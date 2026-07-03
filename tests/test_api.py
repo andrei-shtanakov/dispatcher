@@ -66,6 +66,19 @@ async def test_errors_sorted_newest_first(tmp_path: Path) -> None:
     assert stamps == sorted(stamps, reverse=True)
 
 
+async def test_errors_project_filter(tmp_path: Path) -> None:
+    async with _client(tmp_path) as client:
+        all_events = (await client.get("/api/errors")).json()
+        arbiter_only = (
+            await client.get("/api/errors", params={"project": "arbiter"})
+        ).json()
+        unknown = (await client.get("/api/errors", params={"project": "nope"})).json()
+    assert 0 < len(arbiter_only) < len(all_events)
+    # spec-runner fixture errors must not leak into the arbiter view
+    assert not any("lint failed" in e["body"] for e in arbiter_only)
+    assert unknown == []
+
+
 async def test_errors_days_filter(tmp_path: Path) -> None:
     async with _client(tmp_path) as client:
         all_events = (await client.get("/api/errors")).json()
@@ -108,6 +121,8 @@ async def test_index_served(tmp_path: Path) -> None:
     assert resp.status_code == 200
     assert 'id="projects"' in resp.text
     assert 'id="errors-toggle"' in resp.text
+    # Errors live in a collapsible box, collapsed by default (no `open` attr)
+    assert '<details id="errors-box">' in resp.text
     # Regression guard: cards use data-name + a delegated listener; inline
     # onclick would be XSS-prone (project names reach a JS-string context).
     assert "data-name=" in resp.text

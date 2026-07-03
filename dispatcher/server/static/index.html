@@ -42,6 +42,15 @@
     color: var(--dim); border-radius: 6px; font: inherit; font-size: 12px;
     padding: 2px 8px; cursor: pointer; margin-left: 8px; vertical-align: 2px; }
   #errors-toggle:hover { color: var(--ink); }
+  details > summary { cursor: pointer; list-style: none; }
+  details > summary::before { content: "▸ "; color: var(--dim); }
+  details[open] > summary::before { content: "▾ "; }
+  details > summary h2 { display: inline; }
+  details .tablewrap { margin-top: 10px; }
+  #errors-count { color: var(--dim); font-weight: 400; }
+  #errors-filter { color: var(--dim); font-weight: 400; }
+  #errors-clear { background: none; border: none; color: var(--bad);
+    cursor: pointer; font: inherit; padding: 0 2px; }
   #detail { white-space: pre-wrap; font-family: ui-monospace, monospace;
     font-size: 12px; background: var(--card); border: 1px solid var(--line);
     border-radius: 10px; padding: 14px; max-height: 480px; overflow: auto; }
@@ -58,11 +67,13 @@
   <h2>Project detail <span id="detail-name"></span></h2>
   <div id="detail">click a project card…</div></section>
 
-<section><h2>Errors
-    <button id="errors-toggle" type="button">show all</button></h2>
+<section><details id="errors-box">
+  <summary><h2>Errors <span id="errors-count"></span>
+    <span id="errors-filter"></span>
+    <button id="errors-toggle" type="button">show all</button></h2></summary>
   <div class="tablewrap"><table id="errors">
     <thead><tr><th>Time</th><th>Service</th><th>Message</th></tr></thead>
-    <tbody></tbody></table></div></section>
+    <tbody></tbody></table></div></details></section>
 
 <section><h2>Models</h2>
   <div class="tablewrap"><table id="models">
@@ -83,13 +94,36 @@ const get = async p => (await fetch(p)).json();
 const ERRORS_DAYS_DEFAULT = 14;
 const MSG_LIMIT = 160;
 let errorsDays = ERRORS_DAYS_DEFAULT;  // null = show all
+let errorsProject = null;              // null = all projects
+
+function renderErrorsFilter() {
+  const box = document.getElementById("errors-filter");
+  box.innerHTML = errorsProject === null ? "" :
+    `· ${esc(errorsProject)} <button id="errors-clear" type="button">✕</button>`;
+}
 
 document.getElementById("projects").addEventListener("click", e => {
   const card = e.target.closest(".card[data-name]");
-  if (card) detail(card.dataset.name);
+  if (!card) return;
+  errorsProject = card.dataset.name;
+  renderErrorsFilter();
+  document.getElementById("errors-box").open = true;
+  refresh();
+  detail(card.dataset.name);
+});
+
+document.getElementById("errors-filter").addEventListener("click", e => {
+  if (e.target.id !== "errors-clear") return;
+  e.preventDefault();
+  e.stopPropagation();  // don't collapse the <details>
+  errorsProject = null;
+  renderErrorsFilter();
+  refresh();
 });
 
 document.getElementById("errors-toggle").addEventListener("click", e => {
+  e.preventDefault();
+  e.stopPropagation();  // don't toggle the <details>
   errorsDays = errorsDays === null ? ERRORS_DAYS_DEFAULT : null;
   e.target.textContent =
     errorsDays === null ? `last ${ERRORS_DAYS_DEFAULT} days` : "show all";
@@ -107,7 +141,9 @@ document.querySelector("#errors tbody").addEventListener("click", e => {
 async function refresh() {
   try {
     const errorsUrl = "/api/errors?limit=50"
-      + (errorsDays === null ? "" : `&days=${errorsDays}`);
+      + (errorsDays === null ? "" : `&days=${errorsDays}`)
+      + (errorsProject === null
+        ? "" : `&project=${encodeURIComponent(errorsProject)}`);
     const [ov, errors, models, contracts] = await Promise.all([
       get("/api/overview"), get(errorsUrl),
       get("/api/models"), get("/api/contracts")]);
@@ -137,6 +173,8 @@ async function refresh() {
       <td class="err msg"${expandable}>${esc(short)}</td></tr>`;
     }).join("")
       || `<tr><td colspan="3" class="ok">no errors 🎉</td></tr>`;
+    document.getElementById("errors-count").textContent =
+      `(${errors.length})`;
     document.querySelector("#models tbody").innerHTML = models.map(m => `
       <tr><td>${esc(m.project)}</td><td>${esc(m.model_id)}</td>
       <td>${esc(m.harness ?? "—")}</td><td>${esc(m.role)}</td>

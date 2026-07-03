@@ -129,8 +129,11 @@ def create_app(config: DispatcherConfig) -> FastAPI:
     def errors(
         limit: int = Query(100, ge=0),
         days: int | None = Query(None, ge=1),
+        project: str | None = Query(None),
     ) -> list[ErrorEvent]:
         snapshots, _ = cache.get()
+        if project is not None:
+            snapshots = [s for s in snapshots if s.name == project]
         merged = [e for s in snapshots for e in s.errors]
         if days is not None:
             merged = recent_errors(merged, days)
