@@ -1,0 +1,91 @@
+"""Dispatcher configuration and project auto-discovery."""
+
+from __future__ import annotations
+
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from dispatcher.core.collectors.base import Collector
+
+DEFAULT_PORT = 8787
+_DEFAULT_MAESTRO_DB = Path.home() / ".maestro" / "maestro.db"
+
+
+def _monorepo_fallback_root() -> Path:
+    """Parent of the dispatcher project — monorepo-layout convenience only.
+
+    Standalone installs must list roots explicitly in dispatcher.toml.
+    """
+    return Path(__file__).resolve().parents[2].parent
+
+
+@dataclass(frozen=True)
+class DispatcherConfig:
+    """Runtime configuration (dispatcher.toml)."""
+
+    roots: tuple[Path, ...]
+    maestro_db: Path = field(default_factory=lambda: _DEFAULT_MAESTRO_DB)
+    port: int = DEFAULT_PORT
+
+
+@dataclass(frozen=True)
+class DiscoveredProject:
+    """A detected project and the collector that owns it."""
+
+    name: str
+    path: Path
+    collector: Collector
+
+
+def load_config(config_path: Path | None = None) -> DispatcherConfig:
+    """Load dispatcher.toml; absent file yields defaults."""
+    data: dict = {}
+    path = config_path or Path("dispatcher.toml")
+    if path.is_file():
+        data = tomllib.loads(path.read_text())
+    roots = tuple(Path(p).expanduser() for p in data.get("roots", []))
+    if not roots:
+        roots = (_monorepo_fallback_root(),)
+    maestro_db = Path(data.get("maestro_db", str(_DEFAULT_MAESTRO_DB))).expanduser()
+    return DispatcherConfig(
+        roots=roots,
+        maestro_db=maestro_db,
+        port=int(data.get("port", DEFAULT_PORT)),
+    )
+
+
+def discover(
+    roots: tuple[Path, ...], collectors: list[Collector]
+) -> tuple[list[DiscoveredProject], list[str]]:
+    """Scan roots; first match per collector wins across all roots."""
+    found: list[DiscoveredProject] = []
+    warnings: list[str] = []
+    matched: set[str] = set()
+    for root in roots:
+        if not root.is_dir():
+            warnings.append(f"root not found: {root}")
+            continue
+        try:
+            children = sorted(d for d in root.iterdir() if d.is_dir())
+        except OSError as err:
+            warnings.append(f"cannot list {root}: {err}")
+            continue
+        for candidate in [root, *children]:
+            for collector in collectors:
+                if collector.name in matched:
+                    continue
+                try:
+                    hit = collector.detect(candidate)
+                except OSError:
+                    continue
+                if hit:
+                    matched.add(collector.name)
+                    found.append(
+                        DiscoveredProject(
+                            name=collector.name,
+                            path=candidate,
+                            collector=collector,
+                        )
+                    )
+    return found, warnings
