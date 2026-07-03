@@ -36,6 +36,12 @@
   tr:last-child td { border-bottom: none; }
   .err { color: var(--bad); }
   .ok { color: var(--ok); }
+  td.msg { white-space: normal; word-break: break-word; max-width: 720px; }
+  td.msg[data-full] { cursor: pointer; }
+  #errors-toggle { background: none; border: 1px solid var(--line);
+    color: var(--dim); border-radius: 6px; font: inherit; font-size: 12px;
+    padding: 2px 8px; cursor: pointer; margin-left: 8px; vertical-align: 2px; }
+  #errors-toggle:hover { color: var(--ink); }
   #detail { white-space: pre-wrap; font-family: ui-monospace, monospace;
     font-size: 12px; background: var(--card); border: 1px solid var(--line);
     border-radius: 10px; padding: 14px; max-height: 480px; overflow: auto; }
@@ -52,7 +58,8 @@
   <h2>Project detail <span id="detail-name"></span></h2>
   <div id="detail">click a project card…</div></section>
 
-<section><h2>Errors</h2>
+<section><h2>Errors
+    <button id="errors-toggle" type="button">show all</button></h2>
   <div class="tablewrap"><table id="errors">
     <thead><tr><th>Time</th><th>Service</th><th>Message</th></tr></thead>
     <tbody></tbody></table></div></section>
@@ -73,15 +80,36 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const get = async p => (await fetch(p)).json();
 
+const ERRORS_DAYS_DEFAULT = 14;
+const MSG_LIMIT = 160;
+let errorsDays = ERRORS_DAYS_DEFAULT;  // null = show all
+
 document.getElementById("projects").addEventListener("click", e => {
   const card = e.target.closest(".card[data-name]");
   if (card) detail(card.dataset.name);
 });
 
+document.getElementById("errors-toggle").addEventListener("click", e => {
+  errorsDays = errorsDays === null ? ERRORS_DAYS_DEFAULT : null;
+  e.target.textContent =
+    errorsDays === null ? `last ${ERRORS_DAYS_DEFAULT} days` : "show all";
+  refresh();
+});
+
+// Long messages render truncated; click a message cell to expand/collapse.
+document.querySelector("#errors tbody").addEventListener("click", e => {
+  const td = e.target.closest("td.msg");
+  if (!td || td.dataset.full === undefined) return;
+  const expanded = td.classList.toggle("expanded");
+  td.textContent = expanded ? td.dataset.full : td.dataset.short;
+});
+
 async function refresh() {
   try {
+    const errorsUrl = "/api/errors?limit=50"
+      + (errorsDays === null ? "" : `&days=${errorsDays}`);
     const [ov, errors, models, contracts] = await Promise.all([
-      get("/api/overview"), get("/api/errors?limit=50"),
+      get("/api/overview"), get(errorsUrl),
       get("/api/models"), get("/api/contracts")]);
     document.getElementById("projects").innerHTML = ov.projects.map(p => `
       <div class="card ${p.detected ? "" : "off"}"
@@ -98,9 +126,16 @@ async function refresh() {
         ${(p.warnings || []).map(w => `<div class="warn">⚠ ${esc(w)}</div>`)
           .join("")}
       </div>`).join("");
-    document.querySelector("#errors tbody").innerHTML = errors.map(e => `
+    document.querySelector("#errors tbody").innerHTML = errors.map(e => {
+      const full = e.body ?? "";
+      const short = full.length > MSG_LIMIT
+        ? full.slice(0, MSG_LIMIT) + "…" : full;
+      const expandable = short !== full
+        ? ` data-full="${esc(full)}" data-short="${esc(short)}"` : "";
+      return `
       <tr><td>${esc(e.timestamp ?? "—")}</td><td>${esc(e.service ?? "—")}</td>
-      <td class="err">${esc(e.body)}</td></tr>`).join("")
+      <td class="err msg"${expandable}>${esc(short)}</td></tr>`;
+    }).join("")
       || `<tr><td colspan="3" class="ok">no errors 🎉</td></tr>`;
     document.querySelector("#models tbody").innerHTML = models.map(m => `
       <tr><td>${esc(m.project)}</td><td>${esc(m.model_id)}</td>

@@ -59,6 +59,40 @@ async def test_errors_negative_limit_rejected(tmp_path: Path) -> None:
     assert resp.status_code == 422
 
 
+async def test_errors_sorted_newest_first(tmp_path: Path) -> None:
+    async with _client(tmp_path) as client:
+        events = (await client.get("/api/errors")).json()
+    stamps = [e["timestamp"] or "" for e in events]
+    assert stamps == sorted(stamps, reverse=True)
+
+
+async def test_errors_days_filter(tmp_path: Path) -> None:
+    async with _client(tmp_path) as client:
+        all_events = (await client.get("/api/errors")).json()
+        recent = (await client.get("/api/errors", params={"days": 1})).json()
+        huge = (await client.get("/api/errors", params={"days": 36500})).json()
+        bad = await client.get("/api/errors", params={"days": 0})
+    assert len(recent) <= len(all_events)
+    assert len(huge) == len(all_events)
+    assert bad.status_code == 422
+
+
+def test_recent_errors_helper() -> None:
+    from datetime import UTC, datetime
+
+    from dispatcher.core.models import ErrorEvent
+    from dispatcher.server.app import recent_errors
+
+    now = datetime(2026, 7, 3, 12, 0, 0, tzinfo=UTC)
+    events = [
+        ErrorEvent(timestamp="2026-07-02T10:00:00+00:00", body="new", source="s"),
+        ErrorEvent(timestamp="2026-02-01T10:00:00", body="old-naive", source="s"),
+        ErrorEvent(timestamp=None, body="undated", source="s"),
+    ]
+    kept = {e.body for e in recent_errors(events, days=14, now=now)}
+    assert kept == {"new", "undated"}  # undated events are never dropped
+
+
 async def test_models_and_contracts(tmp_path: Path) -> None:
     async with _client(tmp_path) as client:
         models = (await client.get("/api/models")).json()
@@ -73,6 +107,7 @@ async def test_index_served(tmp_path: Path) -> None:
         resp = await client.get("/")
     assert resp.status_code == 200
     assert 'id="projects"' in resp.text
+    assert 'id="errors-toggle"' in resp.text
     # Regression guard: cards use data-name + a delegated listener; inline
     # onclick would be XSS-prone (project names reach a JS-string context).
     assert "data-name=" in resp.text

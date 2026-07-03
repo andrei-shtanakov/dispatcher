@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,22 @@ from dispatcher.core.models import (
 
 _CACHE_TTL_SECONDS = 5.0
 _STATIC_DIR = Path(__file__).parent / "static"
+_ISO_PREFIX = 19  # "YYYY-MM-DDTHH:MM:SS" — comparable across naive/aware stamps
+
+
+def recent_errors(
+    events: list[ErrorEvent], days: int, now: datetime | None = None
+) -> list[ErrorEvent]:
+    """Keep events newer than `days` days; undated events are never dropped.
+
+    Source timestamps mix naive and timezone-aware ISO strings, so the
+    comparison uses the first 19 characters, which sort chronologically.
+    """
+    moment = now if now is not None else datetime.now(tz=UTC)
+    cutoff = (moment - timedelta(days=days)).isoformat()[:_ISO_PREFIX]
+    return [
+        e for e in events if e.timestamp is None or e.timestamp[:_ISO_PREFIX] >= cutoff
+    ]
 
 
 class _SnapshotCache:
@@ -109,9 +126,14 @@ def create_app(config: DispatcherConfig) -> FastAPI:
         raise HTTPException(status_code=404, detail=f"unknown project: {name}")
 
     @app.get("/api/errors", response_model=list[ErrorEvent])
-    def errors(limit: int = Query(100, ge=0)) -> list[ErrorEvent]:
+    def errors(
+        limit: int = Query(100, ge=0),
+        days: int | None = Query(None, ge=1),
+    ) -> list[ErrorEvent]:
         snapshots, _ = cache.get()
         merged = [e for s in snapshots for e in s.errors]
+        if days is not None:
+            merged = recent_errors(merged, days)
         merged.sort(key=lambda e: e.timestamp or "", reverse=True)
         return merged[:limit]
 
