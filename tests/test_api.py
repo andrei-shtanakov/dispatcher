@@ -66,4 +66,4 @@ async def test_index_served(tmp_path: Path) -> None:
     async with _client(tmp_path) as client:
         resp = await client.get("/")
     assert resp.status_code == 200
-    assert "Dispatcher" in resp.text
+    assert 'id="projects"' in resp.text
