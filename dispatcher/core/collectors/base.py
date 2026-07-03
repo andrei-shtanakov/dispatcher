@@ -6,6 +6,7 @@ import json
 import re
 import sqlite3
 import time
+import tomllib
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -16,13 +17,8 @@ import yaml
 
 from dispatcher.core.models import ErrorEvent, ProjectSnapshot, SchemaVersionCheck
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - py>=3.11 always has it
-    raise
-
 SEVERITY_ERROR = 17  # OTel SeverityNumber: 17..20 == ERROR..FATAL
-_RETRIES = 5
+_RETRIES = 2
 _KEY_RE = re.compile(r"(?i)(token|secret|password|passwd|api_?key|credential)")
 _URL_CRED_RE = re.compile(r"://[^/@\s:]+:[^/@\s]+@")
 _TOKEN_VALUE_RE = re.compile(
@@ -65,25 +61,24 @@ def read_rows(
 
     Raises SourceReadError on any failure. Never writes, never creates.
     """
-    if not db_path.exists():
-        raise SourceReadError(f"{db_path.name}: database does not exist")
-
+    uri = f"file:{db_path}?mode=ro"
     last_err: Exception | None = None
     for attempt in range(_RETRIES):
         try:
-            conn = sqlite3.connect(str(db_path), timeout=10.0, check_same_thread=False)
+            conn = sqlite3.connect(uri, uri=True, timeout=2.0)
             try:
                 conn.row_factory = sqlite3.Row
-                conn.execute("PRAGMA busy_timeout = 10000")
-                conn.execute("PRAGMA query_only = ON")
+                conn.execute("PRAGMA busy_timeout = 2000")
                 rows = conn.execute(sql, params).fetchall()
                 return [dict(row) for row in rows]
             finally:
                 conn.close()
-        except sqlite3.Error as err:
+        except sqlite3.OperationalError as err:
             last_err = err
             if attempt + 1 < _RETRIES:
-                time.sleep(0.5)
+                time.sleep(0.2)
+        except sqlite3.Error as err:
+            raise SourceReadError(f"{db_path.name}: {err}") from err
     raise SourceReadError(f"{db_path.name}: {last_err}")
 
 
@@ -103,12 +98,12 @@ def version_check(
 
 def mask_secrets(value: Any, key: str | None = None) -> Any:
     """Recursively mask secrets by key name and by value pattern."""
+    if key is not None and _KEY_RE.search(key):
+        return "***"
     if isinstance(value, dict):
         return {k: mask_secrets(v, str(k)) for k, v in value.items()}
     if isinstance(value, list):
         return [mask_secrets(v) for v in value]
-    if key is not None and _KEY_RE.search(key):
-        return "***"
     if isinstance(value, str):
         value = _URL_CRED_RE.sub("://***:***@", value)
         return _TOKEN_VALUE_RE.sub("***", value)

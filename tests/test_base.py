@@ -94,6 +94,7 @@ def test_mask_secrets_by_key_and_value() -> None:
     assert "user:pass" not in masked["url"]
     assert "verysecret" not in masked["auth"]
     assert masked["plain"] == "hello"
+    assert mask_secrets({"credentials": {"user": "u"}})["credentials"] == "***"
 
 
 def test_shallow_summary_collapses_containers() -> None:
