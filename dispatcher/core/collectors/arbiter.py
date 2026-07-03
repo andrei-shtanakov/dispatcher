@@ -26,6 +26,12 @@ from dispatcher.core.models import (
 _EXPECTED_SCHEMA = "1"
 
 
+def _decision_title(chosen_agent: str, confidence: float | None) -> str:
+    """Format a decision title, tolerating a NULL confidence value."""
+    conf_txt = "n/a" if confidence is None else f"{confidence:.2f}"
+    return f"{chosen_agent} (conf={conf_txt})"
+
+
 class ArbiterCollector:
     """Reads arbiter's decision DB and agent policy configs."""
 
@@ -62,7 +68,7 @@ class ArbiterCollector:
             snap.tasks = [
                 TaskInfo(
                     task_id=r["task_id"],
-                    title=f"{r['chosen_agent']} (conf={r['confidence']:.2f})",
+                    title=_decision_title(r["chosen_agent"], r["confidence"]),
                     status=r["action"],
                     started_at=r["timestamp"],
                     source=str(db),

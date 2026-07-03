@@ -1,5 +1,6 @@
 """Tests for the arbiter collector."""
 
+import sqlite3
 from pathlib import Path
 
 from conftest import make_arbiter
@@ -33,6 +34,23 @@ def test_collect_happy_path(tmp_path: Path) -> None:
     assert ("aider", "aider") in routable
     assert any(e.body == "subprocess failed" for e in snap.errors)
     assert snap.warnings == []
+
+
+def test_collect_null_confidence(tmp_path: Path) -> None:
+    p = make_arbiter(tmp_path)
+    with sqlite3.connect(p / "arbiter.db") as conn:
+        conn.execute(
+            "INSERT INTO decisions "
+            "(task_id, timestamp, chosen_agent, action, confidence) "
+            "VALUES ('T-null', '2026-07-03T00:00:00', 'aider', "
+            "'fallback', NULL)"
+        )
+    snap = ArbiterCollector().collect(p, _ctx(tmp_path))
+    null_tasks = [t for t in snap.tasks if t.task_id == "T-null"]
+    assert null_tasks
+    title = null_tasks[0].title
+    assert title is not None
+    assert "n/a" in title
 
 
 def test_collect_without_db(tmp_path: Path) -> None:
