@@ -10,6 +10,9 @@ installed; missing ones simply don't show up.
     uv run dispatcher serve            # http://127.0.0.1:8787
     uv run dispatcher serve --port 9000 --config /path/dispatcher.toml
 
+Port precedence: the CLI `--port` flag overrides the config file's `port`,
+which overrides the default 8787.
+
 ## Configure (optional `dispatcher.toml`)
 
     roots = ["/Users/you/labs/all_ai_orchestrators"]

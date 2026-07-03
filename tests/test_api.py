@@ -67,3 +67,7 @@ async def test_index_served(tmp_path: Path) -> None:
         resp = await client.get("/")
     assert resp.status_code == 200
     assert 'id="projects"' in resp.text
+    # Regression guard: cards use data-name + a delegated listener; inline
+    # onclick would be XSS-prone (project names reach a JS-string context).
+    assert "data-name=" in resp.text
+    assert "onclick=" not in resp.text

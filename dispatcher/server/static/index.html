@@ -72,6 +72,11 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const get = async p => (await fetch(p)).json();
 
+document.getElementById("projects").addEventListener("click", e => {
+  const card = e.target.closest(".card[data-name]");
+  if (card) detail(card.dataset.name);
+});
+
 async function refresh() {
   try {
     const [ov, errors, models, contracts] = await Promise.all([
@@ -79,14 +84,14 @@ async function refresh() {
       get("/api/models"), get("/api/contracts")]);
     document.getElementById("projects").innerHTML = ov.projects.map(p => `
       <div class="card ${p.detected ? "" : "off"}"
-           ${p.detected ? `onclick="detail('${esc(p.name)}')"` : ""}>
+           ${p.detected ? `data-name="${esc(p.name)}"` : ""}>
         <h2>${esc(p.name)}</h2>
         ${p.detected
-          ? `<div class="counts">tasks ${p.counts.tasks ?? 0} ·
-               models ${p.counts.models ?? 0} ·
-               tests ${p.counts.test_results ?? 0} ·
+          ? `<div class="counts">tasks ${esc(p.counts.tasks ?? 0)} ·
+               models ${esc(p.counts.models ?? 0)} ·
+               tests ${esc(p.counts.test_results ?? 0)} ·
                <span class="${p.counts.errors ? "err" : ""}">
-                 errors ${p.counts.errors ?? 0}</span></div>
+                 errors ${esc(p.counts.errors ?? 0)}</span></div>
              <div class="fresh">${esc(p.freshness ?? "freshness unknown")}</div>`
           : `<div class="counts">not detected</div>`}
         ${(p.warnings || []).map(w => `<div class="warn">⚠ ${esc(w)}</div>`)
