@@ -1,0 +1,46 @@
+[project]
+name = "dispatcher"
+version = "0.1.0"
+description = "Read-only monitoring dashboard for the AI-orchestrators ecosystem"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.139.0",
+    "pydantic>=2.13.4",
+    "pyyaml>=6.0.3",
+    "uvicorn>=0.49.0",
+]
+
+[project.scripts]
+dispatcher = "dispatcher.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["dispatcher"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+extend-select = ["I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.pyrefly]
+project-includes = [
+    "**/*.py*",
+    "**/*.ipynb",
+]
+
+[dependency-groups]
+dev = [
+    "anyio>=4.14.1",
+    "httpx>=0.28.1",
+    "pyrefly>=1.1.1",
+    "pytest>=9.1.1",
+    "ruff>=0.15.20",
+]
