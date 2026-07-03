@@ -79,6 +79,16 @@ async def test_errors_project_filter(tmp_path: Path) -> None:
     assert unknown == []
 
 
+async def test_errors_service_filter(tmp_path: Path) -> None:
+    async with _client(tmp_path) as client:
+        all_events = (await client.get("/api/errors")).json()
+        svc_only = (await client.get("/api/errors", params={"service": "svc"})).json()
+        unknown = (await client.get("/api/errors", params={"service": "nope"})).json()
+    assert 0 < len(svc_only) < len(all_events)
+    assert all(e["service"] == "svc" for e in svc_only)
+    assert unknown == []
+
+
 async def test_errors_days_filter(tmp_path: Path) -> None:
     async with _client(tmp_path) as client:
         all_events = (await client.get("/api/errors")).json()
@@ -123,6 +133,7 @@ async def test_index_served(tmp_path: Path) -> None:
     assert 'id="errors-toggle"' in resp.text
     # Errors live in a collapsible box, collapsed by default (no `open` attr)
     assert '<details id="errors-box">' in resp.text
+    assert 'id="errors-service"' in resp.text
     # Regression guard: cards use data-name + a delegated listener; inline
     # onclick would be XSS-prone (project names reach a JS-string context).
     assert "data-name=" in resp.text

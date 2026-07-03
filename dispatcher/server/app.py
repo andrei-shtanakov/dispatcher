@@ -130,11 +130,14 @@ def create_app(config: DispatcherConfig) -> FastAPI:
         limit: int = Query(100, ge=0),
         days: int | None = Query(None, ge=1),
         project: str | None = Query(None),
+        service: str | None = Query(None),
     ) -> list[ErrorEvent]:
         snapshots, _ = cache.get()
         if project is not None:
             snapshots = [s for s in snapshots if s.name == project]
         merged = [e for s in snapshots for e in s.errors]
+        if service is not None:
+            merged = [e for e in merged if e.service == service]
         if days is not None:
             merged = recent_errors(merged, days)
         merged.sort(key=lambda e: e.timestamp or "", reverse=True)

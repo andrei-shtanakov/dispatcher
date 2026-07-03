@@ -51,6 +51,9 @@
   #errors-filter { color: var(--dim); font-weight: 400; }
   #errors-clear { background: none; border: none; color: var(--bad);
     cursor: pointer; font: inherit; padding: 0 2px; }
+  #errors-service { background: var(--card); border: 1px solid var(--line);
+    color: var(--dim); border-radius: 6px; font: inherit; font-size: 12px;
+    padding: 2px 6px; margin-left: 8px; vertical-align: 2px; }
   #detail { white-space: pre-wrap; font-family: ui-monospace, monospace;
     font-size: 12px; background: var(--card); border: 1px solid var(--line);
     border-radius: 10px; padding: 14px; max-height: 480px; overflow: auto; }
@@ -70,6 +73,7 @@
 <section><details id="errors-box">
   <summary><h2>Errors <span id="errors-count"></span>
     <span id="errors-filter"></span>
+    <select id="errors-service"><option value="">all services</option></select>
     <button id="errors-toggle" type="button">show all</button></h2></summary>
   <div class="tablewrap"><table id="errors">
     <thead><tr><th>Time</th><th>Service</th><th>Message</th></tr></thead>
@@ -95,6 +99,17 @@ const ERRORS_DAYS_DEFAULT = 14;
 const MSG_LIMIT = 160;
 let errorsDays = ERRORS_DAYS_DEFAULT;  // null = show all
 let errorsProject = null;              // null = all projects
+let errorsService = null;              // null = all services
+const knownServices = new Set();       // union of services ever seen
+
+function renderServiceOptions() {
+  const sel = document.getElementById("errors-service");
+  const current = errorsService ?? "";
+  sel.innerHTML = `<option value="">all services</option>`
+    + [...knownServices].sort().map(s =>
+      `<option value="${esc(s)}">${esc(s)}</option>`).join("");
+  sel.value = current;
+}
 
 function renderErrorsFilter() {
   const box = document.getElementById("errors-filter");
@@ -130,6 +145,13 @@ document.getElementById("errors-toggle").addEventListener("click", e => {
   refresh();
 });
 
+const serviceSelect = document.getElementById("errors-service");
+serviceSelect.addEventListener("click", e => e.stopPropagation());
+serviceSelect.addEventListener("change", e => {
+  errorsService = e.target.value || null;
+  refresh();
+});
+
 // Long messages render truncated; click a message cell to expand/collapse.
 document.querySelector("#errors tbody").addEventListener("click", e => {
   const td = e.target.closest("td.msg");
@@ -143,7 +165,9 @@ async function refresh() {
     const errorsUrl = "/api/errors?limit=50"
       + (errorsDays === null ? "" : `&days=${errorsDays}`)
       + (errorsProject === null
-        ? "" : `&project=${encodeURIComponent(errorsProject)}`);
+        ? "" : `&project=${encodeURIComponent(errorsProject)}`)
+      + (errorsService === null
+        ? "" : `&service=${encodeURIComponent(errorsService)}`);
     const [ov, errors, models, contracts] = await Promise.all([
       get("/api/overview"), get(errorsUrl),
       get("/api/models"), get("/api/contracts")]);
@@ -175,6 +199,8 @@ async function refresh() {
       || `<tr><td colspan="3" class="ok">no errors 🎉</td></tr>`;
     document.getElementById("errors-count").textContent =
       `(${errors.length})`;
+    errors.forEach(e => { if (e.service) knownServices.add(e.service); });
+    renderServiceOptions();
     document.querySelector("#models tbody").innerHTML = models.map(m => `
       <tr><td>${esc(m.project)}</td><td>${esc(m.model_id)}</td>
       <td>${esc(m.harness ?? "—")}</td><td>${esc(m.role)}</td>
