@@ -104,7 +104,12 @@ class AtpCollector:
         exp = path / "results" / "experiment" / "experiment_results.json"
         if not exp.is_file():
             return
-        stamp = datetime.fromtimestamp(exp.stat().st_mtime, tz=UTC).isoformat()
+        try:
+            mtime = exp.stat().st_mtime
+        except OSError as err:
+            snap.warnings.append(f"cannot stat {exp.name}: {err}")
+            return
+        stamp = datetime.fromtimestamp(mtime, tz=UTC).isoformat()
         snap.test_results.append(
             TestRunSummary(
                 run_id="experiment",
@@ -120,7 +125,12 @@ class AtpCollector:
         if not bench.is_dir():
             return
         for db in sorted(bench.rglob("*.db")):
-            stamp = datetime.fromtimestamp(db.stat().st_mtime, tz=UTC).isoformat()
+            try:
+                mtime = db.stat().st_mtime
+            except OSError as err:
+                snap.warnings.append(f"cannot stat {db.name}: {err}")
+                continue
+            stamp = datetime.fromtimestamp(mtime, tz=UTC).isoformat()
             snap.test_results.append(
                 TestRunSummary(
                     run_id=str(db.relative_to(path)),

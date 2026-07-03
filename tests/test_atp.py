@@ -51,3 +51,14 @@ def test_collect_without_dashboard_db(tmp_path: Path) -> None:
     snap = AtpCollector().collect(p, _ctx(tmp_path))
     assert any("atp-dashboard" in w for w in snap.warnings)
     assert any(m.role == "catalog" for m in snap.models)
+
+
+def test_collect_with_unstatable_bench_output(tmp_path: Path) -> None:
+    p = make_atp(tmp_path)
+    db = p / "_bench_output" / "r07" / "sweep.db"
+    db.unlink()
+    db.symlink_to(p / "nonexistent-target")
+    snap = AtpCollector().collect(p, _ctx(tmp_path))
+    names = {t.name for t in snap.test_results}
+    assert "_bench_output/r07/sweep.db" not in names
+    assert any("sweep.db" in w for w in snap.warnings)
