@@ -29,6 +29,7 @@ extend-select = ["I"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = ["ignore::pytest.PytestCollectionWarning"]
 
 [tool.pyrefly]
 project-includes = [

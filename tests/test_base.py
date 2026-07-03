@@ -10,6 +10,7 @@ import pytest
 
 from dispatcher.core.collectors.base import (
     SourceReadError,
+    coerce_str,
     mask_secrets,
     newest_mtime,
     read_otel_errors,
@@ -132,6 +133,33 @@ def test_read_otel_errors(tmp_path: Path) -> None:
 
 def test_read_otel_errors_missing_dir(tmp_path: Path) -> None:
     assert read_otel_errors(tmp_path / "no-logs") == []
+
+
+def test_read_otel_errors_masks_secrets_in_body(tmp_path: Path) -> None:
+    run = tmp_path / "logs" / "01CCCCCCCCCCCCCCCCCCCCCCCC"
+    run.mkdir(parents=True)
+    rec = {
+        "SeverityNumber": 17,
+        "SeverityText": "ERROR",
+        "Body": (
+            "conn to nats://admin:hunter2@host:4222 failed, "
+            "auth Bearer sk-live-abc123456"
+        ),
+        "Timestamp": "1719999999000000000",
+        "Resource": {"service.name": "svc"},
+    }
+    (run / "svc-1.jsonl").write_text(json.dumps(rec) + "\n")
+    events = read_otel_errors(tmp_path / "logs")
+    assert len(events) == 1
+    assert "hunter2" not in events[0].body
+    assert "sk-live-abc123456" not in events[0].body
+
+
+def test_coerce_str() -> None:
+    assert coerce_str(None) == "unknown"
+    assert coerce_str(None, default="n/a") == "n/a"
+    assert coerce_str(42) == "42"
+    assert coerce_str("ok") == "ok"
 
 
 def test_newest_mtime(tmp_path: Path) -> None:

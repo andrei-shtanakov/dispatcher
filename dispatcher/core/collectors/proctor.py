@@ -7,6 +7,7 @@ from pathlib import Path
 from dispatcher.core.collectors.base import (
     CollectContext,
     SourceReadError,
+    coerce_str,
     mask_secrets,
     newest_mtime,
     read_rows,
@@ -69,8 +70,8 @@ class ProctorCollector:
             )
             snap.tasks = [
                 TaskInfo(
-                    task_id=r["id"],
-                    status=r["status"],
+                    task_id=coerce_str(r["id"]),
+                    status=coerce_str(r["status"]),
                     started_at=r["created_at"],
                     source=str(db),
                 )
@@ -83,7 +84,7 @@ class ProctorCollector:
             )
             snap.tasks.extend(
                 TaskInfo(
-                    task_id=r["id"],
+                    task_id=coerce_str(r["id"]),
                     title=f"{r['type']} {r['expression']} (next={r['next_run']})",
                     status="enabled" if r["enabled"] else "disabled",
                     started_at=r["last_run"],
@@ -107,7 +108,9 @@ class ProctorCollector:
                 summary=mask_secrets(shallow_summary(data)),
             )
         )
-        llm = data.get("llm") or {}
+        llm = data.get("llm")
+        if not isinstance(llm, dict):
+            llm = {}
         for key, role in (("default_model", "default"), ("fallback_model", "fallback")):
             model = llm.get(key)
             if isinstance(model, str):
@@ -131,6 +134,10 @@ def _text_log_errors(
         for line in lines:
             if "ERROR" in line:
                 events.append(
-                    ErrorEvent(service="proctor-a", body=line, source=str(log))
+                    ErrorEvent(
+                        service="proctor-a",
+                        body=mask_secrets(line),
+                        source=str(log),
+                    )
                 )
     return events[-limit:]

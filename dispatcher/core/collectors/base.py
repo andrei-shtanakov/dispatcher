@@ -96,6 +96,15 @@ def version_check(
     return SchemaVersionCheck(database=database, found=found, expected=expected, ok=ok)
 
 
+def coerce_str(value: object, default: str = "unknown") -> str:
+    """Coerce a nullable source-column value to `str`, degrading gracefully.
+
+    Returns `default` when `value` is None (e.g. a NULL SQL column), so a
+    bad/legacy row can never crash a collector on a non-Optional model field.
+    """
+    return default if value is None else str(value)
+
+
 def mask_secrets(value: Any, key: str | None = None) -> Any:
     """Recursively mask secrets by key name and by value pattern."""
     if key is not None and _KEY_RE.search(key):
@@ -170,7 +179,7 @@ def read_otel_errors(logs_dir: Path, limit: int = 20) -> list[ErrorEvent]:
                         timestamp=_otel_timestamp(rec.get("Timestamp")),
                         service=resource.get("service.name"),
                         severity=str(rec.get("SeverityText", "ERROR")),
-                        body=str(rec.get("Body", "")),
+                        body=mask_secrets(str(rec.get("Body", ""))),
                         pipeline_id=attrs.get("pipeline_id"),
                         source=str(jf),
                     )

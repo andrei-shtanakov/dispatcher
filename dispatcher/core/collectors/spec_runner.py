@@ -7,6 +7,7 @@ from pathlib import Path
 from dispatcher.core.collectors.base import (
     CollectContext,
     SourceReadError,
+    coerce_str,
     mask_secrets,
     newest_mtime,
     read_otel_errors,
@@ -69,8 +70,8 @@ class SpecRunnerCollector:
             )
             snap.tasks = [
                 TaskInfo(
-                    task_id=r["task_id"],
-                    status=r["status"],
+                    task_id=coerce_str(r["task_id"]),
+                    status=coerce_str(r["status"]),
                     started_at=r["started_at"],
                     completed_at=r["completed_at"],
                     source=str(db),

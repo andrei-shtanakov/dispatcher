@@ -1,5 +1,6 @@
 """Tests for the Maestro collector."""
 
+import sqlite3
 from pathlib import Path
 
 from conftest import make_atp, make_maestro, make_maestro_home
@@ -44,3 +45,18 @@ def test_collect_without_home_db(tmp_path: Path) -> None:
     snap = MaestroCollector().collect(p, ctx)
     assert snap.tasks == []
     assert any("maestro.db" in w for w in snap.warnings)
+
+
+def test_collect_null_status_task_does_not_raise(tmp_path: Path) -> None:
+    p = make_maestro(tmp_path)
+    db = make_maestro_home(tmp_path)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, agent_type, created_at, "
+            "started_at, completed_at) VALUES ('M-null', 'x', NULL, "
+            "'claude_code', '2026-07-03T00:00:00', NULL, NULL)"
+        )
+    ctx = CollectContext(home=tmp_path / "home", maestro_db=db)
+    snap = MaestroCollector().collect(p, ctx)
+    task = next(t for t in snap.tasks if t.task_id == "M-null")
+    assert task.status == "unknown"

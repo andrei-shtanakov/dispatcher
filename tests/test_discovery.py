@@ -55,6 +55,15 @@ def test_discover_dedupes_by_name(tmp_path: Path) -> None:
     assert [d.name for d in found] == ["proctor-a"]
 
 
+def test_discover_skips_cowork_output(tmp_path: Path) -> None:
+    # _cowork_output is dev-only per monorepo rules; even a fully-formed
+    # project living under it must never be detected.
+    make_proctor(tmp_path / "_cowork_output")
+    make_arbiter(tmp_path)
+    found, _ = discover((tmp_path,), COLLECTORS)
+    assert {d.name for d in found} == {"arbiter"}
+
+
 def test_config_is_frozen(tmp_path: Path) -> None:
     conf = DispatcherConfig(roots=(tmp_path,), maestro_db=tmp_path / "m.db")
     try:

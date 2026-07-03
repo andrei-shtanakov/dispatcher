@@ -53,6 +53,12 @@ async def test_errors_feed(tmp_path: Path) -> None:
     assert any(e["body"] == "subprocess failed" for e in events)
 
 
+async def test_errors_negative_limit_rejected(tmp_path: Path) -> None:
+    async with _client(tmp_path) as client:
+        resp = await client.get("/api/errors", params={"limit": -1})
+    assert resp.status_code == 422
+
+
 async def test_models_and_contracts(tmp_path: Path) -> None:
     async with _client(tmp_path) as client:
         models = (await client.get("/api/models")).json()

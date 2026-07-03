@@ -7,6 +7,7 @@ from pathlib import Path
 from dispatcher.core.collectors.base import (
     CollectContext,
     SourceReadError,
+    coerce_str,
     mask_secrets,
     newest_mtime,
     read_otel_errors,
@@ -67,9 +68,9 @@ class ArbiterCollector:
             )
             snap.tasks = [
                 TaskInfo(
-                    task_id=r["task_id"],
+                    task_id=coerce_str(r["task_id"]),
                     title=_decision_title(r["chosen_agent"], r["confidence"]),
-                    status=r["action"],
+                    status=coerce_str(r["action"]),
                     started_at=r["timestamp"],
                     source=str(db),
                 )
@@ -82,7 +83,7 @@ class ArbiterCollector:
             )
             snap.test_results = [
                 TestRunSummary(
-                    run_id=r["run_id"],
+                    run_id=coerce_str(r["run_id"]),
                     name=f"{r['benchmark_id']} @ {r['agent_id']}",
                     score=r["score"],
                     timestamp=r["ts"],

@@ -8,6 +8,7 @@ from pathlib import Path
 from dispatcher.core.collectors.base import (
     CollectContext,
     SourceReadError,
+    coerce_str,
     mask_secrets,
     newest_mtime,
     read_otel_errors,
@@ -73,7 +74,7 @@ class AtpCollector:
                 snap.test_results.append(
                     TestRunSummary(
                         run_id=str(r["id"]),
-                        name=r["test_name"],
+                        name=coerce_str(r["test_name"]),
                         passed=good,
                         failed=None if total is None else total - (good or 0),
                         total=total,
@@ -146,7 +147,12 @@ class AtpCollector:
         except SourceReadError as err:
             snap.warnings.append(str(err))
             return
-        for model_id, spec in data.get("models", {}).items():
+        models = data.get("models", {})
+        if not isinstance(models, dict):
+            models = {}
+        for model_id, spec in models.items():
+            if not isinstance(spec, dict):
+                continue
             snap.models.append(
                 ModelInUse(
                     model_id=model_id,
@@ -156,7 +162,12 @@ class AtpCollector:
                     source=str(catalog),
                 )
             )
-        for agent in data.get("agents", []):
+        agents = data.get("agents", [])
+        if not isinstance(agents, list):
+            agents = []
+        for agent in agents:
+            if not isinstance(agent, dict):
+                continue
             snap.models.append(
                 ModelInUse(
                     model_id=str(agent.get("model", "?")),

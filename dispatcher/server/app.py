@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
 
 from dispatcher.core.collectors import COLLECTORS, CollectContext
@@ -109,7 +109,7 @@ def create_app(config: DispatcherConfig) -> FastAPI:
         raise HTTPException(status_code=404, detail=f"unknown project: {name}")
 
     @app.get("/api/errors", response_model=list[ErrorEvent])
-    def errors(limit: int = 100) -> list[ErrorEvent]:
+    def errors(limit: int = Query(100, ge=0)) -> list[ErrorEvent]:
         snapshots, _ = cache.get()
         merged = [e for s in snapshots for e in s.errors]
         merged.sort(key=lambda e: e.timestamp or "", reverse=True)

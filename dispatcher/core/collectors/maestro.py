@@ -7,6 +7,7 @@ from pathlib import Path
 from dispatcher.core.collectors.base import (
     CollectContext,
     SourceReadError,
+    coerce_str,
     mask_secrets,
     newest_mtime,
     read_otel_errors,
@@ -73,9 +74,9 @@ class MaestroCollector:
             )
             snap.tasks = [
                 TaskInfo(
-                    task_id=r["id"],
+                    task_id=coerce_str(r["id"]),
                     title=f"{r['title']} [{r['agent_type']}]",
-                    status=r["status"],
+                    status=coerce_str(r["status"]),
                     started_at=_opt_str(r["started_at"]),
                     completed_at=_opt_str(r["completed_at"]),
                     cost_usd=costs.get(r["id"]),
@@ -104,8 +105,11 @@ class MaestroCollector:
         except SourceReadError as err:
             snap.warnings.append(str(err))
             return
-        for agent in data.get("agents", []):
-            if not agent.get("routable"):
+        agents = data.get("agents", [])
+        if not isinstance(agents, list):
+            agents = []
+        for agent in agents:
+            if not isinstance(agent, dict) or not agent.get("routable"):
                 continue
             snap.models.append(
                 ModelInUse(

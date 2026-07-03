@@ -62,3 +62,16 @@ def test_collect_with_unstatable_bench_output(tmp_path: Path) -> None:
     names = {t.name for t in snap.test_results}
     assert "_bench_output/r07/sweep.db" not in names
     assert any("sweep.db" in w for w in snap.warnings)
+
+
+def test_collect_catalog_skips_malformed_agent_entry(tmp_path: Path) -> None:
+    p = make_atp(tmp_path)
+    (p / "method" / "agents-catalog.toml").write_text(
+        'agents = ["notadict"]\n\n'
+        '[models."claude-sonnet-4-6"]\nvendor = "anthropic"\n'
+        'status = "active"\n'
+    )
+    snap = AtpCollector().collect(p, _ctx(tmp_path))
+    catalog_models = {m.model_id for m in snap.models if m.role == "catalog"}
+    assert catalog_models == {"claude-sonnet-4-6"}
+    assert not any(m.role in ("routable", "enrolled") for m in snap.models)

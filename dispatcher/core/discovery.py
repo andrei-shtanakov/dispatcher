@@ -67,7 +67,13 @@ def discover(
             warnings.append(f"root not found: {root}")
             continue
         try:
-            children = sorted(d for d in root.iterdir() if d.is_dir())
+            # `_cowork_output` is dev-only per monorepo rules and must never
+            # be read; skip it and any other hidden/underscore-prefixed dir.
+            children = sorted(
+                d
+                for d in root.iterdir()
+                if d.is_dir() and not d.name.startswith(("_", "."))
+            )
         except OSError as err:
             warnings.append(f"cannot list {root}: {err}")
             continue
