@@ -48,6 +48,10 @@
 
 <div class="grid" id="projects"></div>
 
+<section id="detail-section" hidden>
+  <h2>Project detail <span id="detail-name"></span></h2>
+  <div id="detail">click a project card…</div></section>
+
 <section><h2>Errors</h2>
   <div class="tablewrap"><table id="errors">
     <thead><tr><th>Time</th><th>Service</th><th>Message</th></tr></thead>
@@ -63,9 +67,6 @@
   <div class="tablewrap"><table id="contracts">
     <thead><tr><th>Name</th><th>Canon</th><th>Vendored</th><th>Sync</th>
       </tr></thead><tbody></tbody></table></div></section>
-
-<section><h2>Project detail <span id="detail-name"></span></h2>
-  <div id="detail">click a project card…</div></section>
 
 <script>
 const esc = s => String(s ?? "").replace(/[&<>"']/g,
@@ -120,10 +121,14 @@ async function refresh() {
 }
 
 async function detail(name) {
+  const section = document.getElementById("detail-section");
+  section.hidden = false;
   document.getElementById("detail-name").textContent = "— " + name;
+  document.getElementById("detail").textContent = "loading…";
   const snap = await get("/api/projects/" + encodeURIComponent(name));
   document.getElementById("detail").textContent =
     JSON.stringify(snap, null, 2);
+  section.scrollIntoView({behavior: "smooth", block: "nearest"});
 }
 
 refresh();
