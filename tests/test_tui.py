@@ -10,10 +10,10 @@ from conftest import (
     make_maestro_home,
     make_spec_runner,
 )
-from textual.widgets import DataTable, TabPane
+from textual.widgets import DataTable, Select, TabPane
 
 from dispatcher.core.discovery import DispatcherConfig
-from dispatcher.tui.app import DispatcherApp
+from dispatcher.tui.app import DispatcherApp, truncate
 
 pytestmark = pytest.mark.anyio
 
@@ -149,3 +149,64 @@ async def test_contracts_table_shows_drift(tmp_path: Path) -> None:
         rows = [table.get_row_at(i) for i in range(table.row_count)]
         catalog = next(r for r in rows if str(r[0]) == "agents-catalog")
         assert "✗ drift" in str(catalog[3])
+
+
+def test_truncate_web_parity() -> None:
+    assert truncate("x" * 160) == "x" * 160
+    assert truncate("x" * 161) == "x" * 160 + "…"
+
+
+async def test_errors_tab_lists_and_counts(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        table = app.query_one("#errors-table", DataTable)
+        assert table.row_count == len(app._shown_errors) > 0
+        # newest first, like the web feed
+        stamps = [e.timestamp or "" for e in app._shown_errors]
+        assert stamps == sorted(stamps, reverse=True)
+
+
+async def test_errors_service_filter(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        total = len(app._shown_errors)
+        app.query_one("#errors-service", Select).value = "svc"
+        await pilot.pause()
+        assert 0 < len(app._shown_errors) < total
+        assert all(e.service == "svc" for e in app._shown_errors)
+
+
+async def test_errors_project_filter(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        app.query_one("#errors-project", Select).value = "arbiter"
+        await pilot.pause()
+        assert app._shown_errors  # arbiter fixture has an OTel error
+        assert not any("lint failed" in e.body for e in app._shown_errors)
+
+
+async def test_errors_days_toggle(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        assert app._errors_days == 14
+        await pilot.press("a")
+        assert app._errors_days is None
+        await pilot.press("a")
+        assert app._errors_days == 14
+
+
+async def test_errors_empty_state(tmp_path: Path) -> None:
+    empty_root = tmp_path / "nothing"
+    empty_root.mkdir()
+    app = DispatcherApp(
+        DispatcherConfig(roots=(empty_root,), maestro_db=tmp_path / "no.db")
+    )
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        table = app.query_one("#errors-table", DataTable)
+        assert table.row_count == 1
+        assert "no errors 🎉" in str(table.get_row_at(0)[2])

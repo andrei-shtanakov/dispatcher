@@ -21,7 +21,11 @@ from textual.widgets import (
 from dispatcher.core.contracts import check_contracts
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.models import ContractStatus, ErrorEvent, ProjectSnapshot
-from dispatcher.core.service import ERRORS_DAYS_DEFAULT, SnapshotService
+from dispatcher.core.service import (
+    ERRORS_DAYS_DEFAULT,
+    SnapshotService,
+    recent_errors,
+)
 
 MSG_LIMIT = 160  # same message truncation threshold as the web UI
 ERRORS_LIMIT = 50  # same errors-feed cap as the web UI
@@ -165,8 +169,58 @@ class DispatcherApp(App[None]):
                 key=s.name,
             )
 
+    def _merged_errors(self) -> list[ErrorEvent]:
+        """Filter + sort exactly like GET /api/errors with the web defaults."""
+        snaps = self._snapshots
+        if self._errors_project is not None:
+            snaps = [s for s in snaps if s.name == self._errors_project]
+        merged = [e for s in snaps for e in s.errors]
+        if self._errors_service is not None:
+            merged = [e for e in merged if e.service == self._errors_service]
+        if self._errors_days is not None:
+            merged = recent_errors(merged, self._errors_days)
+        merged.sort(key=lambda e: e.timestamp or "", reverse=True)
+        return merged[:ERRORS_LIMIT]
+
     def _render_errors(self) -> None:
-        pass  # Task 5
+        table = self.query_one("#errors-table", DataTable)
+        self._shown_errors = self._merged_errors()
+        table.clear()
+        for e in self._shown_errors:
+            table.add_row(
+                e.timestamp or "—",
+                e.service or "—",
+                Text(truncate(e.body), style="red"),
+            )
+        if not self._shown_errors:
+            table.add_row("", "", Text("no errors 🎉", style="green"))
+        self.query_one(TabbedContent).get_tab(
+            "tab-errors"
+        ).label = f"Errors ({len(self._shown_errors)})"
+        detected = sorted(s.name for s in self._snapshots if s.detected)
+        self._update_select("errors-project", detected, self._errors_project)
+        services = {e.service for s in self._snapshots for e in s.errors if e.service}
+        self._update_select("errors-service", sorted(services), self._errors_service)
+
+    def _update_select(
+        self, select_id: str, values: list[str], current: str | None
+    ) -> None:
+        """Rebuild a filter Select, keeping the current choice selectable."""
+        if current is not None and current not in values:
+            values = sorted([*values, current])
+        select = self.query_one(f"#{select_id}", Select)
+        with select.prevent(Select.Changed):
+            select.set_options((v, v) for v in values)
+            if current is not None:
+                select.value = current
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        value = None if event.value is Select.BLANK else str(event.value)
+        if event.select.id == "errors-project":
+            self._errors_project = value
+        elif event.select.id == "errors-service":
+            self._errors_service = value
+        self._render_errors()
 
     def _render_models(self) -> None:
         table = self.query_one("#models-table", DataTable)
@@ -195,7 +249,10 @@ class DispatcherApp(App[None]):
             table.add_row(c.name, c.canonical_path, c.vendored_path or "—", sync)
 
     def action_toggle_days(self) -> None:
-        pass  # wired to the errors renderer in a later task
+        self._errors_days = (
+            None if self._errors_days is not None else ERRORS_DAYS_DEFAULT
+        )
+        self._render_errors()
 
     def action_project_errors(self) -> None:
         pass  # wired to the errors tab in a later task

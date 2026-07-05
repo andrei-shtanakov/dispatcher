@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
@@ -21,11 +22,16 @@ def _db(path: Path, script: str) -> None:
 
 
 def write_otel_error_log(project_root: Path) -> None:
-    """One run dir with one ERROR record."""
+    """One run dir with one ERROR record.
+
+    The timestamp is computed relative to "now" (rather than a fixed
+    epoch) so this fixture stays inside default recency windows (e.g. the
+    TUI's 14-day errors filter) no matter when the suite runs.
+    """
     run = project_root / "logs" / "01BBBBBBBBBBBBBBBBBBBBBBBB"
     run.mkdir(parents=True, exist_ok=True)
     rec = {
-        "Timestamp": "1751500000000000000",
+        "Timestamp": str(time.time_ns() - 3_600_000_000_000),  # ~1h ago
         "SeverityNumber": 17,
         "SeverityText": "ERROR",
         "Body": "subprocess failed",
