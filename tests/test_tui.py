@@ -105,7 +105,7 @@ async def test_collect_failure_keeps_last_data(tmp_path: Path, monkeypatch) -> N
             message: str,
             *,
             severity: Literal["error", "information", "warning"] = "information",
-            **kwargs
+            **kwargs,
         ) -> None:
             recorded.append((str(message), severity))
             return real_notify(message, severity=severity, **kwargs)
@@ -126,3 +126,26 @@ async def test_collect_failure_keeps_last_data(tmp_path: Path, monkeypatch) -> N
         assert any(msg.startswith("refresh failed:") for msg in error_messages), (
             "Expected an error message starting with 'refresh failed:'"
         )
+
+
+async def test_models_table_matches_web_columns(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        table = app.query_one("#models-table", DataTable)
+        assert table.row_count > 0
+        rows = [table.get_row_at(i) for i in range(table.row_count)]
+        # arbiter agents.toml fixture exposes a routable harness@model
+        assert any(str(r[0]) == "arbiter" and str(r[3]) == "routable" for r in rows)
+        # missing optional values render as em-dash, like the web
+        assert any("—" in map(str, r) for r in rows)
+
+
+async def test_contracts_table_shows_drift(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        table = app.query_one("#contracts-table", DataTable)
+        rows = [table.get_row_at(i) for i in range(table.row_count)]
+        catalog = next(r for r in rows if str(r[0]) == "agents-catalog")
+        assert "✗ drift" in str(catalog[3])

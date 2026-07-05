@@ -169,10 +169,30 @@ class DispatcherApp(App[None]):
         pass  # Task 5
 
     def _render_models(self) -> None:
-        pass  # Task 4
+        table = self.query_one("#models-table", DataTable)
+        table.clear()
+        for s in self._snapshots:
+            for m in s.models:
+                table.add_row(
+                    s.name,
+                    m.model_id,
+                    m.harness or "—",
+                    m.role,
+                    m.vendor or "—",
+                    m.status or "—",
+                )
 
     def _render_contracts(self) -> None:
-        pass  # Task 4
+        table = self.query_one("#contracts-table", DataTable)
+        table.clear()
+        for c in self._contracts:
+            if c.in_sync is None:
+                sync: Text | str = c.detail or "n/a"
+            elif c.in_sync:
+                sync = Text("✓ in sync", style="green")
+            else:
+                sync = Text("✗ drift", style="bold red")
+            table.add_row(c.name, c.canonical_path, c.vendored_path or "—", sync)
 
     def action_toggle_days(self) -> None:
         pass  # wired to the errors renderer in a later task
