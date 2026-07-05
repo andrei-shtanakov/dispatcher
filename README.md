@@ -13,6 +13,14 @@ installed; missing ones simply don't show up.
 Port precedence: the CLI `--port` flag overrides the config file's `port`,
 which overrides the default 8787.
 
+### Terminal UI
+
+    uv run dispatcher tui                     # tabs: Projects / Errors / Models / Contracts
+    uv run dispatcher tui --config dispatcher.toml
+
+Keys: `r` refresh · `a` toggle errors 14d/all · `e` errors for selected
+project · `Enter` drill down · `Esc` back · `q` quit. Auto-refresh: 10 s.
+
 ## Configure (optional `dispatcher.toml`)
 
     roots = ["/Users/you/labs/all_ai_orchestrators"]
@@ -30,4 +38,5 @@ contract the future TUI and VSCode extension consume.
 
 ## Design
 
-See `docs/superpowers/specs/2026-07-03-dispatcher-design.md`.
+See `docs/superpowers/specs/2026-07-03-dispatcher-design.md` (Stage 1) and
+`docs/superpowers/specs/2026-07-05-dispatcher-tui-design.md` (Stage 2, TUI).
