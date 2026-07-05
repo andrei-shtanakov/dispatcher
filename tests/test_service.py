@@ -10,6 +10,7 @@ from conftest import make_arbiter, make_maestro_home
 from dispatcher.core import service as service_mod
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.service import ERRORS_DAYS_DEFAULT, SnapshotService
+from dispatcher.tui.app import ERRORS_LIMIT, MSG_LIMIT
 
 
 def _config(tmp_path: Path) -> DispatcherConfig:
@@ -65,10 +66,21 @@ def test_concurrent_get_collects_once(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_web_days_default_matches_core() -> None:
-    # The web JS cannot import the core constant and keeps its own copy.
+    # The web JS cannot import the core/TUI constants and keeps its own
+    # copies; pin them here so the two UIs can't silently drift apart.
     html_path = (
         Path(service_mod.__file__).parents[1] / "server" / "static" / "index.html"
     )
-    match = re.search(r"ERRORS_DAYS_DEFAULT = (\d+)", html_path.read_text())
-    assert match is not None
-    assert int(match.group(1)) == ERRORS_DAYS_DEFAULT
+    html_text = html_path.read_text()
+
+    days_match = re.search(r"ERRORS_DAYS_DEFAULT = (\d+)", html_text)
+    assert days_match is not None
+    assert int(days_match.group(1)) == ERRORS_DAYS_DEFAULT
+
+    msg_limit_match = re.search(r"const MSG_LIMIT = (\d+)", html_text)
+    assert msg_limit_match is not None
+    assert int(msg_limit_match.group(1)) == MSG_LIMIT
+
+    errors_limit_match = re.search(r"/api/errors\?limit=(\d+)", html_text)
+    assert errors_limit_match is not None
+    assert int(errors_limit_match.group(1)) == ERRORS_LIMIT

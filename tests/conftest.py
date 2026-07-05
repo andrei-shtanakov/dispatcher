@@ -3,6 +3,7 @@
 import json
 import sqlite3
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -44,9 +45,16 @@ def write_otel_error_log(project_root: Path) -> None:
 def make_spec_runner(root: Path) -> Path:
     p = root / "spec-runner"
     (p / "src" / "spec_runner").mkdir(parents=True)
+    # This attempts-row timestamp feeds the TUI/web errors pipeline, whose
+    # default freshness filter is a 14-day now-relative window. Keep it
+    # now-relative (rather than a fixed epoch) so it doesn't age out of that
+    # window and silently drop from recency-sensitive assertions.
+    attempt_ts = (datetime.now(tz=UTC) - timedelta(days=1)).isoformat(
+        timespec="seconds"
+    )
     _db(
         p / "spec" / ".executor-state.db",
-        """
+        f"""
         CREATE TABLE tasks (
             task_id TEXT PRIMARY KEY, status TEXT NOT NULL,
             started_at TEXT, completed_at TEXT);
@@ -59,7 +67,7 @@ def make_spec_runner(root: Path) -> Path:
             ('T-2', 'in_progress', '2026-07-03T09:00:00', NULL);
         INSERT INTO attempts (task_id, timestamp, success, error, error_kind,
             error_stage)
-            VALUES ('T-1', '2026-07-01T10:10:00', 0, 'lint failed', 'lint',
+            VALUES ('T-1', '{attempt_ts}', 0, 'lint failed', 'lint',
             'verify');
         INSERT INTO executor_meta VALUES ('total_completed', '1');
         """,

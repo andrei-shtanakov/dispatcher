@@ -34,7 +34,7 @@ layout). Standalone installs must list `roots` explicitly.
 
 `/api/overview`, `/api/projects/{name}`, `/api/errors?limit=N`,
 `/api/models`, `/api/contracts` — pydantic-typed JSON; this is the same
-contract the future TUI and VSCode extension consume.
+contract the future VSCode extension consumes.
 
 ## Design
 

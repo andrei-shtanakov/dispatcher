@@ -104,7 +104,7 @@ class DispatcherApp(App[None]):
     def action_refresh(self) -> None:
         self._collect()
 
-    @work(thread=True)
+    @work(thread=True, exclusive=True)
     def _collect(self) -> None:
         """Collect snapshots and contracts off the event loop."""
         try:
