@@ -10,7 +10,7 @@ from conftest import (
     make_maestro_home,
     make_spec_runner,
 )
-from textual.widgets import DataTable, Select, TabbedContent, TabPane
+from textual.widgets import DataTable, Select, Static, TabbedContent, TabPane
 
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.tui.app import DispatcherApp, truncate
@@ -223,15 +223,12 @@ async def test_enter_opens_project_detail(tmp_path: Path) -> None:
         await pilot.press("enter")  # cursor starts on row 0 = arbiter
         assert isinstance(app.screen, ProjectDetailScreen)
         assert app.screen._snap.name == "arbiter"
-        # Verify detail-screen renders collected_at and detected fields
-        snap = app.screen._snap
-        assert snap.collected_at is not None
-        assert isinstance(snap.detected, bool)
-
-        # Verify the header includes these fields.
-        # (The actual rendering is tested by the app running and not crashing)
-        assert snap.collected_at is not None, "collected_at must be present"
-        assert snap.detected is not None, "detected must be present"
+        # Verify the rendered header actually contains the collected_at and
+        # detected fields (not just that the model attributes exist).
+        texts = " ".join(str(w.content) for w in app.screen.query(Static))
+        assert "collected:" in texts
+        assert "detected:" in texts
+        assert "T-9" in texts  # arbiter fixture task rendered in sections
         await pilot.press("escape")
         assert not isinstance(app.screen, ProjectDetailScreen)
 
