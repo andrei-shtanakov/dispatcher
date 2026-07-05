@@ -26,6 +26,7 @@ from dispatcher.core.service import (
     SnapshotService,
     recent_errors,
 )
+from dispatcher.tui.detail import ErrorMessageScreen, ProjectDetailScreen
 
 MSG_LIMIT = 160  # same message truncation threshold as the web UI
 ERRORS_LIMIT = 50  # same errors-feed cap as the web UI
@@ -254,5 +255,32 @@ class DispatcherApp(App[None]):
         )
         self._render_errors()
 
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        if event.data_table.id == "projects-table":
+            name = str(event.row_key.value)
+            snap = self._snapshot(name)
+            if snap is not None and snap.detected:
+                self.push_screen(ProjectDetailScreen(snap))
+        elif event.data_table.id == "errors-table":
+            idx = event.cursor_row
+            if 0 <= idx < len(self._shown_errors):
+                self.push_screen(ErrorMessageScreen(self._shown_errors[idx].body))
+
     def action_project_errors(self) -> None:
-        pass  # wired to the errors tab in a later task
+        tabs = self.query_one(TabbedContent)
+        if tabs.active != "tab-projects":
+            return
+        table = self.query_one("#projects-table", DataTable)
+        if table.row_count == 0:
+            return
+        row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
+        name = str(row_key.value)
+        snap = self._snapshot(name)
+        if snap is None or not snap.detected:
+            return
+        self._errors_project = name
+        tabs.active = "tab-errors"
+        select = self.query_one("#errors-project", Select)
+        with select.prevent(Select.Changed):
+            select.value = name
+        self._render_errors()

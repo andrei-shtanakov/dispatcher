@@ -10,10 +10,11 @@ from conftest import (
     make_maestro_home,
     make_spec_runner,
 )
-from textual.widgets import DataTable, Select, TabPane
+from textual.widgets import DataTable, Select, TabbedContent, TabPane
 
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.tui.app import DispatcherApp, truncate
+from dispatcher.tui.detail import ErrorMessageScreen, ProjectDetailScreen
 
 pytestmark = pytest.mark.anyio
 
@@ -210,3 +211,58 @@ async def test_errors_empty_state(tmp_path: Path) -> None:
         table = app.query_one("#errors-table", DataTable)
         assert table.row_count == 1
         assert "no errors 🎉" in str(table.get_row_at(0)[2])
+
+
+async def test_enter_opens_project_detail(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        table = app.query_one("#projects-table", DataTable)
+        table.focus()
+        await pilot.pause()
+        await pilot.press("enter")  # cursor starts on row 0 = arbiter
+        assert isinstance(app.screen, ProjectDetailScreen)
+        assert app.screen._snap.name == "arbiter"
+        await pilot.press("escape")
+        assert not isinstance(app.screen, ProjectDetailScreen)
+
+
+async def test_enter_ignored_on_undetected_project(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        table = app.query_one("#projects-table", DataTable)
+        table.focus()
+        table.move_cursor(row=3)  # first undetected row (Maestro)
+        await pilot.pause()
+        await pilot.press("enter")
+        assert not isinstance(app.screen, ProjectDetailScreen)
+
+
+async def test_enter_on_error_row_shows_full_message(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        app.query_one(TabbedContent).active = "tab-errors"
+        await pilot.pause()
+        table = app.query_one("#errors-table", DataTable)
+        table.focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        assert isinstance(app.screen, ErrorMessageScreen)
+        await pilot.press("escape")
+        assert not isinstance(app.screen, ErrorMessageScreen)
+
+
+async def test_e_key_prefilters_errors_for_project(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        table = app.query_one("#projects-table", DataTable)
+        table.focus()
+        await pilot.pause()
+        await pilot.press("e")  # cursor on row 0 = arbiter
+        await pilot.pause()
+        assert app.query_one(TabbedContent).active == "tab-errors"
+        assert app._errors_project == "arbiter"
+        assert app.query_one("#errors-project", Select).value == "arbiter"
