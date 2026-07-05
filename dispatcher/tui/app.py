@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from pathlib import Path
+
+from rich.text import Text
+from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import (
@@ -13,8 +18,9 @@ from textual.widgets import (
     TabPane,
 )
 
+from dispatcher.core.contracts import check_contracts
 from dispatcher.core.discovery import DispatcherConfig
-from dispatcher.core.models import ErrorEvent, ProjectSnapshot
+from dispatcher.core.models import ContractStatus, ErrorEvent, ProjectSnapshot
 from dispatcher.core.service import ERRORS_DAYS_DEFAULT, SnapshotService
 
 MSG_LIMIT = 160  # same message truncation threshold as the web UI
@@ -46,6 +52,7 @@ class DispatcherApp(App[None]):
         self._service = SnapshotService(config)
         self._snapshots: list[ProjectSnapshot] = []
         self._warnings: list[str] = []
+        self._contracts: list[ContractStatus] = []
         self._errors_days: int | None = ERRORS_DAYS_DEFAULT
         self._errors_project: str | None = None
         self._errors_service: str | None = None
@@ -86,9 +93,86 @@ class DispatcherApp(App[None]):
         self.query_one("#contracts-table", DataTable).add_columns(
             "name", "canon", "vendored", "sync"
         )
+        self.set_interval(10.0, self.action_refresh)
+        self.action_refresh()
 
     def action_refresh(self) -> None:
-        pass  # wired to the collect worker in the next task
+        self._collect()
+
+    @work(thread=True)
+    def _collect(self) -> None:
+        """Collect snapshots and contracts off the event loop."""
+        try:
+            snapshots, warnings = self._service.get()
+            projects = {
+                s.name: Path(s.path) for s in snapshots if s.detected and s.path
+            }
+            contracts = check_contracts(projects)
+        except Exception as err:  # noqa: BLE001 — keep last data on screen
+            self.call_from_thread(
+                self.notify, f"refresh failed: {err}", severity="error"
+            )
+            return
+        self.call_from_thread(self._apply, snapshots, warnings, contracts)
+
+    def _apply(
+        self,
+        snapshots: list[ProjectSnapshot],
+        warnings: list[str],
+        contracts: list[ContractStatus],
+    ) -> None:
+        self._snapshots = snapshots
+        self._warnings = warnings
+        self._contracts = contracts
+        self.sub_title = f"updated {datetime.now():%H:%M:%S} · {len(warnings)} warnings"
+        self._render_projects()
+        self._render_errors()
+        self._render_models()
+        self._render_contracts()
+
+    def _snapshot(self, name: str) -> ProjectSnapshot | None:
+        return next((s for s in self._snapshots if s.name == name), None)
+
+    def _render_projects(self) -> None:
+        table = self.query_one("#projects-table", DataTable)
+        table.clear()
+        for s in self._snapshots:
+            if not s.detected:
+                table.add_row(
+                    Text(s.name, style="dim"),
+                    "not detected",
+                    "—",
+                    "—",
+                    "—",
+                    "—",
+                    "",
+                    key=s.name,
+                )
+                continue
+            errors_cell: Text | str = (
+                Text(str(len(s.errors)), style="bold red")
+                if s.errors
+                else str(len(s.errors))
+            )
+            table.add_row(
+                s.name,
+                s.freshness or "freshness unknown",
+                str(len(s.tasks)),
+                str(len(s.models)),
+                str(len(s.test_results)),
+                errors_cell,
+                f"⚠ {len(s.warnings)}" if s.warnings else "",
+                key=s.name,
+            )
+
+    def _render_errors(self) -> None:
+        pass  # Task 5
+
+    def _render_models(self) -> None:
+        pass  # Task 4
+
+    def _render_contracts(self) -> None:
+        pass  # Task 4
 
     def action_toggle_days(self) -> None:
         pass  # wired to the errors renderer in a later task
