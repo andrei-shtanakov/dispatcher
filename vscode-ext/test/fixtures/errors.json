@@ -3,12 +3,16 @@
     "timestamp": "2026-07-05T12:01:33+00:00",
     "service": "maestro",
     "severity": "ERROR",
-    "body": "timeout in pipeline #42"
+    "body": "timeout in pipeline #42",
+    "source": "otel:svc-1.jsonl",
+    "pipeline_id": "01BBB"
   },
   {
     "timestamp": null,
     "service": null,
     "severity": "ERROR",
-    "body": "undated failure with [markup-looking] text"
+    "body": "undated failure with [markup-looking] text",
+    "source": "state-db",
+    "pipeline_id": null
   }
 ]
