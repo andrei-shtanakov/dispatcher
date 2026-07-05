@@ -53,22 +53,32 @@ export function activate(context: vscode.ExtensionContext): void {
   const errors = new ErrorsProvider();
   const status = createStatusBar();
 
+  let polling = false;
+
   async function poll(): Promise<void> {
+    if (polling) {
+      return;
+    }
+    polling = true;
     try {
-      const api = client();
-      const [overview, events] = await Promise.all([
-        api.overview(),
-        api.errors(),
-      ]);
-      projects.setData(overview.projects);
-      errors.setData(events);
-      status.update(overview);
-      server.markOnline();
-    } catch {
-      projects.setData(null);
-      errors.setData(null);
-      status.update(null);
-      await server.ensureRunning();
+      try {
+        const api = client();
+        const [overview, events] = await Promise.all([
+          api.overview(),
+          api.errors(),
+        ]);
+        projects.setData(overview.projects);
+        errors.setData(events);
+        status.update(overview);
+        server.markOnline();
+      } catch {
+        projects.setData(null);
+        errors.setData(null);
+        status.update(null);
+        await server.ensureRunning();
+      }
+    } finally {
+      polling = false;
     }
   }
 
@@ -95,6 +105,8 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     { dispose: () => clearInterval(timer) },
     { dispose: () => server.dispose() },
+    { dispose: () => projects.dispose() },
+    { dispose: () => errors.dispose() },
   );
 
   void poll();

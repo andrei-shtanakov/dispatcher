@@ -76,6 +76,10 @@ export class ProjectsProvider
     const detail = await this.api().project(node.entry.name);
     return detailLines(detail).map((text) => ({ kind: "line", text }));
   }
+
+  dispose(): void {
+    this.changed.dispose();
+  }
 }
 
 export type ErrorNode =
@@ -130,5 +134,9 @@ export class ErrorsProvider implements vscode.TreeDataProvider<ErrorNode> {
       return [{ kind: "empty" }];
     }
     return this.events.map((event) => ({ kind: "error", event }));
+  }
+
+  dispose(): void {
+    this.changed.dispose();
   }
 }
