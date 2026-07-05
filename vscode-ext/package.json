@@ -5,6 +5,10 @@
   "version": "0.1.0",
   "publisher": "andrei-shtanakov",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/andrei-shtanakov/dispatcher"
+  },
   "private": true,
   "engines": {
     "vscode": "^1.90.0"
