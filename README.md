@@ -21,6 +21,16 @@ which overrides the default 8787.
 Keys: `r` refresh · `a` toggle errors 14d/all · `e` errors for selected
 project · `Enter` drill down · `Esc` back · `q` quit. Auto-refresh: 10 s.
 
+### VSCode extension
+
+    cd vscode-ext && npm install && npm run package   # builds .vsix
+
+Install via "Extensions: Install from VSIX…". Adds a Dispatcher sidebar
+(projects + recent errors) and a status-bar health indicator; the server
+is auto-started when unreachable (`dispatcher.projectDir` setting must
+point at this repo). Settings: `dispatcher.url`, `dispatcher.projectDir`,
+`dispatcher.autoStart`, `dispatcher.pollSeconds`.
+
 ## Configure (optional `dispatcher.toml`)
 
     roots = ["/Users/you/labs/all_ai_orchestrators"]
