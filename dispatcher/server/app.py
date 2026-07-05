@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
-import time
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
 
-from dispatcher.core.collectors import COLLECTORS, CollectContext
 from dispatcher.core.contracts import check_contracts
-from dispatcher.core.discovery import DispatcherConfig, discover
+from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.models import (
     ContractStatus,
     ErrorEvent,
@@ -20,81 +17,17 @@ from dispatcher.core.models import (
     OverviewResponse,
     ProjectSnapshot,
 )
+from dispatcher.core.service import SnapshotService, recent_errors
 
-_CACHE_TTL_SECONDS = 5.0
+__all__ = ["create_app", "recent_errors"]  # re-export: old import path
+
 _STATIC_DIR = Path(__file__).parent / "static"
-_ISO_PREFIX = 19  # "YYYY-MM-DDTHH:MM:SS" — comparable across naive/aware stamps
-
-
-def recent_errors(
-    events: list[ErrorEvent], days: int, now: datetime | None = None
-) -> list[ErrorEvent]:
-    """Keep events newer than `days` days; undated events are never dropped.
-
-    Source timestamps mix naive and timezone-aware ISO strings, so the
-    comparison uses the first 19 characters, which sort chronologically.
-    """
-    moment = now if now is not None else datetime.now(tz=UTC)
-    cutoff = (moment - timedelta(days=days)).isoformat()[:_ISO_PREFIX]
-    return [
-        e for e in events if e.timestamp is None or e.timestamp[:_ISO_PREFIX] >= cutoff
-    ]
-
-
-class _SnapshotCache:
-    """Collect-on-demand cache so a polling UI does not hammer the disk."""
-
-    def __init__(self, config: DispatcherConfig) -> None:
-        self._config = config
-        self._at = 0.0
-        self._data: tuple[list[ProjectSnapshot], list[str]] | None = None
-
-    def get(self) -> tuple[list[ProjectSnapshot], list[str]]:
-        now = time.monotonic()
-        if self._data is not None and now - self._at < _CACHE_TTL_SECONDS:
-            return self._data
-        self._data = self._collect()
-        self._at = now
-        return self._data
-
-    def _collect(self) -> tuple[list[ProjectSnapshot], list[str]]:
-        found, warnings = discover(self._config.roots, COLLECTORS)
-        paths = {d.name: d.path for d in found}
-        atp_root = paths.get("atp-platform")
-        ctx = CollectContext(
-            home=Path.home(),
-            maestro_db=self._config.maestro_db,
-            catalog_path=(
-                None
-                if atp_root is None
-                else atp_root / "method" / "agents-catalog.toml"
-            ),
-        )
-        snapshots: list[ProjectSnapshot] = []
-        for project in found:
-            try:
-                snapshots.append(project.collector.collect(project.path, ctx))
-            except Exception as err:  # noqa: BLE001 — last-resort guard
-                snapshots.append(
-                    ProjectSnapshot(
-                        name=project.name,
-                        path=str(project.path),
-                        warnings=[f"collector crashed: {err}"],
-                    )
-                )
-        detected = {s.name for s in snapshots}
-        snapshots.extend(
-            ProjectSnapshot(name=c.name, path="", detected=False)
-            for c in COLLECTORS
-            if c.name not in detected
-        )
-        return snapshots, warnings
 
 
 def create_app(config: DispatcherConfig) -> FastAPI:
     """Build the API app for the given configuration."""
     app = FastAPI(title="Dispatcher", version="0.1.0")
-    cache = _SnapshotCache(config)
+    cache = SnapshotService(config)
 
     @app.get("/api/overview", response_model=OverviewResponse)
     def overview() -> OverviewResponse:
