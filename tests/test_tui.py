@@ -1,6 +1,7 @@
 """Pilot tests for the textual TUI."""
 
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from conftest import (
@@ -96,11 +97,32 @@ async def test_collect_failure_keeps_last_data(tmp_path: Path, monkeypatch) -> N
         await _settled(app, pilot)
         assert app.query_one("#projects-table", DataTable).row_count == 5
 
+        # Spy on notify calls to guard error toast behavior.
+        recorded: list[tuple[str, str]] = []
+        real_notify = app.notify
+
+        def spy_notify(
+            message: str,
+            *,
+            severity: Literal["error", "information", "warning"] = "information",
+            **kwargs
+        ) -> None:
+            recorded.append((str(message), severity))
+            return real_notify(message, severity=severity, **kwargs)
+
+        monkeypatch.setattr(app, "notify", spy_notify)
+
         def broken_get():
             raise RuntimeError("disk on fire")
 
         monkeypatch.setattr(app._service, "get", broken_get)
         await pilot.press("r")
         await _settled(app, pilot)
-        # layer-3: toast shown, previous data still on screen
+        # Verify: previous data still on screen
         assert app.query_one("#projects-table", DataTable).row_count == 5
+        # Verify: error toast fired with correct severity
+        error_messages = [msg for msg, sev in recorded if sev == "error"]
+        assert len(error_messages) > 0, "Expected at least one error notification"
+        assert any(msg.startswith("refresh failed:") for msg in error_messages), (
+            "Expected an error message starting with 'refresh failed:'"
+        )
