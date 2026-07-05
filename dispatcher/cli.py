@@ -1,14 +1,11 @@
-"""Command-line entry point: `dispatcher serve`."""
+"""Command-line entry point: `dispatcher serve` and `dispatcher tui`."""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
-import uvicorn
-
 from dispatcher.core.discovery import load_config
-from dispatcher.server.app import create_app
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -18,6 +15,8 @@ def build_parser() -> argparse.ArgumentParser:
     serve = sub.add_parser("serve", help="run the dashboard server")
     serve.add_argument("--port", type=int, default=None)
     serve.add_argument("--config", type=Path, default=None)
+    tui = sub.add_parser("tui", help="run the terminal dashboard")
+    tui.add_argument("--config", type=Path, default=None)
     return parser
 
 
@@ -25,6 +24,16 @@ def main() -> None:
     """Entry point for the `dispatcher` console script."""
     args = build_parser().parse_args()
     config = load_config(args.config)
+    if args.command == "tui":
+        # Imported lazily: `serve` should not pay textual's import cost.
+        from dispatcher.tui.app import DispatcherApp
+
+        DispatcherApp(config).run()
+        return
+    import uvicorn
+
+    from dispatcher.server.app import create_app
+
     port = args.port if args.port is not None else config.port
     uvicorn.run(create_app(config), host="127.0.0.1", port=port)
 

@@ -17,3 +17,9 @@ def test_serve_overrides(tmp_path: Path) -> None:
     args = build_parser().parse_args(["serve", "--port", "9000", "--config", str(cfg)])
     assert args.port == 9000
     assert args.config == cfg
+
+
+def test_tui_subcommand_parses() -> None:
+    args = build_parser().parse_args(["tui", "--config", "x.toml"])
+    assert args.command == "tui"
+    assert args.config == Path("x.toml")
