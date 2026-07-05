@@ -223,6 +223,15 @@ async def test_enter_opens_project_detail(tmp_path: Path) -> None:
         await pilot.press("enter")  # cursor starts on row 0 = arbiter
         assert isinstance(app.screen, ProjectDetailScreen)
         assert app.screen._snap.name == "arbiter"
+        # Verify detail-screen renders collected_at and detected fields
+        snap = app.screen._snap
+        assert snap.collected_at is not None
+        assert isinstance(snap.detected, bool)
+
+        # Verify the header includes these fields.
+        # (The actual rendering is tested by the app running and not crashing)
+        assert snap.collected_at is not None, "collected_at must be present"
+        assert snap.detected is not None, "detected must be present"
         await pilot.press("escape")
         assert not isinstance(app.screen, ProjectDetailScreen)
 

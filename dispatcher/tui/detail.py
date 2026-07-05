@@ -90,7 +90,9 @@ class ProjectDetailScreen(Screen[None]):
         with VerticalScroll():
             yield Static(
                 f"[bold]{escape(s.name)}[/bold] — {escape(s.path)}\n"
-                f"freshness: {escape(s.freshness or 'unknown')}"
+                f"freshness: {escape(s.freshness or 'unknown')}\n"
+                f"collected: {escape(s.collected_at.isoformat())} · "
+                f"detected: {s.detected}"
             )
             for title, lines in _sections(s):
                 yield Static(_section(title, lines), classes="detail-section")
