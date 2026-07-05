@@ -90,6 +90,12 @@ export function activate(context: vscode.ExtensionContext): void {
     status.item,
     vscode.commands.registerCommand("dispatcher.refresh", () => void poll()),
     vscode.commands.registerCommand("dispatcher.startServer", () => {
+      if (readConfig().projectDir.trim() === "") {
+        void vscode.window.showWarningMessage(
+          "Set dispatcher.projectDir to the dispatcher repo path to start the server.",
+        );
+        return;
+      }
       server.start();
       void poll();
     }),

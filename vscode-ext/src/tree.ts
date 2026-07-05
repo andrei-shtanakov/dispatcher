@@ -73,8 +73,12 @@ export class ProjectsProvider
     if (node.kind !== "project" || !node.entry.detected) {
       return [];
     }
-    const detail = await this.api().project(node.entry.name);
-    return detailLines(detail).map((text) => ({ kind: "line", text }));
+    try {
+      const detail = await this.api().project(node.entry.name);
+      return detailLines(detail).map((text) => ({ kind: "line", text }));
+    } catch {
+      return [{ kind: "line", text: "detail unavailable" }];
+    }
   }
 
   dispose(): void {

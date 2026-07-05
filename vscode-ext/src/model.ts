@@ -92,7 +92,7 @@ export function statusText(overview: OverviewResponse | null): string {
 export function portFromUrl(url: string): number {
   try {
     const parsed = new URL(url);
-    return parsed.port === "" ? 80 : Number(parsed.port);
+    return parsed.port === "" ? 8787 : Number(parsed.port);
   } catch {
     return 8787;
   }

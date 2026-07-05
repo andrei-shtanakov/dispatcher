@@ -100,7 +100,7 @@ describe("statusText", () => {
 describe("server decisions", () => {
   it("extracts the port", () => {
     expect(portFromUrl("http://127.0.0.1:8787")).toBe(8787);
-    expect(portFromUrl("http://localhost")).toBe(80);
+    expect(portFromUrl("http://localhost")).toBe(8787);
     expect(portFromUrl("")).toBe(8787);
     expect(portFromUrl("not-a-url")).toBe(8787);
   });
