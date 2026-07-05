@@ -90,8 +90,12 @@ export function statusText(overview: OverviewResponse | null): string {
 }
 
 export function portFromUrl(url: string): number {
-  const parsed = new URL(url);
-  return parsed.port === "" ? 80 : Number(parsed.port);
+  try {
+    const parsed = new URL(url);
+    return parsed.port === "" ? 80 : Number(parsed.port);
+  } catch {
+    return 8787;
+  }
 }
 
 export function shouldSpawn(opts: {

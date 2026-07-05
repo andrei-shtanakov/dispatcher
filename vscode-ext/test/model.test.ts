@@ -81,7 +81,9 @@ describe("errors", () => {
   it("labels dated and undated events", () => {
     const [dated, undated] = fixture<ErrorEvent[]>("errors.json");
     expect(errorLabel(dated)).toBe("12:01 maestro — timeout in pipeline #42");
-    expect(errorLabel(undated)).toMatch(/^— — /);
+    expect(errorLabel(undated)).toBe(
+      "— — — undated failure with [markup-looking] text",
+    );
   });
 });
 
@@ -99,6 +101,8 @@ describe("server decisions", () => {
   it("extracts the port", () => {
     expect(portFromUrl("http://127.0.0.1:8787")).toBe(8787);
     expect(portFromUrl("http://localhost")).toBe(80);
+    expect(portFromUrl("")).toBe(8787);
+    expect(portFromUrl("not-a-url")).toBe(8787);
   });
 
   it("spawns only when unreachable+autoStart+projectDir+first try", () => {
