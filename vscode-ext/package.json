@@ -1,0 +1,108 @@
+{
+  "name": "dispatcher-monitor",
+  "displayName": "Dispatcher Monitor",
+  "description": "Ecosystem monitoring sidebar over the dispatcher HTTP API",
+  "version": "0.1.0",
+  "publisher": "andrei-shtanakov",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "dispatcher",
+          "title": "Dispatcher",
+          "icon": "$(pulse)"
+        }
+      ]
+    },
+    "views": {
+      "dispatcher": [
+        {
+          "id": "dispatcherProjects",
+          "name": "Projects"
+        },
+        {
+          "id": "dispatcherErrors",
+          "name": "Errors"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "dispatcher.refresh",
+        "title": "Dispatcher: Refresh"
+      },
+      {
+        "command": "dispatcher.startServer",
+        "title": "Dispatcher: Start Server"
+      },
+      {
+        "command": "dispatcher.showError",
+        "title": "Dispatcher: Show Error Body"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "dispatcher.refresh",
+          "when": "view == dispatcherProjects || view == dispatcherErrors",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "dispatcher.showError",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Dispatcher",
+      "properties": {
+        "dispatcher.url": {
+          "type": "string",
+          "default": "http://127.0.0.1:8787",
+          "description": "Base URL of the dispatcher HTTP API."
+        },
+        "dispatcher.projectDir": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the dispatcher repo, used to spawn `uv run dispatcher serve`. Empty disables auto-start."
+        },
+        "dispatcher.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Spawn the server when the URL is unreachable (requires projectDir)."
+        },
+        "dispatcher.pollSeconds": {
+          "type": "number",
+          "default": 10,
+          "minimum": 5,
+          "description": "Refresh interval in seconds."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "node esbuild.mjs",
+    "package": "npm run typecheck && npm run test && npm run build && vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.28.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  }
+}
