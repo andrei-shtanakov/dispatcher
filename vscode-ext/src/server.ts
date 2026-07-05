@@ -50,6 +50,9 @@ export class ServerManager {
 
   /** Also invoked directly by the "Start Server" command. */
   start(): void {
+    if (this.child !== null) {
+      return;
+    }
     const spawnFn = this.opts.spawnFn ?? spawn;
     const port = portFromUrl(this.opts.url);
     const stderr: string[] = [];

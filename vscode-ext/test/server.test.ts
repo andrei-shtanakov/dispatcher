@@ -46,10 +46,11 @@ describe("ServerManager", () => {
   });
 
   it("spawns at most once per offline episode", async () => {
-    const { mgr, spawnFn } = manager();
+    const { mgr, spawnFn, child } = manager();
     await mgr.ensureRunning();
     await mgr.ensureRunning();
     expect(spawnFn).toHaveBeenCalledTimes(1);
+    child.emit("exit", 0); // the server process died → next episode may respawn
     mgr.markOnline(); // a successful poll ends the episode
     await mgr.ensureRunning();
     expect(spawnFn).toHaveBeenCalledTimes(2);
