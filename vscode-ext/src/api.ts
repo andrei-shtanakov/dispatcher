@@ -12,7 +12,7 @@ export interface OverviewEntry {
   path: string | null;
   detected: boolean;
   freshness: string | null;
-  counts: Counts;
+  counts: Partial<Counts>;
   warnings: string[];
 }
 
