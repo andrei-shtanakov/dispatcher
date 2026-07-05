@@ -216,7 +216,7 @@ class DispatcherApp(App[None]):
                 select.value = current
 
     def on_select_changed(self, event: Select.Changed) -> None:
-        value = None if event.value is Select.BLANK else str(event.value)
+        value = None if event.value is Select.NULL else str(event.value)
         if event.select.id == "errors-project":
             self._errors_project = value
         elif event.select.id == "errors-service":

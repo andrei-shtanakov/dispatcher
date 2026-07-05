@@ -189,6 +189,26 @@ async def test_errors_project_filter(tmp_path: Path) -> None:
         assert not any("lint failed" in e.body for e in app._shown_errors)
 
 
+async def test_errors_project_filter_clearable(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        total = len(app._shown_errors)
+        select = app.query_one("#errors-project", Select)
+        select.value = "arbiter"
+        await pilot.pause()
+        assert app._errors_project == "arbiter"
+        assert len(app._shown_errors) < total
+        select.clear()
+        await pilot.pause()
+        # Regression: on_select_changed used to compare against
+        # `Select.BLANK` (Widget.BLANK, always False) instead of
+        # `Select.NULL`, so clearing never matched and stored the
+        # stringified sentinel as a bogus project name.
+        assert app._errors_project is None
+        assert len(app._shown_errors) == total
+
+
 async def test_errors_days_toggle(tmp_path: Path) -> None:
     app = _app(tmp_path)
     async with app.run_test() as pilot:
