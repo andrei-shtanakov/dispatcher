@@ -1,0 +1,14 @@
+[
+  {
+    "timestamp": "2026-07-05T12:01:33+00:00",
+    "service": "maestro",
+    "severity": "ERROR",
+    "body": "timeout in pipeline #42"
+  },
+  {
+    "timestamp": null,
+    "service": null,
+    "severity": "ERROR",
+    "body": "undated failure with [markup-looking] text"
+  }
+]

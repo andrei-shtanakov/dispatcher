@@ -1,0 +1,16 @@
+{
+  "name": "arbiter",
+  "path": "/labs/arbiter",
+  "detected": true,
+  "collected_at": "2026-07-05T12:00:00+00:00",
+  "freshness": "2026-07-05T09:00:00",
+  "schema_versions": [
+    { "database": "arbiter.db", "found": "1", "expected": "1", "ok": true }
+  ],
+  "models": [{ "model_id": "gpt-5.5" }],
+  "tasks": [{ "task_id": "T-9", "status": "assign" }],
+  "test_results": [{ "run_id": "R-1", "name": "code-review" }],
+  "configs": [{ "path": "config/agents.toml" }],
+  "errors": [],
+  "warnings": []
+}

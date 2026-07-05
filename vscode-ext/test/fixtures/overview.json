@@ -1,0 +1,21 @@
+{
+  "projects": [
+    {
+      "name": "arbiter",
+      "path": "/labs/arbiter",
+      "detected": true,
+      "freshness": "2026-07-05T09:00:00",
+      "counts": { "tasks": 7, "models": 3, "test_results": 1, "errors": 2 },
+      "warnings": ["schema drift: arbiter.db"]
+    },
+    {
+      "name": "Maestro",
+      "path": null,
+      "detected": false,
+      "freshness": null,
+      "counts": {},
+      "warnings": []
+    }
+  ],
+  "warnings": ["root not found: /missing"]
+}
