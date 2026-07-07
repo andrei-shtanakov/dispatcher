@@ -32,7 +32,7 @@ async def test_overview(tmp_path: Path) -> None:
     assert by_name["arbiter"]["detected"] is True
     assert by_name["arbiter"]["counts"]["tasks"] == 1
     assert by_name["Maestro"]["detected"] is False  # no project dir in root
-    assert by_name["proctor-a"]["detected"] is False
+    assert by_name["proctor"]["detected"] is False
 
 
 async def test_project_detail_and_404(tmp_path: Path) -> None:

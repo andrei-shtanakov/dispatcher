@@ -1,4 +1,4 @@
-"""Collector for proctor-a: task/schedule state, LLM config, text logs."""
+"""Collector for proctor: task/schedule state, LLM config, text logs."""
 
 from __future__ import annotations
 
@@ -29,9 +29,12 @@ _LOG_ERRORS_LIMIT = 20
 
 
 class ProctorCollector:
-    """Reads proctor-a's state DB, proctor.yaml, and plain-text logs."""
+    """Reads proctor's state DB, proctor.yaml, and plain-text logs."""
 
-    name = "proctor-a"
+    # `name` matches the on-disk project (repo/dir `proctor`) for discovery; the
+    # runtime observability service-id is `proctor-a` (see `service=` below and the
+    # arbiter log-schema enum). Two namespaces on purpose — ADR 2026-07-07.
+    name = "proctor"
 
     def detect(self, path: Path) -> bool:
         return (path / "config" / "proctor.yaml").is_file()
@@ -135,7 +138,7 @@ def _text_log_errors(
             if "ERROR" in line:
                 events.append(
                     ErrorEvent(
-                        service="proctor-a",
+                        service="proctor-a",  # observability service-id (arbiter log-schema enum); ADR 2026-07-07
                         body=mask_secrets(line),
                         source=str(log),
                     )

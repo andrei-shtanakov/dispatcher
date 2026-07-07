@@ -1,7 +1,7 @@
 # Dispatcher
 
 Read-only monitoring dashboard for the AI-orchestrators ecosystem
-(atp-platform, Maestro, arbiter, spec-runner, proctor-a). Reads on-disk
+(atp-platform, Maestro, arbiter, spec-runner, proctor). Reads on-disk
 artifacts directly — monitored projects don't need to be running or even
 installed; missing ones simply don't show up.
 

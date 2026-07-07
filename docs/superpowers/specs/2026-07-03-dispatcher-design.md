@@ -4,7 +4,7 @@
 
 Dispatcher is a read-only monitoring and control dashboard for the ecosystem
 projects living in `~/labs/all_ai_orchestrators/`: atp-platform, Maestro,
-arbiter, spec-runner, proctor-a. The project list is extensible; more projects
+arbiter, spec-runner, proctor. The project list is extensible; more projects
 may be added later.
 
 It reads on-disk artifacts (SQLite databases, TOML/YAML configs, OTel JSONL
@@ -81,7 +81,7 @@ class Collector(Protocol):
 
 - `detect` checks signature files (e.g. arbiter: `config/agents.toml` +
   `arbiter-core/`; spec-runner: `src/spec_runner/`; Maestro: `maestro/`
-  package; atp-platform: `atp/` + `method/agents-catalog.toml`; proctor-a:
+  package; atp-platform: `atp/` + `method/agents-catalog.toml`; proctor:
   `config/proctor.yaml`).
 - `collect` must never raise for bad/missing data: it returns a partial
   `ProjectSnapshot` with `warnings: list[str]`.
@@ -115,8 +115,8 @@ class Collector(Protocol):
 | Requirement | Source |
 |---|---|
 | ATP test results | `.atp-dashboard.db` (benchmark_runs, test_executions, evaluation_results), `results/experiment/experiment_results.json`, `_bench_output/*.db` |
-| Models in Maestro / arbiter / spec-runner | SSOT `atp-platform/method/agents-catalog.toml`; `arbiter/config/agents.toml` + vendored `config/agents-catalog.toml`; Maestro spawner defaults (`maestro/spawners/*.py` constants) and `$ATP_CATALOG`; `proctor-a/config/proctor.yaml → llm` |
-| Current tasks | `spec-runner/spec/.executor-state.db` (tasks, attempts); `proctor-a/data/state.db` (tasks, schedules); `arbiter/arbiter.db` (decisions, benchmark_runs); Maestro `~/.maestro/maestro.db` (tasks, task_costs, workstreams — CLI default path, `maestro/cli.py`; overridable in `dispatcher.toml`) + `~/.maestro/maestro.pid` for running/not-running status |
+| Models in Maestro / arbiter / spec-runner | SSOT `atp-platform/method/agents-catalog.toml`; `arbiter/config/agents.toml` + vendored `config/agents-catalog.toml`; Maestro spawner defaults (`maestro/spawners/*.py` constants) and `$ATP_CATALOG`; `proctor/config/proctor.yaml → llm` |
+| Current tasks | `spec-runner/spec/.executor-state.db` (tasks, attempts); `proctor/data/state.db` (tasks, schedules); `arbiter/arbiter.db` (decisions, benchmark_runs); Maestro `~/.maestro/maestro.db` (tasks, task_costs, workstreams — CLI default path, `maestro/cli.py`; overridable in `dispatcher.toml`) + `~/.maestro/maestro.pid` for running/not-running status |
 | Configurations | `executor.config.yaml`, `atp.config.yaml`, `config/*.toml`, `config/proctor.yaml` — displayed as summaries with secrets masked |
 | Contracts | `spec-runner/schemas/*.json`, `atp-platform/method/contract/`, catalog drift check: canon `method/agents-catalog.toml` vs an **explicit whitelist of vendored copies** (currently `arbiter/config/agents-catalog.toml`), compared by content hash. Never search by filename — test fixtures like `Maestro/tests/fixtures/agents-catalog.toml` must not trigger false drift |
 | Failures and errors | OTel JSONL `<project>/logs/<ULID>/<service>-<pid>.jsonl` filtered to `SeverityNumber >= 17` (ERROR), merged across projects, newest first; plus spec-runner `attempts.error_kind/error_stage` |
