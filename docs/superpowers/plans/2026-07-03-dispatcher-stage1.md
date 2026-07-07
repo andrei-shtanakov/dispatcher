@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Read-only monitoring dashboard (FastAPI + single-page HTML) over the
-on-disk artifacts of atp-platform, Maestro, arbiter, spec-runner, proctor-a.
+on-disk artifacts of atp-platform, Maestro, arbiter, spec-runner, proctor.
 
 **Architecture:** A `core` library (pydantic models + per-project collectors +
 discovery) shared by all future frontends; a FastAPI server exposing JSON API
@@ -959,7 +959,7 @@ def make_atp(root: Path) -> Path:
 
 
 def make_proctor(root: Path) -> Path:
-    p = root / "proctor-a"
+    p = root / "proctor"
     (p / "config").mkdir(parents=True)
     (p / "config" / "proctor.yaml").write_text(
         "llm:\n  default_model: claude-sonnet-4-20250514\n"
@@ -1920,7 +1920,7 @@ def _opt_str(value: object) -> str | None:
 
 ---
 
-### Task 8: Коллектор proctor-a
+### Task 8: Коллектор proctor
 
 **Files:**
 - Create: `dispatcher/core/collectors/proctor.py`
@@ -1928,14 +1928,14 @@ def _opt_str(value: object) -> str | None:
 
 **Interfaces:**
 - Consumes: helpers Task 2, `make_proctor` Task 3.
-- Produces: `class ProctorCollector` с `name = "proctor-a"`.
+- Produces: `class ProctorCollector` с `name = "proctor"`.
 
 - [ ] **Step 1: Write the failing test**
 
 `tests/test_proctor.py`:
 
 ```python
-"""Tests for the proctor-a collector."""
+"""Tests for the proctor collector."""
 
 from pathlib import Path
 
@@ -1988,7 +1988,7 @@ def test_collect_without_state_db(tmp_path: Path) -> None:
 `dispatcher/core/collectors/proctor.py`:
 
 ```python
-"""Collector for proctor-a: task/schedule state, LLM config, text logs."""
+"""Collector for proctor: task/schedule state, LLM config, text logs."""
 
 from __future__ import annotations
 
@@ -2018,9 +2018,9 @@ _LOG_ERRORS_LIMIT = 20
 
 
 class ProctorCollector:
-    """Reads proctor-a's state DB, proctor.yaml, and plain-text logs."""
+    """Reads proctor's state DB, proctor.yaml, and plain-text logs."""
 
-    name = "proctor-a"
+    name = "proctor"
 
     def detect(self, path: Path) -> bool:
         return (path / "config" / "proctor.yaml").is_file()
@@ -2165,7 +2165,7 @@ from conftest import make_arbiter, make_atp, make_proctor, make_spec_runner
 
 def test_collectors_registry() -> None:
     names = {c.name for c in COLLECTORS}
-    assert names == {"atp-platform", "Maestro", "arbiter", "spec-runner", "proctor-a"}
+    assert names == {"atp-platform", "Maestro", "arbiter", "spec-runner", "proctor"}
 
 
 def test_load_config_from_file(tmp_path: Path) -> None:
@@ -2208,7 +2208,7 @@ def test_discover_dedupes_by_name(tmp_path: Path) -> None:
     root2.mkdir()
     make_proctor(root2)
     found, _ = discover((tmp_path, root2), COLLECTORS)
-    assert [d.name for d in found] == ["proctor-a"]
+    assert [d.name for d in found] == ["proctor"]
 
 
 def test_config_is_frozen(tmp_path: Path) -> None:
@@ -2565,7 +2565,7 @@ async def test_overview(tmp_path: Path) -> None:
     assert by_name["arbiter"]["detected"] is True
     assert by_name["arbiter"]["counts"]["tasks"] == 1
     assert by_name["Maestro"]["detected"] is False  # no project dir in root
-    assert by_name["proctor-a"]["detected"] is False
+    assert by_name["proctor"]["detected"] is False
 
 
 async def test_project_detail_and_404(tmp_path: Path) -> None:
@@ -3010,7 +3010,7 @@ Replace `README.md`:
 # Dispatcher
 
 Read-only monitoring dashboard for the AI-orchestrators ecosystem
-(atp-platform, Maestro, arbiter, spec-runner, proctor-a). Reads on-disk
+(atp-platform, Maestro, arbiter, spec-runner, proctor). Reads on-disk
 artifacts directly — monitored projects don't need to be running or even
 installed; missing ones simply don't show up.
 
@@ -3055,7 +3055,7 @@ kill %1
 ```
 
 Expected: JSON с реальными проектами (atp-platform, Maestro, arbiter,
-spec-runner, proctor-a — detected: true), никаких 500.
+spec-runner, proctor — detected: true), никаких 500.
 
 - [ ] **Step 8: Lint, typecheck, commit**
 

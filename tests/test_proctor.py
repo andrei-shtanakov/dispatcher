@@ -1,4 +1,4 @@
-"""Tests for the proctor-a collector."""
+"""Tests for the proctor collector."""
 
 import sqlite3
 from pathlib import Path

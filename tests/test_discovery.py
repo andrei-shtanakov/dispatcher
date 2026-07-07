@@ -10,7 +10,7 @@ from dispatcher.core.discovery import DispatcherConfig, discover, load_config
 
 def test_collectors_registry() -> None:
     names = {c.name for c in COLLECTORS}
-    assert names == {"atp-platform", "Maestro", "arbiter", "spec-runner", "proctor-a"}
+    assert names == {"atp-platform", "Maestro", "arbiter", "spec-runner", "proctor"}
 
 
 def test_load_config_from_file(tmp_path: Path) -> None:
@@ -52,7 +52,7 @@ def test_discover_dedupes_by_name(tmp_path: Path) -> None:
     root2.mkdir()
     make_proctor(root2)
     found, _ = discover((tmp_path, root2), COLLECTORS)
-    assert [d.name for d in found] == ["proctor-a"]
+    assert [d.name for d in found] == ["proctor"]
 
 
 def test_discover_skips_cowork_output(tmp_path: Path) -> None:

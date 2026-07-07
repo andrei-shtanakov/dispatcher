@@ -201,7 +201,7 @@ def make_atp(root: Path) -> Path:
 
 
 def make_proctor(root: Path) -> Path:
-    p = root / "proctor-a"
+    p = root / "proctor"
     (p / "config").mkdir(parents=True)
     (p / "config" / "proctor.yaml").write_text(
         "llm:\n  default_model: claude-sonnet-4-20250514\n"
