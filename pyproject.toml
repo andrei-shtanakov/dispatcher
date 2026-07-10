@@ -51,6 +51,7 @@ reads = [
     "arbiter/arbiter.db",
     "arbiter/config/agents.toml",
     "arbiter/config/invariants.toml",
+    "arbiter/config",
     "arbiter/logs",
     "atp-platform/.atp-dashboard.db",
     "atp-platform/results/experiment/experiment_results.json",
