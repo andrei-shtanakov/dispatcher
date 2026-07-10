@@ -5,3 +5,8 @@ __pycache__/
 *.egg-info/
 .superpowers/
 .DS_Store
+.claude/
+# spec-runner VSCode extension scaffolding dropped into opened workspaces
+vscode-ext/.vscode/
+vscode-ext/logs/
+vscode-ext/spec/
