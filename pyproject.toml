@@ -39,6 +39,32 @@ project-includes = [
 ]
 search-path = [".", "tests"]
 
+[tool.prograph]
+# File-based reads by dispatcher/core/collectors/*.py — invisible to
+# prograph's import/MCP/contract detectors, so declared explicitly.
+# Maestro's ~/.maestro/maestro.db is outside the monorepo and cannot be
+# declared as a workspace-relative path.
+reads = [
+    "proctor/config/proctor.yaml",
+    "proctor/data/state.db",
+    "proctor/logs",
+    "arbiter/arbiter.db",
+    "arbiter/config/agents.toml",
+    "arbiter/config/invariants.toml",
+    "arbiter/logs",
+    "atp-platform/.atp-dashboard.db",
+    "atp-platform/results/experiment/experiment_results.json",
+    "atp-platform/_bench_output",
+    "atp-platform/method/agents-catalog.toml",
+    "atp-platform/atp.config.yaml",
+    "atp-platform/logs",
+    "Maestro/executor.config.yaml",
+    "Maestro/logs",
+    "spec-runner/spec/.executor-state.db",
+    "spec-runner/executor.config.yaml",
+    "spec-runner/logs",
+]
+
 [dependency-groups]
 dev = [
     "anyio>=4.14.1",
