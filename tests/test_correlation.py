@@ -94,8 +94,10 @@ def test_scan_task_pipelines(tmp_path: Path) -> None:
             },
         ],
     )
-    # corrupt line must be skipped silently
-    (logs / "01AAAAAAAAAAAAAAAAAAAAAAAA" / "broken.jsonl").write_text("{oops\n")
+    # corrupt line and non-dict Attributes must be skipped silently
+    (logs / "01AAAAAAAAAAAAAAAAAAAAAAAA" / "broken.jsonl").write_text(
+        '{oops\n{"Attributes": ["not", "a", "dict"]}\n{"Attributes": "str"}\n'
+    )
     assert scan_task_pipelines(logs) == {"T-9": {"01AAA"}}
 
 

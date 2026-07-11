@@ -83,7 +83,9 @@ def scan_task_pipelines(
                     continue
                 if not isinstance(rec, dict):
                     continue
-                attrs = rec.get("Attributes") or {}
+                attrs = rec.get("Attributes")
+                if not isinstance(attrs, dict):
+                    continue
                 task_id = attrs.get("task_id")
                 pipeline_id = attrs.get("pipeline_id")
                 if task_id and pipeline_id:
@@ -94,9 +96,10 @@ def scan_task_pipelines(
 def build_work_items(snapshots: list[ProjectSnapshot]) -> WorkItemsResponse:
     """Group tasks from all snapshots by their shared task id.
 
-    Cross-project chains sort first, newest activity first within each
-    group. Statuses stay in each project's local vocabulary: this is a
-    lossy read-side view, not a semantic mapping.
+    Chains sort cross-project first, then by most-recent activity;
+    links inside a chain stay chronological (task -> decision ->
+    outcome). Statuses stay in each project's local vocabulary: this
+    is a lossy read-side view, not a semantic mapping.
     """
     by_id: dict[str, list[WorkItemLink]] = {}
     logs_dir: Path | None = None
