@@ -142,7 +142,9 @@ def _load_yaml_items(
             if not isinstance(data, dict):
                 warnings.append(f"roadmap {path.name}: top level must be a mapping")
                 continue
-            roadmaps.append(str(data.get("roadmap", path.stem)))
+            name = data.get("roadmap") or path.stem
+            if str(name) not in roadmaps:
+                roadmaps.append(str(name))
             for raw in data.get("items") or []:
                 if isinstance(raw, dict):
                     items.append((raw, path.name))
@@ -223,6 +225,10 @@ def _run_rule(rule: dict, ctx: _EvidenceContext) -> EvidenceResult:
         passed, detail = handler(rule, ctx)
     except SourceReadError as err:
         passed, detail = False, str(err)
+    except Exception as err:  # noqa: BLE001 — YAML is user-authored;
+        # a malformed rule must degrade to a failed check, not take
+        # down /api/roadmap.
+        passed, detail = False, f"rule error: {err}"
     return EvidenceResult(rule=name, kind=kind, passed=passed, detail=detail)
 
 
@@ -233,13 +239,31 @@ def _rule_project_detected(rule: dict, ctx: _EvidenceContext) -> tuple[bool, str
     return False, f"project {project} not detected"
 
 
+def _safe_join(root: Path, rel: str) -> Path | None:
+    """Resolve `root/rel`, rejecting absolute paths and `..` escapes.
+
+    Roadmap YAML is human-authored canon, but its paths are rendered
+    through the API — defense in depth against probing the host
+    filesystem outside the project root.
+    """
+    candidate = Path(rel)
+    if candidate.is_absolute():
+        return None
+    resolved = (root / candidate).resolve()
+    if not resolved.is_relative_to(root.resolve()):
+        return None
+    return resolved
+
+
 def _rule_file_exists(rule: dict, ctx: _EvidenceContext) -> tuple[bool, str]:
     project = str(rule.get("project", ""))
     rel = str(rule.get("path", ""))
     root = ctx.project_path(project)
     if root is None:
         return False, f"project {project} not detected"
-    target = root / rel
+    target = _safe_join(root, rel)
+    if target is None:
+        return False, f"path escapes project root: {rel}"
     if target.exists():
         return True, f"{project}/{rel} exists"
     return False, f"{project}/{rel} missing"
@@ -252,9 +276,13 @@ def _rule_sqlite_has_row(rule: dict, ctx: _EvidenceContext) -> tuple[bool, str]:
     root = ctx.project_path(project)
     if root is None:
         return False, f"project {project} not detected"
-    rows = read_rows(root / rel, query)
-    if rows:
-        return True, f"{rel}: {len(rows)} row(s)"
+    db = _safe_join(root, rel)
+    if db is None:
+        return False, f"db path escapes project root: {rel}"
+    # EXISTS caps the result at one row regardless of the inner query.
+    rows = read_rows(db, f"SELECT EXISTS ({query.rstrip(';')}) AS present")
+    if rows and rows[0]["present"]:
+        return True, f"{rel}: row found"
     return False, f"{rel}: no rows"
 
 

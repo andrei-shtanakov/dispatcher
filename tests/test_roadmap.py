@@ -117,6 +117,59 @@ def test_duplicate_ids_warn(tmp_path: Path) -> None:
     assert any("duplicate" in w for w in result.warnings)
 
 
+def test_path_traversal_rejected(tmp_path: Path) -> None:
+    d = tmp_path / "roadmaps"
+    d.mkdir()
+    (d / "evil.yaml").write_text(
+        "items:\n"
+        "  - id: RD-EVIL\n"
+        "    title: traversal\n"
+        "    evidence_rules:\n"
+        "      - rule: file_exists\n"
+        "        project: arbiter\n"
+        "        path: /etc/passwd\n"
+        "      - rule: file_exists\n"
+        "        project: arbiter\n"
+        "        path: ../../etc/passwd\n"
+        "      - rule: sqlite_has_row\n"
+        "        project: arbiter\n"
+        "        db: ../outside.db\n"
+        "        query: SELECT 1\n"
+    )
+    snaps = [ProjectSnapshot(name="arbiter", path=str(tmp_path / "arbiter"))]
+    (tmp_path / "arbiter").mkdir()
+    item = build_roadmap((d,), snaps).items[0]
+    assert all(not e.passed for e in item.evidence)
+    assert all("escapes project root" in e.detail for e in item.evidence)
+
+
+def test_malformed_rule_degrades_not_crashes(tmp_path: Path) -> None:
+    d = tmp_path / "roadmaps"
+    d.mkdir()
+    (d / "bad.yaml").write_text(
+        "items:\n"
+        "  - id: RD-BAD\n"
+        "    title: bad min_links\n"
+        "    evidence_rules:\n"
+        "      - rule: work_item_chain\n"
+        "        work_item_id: T-9\n"
+        "        min_links: not-a-number\n"
+    )
+    item = build_roadmap((d,), _snapshots()).items[0]
+    assert item.computed_status == "planned"
+    assert "rule error" in item.evidence[0].detail
+
+
+def test_roadmap_names_dedup_and_null(tmp_path: Path) -> None:
+    d = tmp_path / "roadmaps"
+    d.mkdir()
+    (d / "a.yaml").write_text("roadmap: null\nitems: []\n")
+    (d / "b.yaml").write_text("roadmap: same\nitems: []\n")
+    (d / "c.yaml").write_text("roadmap: same\nitems: []\n")
+    result = build_roadmap((d,), [])
+    assert result.roadmaps == ["a", "same"]
+
+
 def test_default_roadmap_dirs() -> None:
     dirs = default_roadmap_dirs((Path("/r1"), Path("/r2")))
     assert dirs == (
