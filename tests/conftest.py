@@ -103,6 +103,9 @@ def make_arbiter(root: Path) -> Path:
         CREATE TABLE benchmark_runs (
             run_id TEXT PRIMARY KEY, benchmark_id TEXT, agent_id TEXT,
             ts TEXT, score REAL, total_cost_usd REAL);
+        CREATE TABLE outcomes (
+            id INTEGER PRIMARY KEY, task_id TEXT, decision_id INTEGER,
+            agent_id TEXT, timestamp TEXT, status TEXT, cost_usd REAL);
         INSERT INTO schema_version VALUES (1, '2026-04-06');
         INSERT INTO decisions (task_id, timestamp, chosen_agent, action,
             confidence)

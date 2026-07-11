@@ -30,7 +30,13 @@ _EXPECTED_SCHEMA = "1"
 def _decision_title(chosen_agent: str, confidence: float | None) -> str:
     """Format a decision title, tolerating a NULL confidence value."""
     conf_txt = "n/a" if confidence is None else f"{confidence:.2f}"
-    return f"{chosen_agent} (conf={conf_txt})"
+    return f"{chosen_agent or '(no agent)'} (conf={conf_txt})"
+
+
+def _outcome_title(agent_id: str, decision_id: object) -> str:
+    """Format an outcome title, tolerating a NULL decision reference."""
+    ref = "?" if decision_id is None else str(decision_id)
+    return f"outcome via decision #{ref}: {agent_id}"
 
 
 class ArbiterCollector:
@@ -91,6 +97,25 @@ class ArbiterCollector:
                 )
                 for r in runs
             ]
+        except SourceReadError as err:
+            snap.warnings.append(str(err))
+        try:
+            outcomes = read_rows(
+                db,
+                "SELECT task_id, decision_id, agent_id, timestamp, status, "
+                "cost_usd FROM outcomes ORDER BY timestamp DESC LIMIT 50",
+            )
+            snap.tasks.extend(
+                TaskInfo(
+                    task_id=coerce_str(r["task_id"]),
+                    title=_outcome_title(coerce_str(r["agent_id"]), r["decision_id"]),
+                    status=coerce_str(r["status"]),
+                    started_at=r["timestamp"],
+                    cost_usd=r["cost_usd"],
+                    source=str(db),
+                )
+                for r in outcomes
+            )
         except SourceReadError as err:
             snap.warnings.append(str(err))
 
