@@ -27,6 +27,8 @@ class DispatcherConfig:
     roots: tuple[Path, ...]
     maestro_db: Path = field(default_factory=lambda: _DEFAULT_MAESTRO_DB)
     port: int = DEFAULT_PORT
+    # Empty tuple → derived from roots (prograph-vault/authored/roadmaps).
+    roadmap_dirs: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -48,10 +50,12 @@ def load_config(config_path: Path | None = None) -> DispatcherConfig:
     if not roots:
         roots = (_monorepo_fallback_root(),)
     maestro_db = Path(data.get("maestro_db", str(_DEFAULT_MAESTRO_DB))).expanduser()
+    roadmap_dirs = tuple(Path(p).expanduser() for p in data.get("roadmap_dirs", []))
     return DispatcherConfig(
         roots=roots,
         maestro_db=maestro_db,
         port=int(data.get("port", DEFAULT_PORT)),
+        roadmap_dirs=roadmap_dirs,
     )
 
 

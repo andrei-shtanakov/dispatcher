@@ -44,7 +44,8 @@ layout). Standalone installs must list `roots` explicitly.
 
 `/api/overview`, `/api/projects/{name}`, `/api/errors?limit=N`,
 `/api/models`, `/api/contracts`,
-`/api/work-items?cross_only=bool&limit=N` — pydantic-typed JSON; this is
+`/api/work-items?cross_only=bool&limit=N`,
+`/api/roadmap`, `/api/roadmap/{item_id}` — pydantic-typed JSON; this is
 the same contract the future VSCode extension consumes.
 
 `/api/work-items` is the read-side correlation view: tasks from all
@@ -52,6 +53,16 @@ projects grouped by their shared task id (Maestro passes `task.id`
 verbatim to arbiter's `route_task`), with `pipeline_id` links scavenged
 from Maestro session logs. Statuses stay in each project's local
 vocabulary — this is a lossy drill-down view, not a semantic mapping.
+
+`/api/roadmap` renders human-authored roadmap intent
+(`prograph-vault/authored/roadmaps/*.yaml`, override with
+`roadmap_dirs` in dispatcher.toml) as computed status — never manual
+ticks. Evidence is a closed set of typed rules (`project_detected`,
+`file_exists`, `sqlite_has_row`, `contract_in_sync`,
+`work_item_chain`); items whose evidence is not expressible with these
+rules stay `unknown`. Status ladder: `planned / implemented / verified
+/ unknown`, plus `blocked` when a `depends_on` item is not
+implemented+.
 
 ## Design
 
