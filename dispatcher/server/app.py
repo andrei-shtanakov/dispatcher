@@ -18,6 +18,12 @@ from dispatcher.core.models import (
     OverviewResponse,
     ProjectSnapshot,
 )
+from dispatcher.core.roadmap import (
+    RoadmapItemView,
+    RoadmapResponse,
+    build_roadmap,
+    default_roadmap_dirs,
+)
 from dispatcher.core.service import SnapshotService, recent_errors
 
 __all__ = ["create_app", "recent_errors"]  # re-export: old import path
@@ -105,6 +111,21 @@ def create_app(config: DispatcherConfig) -> FastAPI:
             total=result.total,
             cross_project=result.cross_project,
         )
+
+    roadmap_dirs = config.roadmap_dirs or default_roadmap_dirs(config.roots)
+
+    @app.get("/api/roadmap", response_model=RoadmapResponse)
+    def roadmap() -> RoadmapResponse:
+        snapshots, _ = cache.get()
+        return build_roadmap(roadmap_dirs, snapshots)
+
+    @app.get("/api/roadmap/{item_id}", response_model=RoadmapItemView)
+    def roadmap_item(item_id: str) -> RoadmapItemView:
+        snapshots, _ = cache.get()
+        for item in build_roadmap(roadmap_dirs, snapshots).items:
+            if item.id == item_id:
+                return item
+        raise HTTPException(status_code=404, detail=f"unknown roadmap item: {item_id}")
 
     app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="static")
     return app

@@ -90,6 +90,12 @@
     <thead><tr><th>Name</th><th>Canon</th><th>Vendored</th><th>Sync</th>
       </tr></thead><tbody></tbody></table></div></section>
 
+<section><h2>Roadmap <span id="roadmap-names" class="sub"></span></h2>
+  <div class="tablewrap"><table id="roadmap">
+    <thead><tr><th>Phase</th><th>Item</th><th>Owner</th><th>Status</th>
+      <th>Blockers</th><th>Evidence</th></tr></thead>
+    <tbody></tbody></table></div></section>
+
 <script>
 const esc = s => String(s ?? "").replace(/[&<>"']/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -168,9 +174,9 @@ async function refresh() {
         ? "" : `&project=${encodeURIComponent(errorsProject)}`)
       + (errorsService === null
         ? "" : `&service=${encodeURIComponent(errorsService)}`);
-    const [ov, errors, models, contracts] = await Promise.all([
+    const [ov, errors, models, contracts, roadmap] = await Promise.all([
       get("/api/overview"), get(errorsUrl),
-      get("/api/models"), get("/api/contracts")]);
+      get("/api/models"), get("/api/contracts"), get("/api/roadmap")]);
     document.getElementById("projects").innerHTML = ov.projects.map(p => `
       <div class="card ${p.detected ? "" : "off"}"
            ${p.detected ? `data-name="${esc(p.name)}"` : ""}>
@@ -212,6 +218,26 @@ async function refresh() {
       <td class="${c.in_sync === false ? "err" : "ok"}">
         ${c.in_sync === null ? esc(c.detail ?? "n/a")
           : c.in_sync ? "✓ in sync" : "✗ drift"}</td></tr>`).join("");
+    const stCls = s => s === "verified" || s === "implemented" ? "ok"
+      : s === "blocked" ? "err" : "";
+    document.getElementById("roadmap-names").textContent =
+      (roadmap.roadmaps || []).join(", ");
+    document.querySelector("#roadmap tbody").innerHTML =
+      roadmap.items.map(i => {
+        const passed = i.evidence.filter(e => e.passed).length;
+        const ev = i.evidence.length
+          ? `${passed}/${i.evidence.length} rules` : "no rules";
+        return `
+      <tr><td>${esc(i.phase ?? "—")}</td>
+      <td title="${esc(i.title)}">${esc(i.id)} ${esc(i.title)}</td>
+      <td>${esc(i.owner_project ?? "—")}</td>
+      <td class="${stCls(i.computed_status)}">${esc(i.computed_status)}</td>
+      <td>${esc((i.blockers || []).join(", ") || "—")}</td>
+      <td title="${esc(i.evidence.map(e =>
+        `${e.passed ? "✓" : "✗"} ${e.rule}: ${e.detail}`).join("\n"))}">
+        ${esc(ev)}</td></tr>`;
+      }).join("")
+      || `<tr><td colspan="6">no roadmap items</td></tr>`;
     document.getElementById("updated").textContent =
       "updated " + new Date().toLocaleTimeString();
   } catch (err) {
