@@ -43,8 +43,15 @@ layout). Standalone installs must list `roots` explicitly.
 ## API
 
 `/api/overview`, `/api/projects/{name}`, `/api/errors?limit=N`,
-`/api/models`, `/api/contracts` — pydantic-typed JSON; this is the same
-contract the future VSCode extension consumes.
+`/api/models`, `/api/contracts`,
+`/api/work-items?cross_only=bool&limit=N` — pydantic-typed JSON; this is
+the same contract the future VSCode extension consumes.
+
+`/api/work-items` is the read-side correlation view: tasks from all
+projects grouped by their shared task id (Maestro passes `task.id`
+verbatim to arbiter's `route_task`), with `pipeline_id` links scavenged
+from Maestro session logs. Statuses stay in each project's local
+vocabulary — this is a lossy drill-down view, not a semantic mapping.
 
 ## Design
 

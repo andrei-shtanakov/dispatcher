@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
 
 from dispatcher.core.contracts import check_contracts
+from dispatcher.core.correlation import WorkItemsResponse, build_work_items
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.models import (
     ContractStatus,
@@ -88,6 +89,22 @@ def create_app(config: DispatcherConfig) -> FastAPI:
         snapshots, _ = cache.get()
         projects = {s.name: Path(s.path) for s in snapshots if s.detected and s.path}
         return check_contracts(projects)
+
+    @app.get("/api/work-items", response_model=WorkItemsResponse)
+    def work_items(
+        cross_only: bool = Query(False),
+        limit: int = Query(100, ge=0),
+    ) -> WorkItemsResponse:
+        snapshots, _ = cache.get()
+        result = build_work_items(snapshots)
+        items = result.items
+        if cross_only:
+            items = [c for c in items if c.cross_project]
+        return WorkItemsResponse(
+            items=items[:limit],
+            total=result.total,
+            cross_project=result.cross_project,
+        )
 
     app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="static")
     return app
