@@ -33,16 +33,17 @@ async def _settled(app: DispatcherApp, pilot) -> None:
     await pilot.pause()
 
 
-async def test_app_boots_with_four_tabs(tmp_path: Path) -> None:
+async def test_app_boots_with_five_tabs(tmp_path: Path) -> None:
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await _settled(app, pilot)
-        assert len(app.query(TabPane)) == 4
+        assert len(app.query(TabPane)) == 5
         for table_id in (
             "projects-table",
             "errors-table",
             "models-table",
             "contracts-table",
+            "roadmap-table",
         ):
             assert len(app.query_one(f"#{table_id}", DataTable).columns) > 0
 
@@ -292,3 +293,69 @@ async def test_e_key_prefilters_errors_for_project(tmp_path: Path) -> None:
         assert app.query_one(TabbedContent).active == "tab-errors"
         assert app._errors_project == "arbiter"
         assert app.query_one("#errors-project", Select).value == "arbiter"
+
+
+_ROADMAP_YAML = """\
+version: 1
+roadmap: tui-test
+title: TUI test roadmap
+items:
+  - id: TUI-1
+    title: Detected item
+    phase: "1"
+    owner_project: arbiter
+    evidence_rules:
+      - rule: project_detected
+        kind: implementation
+        project: arbiter
+
+  - id: TUI-2
+    title: No rules yet
+    phase: "2"
+    evidence_rules: []
+"""
+
+
+def _app_with_roadmap(tmp_path: Path) -> DispatcherApp:
+    make_atp(tmp_path)
+    make_arbiter(tmp_path)
+    make_spec_runner(tmp_path)
+    db = make_maestro_home(tmp_path)
+    vault = tmp_path / "prograph-vault" / "authored" / "roadmaps"
+    vault.mkdir(parents=True)
+    (vault / "tui-test.yaml").write_text(_ROADMAP_YAML)
+    return DispatcherApp(DispatcherConfig(roots=(tmp_path,), maestro_db=db))
+
+
+async def test_roadmap_tab_columns(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        table = app.query_one("#roadmap-table", DataTable)
+        col_labels = [str(c.label) for c in table.columns.values()]
+        assert col_labels == [
+            "phase",
+            "item",
+            "owner",
+            "status",
+            "blockers",
+            "evidence",
+        ]
+
+
+async def test_roadmap_table_populates_from_yaml(tmp_path: Path) -> None:
+    app = _app_with_roadmap(tmp_path)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        table = app.query_one("#roadmap-table", DataTable)
+        assert table.row_count == 2
+        row1 = table.get_row("TUI-1")
+        assert str(row1[0]) == "1"  # phase
+        assert "TUI-1" in str(row1[1])  # item cell contains id
+        assert str(row1[2]) == "arbiter"  # owner
+        assert str(row1[3]) == "implemented"  # arbiter detected → impl passed
+        assert str(row1[4]) == "—"  # no blockers
+        assert str(row1[5]) == "1/1 rules"  # 1 rule, 1 passed
+        row2 = table.get_row("TUI-2")
+        assert str(row2[3]) == "unknown"  # no rules → unknown
+        assert str(row2[5]) == "no rules"

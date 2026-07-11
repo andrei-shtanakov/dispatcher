@@ -21,6 +21,7 @@ from textual.widgets import (
 from dispatcher.core.contracts import check_contracts
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.models import ContractStatus, ErrorEvent, ProjectSnapshot
+from dispatcher.core.roadmap import RoadmapResponse, build_roadmap, default_roadmap_dirs
 from dispatcher.core.service import (
     ERRORS_DAYS_DEFAULT,
     SnapshotService,
@@ -55,9 +56,11 @@ class DispatcherApp(App[None]):
     def __init__(self, config: DispatcherConfig) -> None:
         super().__init__()
         self._service = SnapshotService(config)
+        self._roadmap_dirs = config.roadmap_dirs or default_roadmap_dirs(config.roots)
         self._snapshots: list[ProjectSnapshot] = []
         self._warnings: list[str] = []
         self._contracts: list[ContractStatus] = []
+        self._roadmap: RoadmapResponse | None = None
         self._errors_days: int | None = ERRORS_DAYS_DEFAULT
         self._errors_project: str | None = None
         self._errors_service: str | None = None
@@ -77,6 +80,8 @@ class DispatcherApp(App[None]):
                 yield DataTable(id="models-table", cursor_type="row")
             with TabPane("Contracts", id="tab-contracts"):
                 yield DataTable(id="contracts-table", cursor_type="row")
+            with TabPane("Roadmap", id="tab-roadmap"):
+                yield DataTable(id="roadmap-table", cursor_type="row")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -98,6 +103,9 @@ class DispatcherApp(App[None]):
         self.query_one("#contracts-table", DataTable).add_columns(
             "name", "canon", "vendored", "sync"
         )
+        self.query_one("#roadmap-table", DataTable).add_columns(
+            "phase", "item", "owner", "status", "blockers", "evidence"
+        )
         self.set_interval(10.0, self.action_refresh)
         self.action_refresh()
 
@@ -113,27 +121,31 @@ class DispatcherApp(App[None]):
                 s.name: Path(s.path) for s in snapshots if s.detected and s.path
             }
             contracts = check_contracts(projects)
+            roadmap = build_roadmap(self._roadmap_dirs, snapshots)
         except Exception as err:  # noqa: BLE001 — keep last data on screen
             self.call_from_thread(
                 self.notify, f"refresh failed: {err}", severity="error"
             )
             return
-        self.call_from_thread(self._apply, snapshots, warnings, contracts)
+        self.call_from_thread(self._apply, snapshots, warnings, contracts, roadmap)
 
     def _apply(
         self,
         snapshots: list[ProjectSnapshot],
         warnings: list[str],
         contracts: list[ContractStatus],
+        roadmap: RoadmapResponse,
     ) -> None:
         self._snapshots = snapshots
         self._warnings = warnings
         self._contracts = contracts
+        self._roadmap = roadmap
         self.sub_title = f"updated {datetime.now():%H:%M:%S} · {len(warnings)} warnings"
         self._render_projects()
         self._render_errors()
         self._render_models()
         self._render_contracts()
+        self._render_roadmap()
 
     def _snapshot(self, name: str) -> ProjectSnapshot | None:
         return next((s for s in self._snapshots if s.name == name), None)
@@ -248,6 +260,26 @@ class DispatcherApp(App[None]):
             else:
                 sync = Text("✗ drift", style="bold red")
             table.add_row(c.name, c.canonical_path, c.vendored_path or "—", sync)
+
+    def _render_roadmap(self) -> None:
+        table = self.query_one("#roadmap-table", DataTable)
+        table.clear()
+        if self._roadmap is None:
+            return
+        for item in self._roadmap.items:
+            passed = sum(1 for e in item.evidence if e.passed)
+            total = len(item.evidence)
+            evidence_cell = f"{passed}/{total} rules" if total else "no rules"
+            blockers_cell = ", ".join(item.blockers) if item.blockers else "—"
+            table.add_row(
+                item.phase or "—",
+                f"{item.id} {item.title}",
+                item.owner_project or "—",
+                item.computed_status,
+                blockers_cell,
+                evidence_cell,
+                key=item.id,
+            )
 
     def action_toggle_days(self) -> None:
         self._errors_days = (
