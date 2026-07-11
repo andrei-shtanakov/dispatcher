@@ -68,7 +68,7 @@ def build_roadmap(
 ) -> RoadmapResponse:
     """Load roadmap YAML files and compute per-item status from evidence."""
     raw_items, roadmaps, warnings = _load_yaml_items(dirs)
-    ctx = _EvidenceContext(snapshots)
+    ctx = _EvidenceContext(snapshots, vault_roots=_vault_roots(dirs))
     views: dict[str, RoadmapItemView] = {}
     for raw, source in raw_items:
         view = _evaluate_item(raw, source, ctx)
@@ -84,16 +84,31 @@ def build_roadmap(
 _SELF_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _vault_roots(dirs: tuple[Path, ...]) -> tuple[Path, ...]:
+    """Vault repo roots derived from roadmap dirs (…/authored/roadmaps)."""
+    roots = []
+    for d in dirs:
+        if d.name == "roadmaps" and d.parent.name == "authored":
+            roots.append(d.parent.parent)
+    return tuple(roots)
+
+
 class _EvidenceContext:
     """Lazily computed shared inputs for rule evaluation.
 
-    `dispatcher` is not one of its own collected projects, but roadmap
-    items about the dashboard itself need to attest dispatcher files, so
-    it resolves to this package's own repo root.
+    Two names resolve outside the collected snapshots: `dispatcher`
+    (this package's own repo root — the dashboard attests itself) and
+    `prograph-vault` (derived from the roadmap dirs — rules about
+    authored KB files, e.g. RD-000's checklist).
     """
 
-    def __init__(self, snapshots: list[ProjectSnapshot]) -> None:
+    def __init__(
+        self,
+        snapshots: list[ProjectSnapshot],
+        vault_roots: tuple[Path, ...] = (),
+    ) -> None:
         self.snapshots = {s.name: s for s in snapshots}
+        self._vault_roots = vault_roots
         self._chains: dict[str, int] | None = None
         self._contracts: dict[str, bool | None] | None = None
 
@@ -116,6 +131,8 @@ class _EvidenceContext:
     def project_path(self, name: str) -> Path | None:
         if name == "dispatcher":
             return _SELF_ROOT
+        if name == "prograph-vault":
+            return next((r for r in self._vault_roots if r.is_dir()), None)
         snap = self.snapshots.get(name)
         if snap is None or not snap.detected or not snap.path:
             return None

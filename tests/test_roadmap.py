@@ -178,6 +178,28 @@ def test_default_roadmap_dirs() -> None:
     )
 
 
+def test_vault_file_rules_resolve_from_roadmap_dirs(tmp_path: Path) -> None:
+    """`prograph-vault` file rules resolve via the roadmap dirs (RD-000)."""
+    d = tmp_path / "prograph-vault" / "authored" / "roadmaps"
+    d.mkdir(parents=True)
+    (tmp_path / "prograph-vault" / "authored" / "rules").mkdir()
+    (tmp_path / "prograph-vault" / "authored" / "rules" / "checklist.md").write_text(
+        "# rule\n"
+    )
+    (d / "kb.yaml").write_text(
+        "items:\n"
+        "  - id: RD-KB\n"
+        "    title: authored rule exists\n"
+        "    evidence_rules:\n"
+        "      - rule: file_exists\n"
+        "        kind: implementation\n"
+        "        project: prograph-vault\n"
+        "        path: authored/rules/checklist.md\n"
+    )
+    result = build_roadmap((d,), [])
+    assert result.items[0].computed_status == "implemented"
+
+
 def test_dispatcher_self_evidence(tmp_path: Path) -> None:
     d = tmp_path / "roadmaps"
     d.mkdir()
