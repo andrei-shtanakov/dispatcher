@@ -21,7 +21,12 @@ from textual.widgets import (
 from dispatcher.core.contracts import check_contracts
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.models import ContractStatus, ErrorEvent, ProjectSnapshot
-from dispatcher.core.roadmap import RoadmapResponse, build_roadmap, default_roadmap_dirs
+from dispatcher.core.roadmap import (
+    RoadmapResponse,
+    build_roadmap,
+    contract_sync_by_name,
+    default_roadmap_dirs,
+)
 from dispatcher.core.service import (
     ERRORS_DAYS_DEFAULT,
     SnapshotService,
@@ -135,7 +140,9 @@ class DispatcherApp(App[None]):
                 s.name: Path(s.path) for s in snapshots if s.detected and s.path
             }
             contracts = check_contracts(projects)
-            roadmap = build_roadmap(self._roadmap_dirs, snapshots)
+            # Same checker run feeds the roadmap's drift projection, so
+            # the Status and Contract columns agree within one refresh.
+            roadmap = build_roadmap(self._roadmap_dirs, snapshots, contracts)
         except Exception as err:  # noqa: BLE001 — keep last data on screen
             self.call_from_thread(
                 self.notify, f"refresh failed: {err}", severity="error"
@@ -280,7 +287,7 @@ class DispatcherApp(App[None]):
         table.clear()
         if self._roadmap is None:
             return
-        sync_by_name = {c.name: c.in_sync for c in self._contracts}
+        sync_by_name = contract_sync_by_name(self._contracts)
         for item in self._roadmap.items:
             passed = sum(1 for e in item.evidence if e.passed)
             total = len(item.evidence)

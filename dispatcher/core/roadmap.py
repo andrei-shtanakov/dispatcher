@@ -82,11 +82,20 @@ def default_roadmap_dirs(roots: tuple[Path, ...]) -> tuple[Path, ...]:
 
 
 def build_roadmap(
-    dirs: tuple[Path, ...], snapshots: list[ProjectSnapshot]
+    dirs: tuple[Path, ...],
+    snapshots: list[ProjectSnapshot],
+    contracts: list[ContractStatus] | None = None,
 ) -> RoadmapResponse:
-    """Load roadmap YAML files and compute per-item status from evidence."""
+    """Load roadmap YAML files and compute per-item status from evidence.
+
+    Pass `contracts` when the caller already ran `check_contracts` so
+    the drift projection reuses those verdicts — one checker run per
+    refresh (ADR-R5). Without it the context runs the checker lazily.
+    """
     raw_items, roadmaps, warnings = _load_yaml_items(dirs)
-    ctx = _EvidenceContext(snapshots, vault_roots=_vault_roots(dirs))
+    ctx = _EvidenceContext(
+        snapshots, vault_roots=_vault_roots(dirs), contracts=contracts
+    )
     views: dict[str, RoadmapItemView] = {}
     for raw, source in raw_items:
         view = _evaluate_item(raw, source, ctx)
@@ -100,6 +109,26 @@ def build_roadmap(
     return RoadmapResponse(roadmaps=roadmaps, items=items, warnings=warnings)
 
 
+def contract_sync_by_name(
+    contracts: list[ContractStatus],
+) -> dict[str, bool | None]:
+    """Fold per-copy checker rows into one verdict per contract name.
+
+    `check_contracts` emits one row per vendored copy: any out-of-sync
+    copy drifts the whole contract; any not-comparable copy blocks an
+    in-sync verdict.
+    """
+    folded: dict[str, bool | None] = {}
+    for c in contracts:
+        if c.name not in folded:
+            folded[c.name] = c.in_sync
+        elif c.in_sync is False or folded[c.name] is False:
+            folded[c.name] = False
+        elif c.in_sync is None or folded[c.name] is None:
+            folded[c.name] = None
+    return folded
+
+
 def build_drift(
     roadmap: RoadmapResponse, contracts: list[ContractStatus]
 ) -> DriftResponse:
@@ -108,21 +137,27 @@ def build_drift(
     Pure re-aggregation of already-computed data — no second checker
     (ADR-R5). Items without `target_contract` are not part of the view.
     """
-    by_name = {c.name: c for c in contracts}
+    sync_by_name = contract_sync_by_name(contracts)
+    details: dict[str, list[str]] = {}
+    for c in contracts:
+        if c.detail:
+            details.setdefault(c.name, []).append(c.detail)
     entries: list[DriftEntry] = []
     for item in roadmap.items:
         if item.target_contract is None:
             continue
-        contract = by_name.get(item.target_contract)
+        name = item.target_contract
         entries.append(
             DriftEntry(
                 id=item.id,
                 title=item.title,
-                target_contract=item.target_contract,
+                target_contract=name,
                 computed_status=item.computed_status,
-                contract_in_sync=None if contract is None else contract.in_sync,
+                contract_in_sync=sync_by_name.get(name),
                 contract_detail=(
-                    "contract not checked" if contract is None else contract.detail
+                    "; ".join(dict.fromkeys(details.get(name, []))) or None
+                    if name in sync_by_name
+                    else "contract not checked"
                 ),
             )
         )
@@ -154,11 +189,14 @@ class _EvidenceContext:
         self,
         snapshots: list[ProjectSnapshot],
         vault_roots: tuple[Path, ...] = (),
+        contracts: list[ContractStatus] | None = None,
     ) -> None:
         self.snapshots = {s.name: s for s in snapshots}
         self._vault_roots = vault_roots
         self._chains: dict[str, int] | None = None
-        self._contracts: dict[str, bool | None] | None = None
+        self._contracts: dict[str, bool | None] | None = (
+            None if contracts is None else contract_sync_by_name(contracts)
+        )
 
     def chain_links(self, work_item_id: str) -> int:
         if self._chains is None:
@@ -173,7 +211,7 @@ class _EvidenceContext:
                 for s in self.snapshots.values()
                 if s.detected and s.path
             }
-            self._contracts = {c.name: c.in_sync for c in check_contracts(projects)}
+            self._contracts = contract_sync_by_name(check_contracts(projects))
         return self._contracts.get(name)
 
     def project_path(self, name: str) -> Path | None:

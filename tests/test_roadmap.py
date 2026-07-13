@@ -9,8 +9,13 @@ from conftest import make_arbiter, make_atp, make_maestro, make_maestro_home
 
 from dispatcher.core.contracts import check_contracts
 from dispatcher.core.discovery import DispatcherConfig
-from dispatcher.core.models import ProjectSnapshot, TaskInfo
-from dispatcher.core.roadmap import build_drift, build_roadmap, default_roadmap_dirs
+from dispatcher.core.models import ContractStatus, ProjectSnapshot, TaskInfo
+from dispatcher.core.roadmap import (
+    build_drift,
+    build_roadmap,
+    contract_sync_by_name,
+    default_roadmap_dirs,
+)
 from dispatcher.server.app import create_app
 
 pytestmark = pytest.mark.anyio
@@ -251,6 +256,15 @@ items:
     title: Unknown contract, no rules
     target_contract: no-such-contract
     evidence_rules: []
+
+  - id: RD-BK
+    title: Blocked dependency and drifted contract
+    target_contract: agents-catalog
+    depends_on: [RD-UC]
+    evidence_rules:
+      - rule: project_detected
+        kind: implementation
+        project: no-such-project
 """
 
 
@@ -280,6 +294,10 @@ def test_drift_when_contract_out_of_sync(tmp_path: Path) -> None:
     assert status["RD-NC"] == "implemented"
     # contract unknown to the checker → status stays unknown
     assert status["RD-UC"] == "unknown"
+    # drift is projected after blocked and wins; blockers stay listed
+    assert status["RD-BK"] == "drift"
+    blocked = next(i for i in result.items if i.id == "RD-BK")
+    assert blocked.blockers == ["RD-UC"]
 
 
 def test_no_drift_when_contract_in_sync(tmp_path: Path) -> None:
@@ -289,6 +307,7 @@ def test_no_drift_when_contract_in_sync(tmp_path: Path) -> None:
     result = build_roadmap((_write_drift_roadmap(tmp_path),), snaps)
     status = {i.id: i.computed_status for i in result.items}
     assert status["RD-TC"] == "implemented"
+    assert status["RD-BK"] == "blocked"  # no drift → blocked survives
 
 
 def test_no_drift_when_contract_not_comparable(tmp_path: Path) -> None:
@@ -302,18 +321,53 @@ def test_no_drift_when_contract_not_comparable(tmp_path: Path) -> None:
 
 def test_build_drift_join(tmp_path: Path) -> None:
     snaps = _contract_snapshots(tmp_path)
-    roadmap = build_roadmap((_write_drift_roadmap(tmp_path),), snaps)
+    roadmap_dir = _write_drift_roadmap(tmp_path)
+    (roadmap_dir / "zz-bad.yaml").write_text("- not a mapping\n")
+    roadmap = build_roadmap((roadmap_dir,), snaps)
     contracts = check_contracts(
         {s.name: Path(s.path) for s in snaps if s.detected and s.path}
     )
     drift = build_drift(roadmap, contracts)
     entries = {e.id: e for e in drift.items}
     # only items with a target_contract are part of the view
-    assert set(entries) == {"RD-TC", "RD-UC"}
+    assert set(entries) == {"RD-TC", "RD-UC", "RD-BK"}
     assert entries["RD-TC"].contract_in_sync is False
     assert entries["RD-TC"].computed_status == "drift"
+    assert entries["RD-TC"].contract_detail is None  # hash mismatch: no detail
     assert entries["RD-UC"].contract_in_sync is None
     assert entries["RD-UC"].contract_detail == "contract not checked"
+    # roadmap warnings propagate through the drift view
+    assert any("zz-bad.yaml" in w for w in drift.warnings)
+
+
+def test_build_roadmap_uses_provided_contracts(tmp_path: Path) -> None:
+    """Injected checker results are reused — no second checker run."""
+    snaps = _contract_snapshots(tmp_path)  # real vendored copy IS drifted
+    in_sync = [ContractStatus(name="agents-catalog", canonical_path="c", in_sync=True)]
+    roadmap = build_roadmap((_write_drift_roadmap(tmp_path),), snaps, in_sync)
+    status = {i.id: i.computed_status for i in roadmap.items}
+    assert status["RD-TC"] == "implemented"
+
+
+def test_contract_sync_fold_any_drifted_copy_wins(tmp_path: Path) -> None:
+    """The checker emits one row per vendored copy, all same-named: one
+    drifted copy drifts the contract regardless of row order, and a
+    not-comparable copy blocks an in-sync verdict."""
+
+    def row(in_sync: bool | None) -> ContractStatus:
+        return ContractStatus(
+            name="agents-catalog", canonical_path="c", in_sync=in_sync
+        )
+
+    assert contract_sync_by_name([row(False), row(True)]) == {"agents-catalog": False}
+    assert contract_sync_by_name([row(True), row(None)]) == {"agents-catalog": None}
+    snaps = _contract_snapshots(tmp_path)
+    contracts = [row(True), row(False)]
+    roadmap = build_roadmap((_write_drift_roadmap(tmp_path),), snaps, contracts)
+    assert {i.id: i.computed_status for i in roadmap.items}["RD-TC"] == "drift"
+    drift = build_drift(roadmap, contracts)
+    entry = next(e for e in drift.items if e.id == "RD-TC")
+    assert entry.contract_in_sync is False
 
 
 async def test_roadmap_endpoint(tmp_path: Path) -> None:

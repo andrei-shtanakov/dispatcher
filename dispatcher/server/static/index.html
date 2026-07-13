@@ -220,7 +220,16 @@ async function refresh() {
           : c.in_sync ? "✓ in sync" : "✗ drift"}</td></tr>`).join("");
     const stCls = s => s === "verified" || s === "implemented" ? "ok"
       : s === "blocked" || s === "drift" ? "err" : "";
-    const syncByName = new Map(contracts.map(c => [c.name, c.in_sync]));
+    // Fold per-copy checker rows: any drifted copy drifts the contract,
+    // any not-comparable copy blocks an in-sync verdict (parity with
+    // contract_sync_by_name in dispatcher/core/roadmap.py).
+    const syncByName = new Map();
+    for (const c of contracts) {
+      const prev = syncByName.has(c.name) ? syncByName.get(c.name) : c.in_sync;
+      syncByName.set(c.name,
+        prev === false || c.in_sync === false ? false
+        : prev === null || c.in_sync === null ? null : true);
+    }
     document.getElementById("roadmap-names").textContent =
       (roadmap.roadmaps || []).join(", ");
     document.querySelector("#roadmap tbody").innerHTML =

@@ -138,3 +138,6 @@ async def test_index_served(tmp_path: Path) -> None:
     # onclick would be XSS-prone (project names reach a JS-string context).
     assert "data-name=" in resp.text
     assert "onclick=" not in resp.text
+    # Roadmap table carries the Contract column; empty row spans all 7
+    assert "<th>Contract</th>" in resp.text
+    assert 'colspan="7"' in resp.text
