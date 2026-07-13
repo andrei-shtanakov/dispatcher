@@ -93,7 +93,7 @@
 <section><h2>Roadmap <span id="roadmap-names" class="sub"></span></h2>
   <div class="tablewrap"><table id="roadmap">
     <thead><tr><th>Phase</th><th>Item</th><th>Owner</th><th>Status</th>
-      <th>Blockers</th><th>Evidence</th></tr></thead>
+      <th>Contract</th><th>Blockers</th><th>Evidence</th></tr></thead>
     <tbody></tbody></table></div></section>
 
 <script>
@@ -219,7 +219,8 @@ async function refresh() {
         ${c.in_sync === null ? esc(c.detail ?? "n/a")
           : c.in_sync ? "✓ in sync" : "✗ drift"}</td></tr>`).join("");
     const stCls = s => s === "verified" || s === "implemented" ? "ok"
-      : s === "blocked" ? "err" : "";
+      : s === "blocked" || s === "drift" ? "err" : "";
+    const syncByName = new Map(contracts.map(c => [c.name, c.in_sync]));
     document.getElementById("roadmap-names").textContent =
       (roadmap.roadmaps || []).join(", ");
     document.querySelector("#roadmap tbody").innerHTML =
@@ -227,17 +228,24 @@ async function refresh() {
         const passed = i.evidence.filter(e => e.passed).length;
         const ev = i.evidence.length
           ? `${passed}/${i.evidence.length} rules` : "no rules";
+        const tc = i.target_contract;
+        const tcSync = tc ? syncByName.get(tc) : undefined;
+        const tcCell = !tc ? "—"
+          : tcSync === true ? `${tc} ✓ in sync`
+          : tcSync === false ? `${tc} ✗ drift` : `${tc} n/a`;
+        const tcCls = tcSync === true ? "ok" : tcSync === false ? "err" : "";
         return `
       <tr><td>${esc(i.phase ?? "—")}</td>
       <td title="${esc(i.title)}">${esc(i.id)} ${esc(i.title)}</td>
       <td>${esc(i.owner_project ?? "—")}</td>
       <td class="${stCls(i.computed_status)}">${esc(i.computed_status)}</td>
+      <td class="${tcCls}">${esc(tcCell)}</td>
       <td>${esc((i.blockers || []).join(", ") || "—")}</td>
       <td title="${esc(i.evidence.map(e =>
         `${e.passed ? "✓" : "✗"} ${e.rule}: ${e.detail}`).join("\n"))}">
         ${esc(ev)}</td></tr>`;
       }).join("")
-      || `<tr><td colspan="6">no roadmap items</td></tr>`;
+      || `<tr><td colspan="7">no roadmap items</td></tr>`;
     document.getElementById("updated").textContent =
       "updated " + new Date().toLocaleTimeString();
   } catch (err) {

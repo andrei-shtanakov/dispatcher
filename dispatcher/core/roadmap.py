@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from dispatcher.core.collectors.base import SourceReadError, read_rows
 from dispatcher.core.contracts import check_contracts
 from dispatcher.core.correlation import build_work_items
-from dispatcher.core.models import ProjectSnapshot
+from dispatcher.core.models import ContractStatus, ProjectSnapshot
 
 _DONE = ("implemented", "verified")
 _RULE_KINDS = ("implementation", "verification")
@@ -58,6 +58,24 @@ class RoadmapResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class DriftEntry(BaseModel):
+    """One roadmap item joined with its target contract's sync state."""
+
+    id: str
+    title: str
+    target_contract: str
+    computed_status: str
+    contract_in_sync: bool | None = None  # None: unknown / not comparable
+    contract_detail: str | None = None
+
+
+class DriftResponse(BaseModel):
+    """Response of GET /api/roadmap/drift."""
+
+    items: list[DriftEntry]
+    warnings: list[str] = Field(default_factory=list)
+
+
 def default_roadmap_dirs(roots: tuple[Path, ...]) -> tuple[Path, ...]:
     """Canonical roadmap location relative to each configured root."""
     return tuple(root / "prograph-vault" / "authored" / "roadmaps" for root in roots)
@@ -77,8 +95,38 @@ def build_roadmap(
             continue
         views[view.id] = view
     _apply_blocked(views)
+    _apply_drift(views, ctx)
     items = sorted(views.values(), key=lambda v: (v.phase or "", v.id))
     return RoadmapResponse(roadmaps=roadmaps, items=items, warnings=warnings)
+
+
+def build_drift(
+    roadmap: RoadmapResponse, contracts: list[ContractStatus]
+) -> DriftResponse:
+    """Join items carrying a `target_contract` with contracts sync state.
+
+    Pure re-aggregation of already-computed data — no second checker
+    (ADR-R5). Items without `target_contract` are not part of the view.
+    """
+    by_name = {c.name: c for c in contracts}
+    entries: list[DriftEntry] = []
+    for item in roadmap.items:
+        if item.target_contract is None:
+            continue
+        contract = by_name.get(item.target_contract)
+        entries.append(
+            DriftEntry(
+                id=item.id,
+                title=item.title,
+                target_contract=item.target_contract,
+                computed_status=item.computed_status,
+                contract_in_sync=None if contract is None else contract.in_sync,
+                contract_detail=(
+                    "contract not checked" if contract is None else contract.detail
+                ),
+            )
+        )
+    return DriftResponse(items=entries, warnings=roadmap.warnings)
 
 
 _SELF_ROOT = Path(__file__).resolve().parents[2]
@@ -192,8 +240,8 @@ def _evaluate_item(raw: dict, source: str, ctx: _EvidenceContext) -> RoadmapItem
 def _status_from_evidence(evidence: list[EvidenceResult]) -> str:
     """MVP status ladder: unknown / planned / implemented / verified.
 
-    `blocked` is applied afterwards from dependencies; `drift` arrives
-    post-MVP as a projection of the contracts checker.
+    `blocked` is applied afterwards from dependencies; `drift` is
+    projected afterwards from the contracts checker (REQ-010).
     """
     if not evidence:
         return "unknown"
@@ -223,6 +271,21 @@ def _apply_blocked(views: dict[str, RoadmapItemView]) -> None:
         if blockers:
             view.computed_status = "blocked"
             view.blockers = blockers
+
+
+def _apply_drift(views: dict[str, RoadmapItemView], ctx: _EvidenceContext) -> None:
+    """Project contracts-checker verdicts onto items with a target_contract.
+
+    Only an explicit out-of-sync verdict rewrites the status to `drift`;
+    in-sync, unknown contract, or not-comparable leaves the status
+    unchanged — stays honest (REQ-010). Items without `target_contract`
+    keep the MVP 4+1 statuses untouched.
+    """
+    for view in views.values():
+        if view.target_contract is None:
+            continue
+        if ctx.contract_in_sync(view.target_contract) is False:
+            view.computed_status = "drift"
 
 
 def _run_rule(rule: dict, ctx: _EvidenceContext) -> EvidenceResult:

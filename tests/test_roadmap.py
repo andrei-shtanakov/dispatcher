@@ -7,9 +7,10 @@ import httpx
 import pytest
 from conftest import make_arbiter, make_atp, make_maestro, make_maestro_home
 
+from dispatcher.core.contracts import check_contracts
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.models import ProjectSnapshot, TaskInfo
-from dispatcher.core.roadmap import build_roadmap, default_roadmap_dirs
+from dispatcher.core.roadmap import build_drift, build_roadmap, default_roadmap_dirs
 from dispatcher.server.app import create_app
 
 pytestmark = pytest.mark.anyio
@@ -65,6 +66,16 @@ items:
     evidence_rules:
       - rule: teleport_check
         kind: implementation
+
+  - id: RD-F
+    title: Contract-tracked item
+    phase: "4"
+    owner_project: arbiter
+    target_contract: agents-catalog
+    evidence_rules:
+      - rule: project_detected
+        kind: implementation
+        project: arbiter
 """
 
 
@@ -94,6 +105,8 @@ def test_status_ladder(tmp_path: Path) -> None:
         "RD-C": "blocked",
         "RD-D": "unknown",
         "RD-E": "planned",
+        # target_contract set but canon missing → not comparable → unchanged
+        "RD-F": "implemented",
     }
     blocked = next(i for i in result.items if i.id == "RD-C")
     assert blocked.blockers == ["RD-B"]
@@ -217,6 +230,92 @@ def test_dispatcher_self_evidence(tmp_path: Path) -> None:
     assert result.items[0].computed_status == "implemented"
 
 
+_DRIFT_ROADMAP = """
+items:
+  - id: RD-TC
+    title: Tracks the agents catalog contract
+    target_contract: agents-catalog
+    evidence_rules:
+      - rule: project_detected
+        kind: implementation
+        project: arbiter
+
+  - id: RD-NC
+    title: No contract, same rules
+    evidence_rules:
+      - rule: project_detected
+        kind: implementation
+        project: arbiter
+
+  - id: RD-UC
+    title: Unknown contract, no rules
+    target_contract: no-such-contract
+    evidence_rules: []
+"""
+
+
+def _write_drift_roadmap(tmp_path: Path) -> Path:
+    d = tmp_path / "roadmaps"
+    d.mkdir()
+    (d / "drift.yaml").write_text(_DRIFT_ROADMAP)
+    return d
+
+
+def _contract_snapshots(tmp_path: Path) -> list[ProjectSnapshot]:
+    """Real canon + vendored trees; fixture copies differ (drifted)."""
+    atp = make_atp(tmp_path)
+    arb = make_arbiter(tmp_path)
+    return [
+        ProjectSnapshot(name="atp-platform", path=str(atp)),
+        ProjectSnapshot(name="arbiter", path=str(arb)),
+    ]
+
+
+def test_drift_when_contract_out_of_sync(tmp_path: Path) -> None:
+    snaps = _contract_snapshots(tmp_path)
+    result = build_roadmap((_write_drift_roadmap(tmp_path),), snaps)
+    status = {i.id: i.computed_status for i in result.items}
+    assert status["RD-TC"] == "drift"
+    # regression: no target_contract → MVP statuses unaffected
+    assert status["RD-NC"] == "implemented"
+    # contract unknown to the checker → status stays unknown
+    assert status["RD-UC"] == "unknown"
+
+
+def test_no_drift_when_contract_in_sync(tmp_path: Path) -> None:
+    snaps = _contract_snapshots(tmp_path)
+    canon = (tmp_path / "atp-platform" / "method" / "agents-catalog.toml").read_text()
+    (tmp_path / "arbiter" / "config" / "agents-catalog.toml").write_text(canon)
+    result = build_roadmap((_write_drift_roadmap(tmp_path),), snaps)
+    status = {i.id: i.computed_status for i in result.items}
+    assert status["RD-TC"] == "implemented"
+
+
+def test_no_drift_when_contract_not_comparable(tmp_path: Path) -> None:
+    """Canon missing → in_sync is None → status unchanged (stays honest)."""
+    arb = make_arbiter(tmp_path)
+    snaps = [ProjectSnapshot(name="arbiter", path=str(arb))]
+    result = build_roadmap((_write_drift_roadmap(tmp_path),), snaps)
+    status = {i.id: i.computed_status for i in result.items}
+    assert status["RD-TC"] == "implemented"
+
+
+def test_build_drift_join(tmp_path: Path) -> None:
+    snaps = _contract_snapshots(tmp_path)
+    roadmap = build_roadmap((_write_drift_roadmap(tmp_path),), snaps)
+    contracts = check_contracts(
+        {s.name: Path(s.path) for s in snaps if s.detected and s.path}
+    )
+    drift = build_drift(roadmap, contracts)
+    entries = {e.id: e for e in drift.items}
+    # only items with a target_contract are part of the view
+    assert set(entries) == {"RD-TC", "RD-UC"}
+    assert entries["RD-TC"].contract_in_sync is False
+    assert entries["RD-TC"].computed_status == "drift"
+    assert entries["RD-UC"].contract_in_sync is None
+    assert entries["RD-UC"].contract_detail == "contract not checked"
+
+
 async def test_roadmap_endpoint(tmp_path: Path) -> None:
     make_atp(tmp_path)
     make_arbiter(tmp_path)
@@ -239,10 +338,25 @@ async def test_roadmap_endpoint(tmp_path: Path) -> None:
         listing = await c.get("/api/roadmap")
         one = await c.get("/api/roadmap/RD-A")
         missing = await c.get("/api/roadmap/RD-ZZZ")
+        drift = await c.get("/api/roadmap/drift")
     assert listing.status_code == 200
     data = listing.json()
     assert data["roadmaps"] == ["test-v1"]
-    assert {i["id"] for i in data["items"]} == {"RD-A", "RD-B", "RD-C", "RD-D", "RD-E"}
+    assert {i["id"] for i in data["items"]} == {
+        "RD-A",
+        "RD-B",
+        "RD-C",
+        "RD-D",
+        "RD-E",
+        "RD-F",
+    }
     assert one.status_code == 200
     assert one.json()["computed_status"] == "verified"
     assert missing.status_code == 404
+    # drift route is not shadowed by /{item_id} and joins contract state
+    assert drift.status_code == 200
+    entries = drift.json()["items"]
+    assert [e["id"] for e in entries] == ["RD-F"]
+    assert entries[0]["target_contract"] == "agents-catalog"
+    assert entries[0]["contract_in_sync"] is False  # fixture copies differ
+    assert entries[0]["computed_status"] == "drift"

@@ -13,7 +13,7 @@ from conftest import (
 from textual.widgets import DataTable, Select, Static, TabbedContent, TabPane
 
 from dispatcher.core.discovery import DispatcherConfig
-from dispatcher.tui.app import DispatcherApp, truncate
+from dispatcher.tui.app import DispatcherApp, _contract_cell, truncate
 from dispatcher.tui.detail import ErrorMessageScreen, ProjectDetailScreen
 
 pytestmark = pytest.mark.anyio
@@ -156,6 +156,15 @@ async def test_contracts_table_shows_drift(tmp_path: Path) -> None:
 def test_truncate_web_parity() -> None:
     assert truncate("x" * 160) == "x" * 160
     assert truncate("x" * 161) == "x" * 160 + "…"
+
+
+def test_contract_cell_states() -> None:
+    sync: dict[str, bool | None] = {"a": True, "b": False, "c": None}
+    assert _contract_cell(None, sync) == "—"
+    assert "a ✓ in sync" in str(_contract_cell("a", sync))
+    assert "b ✗ drift" in str(_contract_cell("b", sync))
+    assert _contract_cell("c", sync) == "c n/a"  # not comparable
+    assert _contract_cell("missing", sync) == "missing n/a"  # unknown name
 
 
 async def test_errors_tab_lists_and_counts(tmp_path: Path) -> None:
@@ -313,6 +322,16 @@ items:
     title: No rules yet
     phase: "2"
     evidence_rules: []
+
+  - id: TUI-3
+    title: Contract drifted
+    phase: "3"
+    owner_project: arbiter
+    target_contract: agents-catalog
+    evidence_rules:
+      - rule: project_detected
+        kind: implementation
+        project: arbiter
 """
 
 
@@ -338,6 +357,7 @@ async def test_roadmap_tab_columns(tmp_path: Path) -> None:
             "item",
             "owner",
             "status",
+            "contract",
             "blockers",
             "evidence",
         ]
@@ -348,14 +368,18 @@ async def test_roadmap_table_populates_from_yaml(tmp_path: Path) -> None:
     async with app.run_test() as pilot:
         await _settled(app, pilot)
         table = app.query_one("#roadmap-table", DataTable)
-        assert table.row_count == 2
+        assert table.row_count == 3
         row1 = table.get_row("TUI-1")
         assert str(row1[0]) == "1"  # phase
         assert "TUI-1" in str(row1[1])  # item cell contains id
         assert str(row1[2]) == "arbiter"  # owner
         assert str(row1[3]) == "implemented"  # arbiter detected → impl passed
-        assert str(row1[4]) == "—"  # no blockers
-        assert str(row1[5]) == "1/1 rules"  # 1 rule, 1 passed
+        assert str(row1[4]) == "—"  # no target_contract
+        assert str(row1[5]) == "—"  # no blockers
+        assert str(row1[6]) == "1/1 rules"  # 1 rule, 1 passed
         row2 = table.get_row("TUI-2")
         assert str(row2[3]) == "unknown"  # no rules → unknown
-        assert str(row2[5]) == "no rules"
+        assert str(row2[6]) == "no rules"
+        row3 = table.get_row("TUI-3")
+        assert str(row3[3]) == "drift"  # fixture vendored copy differs
+        assert "agents-catalog ✗ drift" in str(row3[4])
