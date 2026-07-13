@@ -62,25 +62,31 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     polling = true;
     try {
-      try {
-        const api = client();
-        const [overview, events, roadmapData] = await Promise.all([
-          api.overview(),
-          api.errors(),
-          api.roadmap(),
-        ]);
-        projects.setData(overview.projects);
-        errors.setData(events);
-        roadmap.setData(roadmapData);
-        status.update(overview);
-        server.markOnline();
-      } catch {
+      const api = client();
+      // overview() is the health signal (same call server.probe uses).
+      // Only its failure means the server is offline; errors/roadmap
+      // degrade independently so one broken endpoint (e.g. an older
+      // server without /api/roadmap) doesn't blank the other views.
+      const overview = await api.overview().catch(() => null);
+      if (overview === null) {
         projects.setData(null);
         errors.setData(null);
         roadmap.setData(null);
         status.update(null);
         await server.ensureRunning();
+        return;
       }
+      projects.setData(overview.projects);
+      status.update(overview);
+      server.markOnline();
+      const [events, roadmapData] = await Promise.allSettled([
+        api.errors(),
+        api.roadmap(),
+      ]);
+      errors.setData(events.status === "fulfilled" ? events.value : null);
+      roadmap.setData(
+        roadmapData.status === "fulfilled" ? roadmapData.value : null,
+      );
     } finally {
       polling = false;
     }

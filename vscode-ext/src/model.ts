@@ -101,6 +101,8 @@ const ROADMAP_ICONS: Record<string, StatusIcon> = {
   verified: { icon: "pass-filled", color: "testing.iconPassed" },
   implemented: { icon: "circle-filled", color: "testing.iconPassed" },
   blocked: { icon: "error", color: "testing.iconFailed" },
+  // drift is an error state on web/TUI too (rendered red) — keep parity.
+  drift: { icon: "error", color: "testing.iconFailed" },
   planned: { icon: "circle-outline", color: null },
   unknown: { icon: "question", color: null },
 };

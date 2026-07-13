@@ -44,8 +44,15 @@ describe("roadmapStatusIcon", () => {
     });
   });
 
+  it("maps drift to the error icon (web/TUI parity)", () => {
+    expect(roadmapStatusIcon("drift")).toEqual({
+      icon: "error",
+      color: "testing.iconFailed",
+    });
+  });
+
   it("falls back to the unknown icon for unexpected statuses", () => {
-    expect(roadmapStatusIcon("drift")).toEqual(roadmapStatusIcon("unknown"));
+    expect(roadmapStatusIcon("nonsense")).toEqual(roadmapStatusIcon("unknown"));
   });
 });
 
