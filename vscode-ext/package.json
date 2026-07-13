@@ -36,6 +36,10 @@
         {
           "id": "dispatcherErrors",
           "name": "Errors"
+        },
+        {
+          "id": "dispatcherRoadmap",
+          "name": "Roadmap"
         }
       ]
     },
@@ -57,7 +61,7 @@
       "view/title": [
         {
           "command": "dispatcher.refresh",
-          "when": "view == dispatcherProjects || view == dispatcherErrors",
+          "when": "view == dispatcherProjects || view == dispatcherErrors || view == dispatcherRoadmap",
           "group": "navigation"
         }
       ],

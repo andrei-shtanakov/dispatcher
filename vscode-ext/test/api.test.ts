@@ -32,6 +32,16 @@ describe("ApiClient", () => {
     expect(events).toHaveLength(2);
   });
 
+  it("fetches and parses the roadmap", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse(fixture("roadmap.json")));
+    vi.stubGlobal("fetch", fetchMock);
+    const roadmap = await new ApiClient("http://x").roadmap();
+    expect(fetchMock.mock.calls[0][0]).toBe("http://x/api/roadmap");
+    expect(roadmap.roadmaps).toEqual(["ecosystem-2026"]);
+    expect(roadmap.items).toHaveLength(5);
+    expect(roadmap.items[0].evidence[0].passed).toBe(true);
+  });
+
   it("URL-encodes project names", async () => {
     const fetchMock = vi.fn().mockResolvedValue(okResponse(fixture("project.json")));
     vi.stubGlobal("fetch", fetchMock);

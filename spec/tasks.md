@@ -60,19 +60,19 @@ Tests: `tests/test_roadmap.py` (10), `tests/test_tui.py`.
 ## M2 — Surface completion
 
 ### TASK-101: Roadmap view in VSCode extension
-🟠 P1 | ⬜ TODO | Est: 1d
+🟠 P1 | ✅ DONE | Est: 1d
 
 **Description:**
 The last MVP surface from recommendation §6 not yet implemented
 (`vscode-ext/src` has no roadmap code).
 
 **Checklist:**
-- [ ] Add Roadmap tree/webview to `vscode-ext` consuming `GET /api/roadmap`
-- [ ] Render `Phase | Item | Owner | Status | Blockers | Evidence` mirroring web/TUI columns
-- [ ] Status icons for `planned/implemented/verified/blocked/unknown`
-- [ ] Item drill-down showing per-rule `EvidenceResult` (passed/detail)
-- [ ] Graceful state when server unreachable or no roadmaps found
-- [ ] Extension tests (or smoke script) for view data mapping
+- [x] Add Roadmap tree/webview to `vscode-ext` consuming `GET /api/roadmap`
+- [x] Render `Phase | Item | Owner | Status | Blockers | Evidence` mirroring web/TUI columns
+- [x] Status icons for `planned/implemented/verified/blocked/unknown`
+- [x] Item drill-down showing per-rule `EvidenceResult` (passed/detail)
+- [x] Graceful state when server unreachable or no roadmaps found
+- [x] Extension tests (or smoke script) for view data mapping
 
 **Traces to:** [REQ-009], [DESIGN-006]
 **Depends on:** [TASK-002]
@@ -82,55 +82,55 @@ The last MVP surface from recommendation §6 not yet implemented
 ## M3 — Post-MVP views & governance linkage
 
 ### TASK-102: Drift projection over existing `/api/contracts`
-🟡 P2 | ⬜ TODO | Est: 1d
+🟡 P2 | ✅ DONE | Est: 1d
 
 **Description:**
 Second-step item from recommendation §8: `drift` as a projection of the
 existing contracts checker, not a new mechanism.
 
 **Checklist:**
-- [ ] `GET /api/roadmap/drift` — join roadmap items (`target_contract`) with `/api/contracts` sync state
-- [ ] Surface `drift` in `computed_status` only when contracts checker reports canon/vendored mismatch for the item's `target_contract`
-- [ ] Web + TUI: Contract Drift view/column
-- [ ] Tests: in-sync, drifted, contract unknown → status stays `unknown`/unchanged
-- [ ] Regression: existing 4+1 statuses unaffected when no `target_contract`
+- [x] `GET /api/roadmap/drift` — join roadmap items (`target_contract`) with `/api/contracts` sync state
+- [x] Surface `drift` in `computed_status` only when contracts checker reports canon/vendored mismatch for the item's `target_contract`
+- [x] Web + TUI: Contract Drift view/column
+- [x] Tests: in-sync, drifted, contract unknown → status stays `unknown`/unchanged
+- [x] Regression: existing 4+1 statuses unaffected when no `target_contract`
 
 **Traces to:** [REQ-010], [DESIGN-007]
 **Depends on:** [TASK-001]
 
 ### TASK-103: Evidence freshness (`last_seen`)
-🟡 P2 | ⬜ TODO | Est: 0.5d
+🟡 P2 | ✅ DONE | Est: 0.5d
 
 **Description:**
 `RoadmapItemView` currently has no `last_seen`; the model in
 recommendation §7 requires it, and the Freshness view depends on it.
 
 **Checklist:**
-- [ ] Add `last_seen` to `EvidenceResult`/`RoadmapItemView` (mtime of matched file/DB/log artifact, None where not applicable)
-- [ ] Expose in `/api/roadmap` payload; add Freshness column to web + TUI
-- [ ] Tests: freshness populated for `file_exists`/`sqlite_has_row`, absent for `project_detected`
+- [x] Add `last_seen` to `EvidenceResult`/`RoadmapItemView` (mtime of matched file/DB/log artifact, None where not applicable)
+- [x] Expose in `/api/roadmap` payload; add Freshness column to web + TUI
+- [x] Tests: freshness populated for `file_exists`/`sqlite_has_row`, absent for `project_detected`
 
 **Traces to:** [REQ-011], [DESIGN-007]
 **Depends on:** [TASK-001]
 
 ### TASK-104: Aggregation endpoints — phases and blockers
-🟢 P3 | ⬜ TODO | Est: 0.5d
+🟢 P3 | ✅ DONE | Est: 0.5d
 
 **Description:**
 Optional endpoints from recommendation §6; pure re-aggregations of
 `build_roadmap` output.
 
 **Checklist:**
-- [ ] `GET /api/roadmap/phases` — per-phase counts by status, blocked lists
-- [ ] `GET /api/roadmap/blockers` — reverse dependency view (what blocks what)
-- [ ] Tests for both aggregations incl. empty roadmap and cyclic `depends_on`
-- [ ] Register routes so they don't clash with `/api/roadmap/{item_id}`
+- [x] `GET /api/roadmap/phases` — per-phase counts by status, blocked lists
+- [x] `GET /api/roadmap/blockers` — reverse dependency view (what blocks what)
+- [x] Tests for both aggregations incl. empty roadmap and cyclic `depends_on`
+- [x] Register routes so they don't clash with `/api/roadmap/{item_id}`
 
 **Traces to:** [REQ-012], [DESIGN-003]
 **Depends on:** [TASK-002]
 
 ### TASK-105: Handoff — steward gates / owner_role linkage
-🟡 P2 | ⬜ TODO | Est: 0.5d
+🟡 P2 | ✅ DONE | Est: 0.5d
 
 **Description:**
 Recommendation §14 P2 items live in neighbor repos (`steward`,
@@ -138,9 +138,9 @@ Recommendation §14 P2 items live in neighbor repos (`steward`,
 written handoff, not code.
 
 **Checklist:**
-- [ ] Write handoff note to `../prograph-vault/authored/notes/`: proposed `owner_role` field semantics, gates → verification-rule mapping, what dispatcher expects to consume
-- [ ] Add `owner_role` as an optional pass-through field on `RoadmapItem` (no evaluation logic) so vault YAML can start carrying it
-- [ ] Test: `owner_role` round-trips through the API
+- [x] Write handoff note to `../prograph-vault/authored/notes/`: proposed `owner_role` field semantics, gates → verification-rule mapping, what dispatcher expects to consume
+- [x] Add `owner_role` as an optional pass-through field on `RoadmapItem` (no evaluation logic) so vault YAML can start carrying it
+- [x] Test: `owner_role` round-trips through the API
 
 **Traces to:** [REQ-013], [DESIGN-001]
 **Depends on:** [TASK-001]
@@ -172,7 +172,7 @@ TASK-001 (core ✅)
 | Milestone | Tasks | Done | Remaining est. |
 |-----------|-------|------|----------------|
 | M1 Roadmap MVP | TASK-001..004 | 4/4 ✅ | — |
-| M2 Surface completion | TASK-101 | 0/1 | ~1d |
-| M3 Post-MVP views | TASK-102..105 | 0/4 | ~2.5d |
+| M2 Surface completion | TASK-101 | 1/1 ✅ | — |
+| M3 Post-MVP views | TASK-102..105 | 4/4 ✅ | — |
 
-Recommended order: TASK-101 → TASK-102 → TASK-103 → TASK-105 → TASK-104.
+All roadmap M2/M3 tasks complete.

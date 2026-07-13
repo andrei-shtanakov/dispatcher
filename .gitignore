@@ -14,3 +14,7 @@ logs/
 # spec executor session artifacts (spec/*.md themselves are tracked)
 spec/.executor-logs/
 spec/.executor-progress.txt
+spec/.executor-state.db*
+spec/.executor-state.lock
+spec/.task-history.log
+.vscode/
