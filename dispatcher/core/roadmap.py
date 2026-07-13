@@ -41,6 +41,9 @@ class RoadmapItemView(BaseModel):
     title: str
     phase: str | None = None
     owner_project: str | None = None
+    # Governance linkage owned by steward (REQ-013): dispatcher carries the
+    # authored value through to the API verbatim and never evaluates it.
+    owner_role: str | None = None
     target_contract: str | None = None
     depends_on: list[str] = Field(default_factory=list)
     expected_evidence: list[str] = Field(default_factory=list)
@@ -266,6 +269,7 @@ def _evaluate_item(raw: dict, source: str, ctx: _EvidenceContext) -> RoadmapItem
         title=str(raw.get("title", "")),
         phase=_opt_str(raw.get("phase")),
         owner_project=_opt_str(raw.get("owner_project")),
+        owner_role=_opt_str(raw.get("owner_role")),
         target_contract=_opt_str(raw.get("target_contract")),
         depends_on=[str(d) for d in raw.get("depends_on") or []],
         expected_evidence=[str(e) for e in raw.get("expected_evidence") or []],
