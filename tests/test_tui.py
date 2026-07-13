@@ -1,5 +1,6 @@
 """Pilot tests for the textual TUI."""
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -332,6 +333,16 @@ items:
       - rule: project_detected
         kind: implementation
         project: arbiter
+
+  - id: TUI-4
+    title: File-backed freshness
+    phase: "4"
+    owner_project: arbiter
+    evidence_rules:
+      - rule: file_exists
+        kind: implementation
+        project: arbiter
+        path: config/agents.toml
 """
 
 
@@ -369,7 +380,7 @@ async def test_roadmap_table_populates_from_yaml(tmp_path: Path) -> None:
     async with app.run_test() as pilot:
         await _settled(app, pilot)
         table = app.query_one("#roadmap-table", DataTable)
-        assert table.row_count == 3
+        assert table.row_count == 4
         row1 = table.get_row("TUI-1")
         assert str(row1[0]) == "1"  # phase
         assert "TUI-1" in str(row1[1])  # item cell contains id
@@ -385,3 +396,11 @@ async def test_roadmap_table_populates_from_yaml(tmp_path: Path) -> None:
         row3 = table.get_row("TUI-3")
         assert str(row3[3]) == "drift"  # fixture vendored copy differs
         assert "agents-catalog ✗ drift" in str(row3[4])
+        row4 = table.get_row("TUI-4")
+        # file_exists matched → freshness cell renders the artifact mtime,
+        # not the "—" fallback (success path of app.py freshness column)
+        agents_toml = tmp_path / "arbiter" / "config" / "agents.toml"
+        expected = datetime.fromtimestamp(
+            agents_toml.stat().st_mtime, tz=UTC
+        ).isoformat()
+        assert str(row4[7]) == expected

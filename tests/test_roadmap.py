@@ -289,6 +289,8 @@ def test_last_seen_freshness(tmp_path: Path) -> None:
     file_ev, db_ev, no_row_ev, detected_ev, missing_ev = item.evidence
     assert file_ev.passed and file_ev.last_seen == _iso_mtime(artifact)
     assert db_ev.passed and db_ev.last_seen == _iso_mtime(db)
+    # stamps are tz-aware UTC, never naive/local (guards string ordering)
+    assert file_ev.last_seen is not None and file_ev.last_seen.endswith("+00:00")
     # no matched artifact → no observation timestamp
     assert not no_row_ev.passed and no_row_ev.last_seen is None
     assert detected_ev.passed and detected_ev.last_seen is None
@@ -303,6 +305,32 @@ def test_last_seen_none_without_file_evidence(tmp_path: Path) -> None:
     assert by_id["RD-A"].last_seen is None  # project_detected + chain rules
     assert by_id["RD-B"].last_seen is None  # file_exists failed
     assert by_id["RD-D"].last_seen is None  # no rules
+
+
+_CONTRACT_RULE_ROADMAP = """
+items:
+  - id: RD-CR
+    title: Contract-in-sync evidence rule
+    evidence_rules:
+      - rule: contract_in_sync
+        kind: verification
+        name: agents-catalog
+"""
+
+
+def test_contract_in_sync_rule_carries_no_last_seen(tmp_path: Path) -> None:
+    """The `contract_in_sync` rule attests a comparison, not an artifact,
+    so it never populates `last_seen` (REQ-011)."""
+    d = tmp_path / "roadmaps"
+    d.mkdir()
+    (d / "cr.yaml").write_text(_CONTRACT_RULE_ROADMAP)
+    in_sync = [ContractStatus(name="agents-catalog", canonical_path="c", in_sync=True)]
+    item = build_roadmap((d,), [], in_sync).items[0]
+    ev = item.evidence[0]
+    assert ev.rule == "contract_in_sync"
+    assert ev.passed and ev.detail == "contract agents-catalog in sync"
+    assert ev.last_seen is None
+    assert item.last_seen is None
 
 
 _DRIFT_ROADMAP = """
