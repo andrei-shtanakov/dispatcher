@@ -10,3 +10,7 @@ __pycache__/
 vscode-ext/.vscode/
 vscode-ext/logs/
 vscode-ext/spec/
+logs/
+# spec executor session artifacts (spec/*.md themselves are tracked)
+spec/.executor-logs/
+spec/.executor-progress.txt
