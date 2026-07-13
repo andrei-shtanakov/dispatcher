@@ -16,7 +16,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
-from dispatcher.core.collectors.base import SourceReadError, read_rows
+from dispatcher.core.collectors.base import SourceReadError, newest_mtime, read_rows
 from dispatcher.core.contracts import check_contracts
 from dispatcher.core.correlation import build_work_items
 from dispatcher.core.models import ContractStatus, ProjectSnapshot
@@ -32,6 +32,7 @@ class EvidenceResult(BaseModel):
     kind: str  # implementation | verification
     passed: bool
     detail: str
+    last_seen: str | None = None  # ISO mtime of the matched artifact (REQ-011)
 
 
 class RoadmapItemView(BaseModel):
@@ -47,6 +48,7 @@ class RoadmapItemView(BaseModel):
     computed_status: str
     evidence: list[EvidenceResult] = Field(default_factory=list)
     blockers: list[str] = Field(default_factory=list)
+    last_seen: str | None = None  # newest evidence last_seen (REQ-011)
     source: str
 
 
@@ -261,6 +263,8 @@ def _load_yaml_items(
 def _evaluate_item(raw: dict, source: str, ctx: _EvidenceContext) -> RoadmapItemView:
     rules = [r for r in raw.get("evidence_rules") or [] if isinstance(r, dict)]
     evidence = [_run_rule(rule, ctx) for rule in rules]
+    # UTC ISO stamps (newest_mtime) compare correctly as strings.
+    last_seen = max((e.last_seen for e in evidence if e.last_seen), default=None)
     return RoadmapItemView(
         id=str(raw.get("id", "?")),
         title=str(raw.get("title", "")),
@@ -271,6 +275,7 @@ def _evaluate_item(raw: dict, source: str, ctx: _EvidenceContext) -> RoadmapItem
         expected_evidence=[str(e) for e in raw.get("expected_evidence") or []],
         computed_status=_status_from_evidence(evidence),
         evidence=evidence,
+        last_seen=last_seen,
         source=source,
     )
 
@@ -339,22 +344,30 @@ def _run_rule(rule: dict, ctx: _EvidenceContext) -> EvidenceResult:
             passed=False,
             detail=f"unknown rule: {name!r}",
         )
+    last_seen: str | None = None
     try:
-        passed, detail = handler(rule, ctx)
+        passed, detail, last_seen = handler(rule, ctx)
     except SourceReadError as err:
         passed, detail = False, str(err)
     except Exception as err:  # noqa: BLE001 — YAML is user-authored;
         # a malformed rule must degrade to a failed check, not take
         # down /api/roadmap.
         passed, detail = False, f"rule error: {err}"
-    return EvidenceResult(rule=name, kind=kind, passed=passed, detail=detail)
+    return EvidenceResult(
+        rule=name, kind=kind, passed=passed, detail=detail, last_seen=last_seen
+    )
 
 
-def _rule_project_detected(rule: dict, ctx: _EvidenceContext) -> tuple[bool, str]:
+# (passed, detail, last_seen) — last_seen is the ISO mtime of the matched
+# artifact for file-backed rules, None where not applicable (DESIGN-007).
+_RuleOutcome = tuple[bool, str, str | None]
+
+
+def _rule_project_detected(rule: dict, ctx: _EvidenceContext) -> _RuleOutcome:
     project = str(rule.get("project", ""))
     if ctx.project_path(project) is not None:
-        return True, f"project {project} detected"
-    return False, f"project {project} not detected"
+        return True, f"project {project} detected", None
+    return False, f"project {project} not detected", None
 
 
 def _safe_join(root: Path, rel: str) -> Path | None:
@@ -373,54 +386,54 @@ def _safe_join(root: Path, rel: str) -> Path | None:
     return resolved
 
 
-def _rule_file_exists(rule: dict, ctx: _EvidenceContext) -> tuple[bool, str]:
+def _rule_file_exists(rule: dict, ctx: _EvidenceContext) -> _RuleOutcome:
     project = str(rule.get("project", ""))
     rel = str(rule.get("path", ""))
     root = ctx.project_path(project)
     if root is None:
-        return False, f"project {project} not detected"
+        return False, f"project {project} not detected", None
     target = _safe_join(root, rel)
     if target is None:
-        return False, f"path escapes project root: {rel}"
+        return False, f"path escapes project root: {rel}", None
     if target.exists():
-        return True, f"{project}/{rel} exists"
-    return False, f"{project}/{rel} missing"
+        return True, f"{project}/{rel} exists", newest_mtime([target])
+    return False, f"{project}/{rel} missing", None
 
 
-def _rule_sqlite_has_row(rule: dict, ctx: _EvidenceContext) -> tuple[bool, str]:
+def _rule_sqlite_has_row(rule: dict, ctx: _EvidenceContext) -> _RuleOutcome:
     project = str(rule.get("project", ""))
     rel = str(rule.get("db", ""))
     query = str(rule.get("query", ""))
     root = ctx.project_path(project)
     if root is None:
-        return False, f"project {project} not detected"
+        return False, f"project {project} not detected", None
     db = _safe_join(root, rel)
     if db is None:
-        return False, f"db path escapes project root: {rel}"
+        return False, f"db path escapes project root: {rel}", None
     # EXISTS caps the result at one row regardless of the inner query.
     rows = read_rows(db, f"SELECT EXISTS ({query.rstrip(';')}) AS present")
     if rows and rows[0]["present"]:
-        return True, f"{rel}: row found"
-    return False, f"{rel}: no rows"
+        return True, f"{rel}: row found", newest_mtime([db])
+    return False, f"{rel}: no rows", None
 
 
-def _rule_contract_in_sync(rule: dict, ctx: _EvidenceContext) -> tuple[bool, str]:
+def _rule_contract_in_sync(rule: dict, ctx: _EvidenceContext) -> _RuleOutcome:
     name = str(rule.get("name", ""))
     state = ctx.contract_in_sync(name)
     if state is True:
-        return True, f"contract {name} in sync"
+        return True, f"contract {name} in sync", None
     if state is None:
-        return False, f"contract {name} not comparable"
-    return False, f"contract {name} out of sync"
+        return False, f"contract {name} not comparable", None
+    return False, f"contract {name} out of sync", None
 
 
-def _rule_work_item_chain(rule: dict, ctx: _EvidenceContext) -> tuple[bool, str]:
+def _rule_work_item_chain(rule: dict, ctx: _EvidenceContext) -> _RuleOutcome:
     work_item_id = str(rule.get("work_item_id", ""))
     min_links = int(rule.get("min_links", 1))
     links = ctx.chain_links(work_item_id)
     if links >= min_links:
-        return True, f"chain {work_item_id}: {links} link(s)"
-    return False, f"chain {work_item_id}: {links} link(s), need {min_links}"
+        return True, f"chain {work_item_id}: {links} link(s)", None
+    return False, f"chain {work_item_id}: {links} link(s), need {min_links}", None
 
 
 _RULES = {

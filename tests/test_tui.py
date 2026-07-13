@@ -360,6 +360,7 @@ async def test_roadmap_tab_columns(tmp_path: Path) -> None:
             "contract",
             "blockers",
             "evidence",
+            "freshness",
         ]
 
 
@@ -377,6 +378,7 @@ async def test_roadmap_table_populates_from_yaml(tmp_path: Path) -> None:
         assert str(row1[4]) == "—"  # no target_contract
         assert str(row1[5]) == "—"  # no blockers
         assert str(row1[6]) == "1/1 rules"  # 1 rule, 1 passed
+        assert str(row1[7]) == "—"  # project_detected carries no mtime
         row2 = table.get_row("TUI-2")
         assert str(row2[3]) == "unknown"  # no rules → unknown
         assert str(row2[6]) == "no rules"

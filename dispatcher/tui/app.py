@@ -123,7 +123,14 @@ class DispatcherApp(App[None]):
             "name", "canon", "vendored", "sync"
         )
         self.query_one("#roadmap-table", DataTable).add_columns(
-            "phase", "item", "owner", "status", "contract", "blockers", "evidence"
+            "phase",
+            "item",
+            "owner",
+            "status",
+            "contract",
+            "blockers",
+            "evidence",
+            "freshness",
         )
         self.set_interval(10.0, self.action_refresh)
         self.action_refresh()
@@ -306,6 +313,7 @@ class DispatcherApp(App[None]):
                 _contract_cell(item.target_contract, sync_by_name),
                 blockers_cell,
                 evidence_cell,
+                item.last_seen or "—",
                 key=item.id,
             )
 

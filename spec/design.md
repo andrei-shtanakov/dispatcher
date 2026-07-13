@@ -187,7 +187,7 @@ empty/unreachable states.
 
 **Traces to:** [REQ-009] → [TASK-101]
 
-### DESIGN-007: Drift & freshness projections — planned (M3)
+### DESIGN-007: Drift & freshness projections ✅
 
 - **Drift** [REQ-010]: no new mechanics — join items' `target_contract`
   with `check_contracts` results already exposed at `/api/contracts`.
