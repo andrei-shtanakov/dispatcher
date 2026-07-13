@@ -1,8 +1,25 @@
 /** TreeDataProviders: thin adapters over the pure model mappers. */
 
 import * as vscode from "vscode";
-import type { ApiClient, ErrorEvent, OverviewEntry } from "./api";
-import { detailLines, errorLabel, projectView } from "./model";
+import type {
+  ApiClient,
+  ErrorEvent,
+  EvidenceResult,
+  OverviewEntry,
+  RoadmapItemView,
+  RoadmapResponse,
+} from "./api";
+import {
+  detailLines,
+  errorLabel,
+  evidenceLabel,
+  projectView,
+  roadmapEmptyText,
+  roadmapItemChildren,
+  roadmapItemDescription,
+  roadmapItemLabel,
+  roadmapStatusIcon,
+} from "./model";
 
 export type ProjectNode =
   | { kind: "project"; entry: OverviewEntry }
@@ -79,6 +96,95 @@ export class ProjectsProvider
     } catch {
       return [{ kind: "line", text: "detail unavailable" }];
     }
+  }
+
+  dispose(): void {
+    this.changed.dispose();
+  }
+}
+
+export type RoadmapNode =
+  | { kind: "item"; item: RoadmapItemView }
+  | { kind: "evidence"; evidence: EvidenceResult }
+  | { kind: "line"; text: string }
+  | { kind: "empty"; text: string }
+  | { kind: "offline" };
+
+export class RoadmapProvider implements vscode.TreeDataProvider<RoadmapNode> {
+  private readonly changed = new vscode.EventEmitter<void>();
+  readonly onDidChangeTreeData = this.changed.event;
+  private roadmap: RoadmapResponse | null = null; // null = offline
+
+  setData(roadmap: RoadmapResponse | null): void {
+    this.roadmap = roadmap;
+    this.changed.fire();
+  }
+
+  getTreeItem(node: RoadmapNode): vscode.TreeItem {
+    if (node.kind === "offline") {
+      return offlineItem();
+    }
+    if (node.kind === "empty") {
+      const item = new vscode.TreeItem(node.text);
+      item.iconPath = new vscode.ThemeIcon("info");
+      return item;
+    }
+    if (node.kind === "line") {
+      return new vscode.TreeItem(node.text);
+    }
+    if (node.kind === "evidence") {
+      const item = new vscode.TreeItem(evidenceLabel(node.evidence));
+      item.tooltip = node.evidence.detail;
+      item.iconPath = node.evidence.passed
+        ? new vscode.ThemeIcon(
+            "check",
+            new vscode.ThemeColor("testing.iconPassed"),
+          )
+        : new vscode.ThemeIcon(
+            "close",
+            new vscode.ThemeColor("testing.iconFailed"),
+          );
+      return item;
+    }
+    const item = new vscode.TreeItem(
+      roadmapItemLabel(node.item),
+      vscode.TreeItemCollapsibleState.Collapsed,
+    );
+    item.description = roadmapItemDescription(node.item);
+    item.tooltip = [
+      node.item.title,
+      `phase: ${node.item.phase ?? "—"}`,
+      `owner: ${node.item.owner_project ?? "—"}`,
+      `status: ${node.item.computed_status}`,
+      `source: ${node.item.source}`,
+    ].join("\n");
+    const icon = roadmapStatusIcon(node.item.computed_status);
+    item.iconPath =
+      icon.color === null
+        ? new vscode.ThemeIcon(icon.icon)
+        : new vscode.ThemeIcon(icon.icon, new vscode.ThemeColor(icon.color));
+    return item;
+  }
+
+  getChildren(node?: RoadmapNode): RoadmapNode[] {
+    if (node === undefined) {
+      if (this.roadmap === null) {
+        return [{ kind: "offline" }];
+      }
+      const empty = roadmapEmptyText(this.roadmap);
+      if (empty !== null) {
+        return [{ kind: "empty", text: empty }];
+      }
+      return this.roadmap.items.map((item) => ({ kind: "item", item }));
+    }
+    if (node.kind !== "item") {
+      return [];
+    }
+    return roadmapItemChildren(node.item).map((child) =>
+      child.kind === "evidence"
+        ? { kind: "evidence", evidence: child.evidence }
+        : { kind: "line", text: child.text },
+    );
   }
 
   dispose(): void {

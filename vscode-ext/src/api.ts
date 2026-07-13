@@ -35,6 +35,33 @@ export interface SchemaVersionCheck {
   ok: boolean | null;
 }
 
+export interface EvidenceResult {
+  rule: string;
+  kind: string; // implementation | verification
+  passed: boolean;
+  detail: string;
+}
+
+export interface RoadmapItemView {
+  id: string;
+  title: string;
+  phase: string | null;
+  owner_project: string | null;
+  target_contract: string | null;
+  depends_on: string[];
+  expected_evidence: string[];
+  computed_status: string;
+  evidence: EvidenceResult[];
+  blockers: string[];
+  source: string;
+}
+
+export interface RoadmapResponse {
+  roadmaps: string[];
+  items: RoadmapItemView[];
+  warnings: string[];
+}
+
 export interface ProjectDetail {
   name: string;
   path: string;
@@ -74,5 +101,9 @@ export class ApiClient {
 
   errors(): Promise<ErrorEvent[]> {
     return this.get("/api/errors?days=14&limit=50");
+  }
+
+  roadmap(): Promise<RoadmapResponse> {
+    return this.get("/api/roadmap");
   }
 }

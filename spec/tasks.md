@@ -60,19 +60,19 @@ Tests: `tests/test_roadmap.py` (10), `tests/test_tui.py`.
 ## M2 — Surface completion
 
 ### TASK-101: Roadmap view in VSCode extension
-🟠 P1 | ⬜ TODO | Est: 1d
+🟠 P1 | ✅ DONE | Est: 1d
 
 **Description:**
 The last MVP surface from recommendation §6 not yet implemented
 (`vscode-ext/src` has no roadmap code).
 
 **Checklist:**
-- [ ] Add Roadmap tree/webview to `vscode-ext` consuming `GET /api/roadmap`
-- [ ] Render `Phase | Item | Owner | Status | Blockers | Evidence` mirroring web/TUI columns
-- [ ] Status icons for `planned/implemented/verified/blocked/unknown`
-- [ ] Item drill-down showing per-rule `EvidenceResult` (passed/detail)
-- [ ] Graceful state when server unreachable or no roadmaps found
-- [ ] Extension tests (or smoke script) for view data mapping
+- [x] Add Roadmap tree/webview to `vscode-ext` consuming `GET /api/roadmap`
+- [x] Render `Phase | Item | Owner | Status | Blockers | Evidence` mirroring web/TUI columns
+- [x] Status icons for `planned/implemented/verified/blocked/unknown`
+- [x] Item drill-down showing per-rule `EvidenceResult` (passed/detail)
+- [x] Graceful state when server unreachable or no roadmaps found
+- [x] Extension tests (or smoke script) for view data mapping
 
 **Traces to:** [REQ-009], [DESIGN-006]
 **Depends on:** [TASK-002]
@@ -172,7 +172,7 @@ TASK-001 (core ✅)
 | Milestone | Tasks | Done | Remaining est. |
 |-----------|-------|------|----------------|
 | M1 Roadmap MVP | TASK-001..004 | 4/4 ✅ | — |
-| M2 Surface completion | TASK-101 | 0/1 | ~1d |
+| M2 Surface completion | TASK-101 | 1/1 ✅ | — |
 | M3 Post-MVP views | TASK-102..105 | 0/4 | ~2.5d |
 
 Recommended order: TASK-101 → TASK-102 → TASK-103 → TASK-105 → TASK-104.
