@@ -93,7 +93,8 @@
 <section><h2>Roadmap <span id="roadmap-names" class="sub"></span></h2>
   <div class="tablewrap"><table id="roadmap">
     <thead><tr><th>Phase</th><th>Item</th><th>Owner</th><th>Status</th>
-      <th>Contract</th><th>Blockers</th><th>Evidence</th></tr></thead>
+      <th>Contract</th><th>Blockers</th><th>Evidence</th><th>Freshness</th>
+      </tr></thead>
     <tbody></tbody></table></div></section>
 
 <script>
@@ -252,9 +253,10 @@ async function refresh() {
       <td>${esc((i.blockers || []).join(", ") || "—")}</td>
       <td title="${esc(i.evidence.map(e =>
         `${e.passed ? "✓" : "✗"} ${e.rule}: ${e.detail}`).join("\n"))}">
-        ${esc(ev)}</td></tr>`;
+        ${esc(ev)}</td>
+      <td class="fresh">${esc(i.last_seen ?? "—")}</td></tr>`;
       }).join("")
-      || `<tr><td colspan="7">no roadmap items</td></tr>`;
+      || `<tr><td colspan="8">no roadmap items</td></tr>`;
     document.getElementById("updated").textContent =
       "updated " + new Date().toLocaleTimeString();
   } catch (err) {

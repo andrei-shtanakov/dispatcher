@@ -1,6 +1,7 @@
 """Tests for the roadmap read-model (typed evidence rules + API)."""
 
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -237,6 +238,73 @@ def test_dispatcher_self_evidence(tmp_path: Path) -> None:
     assert result.items[0].computed_status == "implemented"
 
 
+_FRESHNESS_ROADMAP = """
+items:
+  - id: RD-FRESH
+    title: Freshness over file and db evidence
+    evidence_rules:
+      - rule: file_exists
+        kind: implementation
+        project: arbiter
+        path: artifact.txt
+      - rule: sqlite_has_row
+        kind: implementation
+        project: arbiter
+        db: state.db
+        query: SELECT 1 FROM t
+      - rule: sqlite_has_row
+        kind: implementation
+        project: arbiter
+        db: state.db
+        query: SELECT 1 FROM t WHERE id = 'absent'
+      - rule: project_detected
+        kind: implementation
+        project: arbiter
+      - rule: file_exists
+        kind: verification
+        project: arbiter
+        path: missing.txt
+"""
+
+
+def _iso_mtime(path: Path) -> str:
+    return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).isoformat()
+
+
+def test_last_seen_freshness(tmp_path: Path) -> None:
+    """`last_seen` = mtime of the matched artifact; None where n/a (REQ-011)."""
+    proj = tmp_path / "arbiter"
+    proj.mkdir()
+    artifact = proj / "artifact.txt"
+    artifact.write_text("x")
+    db = proj / "state.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE t (id TEXT)")
+        conn.execute("INSERT INTO t VALUES ('a')")
+    d = tmp_path / "roadmaps"
+    d.mkdir()
+    (d / "fresh.yaml").write_text(_FRESHNESS_ROADMAP)
+    snaps = [ProjectSnapshot(name="arbiter", path=str(proj))]
+    item = build_roadmap((d,), snaps).items[0]
+    file_ev, db_ev, no_row_ev, detected_ev, missing_ev = item.evidence
+    assert file_ev.passed and file_ev.last_seen == _iso_mtime(artifact)
+    assert db_ev.passed and db_ev.last_seen == _iso_mtime(db)
+    # no matched artifact → no observation timestamp
+    assert not no_row_ev.passed and no_row_ev.last_seen is None
+    assert detected_ev.passed and detected_ev.last_seen is None
+    assert not missing_ev.passed and missing_ev.last_seen is None
+    # item-level freshness is the newest evidence stamp
+    assert item.last_seen == max(_iso_mtime(artifact), _iso_mtime(db))
+
+
+def test_last_seen_none_without_file_evidence(tmp_path: Path) -> None:
+    result = build_roadmap((_write_roadmap(tmp_path),), _snapshots())
+    by_id = {i.id: i for i in result.items}
+    assert by_id["RD-A"].last_seen is None  # project_detected + chain rules
+    assert by_id["RD-B"].last_seen is None  # file_exists failed
+    assert by_id["RD-D"].last_seen is None  # no rules
+
+
 _DRIFT_ROADMAP = """
 items:
   - id: RD-TC
@@ -406,6 +474,9 @@ async def test_roadmap_endpoint(tmp_path: Path) -> None:
         "RD-E",
         "RD-F",
     }
+    # freshness is part of the payload for every item and rule (REQ-011)
+    assert all("last_seen" in i for i in data["items"])
+    assert all("last_seen" in e for i in data["items"] for e in i["evidence"])
     assert one.status_code == 200
     assert one.json()["computed_status"] == "verified"
     assert missing.status_code == 404

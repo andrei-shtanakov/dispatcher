@@ -99,16 +99,16 @@ existing contracts checker, not a new mechanism.
 **Depends on:** [TASK-001]
 
 ### TASK-103: Evidence freshness (`last_seen`)
-🟡 P2 | ⬜ TODO | Est: 0.5d
+🟡 P2 | ✅ DONE | Est: 0.5d
 
 **Description:**
 `RoadmapItemView` currently has no `last_seen`; the model in
 recommendation §7 requires it, and the Freshness view depends on it.
 
 **Checklist:**
-- [ ] Add `last_seen` to `EvidenceResult`/`RoadmapItemView` (mtime of matched file/DB/log artifact, None where not applicable)
-- [ ] Expose in `/api/roadmap` payload; add Freshness column to web + TUI
-- [ ] Tests: freshness populated for `file_exists`/`sqlite_has_row`, absent for `project_detected`
+- [x] Add `last_seen` to `EvidenceResult`/`RoadmapItemView` (mtime of matched file/DB/log artifact, None where not applicable)
+- [x] Expose in `/api/roadmap` payload; add Freshness column to web + TUI
+- [x] Tests: freshness populated for `file_exists`/`sqlite_has_row`, absent for `project_detected`
 
 **Traces to:** [REQ-011], [DESIGN-007]
 **Depends on:** [TASK-001]
@@ -173,6 +173,6 @@ TASK-001 (core ✅)
 |-----------|-------|------|----------------|
 | M1 Roadmap MVP | TASK-001..004 | 4/4 ✅ | — |
 | M2 Surface completion | TASK-101 | 1/1 ✅ | — |
-| M3 Post-MVP views | TASK-102..105 | 1/4 | ~1.5d |
+| M3 Post-MVP views | TASK-102..105 | 2/4 | ~1d |
 
 Recommended order: TASK-101 → TASK-102 → TASK-103 → TASK-105 → TASK-104.
