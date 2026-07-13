@@ -1,0 +1,111 @@
+{
+  "roadmaps": ["ecosystem-2026"],
+  "items": [
+    {
+      "id": "RD-001",
+      "title": "Contract sync checker",
+      "phase": "M1",
+      "owner_project": "dispatcher",
+      "target_contract": "agents-catalog",
+      "depends_on": [],
+      "expected_evidence": ["checker module exists"],
+      "computed_status": "verified",
+      "evidence": [
+        {
+          "rule": "file_exists",
+          "kind": "implementation",
+          "passed": true,
+          "detail": "dispatcher/core/contracts.py exists"
+        },
+        {
+          "rule": "sqlite_has_row",
+          "kind": "verification",
+          "passed": true,
+          "detail": "state.db: row found"
+        }
+      ],
+      "blockers": [],
+      "source": "ecosystem.yaml"
+    },
+    {
+      "id": "RD-002",
+      "title": "Roadmap TUI tab",
+      "phase": "M1",
+      "owner_project": "dispatcher",
+      "target_contract": null,
+      "depends_on": [],
+      "expected_evidence": [],
+      "computed_status": "implemented",
+      "evidence": [
+        {
+          "rule": "file_exists",
+          "kind": "implementation",
+          "passed": true,
+          "detail": "dispatcher/tui/app.py exists"
+        },
+        {
+          "rule": "work_item_chain",
+          "kind": "verification",
+          "passed": false,
+          "detail": "chain RD-002: 0 link(s), need 1"
+        }
+      ],
+      "blockers": [],
+      "source": "ecosystem.yaml"
+    },
+    {
+      "id": "RD-003",
+      "title": "VSCode roadmap view",
+      "phase": "M2",
+      "owner_project": "dispatcher",
+      "target_contract": null,
+      "depends_on": [],
+      "expected_evidence": [],
+      "computed_status": "planned",
+      "evidence": [
+        {
+          "rule": "file_exists",
+          "kind": "implementation",
+          "passed": false,
+          "detail": "vscode-ext/src/roadmap.ts missing"
+        }
+      ],
+      "blockers": [],
+      "source": "ecosystem.yaml"
+    },
+    {
+      "id": "RD-004",
+      "title": "Drift projection",
+      "phase": "M3",
+      "owner_project": "dispatcher",
+      "target_contract": "agents-catalog",
+      "depends_on": ["RD-003", "RD-999"],
+      "expected_evidence": [],
+      "computed_status": "blocked",
+      "evidence": [
+        {
+          "rule": "contract_in_sync",
+          "kind": "implementation",
+          "passed": false,
+          "detail": "contract agents-catalog not comparable"
+        }
+      ],
+      "blockers": ["RD-003", "RD-999"],
+      "source": "ecosystem.yaml"
+    },
+    {
+      "id": "RD-005",
+      "title": "Prose-only intent",
+      "phase": null,
+      "owner_project": null,
+      "target_contract": null,
+      "depends_on": [],
+      "expected_evidence": ["someone feels good about it"],
+      "computed_status": "unknown",
+      "evidence": [],
+      "blockers": [],
+      "source": "ideas.yaml"
+    }
+  ],
+  "warnings": []
+}

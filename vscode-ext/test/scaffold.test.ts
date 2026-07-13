@@ -6,11 +6,15 @@ describe("manifest", () => {
     readFileSync(new URL("../package.json", import.meta.url), "utf-8"),
   );
 
-  it("declares both views and all commands", () => {
+  it("declares all views and all commands", () => {
     const views = manifest.contributes.views.dispatcher.map(
       (v: { id: string }) => v.id,
     );
-    expect(views).toEqual(["dispatcherProjects", "dispatcherErrors"]);
+    expect(views).toEqual([
+      "dispatcherProjects",
+      "dispatcherErrors",
+      "dispatcherRoadmap",
+    ]);
     const commands = manifest.contributes.commands.map(
       (c: { command: string }) => c.command,
     );

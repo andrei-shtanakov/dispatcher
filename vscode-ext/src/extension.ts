@@ -4,7 +4,7 @@ import * as vscode from "vscode";
 import { ApiClient } from "./api";
 import { ServerManager } from "./server";
 import { createStatusBar } from "./status";
-import { ErrorsProvider, ProjectsProvider } from "./tree";
+import { ErrorsProvider, ProjectsProvider, RoadmapProvider } from "./tree";
 
 interface Config {
   url: string;
@@ -51,6 +51,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const projects = new ProjectsProvider(client);
   const errors = new ErrorsProvider();
+  const roadmap = new RoadmapProvider();
   const status = createStatusBar();
 
   let polling = false;
@@ -63,17 +64,20 @@ export function activate(context: vscode.ExtensionContext): void {
     try {
       try {
         const api = client();
-        const [overview, events] = await Promise.all([
+        const [overview, events, roadmapData] = await Promise.all([
           api.overview(),
           api.errors(),
+          api.roadmap(),
         ]);
         projects.setData(overview.projects);
         errors.setData(events);
+        roadmap.setData(roadmapData);
         status.update(overview);
         server.markOnline();
       } catch {
         projects.setData(null);
         errors.setData(null);
+        roadmap.setData(null);
         status.update(null);
         await server.ensureRunning();
       }
@@ -87,6 +91,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider("dispatcherProjects", projects),
     vscode.window.registerTreeDataProvider("dispatcherErrors", errors),
+    vscode.window.registerTreeDataProvider("dispatcherRoadmap", roadmap),
     status.item,
     vscode.commands.registerCommand("dispatcher.refresh", () => void poll()),
     vscode.commands.registerCommand("dispatcher.startServer", () => {
@@ -113,6 +118,7 @@ export function activate(context: vscode.ExtensionContext): void {
     { dispose: () => server.dispose() },
     { dispose: () => projects.dispose() },
     { dispose: () => errors.dispose() },
+    { dispose: () => roadmap.dispose() },
   );
 
   void poll();
