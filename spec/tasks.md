@@ -130,7 +130,7 @@ Optional endpoints from recommendation §6; pure re-aggregations of
 **Depends on:** [TASK-002]
 
 ### TASK-105: Handoff — steward gates / owner_role linkage
-🟡 P2 | ⬜ TODO | Est: 0.5d
+🟡 P2 | ✅ DONE | Est: 0.5d
 
 **Description:**
 Recommendation §14 P2 items live in neighbor repos (`steward`,
@@ -138,9 +138,9 @@ Recommendation §14 P2 items live in neighbor repos (`steward`,
 written handoff, not code.
 
 **Checklist:**
-- [ ] Write handoff note to `../prograph-vault/authored/notes/`: proposed `owner_role` field semantics, gates → verification-rule mapping, what dispatcher expects to consume
-- [ ] Add `owner_role` as an optional pass-through field on `RoadmapItem` (no evaluation logic) so vault YAML can start carrying it
-- [ ] Test: `owner_role` round-trips through the API
+- [x] Write handoff note to `../prograph-vault/authored/notes/`: proposed `owner_role` field semantics, gates → verification-rule mapping, what dispatcher expects to consume
+- [x] Add `owner_role` as an optional pass-through field on `RoadmapItem` (no evaluation logic) so vault YAML can start carrying it
+- [x] Test: `owner_role` round-trips through the API
 
 **Traces to:** [REQ-013], [DESIGN-001]
 **Depends on:** [TASK-001]

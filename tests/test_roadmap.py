@@ -32,6 +32,7 @@ items:
     title: Implemented and verified item
     phase: "1"
     owner_project: arbiter
+    owner_role: tech-lead
     evidence_rules:
       - rule: project_detected
         kind: implementation
@@ -120,6 +121,16 @@ def test_status_ladder(tmp_path: Path) -> None:
     assert blocked.blockers == ["RD-B"]
     unknown_rule = next(i for i in result.items if i.id == "RD-E")
     assert "unknown rule" in unknown_rule.evidence[0].detail
+
+
+def test_owner_role_passthrough(tmp_path: Path) -> None:
+    """`owner_role` is carried verbatim and never drives status (REQ-013)."""
+    result = build_roadmap((_write_roadmap(tmp_path),), _snapshots())
+    by_id = {i.id: i for i in result.items}
+    assert by_id["RD-A"].owner_role == "tech-lead"
+    # Absent in YAML → None, and it does not touch the computed status.
+    assert by_id["RD-B"].owner_role is None
+    assert by_id["RD-A"].computed_status == "verified"
 
 
 def test_missing_dir_warns(tmp_path: Path) -> None:
@@ -507,6 +518,10 @@ async def test_roadmap_endpoint(tmp_path: Path) -> None:
     assert all("last_seen" in e for i in data["items"] for e in i["evidence"])
     assert one.status_code == 200
     assert one.json()["computed_status"] == "verified"
+    # owner_role round-trips through the API untouched (REQ-013).
+    assert one.json()["owner_role"] == "tech-lead"
+    rd_b = next(i for i in data["items"] if i["id"] == "RD-B")
+    assert rd_b["owner_role"] is None
     assert missing.status_code == 404
     # drift route is not shadowed by /{item_id} and joins contract state
     assert drift.status_code == 200
