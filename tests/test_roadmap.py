@@ -441,6 +441,11 @@ items:
         project: arbiter
         path: nope.json
 
+  - id: RD-5
+    title: Also depends on the done root
+    phase: P1
+    depends_on: [RD-1]
+
   - id: RD-3
     title: Cycle a
     phase: P2
@@ -481,6 +486,32 @@ def test_build_phases_empty_roadmap(tmp_path: Path) -> None:
     assert any("no roadmap directory" in w for w in result.warnings)
 
 
+def test_build_phases_lists_multiple_blocked_ids_in_order(tmp_path: Path) -> None:
+    """A phase's `blocked` aggregates every blocked id in (phase, id) order."""
+    d = tmp_path / "roadmaps"
+    d.mkdir()
+    # Two planned items (failing impl rule) with an unfinished dep => blocked;
+    # written out of id order to prove the output follows build_roadmap's sort.
+    item = (
+        "  - id: {id}\n"
+        "    title: {id}\n"
+        "    phase: PB\n"
+        "    depends_on: [RD-MISSING]\n"
+        "    evidence_rules:\n"
+        "      - rule: file_exists\n"
+        "        kind: implementation\n"
+        "        project: arbiter\n"
+        "        path: nope.json\n"
+    )
+    (d / "blk.yaml").write_text(
+        "items:\n" + item.format(id="RD-Z") + item.format(id="RD-Y")
+    )
+    phase = build_phases(build_roadmap((d,), _snapshots())).phases[0]
+    assert phase.phase == "PB"
+    assert phase.counts == {"blocked": 2}
+    assert phase.blocked == ["RD-Y", "RD-Z"]  # sorted by id, not file order
+
+
 def test_build_phases_groups_none_phase(tmp_path: Path) -> None:
     d = tmp_path / "roadmaps"
     d.mkdir()
@@ -502,8 +533,9 @@ def test_build_blockers_reverse_view(tmp_path: Path) -> None:
         "RD-4",
         "RD-GHOST",
     ]
-    # a resolved (implemented) dependency is not holding anyone back
-    assert entries["RD-1"].blocks == ["RD-2"]
+    # a resolved (implemented) dependency is not holding anyone back;
+    # its `blocks` aggregates every dependent in (phase, id) order
+    assert entries["RD-1"].blocks == ["RD-2", "RD-5"]
     assert entries["RD-1"].computed_status == "implemented"
     assert entries["RD-1"].unresolved is False
     # an id referenced but never defined: unknown, and a real blocker
@@ -535,19 +567,29 @@ async def test_aggregation_endpoints(tmp_path: Path) -> None:
     vault = tmp_path / "prograph-vault" / "authored" / "roadmaps"
     vault.mkdir(parents=True)
     (vault / "graph.yaml").write_text(_GRAPH_ROADMAP)
+    # Items whose ids literally collide with the aggregation routes: the
+    # routes must win over /api/roadmap/{item_id}, never resolve to these.
+    collide = (
+        "  - id: {id}\n    title: collide {id}\n    phase: P1\n    evidence_rules: []\n"
+    )
+    (vault / "collide.yaml").write_text(
+        "items:\n" + collide.format(id="phases") + collide.format(id="blockers")
+    )
     config = DispatcherConfig(roots=(tmp_path,))
     app = create_app(config)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         phases = await c.get("/api/roadmap/phases")
         blockers = await c.get("/api/roadmap/blockers")
-        # aggregation routes must not be shadowed by /{item_id}
-        as_item = await c.get("/api/roadmap/phases")
+        item = await c.get("/api/roadmap/RD-1")
+    # aggregation shape wins, not the RoadmapItemView of the id "phases"
     assert phases.status_code == 200
+    assert "phases" in phases.json() and "computed_status" not in phases.json()
     assert {p["phase"] for p in phases.json()["phases"]} == {"P1", "P2"}
     assert blockers.status_code == 200
+    assert "items" in blockers.json() and "computed_status" not in blockers.json()
     ids = {e["id"] for e in blockers.json()["items"]}
     assert ids == {"RD-1", "RD-3", "RD-4", "RD-GHOST"}
-    # "phases" resolves to the aggregation, never a 404 item lookup
-    assert as_item.status_code == 200
-    assert "phases" in as_item.json()
+    # the catch-all /{item_id} still resolves a genuine roadmap item id
+    assert item.status_code == 200
+    assert item.json()["id"] == "RD-1"
