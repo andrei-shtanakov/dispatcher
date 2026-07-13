@@ -19,8 +19,10 @@ from dispatcher.core.models import (
     ProjectSnapshot,
 )
 from dispatcher.core.roadmap import (
+    DriftResponse,
     RoadmapItemView,
     RoadmapResponse,
+    build_drift,
     build_roadmap,
     default_roadmap_dirs,
 )
@@ -118,6 +120,17 @@ def create_app(config: DispatcherConfig) -> FastAPI:
     def roadmap() -> RoadmapResponse:
         snapshots, _ = cache.get()
         return build_roadmap(roadmap_dirs, snapshots)
+
+    # Registered before /{item_id} so "drift" is not matched as an item id.
+    @app.get("/api/roadmap/drift", response_model=DriftResponse)
+    def roadmap_drift() -> DriftResponse:
+        snapshots, _ = cache.get()
+        projects = {s.name: Path(s.path) for s in snapshots if s.detected and s.path}
+        # One checker run feeds both the status projection and the join,
+        # so computed_status and contract_in_sync cannot disagree (ADR-R5).
+        contracts = check_contracts(projects)
+        roadmap = build_roadmap(roadmap_dirs, snapshots, contracts)
+        return build_drift(roadmap, contracts)
 
     @app.get("/api/roadmap/{item_id}", response_model=RoadmapItemView)
     def roadmap_item(item_id: str) -> RoadmapItemView:

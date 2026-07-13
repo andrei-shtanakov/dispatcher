@@ -21,7 +21,12 @@ from textual.widgets import (
 from dispatcher.core.contracts import check_contracts
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.models import ContractStatus, ErrorEvent, ProjectSnapshot
-from dispatcher.core.roadmap import RoadmapResponse, build_roadmap, default_roadmap_dirs
+from dispatcher.core.roadmap import (
+    RoadmapResponse,
+    build_roadmap,
+    contract_sync_by_name,
+    default_roadmap_dirs,
+)
 from dispatcher.core.service import (
     ERRORS_DAYS_DEFAULT,
     SnapshotService,
@@ -36,6 +41,20 @@ ERRORS_LIMIT = 50  # same errors-feed cap as the web UI
 def truncate(body: str, limit: int = MSG_LIMIT) -> str:
     """Web-parity message truncation: cap at `limit` chars plus ellipsis."""
     return body if len(body) <= limit else body[:limit] + "…"
+
+
+def _contract_cell(
+    name: str | None, sync_by_name: dict[str, bool | None]
+) -> Text | str:
+    """Contract Drift column: target contract joined with its sync state."""
+    if name is None:
+        return "—"
+    state = sync_by_name.get(name)
+    if state is True:
+        return Text(f"{name} ✓ in sync", style="green")
+    if state is False:
+        return Text(f"{name} ✗ drift", style="bold red")
+    return f"{name} n/a"
 
 
 class DispatcherApp(App[None]):
@@ -104,7 +123,7 @@ class DispatcherApp(App[None]):
             "name", "canon", "vendored", "sync"
         )
         self.query_one("#roadmap-table", DataTable).add_columns(
-            "phase", "item", "owner", "status", "blockers", "evidence"
+            "phase", "item", "owner", "status", "contract", "blockers", "evidence"
         )
         self.set_interval(10.0, self.action_refresh)
         self.action_refresh()
@@ -121,7 +140,9 @@ class DispatcherApp(App[None]):
                 s.name: Path(s.path) for s in snapshots if s.detected and s.path
             }
             contracts = check_contracts(projects)
-            roadmap = build_roadmap(self._roadmap_dirs, snapshots)
+            # Same checker run feeds the roadmap's drift projection, so
+            # the Status and Contract columns agree within one refresh.
+            roadmap = build_roadmap(self._roadmap_dirs, snapshots, contracts)
         except Exception as err:  # noqa: BLE001 — keep last data on screen
             self.call_from_thread(
                 self.notify, f"refresh failed: {err}", severity="error"
@@ -266,16 +287,23 @@ class DispatcherApp(App[None]):
         table.clear()
         if self._roadmap is None:
             return
+        sync_by_name = contract_sync_by_name(self._contracts)
         for item in self._roadmap.items:
             passed = sum(1 for e in item.evidence if e.passed)
             total = len(item.evidence)
             evidence_cell = f"{passed}/{total} rules" if total else "no rules"
             blockers_cell = ", ".join(item.blockers) if item.blockers else "—"
+            status_cell: Text | str = (
+                Text("drift", style="bold red")
+                if item.computed_status == "drift"
+                else item.computed_status
+            )
             table.add_row(
                 item.phase or "—",
                 f"{item.id} {item.title}",
                 item.owner_project or "—",
-                item.computed_status,
+                status_cell,
+                _contract_cell(item.target_contract, sync_by_name),
                 blockers_cell,
                 evidence_cell,
                 key=item.id,

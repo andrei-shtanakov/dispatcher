@@ -82,18 +82,18 @@ The last MVP surface from recommendation §6 not yet implemented
 ## M3 — Post-MVP views & governance linkage
 
 ### TASK-102: Drift projection over existing `/api/contracts`
-🟡 P2 | ⬜ TODO | Est: 1d
+🟡 P2 | ✅ DONE | Est: 1d
 
 **Description:**
 Second-step item from recommendation §8: `drift` as a projection of the
 existing contracts checker, not a new mechanism.
 
 **Checklist:**
-- [ ] `GET /api/roadmap/drift` — join roadmap items (`target_contract`) with `/api/contracts` sync state
-- [ ] Surface `drift` in `computed_status` only when contracts checker reports canon/vendored mismatch for the item's `target_contract`
-- [ ] Web + TUI: Contract Drift view/column
-- [ ] Tests: in-sync, drifted, contract unknown → status stays `unknown`/unchanged
-- [ ] Regression: existing 4+1 statuses unaffected when no `target_contract`
+- [x] `GET /api/roadmap/drift` — join roadmap items (`target_contract`) with `/api/contracts` sync state
+- [x] Surface `drift` in `computed_status` only when contracts checker reports canon/vendored mismatch for the item's `target_contract`
+- [x] Web + TUI: Contract Drift view/column
+- [x] Tests: in-sync, drifted, contract unknown → status stays `unknown`/unchanged
+- [x] Regression: existing 4+1 statuses unaffected when no `target_contract`
 
 **Traces to:** [REQ-010], [DESIGN-007]
 **Depends on:** [TASK-001]
@@ -173,6 +173,6 @@ TASK-001 (core ✅)
 |-----------|-------|------|----------------|
 | M1 Roadmap MVP | TASK-001..004 | 4/4 ✅ | — |
 | M2 Surface completion | TASK-101 | 1/1 ✅ | — |
-| M3 Post-MVP views | TASK-102..105 | 0/4 | ~2.5d |
+| M3 Post-MVP views | TASK-102..105 | 1/4 | ~1.5d |
 
 Recommended order: TASK-101 → TASK-102 → TASK-103 → TASK-105 → TASK-104.

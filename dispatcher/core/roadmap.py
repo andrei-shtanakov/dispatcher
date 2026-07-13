@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from dispatcher.core.collectors.base import SourceReadError, read_rows
 from dispatcher.core.contracts import check_contracts
 from dispatcher.core.correlation import build_work_items
-from dispatcher.core.models import ProjectSnapshot
+from dispatcher.core.models import ContractStatus, ProjectSnapshot
 
 _DONE = ("implemented", "verified")
 _RULE_KINDS = ("implementation", "verification")
@@ -58,17 +58,44 @@ class RoadmapResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class DriftEntry(BaseModel):
+    """One roadmap item joined with its target contract's sync state."""
+
+    id: str
+    title: str
+    target_contract: str
+    computed_status: str
+    contract_in_sync: bool | None = None  # None: unknown / not comparable
+    contract_detail: str | None = None
+
+
+class DriftResponse(BaseModel):
+    """Response of GET /api/roadmap/drift."""
+
+    items: list[DriftEntry]
+    warnings: list[str] = Field(default_factory=list)
+
+
 def default_roadmap_dirs(roots: tuple[Path, ...]) -> tuple[Path, ...]:
     """Canonical roadmap location relative to each configured root."""
     return tuple(root / "prograph-vault" / "authored" / "roadmaps" for root in roots)
 
 
 def build_roadmap(
-    dirs: tuple[Path, ...], snapshots: list[ProjectSnapshot]
+    dirs: tuple[Path, ...],
+    snapshots: list[ProjectSnapshot],
+    contracts: list[ContractStatus] | None = None,
 ) -> RoadmapResponse:
-    """Load roadmap YAML files and compute per-item status from evidence."""
+    """Load roadmap YAML files and compute per-item status from evidence.
+
+    Pass `contracts` when the caller already ran `check_contracts` so
+    the drift projection reuses those verdicts — one checker run per
+    refresh (ADR-R5). Without it the context runs the checker lazily.
+    """
     raw_items, roadmaps, warnings = _load_yaml_items(dirs)
-    ctx = _EvidenceContext(snapshots, vault_roots=_vault_roots(dirs))
+    ctx = _EvidenceContext(
+        snapshots, vault_roots=_vault_roots(dirs), contracts=contracts
+    )
     views: dict[str, RoadmapItemView] = {}
     for raw, source in raw_items:
         view = _evaluate_item(raw, source, ctx)
@@ -77,8 +104,64 @@ def build_roadmap(
             continue
         views[view.id] = view
     _apply_blocked(views)
+    _apply_drift(views, ctx)
     items = sorted(views.values(), key=lambda v: (v.phase or "", v.id))
     return RoadmapResponse(roadmaps=roadmaps, items=items, warnings=warnings)
+
+
+def contract_sync_by_name(
+    contracts: list[ContractStatus],
+) -> dict[str, bool | None]:
+    """Fold per-copy checker rows into one verdict per contract name.
+
+    `check_contracts` emits one row per vendored copy: any out-of-sync
+    copy drifts the whole contract; any not-comparable copy blocks an
+    in-sync verdict.
+    """
+    folded: dict[str, bool | None] = {}
+    for c in contracts:
+        if c.name not in folded:
+            folded[c.name] = c.in_sync
+        elif c.in_sync is False or folded[c.name] is False:
+            folded[c.name] = False
+        elif c.in_sync is None or folded[c.name] is None:
+            folded[c.name] = None
+    return folded
+
+
+def build_drift(
+    roadmap: RoadmapResponse, contracts: list[ContractStatus]
+) -> DriftResponse:
+    """Join items carrying a `target_contract` with contracts sync state.
+
+    Pure re-aggregation of already-computed data — no second checker
+    (ADR-R5). Items without `target_contract` are not part of the view.
+    """
+    sync_by_name = contract_sync_by_name(contracts)
+    details: dict[str, list[str]] = {}
+    for c in contracts:
+        if c.detail:
+            details.setdefault(c.name, []).append(c.detail)
+    entries: list[DriftEntry] = []
+    for item in roadmap.items:
+        if item.target_contract is None:
+            continue
+        name = item.target_contract
+        entries.append(
+            DriftEntry(
+                id=item.id,
+                title=item.title,
+                target_contract=name,
+                computed_status=item.computed_status,
+                contract_in_sync=sync_by_name.get(name),
+                contract_detail=(
+                    "; ".join(dict.fromkeys(details.get(name, []))) or None
+                    if name in sync_by_name
+                    else "contract not checked"
+                ),
+            )
+        )
+    return DriftResponse(items=entries, warnings=roadmap.warnings)
 
 
 _SELF_ROOT = Path(__file__).resolve().parents[2]
@@ -106,11 +189,14 @@ class _EvidenceContext:
         self,
         snapshots: list[ProjectSnapshot],
         vault_roots: tuple[Path, ...] = (),
+        contracts: list[ContractStatus] | None = None,
     ) -> None:
         self.snapshots = {s.name: s for s in snapshots}
         self._vault_roots = vault_roots
         self._chains: dict[str, int] | None = None
-        self._contracts: dict[str, bool | None] | None = None
+        self._contracts: dict[str, bool | None] | None = (
+            None if contracts is None else contract_sync_by_name(contracts)
+        )
 
     def chain_links(self, work_item_id: str) -> int:
         if self._chains is None:
@@ -125,7 +211,7 @@ class _EvidenceContext:
                 for s in self.snapshots.values()
                 if s.detected and s.path
             }
-            self._contracts = {c.name: c.in_sync for c in check_contracts(projects)}
+            self._contracts = contract_sync_by_name(check_contracts(projects))
         return self._contracts.get(name)
 
     def project_path(self, name: str) -> Path | None:
@@ -192,8 +278,8 @@ def _evaluate_item(raw: dict, source: str, ctx: _EvidenceContext) -> RoadmapItem
 def _status_from_evidence(evidence: list[EvidenceResult]) -> str:
     """MVP status ladder: unknown / planned / implemented / verified.
 
-    `blocked` is applied afterwards from dependencies; `drift` arrives
-    post-MVP as a projection of the contracts checker.
+    `blocked` is applied afterwards from dependencies; `drift` is
+    projected afterwards from the contracts checker (REQ-010).
     """
     if not evidence:
         return "unknown"
@@ -223,6 +309,21 @@ def _apply_blocked(views: dict[str, RoadmapItemView]) -> None:
         if blockers:
             view.computed_status = "blocked"
             view.blockers = blockers
+
+
+def _apply_drift(views: dict[str, RoadmapItemView], ctx: _EvidenceContext) -> None:
+    """Project contracts-checker verdicts onto items with a target_contract.
+
+    Only an explicit out-of-sync verdict rewrites the status to `drift`;
+    in-sync, unknown contract, or not-comparable leaves the status
+    unchanged — stays honest (REQ-010). Items without `target_contract`
+    keep the MVP 4+1 statuses untouched.
+    """
+    for view in views.values():
+        if view.target_contract is None:
+            continue
+        if ctx.contract_in_sync(view.target_contract) is False:
+            view.computed_status = "drift"
 
 
 def _run_rule(rule: dict, ctx: _EvidenceContext) -> EvidenceResult:
