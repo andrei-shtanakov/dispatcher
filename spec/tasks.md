@@ -173,6 +173,6 @@ TASK-001 (core ✅)
 |-----------|-------|------|----------------|
 | M1 Roadmap MVP | TASK-001..004 | 4/4 ✅ | — |
 | M2 Surface completion | TASK-101 | 1/1 ✅ | — |
-| M3 Post-MVP views | TASK-102..105 | 2/4 | ~1d |
+| M3 Post-MVP views | TASK-102..105 | 4/4 ✅ | — |
 
-Recommended order: TASK-101 → TASK-102 → TASK-103 → TASK-105 → TASK-104.
+All roadmap M2/M3 tasks complete.
