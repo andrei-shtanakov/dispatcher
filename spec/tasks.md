@@ -114,17 +114,17 @@ recommendation §7 requires it, and the Freshness view depends on it.
 **Depends on:** [TASK-001]
 
 ### TASK-104: Aggregation endpoints — phases and blockers
-🟢 P3 | ⬜ TODO | Est: 0.5d
+🟢 P3 | ✅ DONE | Est: 0.5d
 
 **Description:**
 Optional endpoints from recommendation §6; pure re-aggregations of
 `build_roadmap` output.
 
 **Checklist:**
-- [ ] `GET /api/roadmap/phases` — per-phase counts by status, blocked lists
-- [ ] `GET /api/roadmap/blockers` — reverse dependency view (what blocks what)
-- [ ] Tests for both aggregations incl. empty roadmap and cyclic `depends_on`
-- [ ] Register routes so they don't clash with `/api/roadmap/{item_id}`
+- [x] `GET /api/roadmap/phases` — per-phase counts by status, blocked lists
+- [x] `GET /api/roadmap/blockers` — reverse dependency view (what blocks what)
+- [x] Tests for both aggregations incl. empty roadmap and cyclic `depends_on`
+- [x] Register routes so they don't clash with `/api/roadmap/{item_id}`
 
 **Traces to:** [REQ-012], [DESIGN-003]
 **Depends on:** [TASK-002]
