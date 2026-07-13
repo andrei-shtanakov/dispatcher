@@ -19,10 +19,14 @@ from dispatcher.core.models import (
     ProjectSnapshot,
 )
 from dispatcher.core.roadmap import (
+    BlockersResponse,
     DriftResponse,
+    PhasesResponse,
     RoadmapItemView,
     RoadmapResponse,
+    build_blockers,
     build_drift,
+    build_phases,
     build_roadmap,
     default_roadmap_dirs,
 )
@@ -131,6 +135,18 @@ def create_app(config: DispatcherConfig) -> FastAPI:
         contracts = check_contracts(projects)
         roadmap = build_roadmap(roadmap_dirs, snapshots, contracts)
         return build_drift(roadmap, contracts)
+
+    # Registered before /{item_id} so "phases" is not matched as an item id.
+    @app.get("/api/roadmap/phases", response_model=PhasesResponse)
+    def roadmap_phases() -> PhasesResponse:
+        snapshots, _ = cache.get()
+        return build_phases(build_roadmap(roadmap_dirs, snapshots))
+
+    # Registered before /{item_id} so "blockers" is not matched as an item id.
+    @app.get("/api/roadmap/blockers", response_model=BlockersResponse)
+    def roadmap_blockers() -> BlockersResponse:
+        snapshots, _ = cache.get()
+        return build_blockers(build_roadmap(roadmap_dirs, snapshots))
 
     @app.get("/api/roadmap/{item_id}", response_model=RoadmapItemView)
     def roadmap_item(item_id: str) -> RoadmapItemView:

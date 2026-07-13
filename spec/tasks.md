@@ -114,7 +114,7 @@ recommendation §7 requires it, and the Freshness view depends on it.
 **Depends on:** [TASK-001]
 
 ### TASK-104: Aggregation endpoints — phases and blockers
-🟢 P3 | ⬜ TODO | Est: 0.5d
+🟢 P3 | ✅ DONE | Est: 0.5d
 
 **Description:**
 Optional endpoints from recommendation §6; pure re-aggregations of

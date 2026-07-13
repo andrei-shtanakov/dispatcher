@@ -11,7 +11,9 @@ from dispatcher.core.contracts import check_contracts
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.models import ContractStatus, ProjectSnapshot, TaskInfo
 from dispatcher.core.roadmap import (
+    build_blockers,
     build_drift,
+    build_phases,
     build_roadmap,
     contract_sync_by_name,
     default_roadmap_dirs,
@@ -414,3 +416,138 @@ async def test_roadmap_endpoint(tmp_path: Path) -> None:
     assert entries[0]["target_contract"] == "agents-catalog"
     assert entries[0]["contract_in_sync"] is False  # fixture copies differ
     assert entries[0]["computed_status"] == "drift"
+
+
+# --- TASK-104: phase / blocker aggregations ---------------------------------
+
+_GRAPH_ROADMAP = """
+items:
+  - id: RD-1
+    title: Done root
+    phase: P1
+    owner_project: arbiter
+    evidence_rules:
+      - rule: project_detected
+        kind: implementation
+        project: arbiter
+
+  - id: RD-2
+    title: Depends on done root and a ghost id
+    phase: P1
+    depends_on: [RD-1, RD-GHOST]
+    evidence_rules:
+      - rule: file_exists
+        kind: implementation
+        project: arbiter
+        path: nope.json
+
+  - id: RD-3
+    title: Cycle a
+    phase: P2
+    depends_on: [RD-4]
+
+  - id: RD-4
+    title: Cycle b
+    phase: P2
+    depends_on: [RD-3]
+"""
+
+
+def _write_graph_roadmap(tmp_path: Path) -> Path:
+    d = tmp_path / "roadmaps"
+    d.mkdir()
+    (d / "graph.yaml").write_text(_GRAPH_ROADMAP)
+    return d
+
+
+def test_build_phases_counts_and_blocked(tmp_path: Path) -> None:
+    roadmap = build_roadmap((_write_roadmap(tmp_path),), _snapshots())
+    phases = {p.phase: p for p in build_phases(roadmap).phases}
+    # phases follow the (phase, id) ordering of build_roadmap
+    assert [p.phase for p in build_phases(roadmap).phases] == ["1", "2", "3", "4", "9"]
+    assert phases["1"].counts == {"verified": 1}
+    assert phases["3"].counts == {"blocked": 1}
+    assert phases["3"].blocked == ["RD-C"]  # only blocked ids listed
+    assert phases["1"].blocked == []
+    # phase "9" holds two items of different status
+    assert phases["9"].total == 2
+    assert phases["9"].counts == {"unknown": 1, "planned": 1}
+
+
+def test_build_phases_empty_roadmap(tmp_path: Path) -> None:
+    roadmap = build_roadmap((tmp_path / "absent",), _snapshots())
+    result = build_phases(roadmap)
+    assert result.phases == []
+    assert any("no roadmap directory" in w for w in result.warnings)
+
+
+def test_build_phases_groups_none_phase(tmp_path: Path) -> None:
+    d = tmp_path / "roadmaps"
+    d.mkdir()
+    (d / "np.yaml").write_text(
+        "items:\n  - id: RD-NOP\n    title: no phase\n    evidence_rules: []\n"
+    )
+    result = build_phases(build_roadmap((d,), []))
+    assert result.phases[0].phase is None
+    assert result.phases[0].counts == {"unknown": 1}
+
+
+def test_build_blockers_reverse_view(tmp_path: Path) -> None:
+    roadmap = build_roadmap((_write_graph_roadmap(tmp_path),), _snapshots())
+    entries = {e.id: e for e in build_blockers(roadmap).items}
+    # every depended-on id becomes an entry, sorted by id
+    assert [e.id for e in build_blockers(roadmap).items] == [
+        "RD-1",
+        "RD-3",
+        "RD-4",
+        "RD-GHOST",
+    ]
+    # a resolved (implemented) dependency is not holding anyone back
+    assert entries["RD-1"].blocks == ["RD-2"]
+    assert entries["RD-1"].computed_status == "implemented"
+    assert entries["RD-1"].unresolved is False
+    # an id referenced but never defined: unknown, and a real blocker
+    ghost = entries["RD-GHOST"]
+    assert ghost.blocks == ["RD-2"]
+    assert ghost.title is None
+    assert ghost.computed_status is None
+    assert ghost.unresolved is True
+
+
+def test_build_blockers_handles_cyclic_depends_on(tmp_path: Path) -> None:
+    """A dependency cycle inverts into mutual entries, never recursion."""
+    roadmap = build_roadmap((_write_graph_roadmap(tmp_path),), _snapshots())
+    entries = {e.id: e for e in build_blockers(roadmap).items}
+    assert entries["RD-3"].blocks == ["RD-4"]
+    assert entries["RD-4"].blocks == ["RD-3"]
+    assert entries["RD-3"].unresolved is True
+    assert entries["RD-4"].unresolved is True
+
+
+def test_build_blockers_empty_roadmap(tmp_path: Path) -> None:
+    result = build_blockers(build_roadmap((tmp_path / "absent",), _snapshots()))
+    assert result.items == []
+    assert any("no roadmap directory" in w for w in result.warnings)
+
+
+async def test_aggregation_endpoints(tmp_path: Path) -> None:
+    make_arbiter(tmp_path)
+    vault = tmp_path / "prograph-vault" / "authored" / "roadmaps"
+    vault.mkdir(parents=True)
+    (vault / "graph.yaml").write_text(_GRAPH_ROADMAP)
+    config = DispatcherConfig(roots=(tmp_path,))
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        phases = await c.get("/api/roadmap/phases")
+        blockers = await c.get("/api/roadmap/blockers")
+        # aggregation routes must not be shadowed by /{item_id}
+        as_item = await c.get("/api/roadmap/phases")
+    assert phases.status_code == 200
+    assert {p["phase"] for p in phases.json()["phases"]} == {"P1", "P2"}
+    assert blockers.status_code == 200
+    ids = {e["id"] for e in blockers.json()["items"]}
+    assert ids == {"RD-1", "RD-3", "RD-4", "RD-GHOST"}
+    # "phases" resolves to the aggregation, never a 404 item lookup
+    assert as_item.status_code == 200
+    assert "phases" in as_item.json()

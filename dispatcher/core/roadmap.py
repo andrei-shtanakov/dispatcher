@@ -76,6 +76,39 @@ class DriftResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class PhaseSummary(BaseModel):
+    """Per-phase rollup of item statuses."""
+
+    phase: str | None = None
+    total: int
+    counts: dict[str, int] = Field(default_factory=dict)  # status -> count
+    blocked: list[str] = Field(default_factory=list)  # ids of blocked items
+
+
+class PhasesResponse(BaseModel):
+    """Response of GET /api/roadmap/phases."""
+
+    phases: list[PhaseSummary]
+    warnings: list[str] = Field(default_factory=list)
+
+
+class BlockerEntry(BaseModel):
+    """One depended-on id and the items that declare it in `depends_on`."""
+
+    id: str
+    title: str | None = None  # None: id referenced but not a roadmap item
+    computed_status: str | None = None  # None: id is not a roadmap item
+    blocks: list[str] = Field(default_factory=list)  # dependent item ids
+    unresolved: bool = False  # dep missing or not implemented+ (a real block)
+
+
+class BlockersResponse(BaseModel):
+    """Response of GET /api/roadmap/blockers (reverse dependency view)."""
+
+    items: list[BlockerEntry]
+    warnings: list[str] = Field(default_factory=list)
+
+
 def default_roadmap_dirs(roots: tuple[Path, ...]) -> tuple[Path, ...]:
     """Canonical roadmap location relative to each configured root."""
     return tuple(root / "prograph-vault" / "authored" / "roadmaps" for root in roots)
@@ -162,6 +195,64 @@ def build_drift(
             )
         )
     return DriftResponse(items=entries, warnings=roadmap.warnings)
+
+
+def build_phases(roadmap: RoadmapResponse) -> PhasesResponse:
+    """Group items by phase, count statuses, and list blocked ids.
+
+    Pure re-aggregation of `build_roadmap` output. `roadmap.items` is
+    already sorted by (phase, id), so both the phase order and the ids
+    within each `blocked` list follow that ordering. Items with no
+    `phase` are grouped under a `None` phase.
+    """
+    groups: dict[str | None, list[RoadmapItemView]] = {}
+    for item in roadmap.items:
+        groups.setdefault(item.phase, []).append(item)
+    summaries: list[PhaseSummary] = []
+    for phase, items in groups.items():
+        counts: dict[str, int] = {}
+        for item in items:
+            counts[item.computed_status] = counts.get(item.computed_status, 0) + 1
+        summaries.append(
+            PhaseSummary(
+                phase=phase,
+                total=len(items),
+                counts=counts,
+                blocked=[i.id for i in items if i.computed_status == "blocked"],
+            )
+        )
+    return PhasesResponse(phases=summaries, warnings=roadmap.warnings)
+
+
+def build_blockers(roadmap: RoadmapResponse) -> BlockersResponse:
+    """Invert `depends_on` into a reverse view: what blocks what.
+
+    Pure re-aggregation of `build_roadmap` output. Each entry keys on a
+    depended-on id and lists the items that declare it. `unresolved`
+    mirrors `_apply_blocked`: the id is either unknown or not yet
+    implemented+, so it is actually holding its dependents back. The
+    inversion is a single edge flip — cyclic `depends_on` yields mutual
+    entries, never recursion.
+    """
+    views = {i.id: i for i in roadmap.items}
+    blocks: dict[str, list[str]] = {}
+    for item in roadmap.items:
+        for dep in item.depends_on:
+            blocks.setdefault(dep, []).append(item.id)
+    entries: list[BlockerEntry] = []
+    for dep, dependents in sorted(blocks.items()):
+        dep_view = views.get(dep)
+        unresolved = dep_view is None or dep_view.computed_status not in _DONE
+        entries.append(
+            BlockerEntry(
+                id=dep,
+                title=dep_view.title if dep_view else None,
+                computed_status=dep_view.computed_status if dep_view else None,
+                blocks=dependents,
+                unresolved=unresolved,
+            )
+        )
+    return BlockersResponse(items=entries, warnings=roadmap.warnings)
 
 
 _SELF_ROOT = Path(__file__).resolve().parents[2]
