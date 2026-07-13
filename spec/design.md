@@ -4,7 +4,7 @@
 > the shipped code (`dispatcher/core/roadmap.py`, PR #6/#7) plus the
 > planned M2/M3 extensions. Earlier stage designs:
 > `docs/superpowers/specs/2026-07-03-dispatcher-design.md` (Stage 1),
-> `2026-07-05-dispatcher-tui-design.md` (Stage 2 TUI).
+> `docs/superpowers/specs/2026-07-05-dispatcher-tui-design.md` (Stage 2 TUI).
 
 ## 1. Architectural Principles
 
@@ -24,7 +24,7 @@
 prograph-vault/authored/roadmaps/*.yaml        (human-authored intent)
         │
         ▼
-┌─────────────────────────── dispatcher ────────────────────────────┐
+┌─────────────────────────── dispatcher ─────────────────────────────┐
 │ core/roadmap.py                                                    │
 │  _load_yaml_items ──► _evaluate_item ──► _apply_blocked            │
 │        │                    │                                      │
@@ -37,9 +37,9 @@ prograph-vault/authored/roadmaps/*.yaml        (human-authored intent)
 │        ▼                                                           │
 │  RoadmapResponse {roadmaps, items[RoadmapItemView], warnings}      │
 │        │                                                           │
-│  server/app.py: GET /api/roadmap, /api/roadmap/{item_id}           │
-│        ├──► web static/index.html (Roadmap section)                │
-│        ├──► tui/app.py (Roadmap tab)                               │
+│  dispatcher/server/app.py: /api/roadmap, /api/roadmap/{item_id}    │
+│        ├──► dispatcher/server/static/index.html (Roadmap section)  │
+│        ├──► dispatcher/tui/app.py (Roadmap tab)                    │
 │        └──► vscode-ext (Roadmap view — M2, planned)                │
 └────────────────────────────────────────────────────────────────────┘
    evidence sources: project snapshots (discovery), SQLite DBs,
@@ -163,7 +163,7 @@ path matching) or use distinct prefixes.
 
 **Traces to:** [REQ-006], [REQ-010], [REQ-012]
 
-### DESIGN-004: Web dashboard Roadmap section (`server/static/index.html`) ✅
+### DESIGN-004: Web dashboard Roadmap section (`dispatcher/server/static/index.html`) ✅
 
 Minimal first screen: `Phase | Item | Owner | Status | Blockers | Evidence`,
 rendered from `/api/roadmap`; evidence detail per rule (passed/detail).

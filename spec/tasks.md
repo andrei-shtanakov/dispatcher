@@ -38,7 +38,7 @@ path-safe joins.
 🟠 P1 | ✅ DONE
 
 **Description:**
-Roadmap section in `server/static/index.html`:
+Roadmap section in `dispatcher/server/static/index.html`:
 `Phase | Item | Owner | Status | Blockers | Evidence`.
 
 **Traces to:** [REQ-007], [DESIGN-004]
