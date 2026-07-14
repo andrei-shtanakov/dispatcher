@@ -45,7 +45,7 @@ def _run(argv: list[str], *, timeout: int, cwd: Path | None = None) -> str:
 
 # hostnames: letters/digits/dot/hyphen/underscore — anything else could
 # escape snapshots_dir when used as a filename component
-_SAFE_HOST_RE = re.compile(r"[A-Za-z0-9._-]+")
+_SAFE_HOST_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")  # без ведущего дефиса
 
 
 def take_snapshot(
@@ -93,7 +93,7 @@ def commit_and_push(vault_repo: Path, target: Path, *, push: bool = True) -> str
         raise PublishError(
             f"snapshot {target} is outside the KB repo {vault_repo}"
         ) from err
-    _run(["git", "-C", str(vault_repo), "add", str(rel)], timeout=_GIT_TIMEOUT)
+    _run(["git", "-C", str(vault_repo), "add", "--", str(rel)], timeout=_GIT_TIMEOUT)
     status = _run(
         ["git", "-C", str(vault_repo), "status", "--porcelain", "--", str(rel)],
         timeout=_GIT_TIMEOUT,
