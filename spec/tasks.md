@@ -195,7 +195,7 @@ repos. `gh_error` degrades only PR fields; `local.error`, stale (> 1 h) and
 **Depends on:** [TASK-201]
 
 ### TASK-203: Background fetch run (verdict freshness)
-🔴 P0 | ⬜ TODO | Est: 1d
+🔴 P0 | ✅ DONE | Est: 1d
 
 **Description:**
 Async fetch-enabled snapshot run refreshing ahead/behind vs origin without
@@ -204,9 +204,9 @@ verdict lands ≤ 30 s (NFR-03), an in-flight flag drives the UI corner
 spinner.
 
 **Checklist:**
-- [ ] Non-blocking background run + in-flight status exposed to API
-- [ ] Verdict timestamp/age on every response
-- [ ] Test: render path never awaits the network run
+- [x] Non-blocking background run + in-flight status в read-модели (`core/sync_service.py`: SyncService/SyncStatus; HTTP-обвязка — TASK-207)
+- [x] Verdict timestamp/age on every response (`report_generated_at`, `last_fetch_at`, `last_fetch_error`)
+- [x] Test: render path never awaits the network run (`tests/test_sync_service.py`, 6; live: get() 0.00 s при fetch в фоне)
 
 **Traces to:** [DESIGN-202], brief NFR-02/NFR-03
 **Depends on:** [TASK-202]
