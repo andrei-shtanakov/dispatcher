@@ -219,7 +219,15 @@ items:
     assert by_name["ghost"]["lagging"] is True
 
 
-async def test_sync_endpoint_shape(tmp_path: Path) -> None:
+async def test_sync_endpoint_shape(tmp_path: Path, monkeypatch) -> None:
+    # детерминизм: live-путь выключен явно, а не через отсутствие
+    # github-checker в PATH конкретной машины
+    from dispatcher.core.sync import SyncSourceError
+
+    def no_live(*args, **kwargs):
+        raise SyncSourceError("disabled in test")
+
+    monkeypatch.setattr("dispatcher.core.sync.run_live_snapshot", no_live)
     async with _client(tmp_path) as client:
         resp = await client.get("/api/sync")
     assert resp.status_code == 200
@@ -229,7 +237,7 @@ async def test_sync_endpoint_shape(tmp_path: Path) -> None:
     assert "report_generated_at" in data
     assert isinstance(data["report"]["hosts"], list)
     assert isinstance(data["report"]["proposals"], list)
-    # тестовое окружение: github-checker недоступен → честный unknown + warning
+    # live отключён → честный unknown + warning, независимо от окружения
     assert data["report"]["top_line"] == "unknown"
     assert any("live snapshot unavailable" in w for w in data["report"]["warnings"])
 
