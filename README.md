@@ -40,6 +40,25 @@ point at this repo). Settings: `dispatcher.url`, `dispatcher.projectDir`,
 Without a config, dispatcher scans its own parent directory (monorepo
 layout). Standalone installs must list `roots` explicitly.
 
+## Sync snapshots (per-machine cron)
+
+    uv run dispatcher publish-snapshot               # snapshot → KB → commit+push
+    uv run dispatcher publish-snapshot --no-push     # local commit only (testing)
+
+Publishes this host's workspace state (via `github-checker snapshot`,
+must be on PATH) to `prograph-vault/derived/snapshots/<host>.json` —
+the KB tool zone (prograph-vault#24). Cross-machine sync verdicts need
+this running on **every** machine at most an hour apart; any failure
+exits non-zero so a dead job is visible in cron mail / launchd logs.
+
+crontab (every 30 min):
+
+    */30 * * * * cd /path/to/dispatcher && uv run dispatcher publish-snapshot
+
+macOS launchd: a `LaunchAgent` with `StartInterval` 1800 running the
+same command works; staleness beyond 1 h renders the host's panel as
+`stale` on the Sync screen rather than failing anything.
+
 ## API
 
 `/api/overview`, `/api/projects/{name}`, `/api/errors?limit=N`,
