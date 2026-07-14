@@ -110,10 +110,13 @@ class SyncService:
                 self._report_at = datetime.now(UTC)
             if start_fetch:
                 self._maybe_start_fetch_locked(now)
-            assert self._report is not None and self._report_at is not None
+            report, report_at = self._report, self._report_at
+            if report is None or report_at is None:
+                # заполняется выше в этом же lock-блоке; guard не вырезается -O
+                raise RuntimeError("sync report cache unexpectedly empty")
             return SyncStatus(
-                report=self._report,
-                report_generated_at=self._report_at,
+                report=report,
+                report_generated_at=report_at,
                 fetch_in_flight=self._fetch_thread is not None
                 and self._fetch_thread.is_alive(),
                 last_fetch_at=self._last_fetch_at,
@@ -137,11 +140,24 @@ class SyncService:
         )
         self._fetch_thread.start()
 
+    def wait_for_fetch(self, timeout: float | None = None) -> bool:
+        """Block until the background run finishes (tests/shutdown); True if idle."""
+        thread = self._fetch_thread
+        if thread is None or not thread.is_alive():
+            return True
+        thread.join(timeout)
+        return not thread.is_alive()
+
     def _fetch_run(self, workspace: Path) -> None:
-        errors = self._fetcher(workspace)
+        try:
+            errors = self._fetcher(workspace)
+        except Exception as err:  # noqa: BLE001 — поток не умирает молча,
+            # сбой обязан всплыть в last_fetch_error, не убить сервис
+            errors = [f"fetch run crashed: {err}"]
         with self._lock:
             self._last_fetch_at = datetime.now(UTC)
             self._last_fetch_error = "; ".join(errors) if errors else None
-            # fresh remote-tracking refs → invalidate so the next get()
-            # recollects with current ahead/behind
-            self._report_monotonic = 0.0
+            # fresh remote-tracking refs → drop the cached report so the next
+            # get() recollects with current ahead/behind (clearing the object
+            # is reliable; a zeroed monotonic mark is not)
+            self._report = None

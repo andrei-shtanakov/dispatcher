@@ -60,7 +60,7 @@ def test_fetch_completion_invalidates_report_cache(tmp_path: Path) -> None:
     service, calls = make_service(tmp_path, instant_fetcher)
     service.get()
     assert done.wait(timeout=2)
-    service._fetch_thread.join(timeout=2)
+    assert service.wait_for_fetch(2)
 
     status = service.get(start_fetch=False)
     assert not status.fetch_in_flight
@@ -86,15 +86,27 @@ def test_fetch_not_restarted_within_min_interval(tmp_path: Path) -> None:
 
     service, _ = make_service(tmp_path, counting_fetcher)
     service.get()
-    service._fetch_thread.join(timeout=2)
+    assert service.wait_for_fetch(2)
     service.get()  # внутри min-interval — второй прогон не стартует
     assert fetches["n"] == 1
+
+
+def test_crashing_fetcher_surfaces_error_and_service_survives(tmp_path: Path) -> None:
+    def crashing_fetcher(workspace: Path) -> list[str]:
+        raise OSError("subprocess exploded")
+
+    service, _ = make_service(tmp_path, crashing_fetcher)
+    service.get()
+    assert service.wait_for_fetch(2)
+    status = service.get(start_fetch=False)
+    assert not status.fetch_in_flight
+    assert "fetch run crashed" in (status.last_fetch_error or "")
 
 
 def test_fetch_errors_surface_in_status(tmp_path: Path) -> None:
     service, _ = make_service(tmp_path, lambda ws: ["alpha: fetch failed"])
     service.get()
-    service._fetch_thread.join(timeout=2)
+    assert service.wait_for_fetch(2)
     status = service.get(start_fetch=False)
     assert status.last_fetch_error == "alpha: fetch failed"
 

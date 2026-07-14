@@ -206,7 +206,7 @@ spinner.
 **Checklist:**
 - [x] Non-blocking background run + in-flight status в read-модели (`core/sync_service.py`: SyncService/SyncStatus; HTTP-обвязка — TASK-207)
 - [x] Verdict timestamp/age on every response (`report_generated_at`, `last_fetch_at`, `last_fetch_error`)
-- [x] Test: render path never awaits the network run (`tests/test_sync_service.py`, 6; live: get() 0.00 s при fetch в фоне)
+- [x] Test: render path never awaits the network run (7 тестов в `tests/test_sync_service.py`, в т.ч. `test_get_never_awaits_fetch`; live: get() 0.00 s при fetch в фоне)
 
 **Traces to:** [DESIGN-202], brief NFR-02/NFR-03
 **Depends on:** [TASK-202]
