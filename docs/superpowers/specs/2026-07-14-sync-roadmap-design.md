@@ -12,10 +12,14 @@
 
 1. **Read-model first.** Everything below except DESIGN-204 keeps dispatcher a
    pure read-model over on-disk artifacts and the vendored snapshot contract.
-2. **Whitelist mutations, never background** (brief NFR-01, conflict X-01
-   resolved by product): the only write paths are `git pull --ff-only` and
-   PR creation, each triggered by an explicit human click, each executed by
-   **github-checker**, not by dispatcher (brief AP-01). Zero autonomous writes.
+2. **Whitelist mutations of observed repos, never background** (brief NFR-01,
+   conflict X-01 resolved by product): the only write paths into *observed
+   repos* are `git pull --ff-only` and PR creation, each triggered by an
+   explicit human click, each executed by **github-checker**, not by
+   dispatcher (brief AP-01). Zero autonomous writes to observed repos. The one
+   deliberate exception outside that scope is the KB `derived/` snapshot feed
+   (DESIGN-203) — a scheduled write into the KB zone the constitution assigns
+   to tools, never into a monitored project.
 3. **Computed status, honest `unknown`.** Degraded inputs (no `gh`, no network,
    stale host snapshot, repo absent on a host) must render as explicit
    `unknown`/`stale`, never as an optimistic "ok" (brief CON-03/CON-04, RK-03).
@@ -40,7 +44,8 @@
 │ contracts/github-checker-snapshot/v1/   (vendored pin, PR #7)        │
 │ core/sync.py                                                         │
 │   ingest local snapshot (live run) + KB host snapshots (aged)        │
-│   → verdict per repo per host: ok | pull-first | unknown(reason)     │
+│   → verdict per repo per host:                                       │
+│       ok | pull-first | no-data | unknown(reason)                    │
 │   → KB repo (prograph-vault) flagged as first-class row              │
 │ core/discovery.py (+)  workspace walk vs tracked set → proposals     │
 │ core/roadmap.py   (+)  readiness/lag/contract-drift aggregation      │
@@ -59,8 +64,8 @@
 ### DESIGN-201: Vendored snapshot contract (`contracts/github-checker-snapshot/v1/`)
 
 Pinned copy of `github-checker/contracts/snapshot/v1/` (schema + the two golden
-fixtures) with a pin header (source repo, commit, sha256) — same discipline as
-the observability contract vendoring. Ingestion validates `schema_version == 1`
+fixtures) with a pin header (source repo, commit, sha256) — the ecosystem's
+established pinned-contract vendoring practice (ADR-ECO-003). Ingestion validates `schema_version == 1`
 and rejects anything else with an explicit `unknown(schema)` verdict, never a
 silent parse-as-best-effort (closes brief RK-02 on the consumer side).
 A CI test validates both vendored fixtures against the vendored schema.
@@ -80,7 +85,10 @@ Verdict per `(repo, host)`:
 | `behind == 0` and `ahead == 0` and not `dirty` | `ok` |
 | `behind > 0` or `ahead > 0` or `dirty` | `pull-first` (with detail) |
 | repo absent in a host's snapshot | `no-data` (CON-03: absence ≠ ok) |
-| snapshot age > 1 h, `gh_error` without KB fallback, `schema_version != 1` | `unknown(reason)` |
+| snapshot age > 1 h, `schema_version != 1`, or local git error (`local.error`) | `unknown(reason)` |
+
+`gh_error` alone does **not** poison the verdict: it degrades only the
+PR-related fields to `unknown` while the git-state verdict stands (§4).
 
 The aggregate top-line answer «можно работать / сначала pull-PR» is the worst
 verdict across repos of the current host, with `prograph-vault` (the KB)
