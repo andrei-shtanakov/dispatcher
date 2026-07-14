@@ -133,6 +133,13 @@ def test_write_snapshot_rejects_traversal_host(tmp_path: Path) -> None:
     assert not (tmp_path / "escape.json").exists()
 
 
+def test_write_snapshot_rejects_leading_hyphen_host(tmp_path: Path) -> None:
+    evil = make_snapshot()
+    evil.host = "-rf"
+    with pytest.raises(PublishError, match="unsafe host"):
+        write_snapshot(evil, tmp_path / "snapshots")
+
+
 def test_commit_outside_vault_is_publish_error(tmp_path: Path) -> None:
     vault = make_vault(tmp_path)
     stray = tmp_path / "elsewhere.json"
