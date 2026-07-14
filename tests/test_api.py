@@ -165,6 +165,12 @@ async def test_sync_track_endpoint_writes_sidecar(tmp_path: Path) -> None:
             "/api/sync/track", json={"dir": "x", "action": "delete"}
         )
         assert resp.status_code == 422
+
+        # пробелы срезаются ДО персиста — «  padded  » не зависнет вечным предложением
+        resp = await client.post(
+            "/api/sync/track", json={"dir": "  padded  ", "action": "track"}
+        )
+        assert "padded" in resp.json()["tracked"]
     assert tracking_file.is_file()
 
 

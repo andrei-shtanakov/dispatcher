@@ -12,6 +12,8 @@ as proposals afterwards.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import tomllib
 from pathlib import Path
 from typing import Literal
@@ -32,10 +34,18 @@ class TrackingState(BaseModel):
 
 
 def load_tracking(path: Path) -> TrackingState | None:
-    """Read the sidecar; None means «not initialized yet» (triggers seeding)."""
+    """Read the sidecar; None means «not initialized» (triggers seeding).
+
+    A corrupted file (partial write, bad hand-edit) also yields None — the
+    next sync run re-seeds it, self-healing instead of taking down sync
+    collection and the tracking endpoint.
+    """
     if not path.is_file():
         return None
-    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError:
+        return None
     return TrackingState(
         tracked=set(data.get("tracked", [])),
         ignored=set(data.get("ignored", [])),
@@ -52,14 +62,19 @@ def save_tracking(path: Path, state: TrackingState) -> None:
         body = "".join(f"  {json.dumps(item)},\n" for item in sorted(items))
         return "[\n" + body + "]"
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    payload = (
         "# dispatcher-owned sync tracking state — edited via the Sync screen\n"
         "# (confirm/reject) or `POST /api/sync/track`; safe to hand-edit too.\n"
         f"tracked = {_array(state.tracked)}\n"
-        f"ignored = {_array(state.ignored)}\n",
-        encoding="utf-8",
+        f"ignored = {_array(state.ignored)}\n"
     )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # atomic temp+replace (как publish.py): упавшая запись не оставит
+    # битого TOML вместо состояния решений
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(payload)
+    os.replace(tmp_name, path)
 
 
 def seed_tracking(path: Path, dirs: set[str]) -> TrackingState:

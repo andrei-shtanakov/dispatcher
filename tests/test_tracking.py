@@ -85,6 +85,21 @@ def test_decide_moves_between_sets(tmp_path: Path) -> None:
     assert "b" not in state.ignored
 
 
+def test_corrupt_sidecar_degrades_to_none_for_reseed(tmp_path: Path) -> None:
+    path = tmp_path / "dispatcher-sync.toml"
+    path.write_text("tracked = [broken", encoding="utf-8")
+    assert load_tracking(path) is None  # → следующий прогон пересидирует
+
+
+def test_save_is_atomic_no_tmp_leftovers(tmp_path: Path) -> None:
+    path = tmp_path / "dispatcher-sync.toml"
+    save_tracking(path, TrackingState(tracked={"a"}))
+    save_tracking(path, TrackingState(tracked={"a", "b"}))
+    assert not list(tmp_path.glob("*.tmp"))
+    state = load_tracking(path)
+    assert state is not None and state.tracked == {"a", "b"}
+
+
 # --- acceptance FR-02: clone → proposal → confirm / reject --------------------
 
 

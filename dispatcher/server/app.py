@@ -179,9 +179,10 @@ def create_app(config: DispatcherConfig) -> FastAPI:
         """Confirm/reject one auto-discovery proposal (writes only the sidecar)."""
         if config.tracking_file is None:
             raise HTTPException(status_code=409, detail="sync tracking not configured")
-        if not decision.dir.strip():
+        repo_dir = decision.dir.strip()
+        if not repo_dir:
             raise HTTPException(status_code=422, detail="empty repo dir")
-        state = decide(config.tracking_file, decision.dir, decision.action)
+        state = decide(config.tracking_file, repo_dir, decision.action)
         sync_cache.invalidate()
         return TrackingView(
             tracked=sorted(state.tracked), ignored=sorted(state.ignored)
