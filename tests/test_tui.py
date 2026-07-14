@@ -14,6 +14,8 @@ from conftest import (
 from textual.widgets import DataTable, Select, Static, TabbedContent, TabPane
 
 from dispatcher.core.discovery import DispatcherConfig
+from dispatcher.core.sync import HostPanel, RepoVerdict, SyncReport
+from dispatcher.core.sync_service import SyncStatus
 from dispatcher.tui.app import DispatcherApp, _contract_cell, truncate
 from dispatcher.tui.detail import ErrorMessageScreen, ProjectDetailScreen
 
@@ -34,12 +36,14 @@ async def _settled(app: DispatcherApp, pilot) -> None:
     await pilot.pause()
 
 
-async def test_app_boots_with_five_tabs(tmp_path: Path) -> None:
+async def test_app_boots_with_six_tabs(tmp_path: Path) -> None:
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await _settled(app, pilot)
-        assert len(app.query(TabPane)) == 5
+        assert len(app.query(TabPane)) == 6
         for table_id in (
+            "sync-table",
+            "roadmap-summary-table",
             "projects-table",
             "errors-table",
             "models-table",
@@ -404,3 +408,119 @@ async def test_roadmap_table_populates_from_yaml(tmp_path: Path) -> None:
             agents_toml.stat().st_mtime, tz=UTC
         ).isoformat()
         assert str(row4[7]) == expected
+
+
+def _sync_status() -> SyncStatus:
+    report = SyncReport(
+        current_host="mac-a",
+        top_line="pull-first",
+        top_reason="alpha: behind 2",
+        hosts=[
+            HostPanel(
+                host="mac-a",
+                source="live",
+                age_seconds=3.0,
+                stale=False,
+                verdicts=[
+                    RepoVerdict(repo="prograph-vault", verdict="ok", is_kb=True),
+                    RepoVerdict(
+                        repo="alpha",
+                        verdict="pull-first",
+                        reason="behind 2",
+                        branch="master",
+                        ahead=0,
+                        behind=2,
+                    ),
+                ],
+            ),
+            HostPanel(
+                host="mac-b",
+                source="kb",
+                age_seconds=7200.0,
+                stale=True,
+                verdicts=[
+                    RepoVerdict(
+                        repo="alpha",
+                        verdict="unknown",
+                        reason="stale snapshot (older than 1 h)",
+                    )
+                ],
+            ),
+        ],
+    )
+    return SyncStatus(
+        report=report,
+        report_generated_at=datetime(2026, 7, 14, 12, 0, tzinfo=UTC),
+        fetch_in_flight=True,
+    )
+
+
+async def test_sync_tab_renders_verdicts_and_topline(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = _app(tmp_path)
+    monkeypatch.setattr(app._sync_service, "get", lambda **kw: _sync_status())
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        table = app.query_one("#sync-table", DataTable)
+        assert table.row_count == 3
+        first = [str(c) for c in table.get_row_at(0)]
+        assert first[0].startswith("mac-a")
+        assert "📌 prograph-vault" in first[2]  # KB закреплён первой строкой
+        stale_row = [str(c) for c in table.get_row_at(2)]
+        assert "stale" in stale_row[1]
+        label = str(app.query_one(TabbedContent).get_tab("tab-sync").label)
+        assert "pull-first" in label
+        assert "⚙ fetching" in app.sub_title  # индикатор фонового fetch
+
+
+async def test_roadmap_summary_table_populates(tmp_path: Path) -> None:
+    roadmaps = tmp_path / "prograph-vault" / "authored" / "roadmaps"
+    roadmaps.mkdir(parents=True)
+    (roadmaps / "eco.yaml").write_text(
+        """
+version: 1
+roadmap: eco
+items:
+  - id: S-1
+    title: Detected
+    owner_project: arbiter
+    evidence_rules:
+      - rule: project_detected
+        kind: implementation
+        project: arbiter
+"""
+    )
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        table = app.query_one("#roadmap-summary-table", DataTable)
+        assert table.row_count == 1
+        row = [str(c) for c in table.get_row_at(0)]
+        assert row[0] == "arbiter"
+        assert row[1] == "1/1"
+        assert row[2] == "100%"
+
+
+async def test_sync_tab_empty_and_error_panels_stay_visible(
+    tmp_path: Path, monkeypatch
+) -> None:
+    status = _sync_status()
+    status.report.hosts.append(
+        HostPanel(host="mac-empty", source="kb", age_seconds=60.0, verdicts=[])
+    )
+    status.report.hosts.append(
+        HostPanel(host="mac-broken", source="kb", error="unsupported schema_version=2")
+    )
+    app = _app(tmp_path)
+    monkeypatch.setattr(app._sync_service, "get", lambda **kw: status)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        table = app.query_one("#sync-table", DataTable)
+        rows = [[str(c) for c in table.get_row_at(i)] for i in range(table.row_count)]
+        empty_row = next(r for r in rows if r[0].startswith("mac-empty"))
+        assert "(kb)" in empty_row[0]  # source виден и у пустой панели
+        assert "no tracked repos" in empty_row[2]
+        broken_row = next(r for r in rows if r[0].startswith("mac-broken"))
+        assert "(kb)" in broken_row[0]  # ...и у панели-ошибки
+        assert "schema_version" in broken_row[4]

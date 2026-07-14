@@ -23,7 +23,9 @@ from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.models import ContractStatus, ErrorEvent, ProjectSnapshot
 from dispatcher.core.roadmap import (
     RoadmapResponse,
+    SummaryResponse,
     build_roadmap,
+    build_summary,
     contract_sync_by_name,
     default_roadmap_dirs,
 )
@@ -32,6 +34,7 @@ from dispatcher.core.service import (
     SnapshotService,
     recent_errors,
 )
+from dispatcher.core.sync_service import SyncService, SyncStatus
 from dispatcher.tui.detail import ErrorMessageScreen, ProjectDetailScreen
 
 MSG_LIMIT = 160  # same message truncation threshold as the web UI
@@ -41,6 +44,28 @@ ERRORS_LIMIT = 50  # same errors-feed cap as the web UI
 def truncate(body: str, limit: int = MSG_LIMIT) -> str:
     """Web-parity message truncation: cap at `limit` chars plus ellipsis."""
     return body if len(body) <= limit else body[:limit] + "…"
+
+
+def _age_cell(seconds: float | None, stale: bool) -> Text | str:
+    """Snapshot age; stale (> 1 h) renders amber — staleness is data."""
+    if seconds is None:
+        return "—"
+    label = (
+        f"{seconds:.0f}s"
+        if seconds < 90
+        else f"{seconds / 60:.0f}m"
+        if seconds < 5400
+        else f"{seconds / 3600:.1f}h"
+    )
+    return Text(f"{label} stale", style="bold yellow") if stale else label
+
+
+def _verdict_cell(verdict: str) -> Text | str:
+    if verdict == "ok":
+        return Text("ok", style="green")
+    if verdict == "pull-first":
+        return Text("pull-first", style="bold yellow")
+    return Text(verdict, style="dim")
 
 
 def _contract_cell(
@@ -75,11 +100,14 @@ class DispatcherApp(App[None]):
     def __init__(self, config: DispatcherConfig) -> None:
         super().__init__()
         self._service = SnapshotService(config)
+        self._sync_service = SyncService(config)
         self._roadmap_dirs = config.roadmap_dirs or default_roadmap_dirs(config.roots)
         self._snapshots: list[ProjectSnapshot] = []
         self._warnings: list[str] = []
         self._contracts: list[ContractStatus] = []
         self._roadmap: RoadmapResponse | None = None
+        self._sync: SyncStatus | None = None
+        self._summary: SummaryResponse | None = None
         self._errors_days: int | None = ERRORS_DAYS_DEFAULT
         self._errors_project: str | None = None
         self._errors_service: str | None = None
@@ -88,6 +116,8 @@ class DispatcherApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Header()
         with TabbedContent():
+            with TabPane("Sync", id="tab-sync"):
+                yield DataTable(id="sync-table", cursor_type="row")
             with TabPane("Projects", id="tab-projects"):
                 yield DataTable(id="projects-table", cursor_type="row")
             with TabPane("Errors", id="tab-errors"):
@@ -100,10 +130,17 @@ class DispatcherApp(App[None]):
             with TabPane("Contracts", id="tab-contracts"):
                 yield DataTable(id="contracts-table", cursor_type="row")
             with TabPane("Roadmap", id="tab-roadmap"):
+                yield DataTable(id="roadmap-summary-table", cursor_type="row")
                 yield DataTable(id="roadmap-table", cursor_type="row")
         yield Footer()
 
     def on_mount(self) -> None:
+        self.query_one("#sync-table", DataTable).add_columns(
+            "host", "age", "repo", "verdict", "reason", "branch", "↑/↓"
+        )
+        self.query_one("#roadmap-summary-table", DataTable).add_columns(
+            "project", "done", "readiness", "lagging", "contract drift"
+        )
         self.query_one("#projects-table", DataTable).add_columns(
             "project",
             "freshness",
@@ -150,12 +187,16 @@ class DispatcherApp(App[None]):
             # Same checker run feeds the roadmap's drift projection, so
             # the Status and Contract columns agree within one refresh.
             roadmap = build_roadmap(self._roadmap_dirs, snapshots, contracts)
+            summary = build_summary(roadmap, contracts)
+            sync = self._sync_service.get()
         except Exception as err:  # noqa: BLE001 — keep last data on screen
             self.call_from_thread(
                 self.notify, f"refresh failed: {err}", severity="error"
             )
             return
-        self.call_from_thread(self._apply, snapshots, warnings, contracts, roadmap)
+        self.call_from_thread(
+            self._apply, snapshots, warnings, contracts, roadmap, summary, sync
+        )
 
     def _apply(
         self,
@@ -163,17 +204,93 @@ class DispatcherApp(App[None]):
         warnings: list[str],
         contracts: list[ContractStatus],
         roadmap: RoadmapResponse,
+        summary: SummaryResponse,
+        sync: SyncStatus,
     ) -> None:
         self._snapshots = snapshots
         self._warnings = warnings
         self._contracts = contracts
         self._roadmap = roadmap
-        self.sub_title = f"updated {datetime.now():%H:%M:%S} · {len(warnings)} warnings"
+        self._summary = summary
+        self._sync = sync
+        # «шестерёнка в углу»: индикатор фонового fetch живёт в sub-title
+        fetching = " · ⚙ fetching" if sync.fetch_in_flight else ""
+        self.sub_title = (
+            f"updated {datetime.now():%H:%M:%S} · {len(warnings)} warnings{fetching}"
+        )
+        self._render_sync()
         self._render_projects()
         self._render_errors()
         self._render_models()
         self._render_contracts()
         self._render_roadmap()
+
+    def _render_sync(self) -> None:
+        table = self.query_one("#sync-table", DataTable)
+        table.clear()
+        if self._sync is None:
+            return
+        report = self._sync.report
+        self.query_one(TabbedContent).get_tab(
+            "tab-sync"
+        ).label = f"Sync · {report.top_line}"
+        for panel in report.hosts:
+            first = True
+            host_cell = f"{panel.host} ({panel.source})"
+            if panel.error is not None:
+                table.add_row(
+                    host_cell,
+                    "—",
+                    "—",
+                    Text("error", style="bold red"),
+                    Text(panel.error, style="red"),
+                    "—",
+                    "—",
+                )
+                continue
+            if not panel.verdicts:
+                # хост без tracked-репо всё равно виден — пустая панель
+                # не должна молча исчезать с экрана
+                table.add_row(
+                    host_cell,
+                    _age_cell(panel.age_seconds, panel.stale),
+                    Text("no tracked repos", style="dim"),
+                    _verdict_cell("unknown"),
+                    "",
+                    "—",
+                    "—",
+                )
+                continue
+            for v in panel.verdicts:
+                repo_cell: Text | str = (
+                    Text(f"📌 {v.repo}", style="bold") if v.is_kb else v.repo
+                )
+                table.add_row(
+                    host_cell if first else "",
+                    _age_cell(panel.age_seconds, panel.stale) if first else "",
+                    repo_cell,
+                    _verdict_cell(v.verdict),
+                    v.reason or "",
+                    v.branch or "—",
+                    f"{v.ahead if v.ahead is not None else '—'}/"
+                    f"{v.behind if v.behind is not None else '—'}"
+                    + (" ✎" if v.dirty else ""),
+                )
+                first = False
+
+    def _render_summary(self) -> None:
+        table = self.query_one("#roadmap-summary-table", DataTable)
+        table.clear()
+        if self._summary is None:
+            return
+        for p in self._summary.projects:
+            table.add_row(
+                p.project,
+                f"{p.done}/{p.total}",
+                f"{p.readiness * 100:.0f}%",
+                Text("⚠ lagging", style="bold yellow") if p.lagging else "—",
+                Text("✗ drift", style="bold red") if p.contract_drift else "—",
+            )
 
     def _snapshot(self, name: str) -> ProjectSnapshot | None:
         return next((s for s in self._snapshots if s.name == name), None)
@@ -290,6 +407,7 @@ class DispatcherApp(App[None]):
             table.add_row(c.name, c.canonical_path, c.vendored_path or "—", sync)
 
     def _render_roadmap(self) -> None:
+        self._render_summary()
         table = self.query_one("#roadmap-table", DataTable)
         table.clear()
         if self._roadmap is None:
