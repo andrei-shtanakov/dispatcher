@@ -27,7 +27,7 @@ coverage:
   risks: covered
   feasibility_review: covered
   gate_passed: true
-open_questions: 2
+open_questions: 1
 blocking_open_questions: 0
 conflicts: 0
 traces_to:
@@ -60,9 +60,9 @@ traces_to:
 - **IF-01** `traces: [S-01]` git CLI по локальным клонам — стабильный, версионируемый контракт.
 - **IF-02** `traces: [S-02]` Прямое чтение SQLite `graph.db` — схема не документирована и
   не заморожена; ломается молча.
-- **IF-03** `traces: [S-05]` `github-checker snapshot` JSON — **схема пока не
-  версионируется** (тот же класс риска, что IF-02); требуется пин v1 до постройки FR-01
-  (см. Q-01).
+- **IF-03** `traces: [S-05]` `github-checker snapshot` JSON — **схема заморожена как v1**
+  (github-checker PR #7, 2026-07-14): `contracts/snapshot/v1/` + `schema_version: 1` в
+  выходе; dispatcher вендорит пиненую копию при постройке FR-01 (см. Q-01, resolved).
 - **IF-04** `traces: [S-05]` `gh` CLI (авторизация GitHub) — при отсутствии snapshot
   деградирует до git-only и пишет причину в `gh_error`.
 - **IF-05** `traces: [S-03]` Публикация snapshot'ов машин в KB `derived/` — новый
@@ -94,8 +94,8 @@ traces_to:
 
 - **RK-01** Схема `graph.db` не заморожена — чтение ломается молча (подтверждён в обоих
   фреймах; главный риск сводного roadmap).
-- **RK-02** Snapshot-JSON github-checker не версионируется — строить Must поверх
-  незамороженной схемы нельзя; закрыть пином v1 (Q-01).
+- **RK-02** Snapshot-JSON github-checker не версионировался — строить Must поверх
+  незамороженной схемы нельзя. **Закрыт 2026-07-14** пином v1 (Q-01, github-checker PR #7).
 - **RK-03** *(tacit, недооценено)* Надёжность cron-публикации с машин: выключенная
   машина или молча умерший cron дают протухший snapshot, который выглядит как «всё ок»,
   если возраст данных не выведен в UI явно (связка с CON-04, Q-02).
@@ -119,9 +119,12 @@ Blocking-конфликтов с customer-брифом feasibility-проход 
 
 ## Open Questions
 
-- **Q-01** `owner_role: architect` · `blocking: false` — заморозить и версионировать
-  схему `snapshot`-JSON (v1) в репо github-checker до постройки FR-01. Правка в соседнем
-  репо — исполняется отдельной задачей в github-checker, этот пункт = handoff.
+- **Q-01** `owner_role: architect` · `blocking: false` · `resolved: true` — заморозить и
+  версионировать схему `snapshot`-JSON (v1) в репо github-checker до постройки FR-01.
+  **Резолюция (2026-07-14):** исполнено github-checker PR #7 — `contracts/snapshot/v1/`
+  (schema + golden-фикстуры full/degraded), поле `schema_version: 1` в выходе,
+  контракт-тест «breaking → только v2 рядом»; `generated_at` переведён на tz-aware
+  RFC3339. Блокер FR-01 снят (закрывает и RK-02).
 - **Q-02** `owner_role: architect` · `blocking: false` — механика надёжности
   cron-публикации (RK-03): heartbeat/возраст snapshot'а в UI обязателен; нужен ли alert
   при протухании > 1 ч и где он живёт.
