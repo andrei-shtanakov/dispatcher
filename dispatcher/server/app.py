@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from dispatcher.core.contracts import check_contracts
 from dispatcher.core.correlation import WorkItemsResponse, build_work_items
@@ -31,16 +32,33 @@ from dispatcher.core.roadmap import (
     default_roadmap_dirs,
 )
 from dispatcher.core.service import SnapshotService, recent_errors
+from dispatcher.core.sync_service import SyncService
+from dispatcher.core.tracking import TrackAction, decide
 
 __all__ = ["create_app", "recent_errors"]  # re-export: old import path
 
 _STATIC_DIR = Path(__file__).parent / "static"
 
 
+class TrackDecision(BaseModel):
+    """POST /api/sync/track body: one confirm/reject decision."""
+
+    dir: str
+    action: TrackAction
+
+
+class TrackingView(BaseModel):
+    """Resulting decision sets after a tracking update."""
+
+    tracked: list[str]
+    ignored: list[str]
+
+
 def create_app(config: DispatcherConfig) -> FastAPI:
     """Build the API app for the given configuration."""
     app = FastAPI(title="Dispatcher", version="0.1.0")
     cache = SnapshotService(config)
+    sync_cache = SyncService(config)
 
     @app.get("/api/overview", response_model=OverviewResponse)
     def overview() -> OverviewResponse:
@@ -155,6 +173,20 @@ def create_app(config: DispatcherConfig) -> FastAPI:
             if item.id == item_id:
                 return item
         raise HTTPException(status_code=404, detail=f"unknown roadmap item: {item_id}")
+
+    @app.post("/api/sync/track", response_model=TrackingView)
+    def sync_track(decision: TrackDecision) -> TrackingView:
+        """Confirm/reject one auto-discovery proposal (writes only the sidecar)."""
+        if config.tracking_file is None:
+            raise HTTPException(status_code=409, detail="sync tracking not configured")
+        repo_dir = decision.dir.strip()
+        if not repo_dir:
+            raise HTTPException(status_code=422, detail="empty repo dir")
+        state = decide(config.tracking_file, repo_dir, decision.action)
+        sync_cache.invalidate()
+        return TrackingView(
+            tracked=sorted(state.tracked), ignored=sorted(state.ignored)
+        )
 
     app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="static")
     return app

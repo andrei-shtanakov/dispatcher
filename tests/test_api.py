@@ -142,3 +142,44 @@ async def test_index_served(tmp_path: Path) -> None:
     assert "<th>Contract</th>" in resp.text
     assert "<th>Freshness</th>" in resp.text
     assert 'colspan="8"' in resp.text
+
+
+async def test_sync_track_endpoint_writes_sidecar(tmp_path: Path) -> None:
+    tracking_file = tmp_path / "dispatcher-sync.toml"
+    config = DispatcherConfig(roots=(tmp_path,), tracking_file=tracking_file)
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/sync/track", json={"dir": "fresh-clone", "action": "track"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["tracked"] == ["fresh-clone"]
+
+        resp = await client.post(
+            "/api/sync/track", json={"dir": "fresh-clone", "action": "ignore"}
+        )
+        assert resp.json() == {"tracked": [], "ignored": ["fresh-clone"]}
+
+        resp = await client.post(
+            "/api/sync/track", json={"dir": "x", "action": "delete"}
+        )
+        assert resp.status_code == 422
+
+        # пробелы срезаются ДО персиста — «  padded  » не зависнет вечным предложением
+        resp = await client.post(
+            "/api/sync/track", json={"dir": "  padded  ", "action": "track"}
+        )
+        assert "padded" in resp.json()["tracked"]
+    assert tracking_file.is_file()
+
+
+async def test_sync_track_unconfigured_is_409(tmp_path: Path) -> None:
+    config = DispatcherConfig(roots=(tmp_path,))
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/sync/track", json={"dir": "a", "action": "track"}
+        )
+    assert resp.status_code == 409

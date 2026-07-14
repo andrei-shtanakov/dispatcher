@@ -230,7 +230,7 @@ the crontab line.
 **Depends on:** [TASK-201]
 
 ### TASK-205: Repo auto-discovery proposals
-🔴 P0 | ⬜ TODO | Est: 1d
+🔴 P0 | ✅ DONE | Est: 1d
 
 **Description:**
 Diff the snapshot workspace walk against dispatcher's tracked set; new repo
@@ -239,9 +239,9 @@ Diff the snapshot workspace walk against dispatcher's tracked set; new repo
 observed-repo mutation. Appears at the next refresh, no daemon.
 
 **Checklist:**
-- [ ] Tracked/ignored persistence + `core/discovery.py` diff
-- [ ] Proposal rows in sync API; confirm/reject endpoint (dispatcher config only)
-- [ ] Test: clone → proposal at next refresh → confirm → tracked / reject → silent
+- [x] Tracked/ignored persistence (`core/tracking.py`, sidecar `dispatcher-sync.toml` — пользовательский dispatcher.toml программно не переписываем; zero-docs bootstrap: первый прогон сидирует всё присутствующее) + diff в `build_report`
+- [x] Proposal rows в SyncReport (`proposals`, не влияют на top-line); `POST /api/sync/track` confirm/reject (405 нет, 409 если не сконфигурировано; пишет только sidecar + invalidate кэша)
+- [x] Test: clone → proposal → confirm → tracked / reject → silent (`tests/test_tracking.py`, 10 + 2 API; live-смоук на реальном KB-снапшоте)
 
 **Traces to:** [DESIGN-205], brief FR-02/G-04/J-05
 **Depends on:** [TASK-202]
