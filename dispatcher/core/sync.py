@@ -17,7 +17,7 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.snapshot_contract import (
@@ -69,7 +69,7 @@ class HostPanel(BaseModel):
     stale: bool = False
     gh_error: str | None = None
     error: str | None = None  # snapshot-level failure (contract/schema/read)
-    verdicts: list[RepoVerdict] = []
+    verdicts: list[RepoVerdict] = Field(default_factory=list)
 
 
 class SyncReport(BaseModel):
@@ -78,8 +78,8 @@ class SyncReport(BaseModel):
     current_host: str
     top_line: str
     top_reason: str | None = None
-    hosts: list[HostPanel] = []
-    warnings: list[str] = []
+    hosts: list[HostPanel] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class SyncSourceError(Exception):
@@ -257,9 +257,22 @@ def load_kb_snapshots(
             continue
         for path in sorted(directory.glob("*.json")):
             try:
-                snapshots.append(parse_snapshot(path.read_text(encoding="utf-8")))
+                snapshot = parse_snapshot(path.read_text(encoding="utf-8"))
             except (OSError, SnapshotContractError) as err:
                 errors.append((path.stem, str(err)))
+                continue
+            if snapshot.host != path.stem:
+                # `<host>.json` convention (prograph-vault#24): a mismatched
+                # payload would misattribute the panel — contract error
+                errors.append(
+                    (
+                        path.stem,
+                        f"payload host {snapshot.host!r} does not match "
+                        f"filename {path.name!r}",
+                    )
+                )
+                continue
+            snapshots.append(snapshot)
     return snapshots, errors
 
 

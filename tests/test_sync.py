@@ -238,6 +238,18 @@ def test_load_kb_snapshots_reads_and_rejects(tmp_path: Path) -> None:
     assert errors and errors[0][0] == "mac-c"
 
 
+def test_load_kb_snapshots_rejects_host_filename_mismatch(tmp_path: Path) -> None:
+    d = tmp_path / "prograph-vault" / "derived" / "snapshots"
+    d.mkdir(parents=True)
+    # payload заявляет mac-b, файл назван mac-z — мисатрибуция панели запрещена
+    (d / "mac-z.json").write_text(snap("mac-b", [{"dir": "a"}]).model_dump_json())
+
+    snapshots, errors = load_kb_snapshots(kb_snapshot_dirs((tmp_path,)))
+    assert snapshots == []
+    assert errors and errors[0][0] == "mac-z"
+    assert "does not match filename" in errors[0][1]
+
+
 def test_collect_sync_survives_missing_github_checker(
     tmp_path: Path, monkeypatch
 ) -> None:
