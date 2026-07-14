@@ -272,3 +272,22 @@ async def test_sync_hosts_reads_published_kb_snapshot(tmp_path: Path) -> None:
     assert panel["age_seconds"] is not None
     verdict = next(v for v in panel["verdicts"] if v["repo"] == "alpha")
     assert verdict["verdict"] in ("pull-first", "unknown")  # unknown если stale
+
+
+async def test_web_page_wires_sync_and_summary(tmp_path: Path) -> None:
+    """Статика связана с sync-API: секция, спиннер, track-POST, summary-таблица."""
+    async with _client(tmp_path) as client:
+        resp = await client.get("/")
+    assert resp.status_code == 200
+    page = resp.text
+    for marker in (
+        'id="sync-section"',
+        'id="sync-fetch"',        # шестерёнка в углу (FR-01 acceptance)
+        'id="sync-proposals"',    # авто-обнаружение (FR-02)
+        'id="roadmap-summary"',   # сводный roadmap (FR-03)
+        '"/api/sync"',
+        '"/api/roadmap/summary"',
+        '"/api/sync/track"',
+        "github-checker pull",    # copy-paste действия до M2-кнопок
+    ):
+        assert marker in page, f"index.html потерял {marker}"

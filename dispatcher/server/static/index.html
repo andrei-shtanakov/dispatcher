@@ -57,6 +57,30 @@
   #detail { white-space: pre-wrap; font-family: ui-monospace, monospace;
     font-size: 12px; background: var(--card); border: 1px solid var(--line);
     border-radius: 10px; padding: 14px; max-height: 480px; overflow: auto; }
+  .badge { display: inline-block; border: 1px solid var(--line);
+    border-radius: 6px; padding: 1px 10px; font-size: 13px; font-weight: 600; }
+  .badge.ok { color: var(--ok); border-color: var(--ok); }
+  .badge.err { color: var(--bad); border-color: var(--bad); }
+  .badge.warn { color: var(--warn); border-color: var(--warn); }
+  .badge.dim { color: var(--dim); }
+  .spin { display: inline-block; animation: spin 1.2s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #sync-fetch { font-weight: 400; }
+  .hostmeta { color: var(--dim); font-size: 12px; margin: 12px 0 6px; }
+  .hostmeta:first-child { margin-top: 0; }
+  .stale { color: var(--warn); font-weight: 600; }
+  code.cmd { background: var(--bg); border: 1px solid var(--line);
+    border-radius: 4px; padding: 1px 6px; font-size: 12px;
+    font-family: ui-monospace, monospace; }
+  button.copy, .proposal button { background: none; border: 1px solid
+    var(--line); border-radius: 4px; color: var(--dim); cursor: pointer;
+    font: inherit; font-size: 11px; padding: 0 6px; }
+  button.copy:hover, .proposal button:hover { color: var(--ink); }
+  button[disabled] { opacity: .45; cursor: not-allowed; }
+  .proposal { background: var(--card); border: 1px solid var(--warn);
+    border-radius: 10px; padding: 10px 14px; margin-bottom: 10px;
+    font-size: 13px; }
+  .kbrow td:first-child { font-weight: 600; }
 </style>
 </head>
 <body>
@@ -64,7 +88,16 @@
 <div class="sub">Ecosystem overview · auto-refresh 10s ·
   <span id="updated"></span></div>
 
-<div class="grid" id="projects"></div>
+<section id="sync-section" style="margin-top:0"><h2>Sync
+  <span id="sync-topline" class="badge dim">…</span>
+  <span id="sync-reason" class="fresh"></span>
+  <span id="sync-fetch" class="fresh" hidden>
+    <span class="spin">⚙</span> fetching…</span></h2>
+  <div id="sync-proposals"></div>
+  <div id="sync-hosts" class="fresh">loading…</div></section>
+
+<section><h2>Projects</h2>
+<div class="grid" id="projects"></div></section>
 
 <section id="detail-section" hidden>
   <h2>Project detail <span id="detail-name"></span></h2>
@@ -91,6 +124,10 @@
       </tr></thead><tbody></tbody></table></div></section>
 
 <section><h2>Roadmap <span id="roadmap-names" class="sub"></span></h2>
+  <div class="tablewrap" style="margin-bottom:10px"><table id="roadmap-summary">
+    <thead><tr><th>Project</th><th>Done</th><th>Readiness</th>
+      <th>Lagging</th><th>Contract drift</th></tr></thead>
+    <tbody></tbody></table></div>
   <div class="tablewrap"><table id="roadmap">
     <thead><tr><th>Phase</th><th>Item</th><th>Owner</th><th>Status</th>
       <th>Contract</th><th>Blockers</th><th>Evidence</th><th>Freshness</th>
@@ -167,6 +204,87 @@ document.querySelector("#errors tbody").addEventListener("click", e => {
   td.textContent = expanded ? td.dataset.full : td.dataset.short;
 });
 
+const fmtAge = s => s == null ? "—"
+  : s < 90 ? `${Math.round(s)}s`
+  : s < 5400 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`;
+const verdictCls = v => v === "ok" ? "ok"
+  : v === "pull-first" ? "warn" : "dim";
+
+function renderSync(sync) {
+  const rep = sync.report;
+  const top = document.getElementById("sync-topline");
+  top.textContent = rep.top_line;
+  top.className = "badge " + (rep.top_line === "ok" ? "ok"
+    : rep.top_line === "pull-first" ? "warn" : "dim");
+  document.getElementById("sync-reason").textContent =
+    rep.top_reason ? "· " + rep.top_reason : "";
+  document.getElementById("sync-fetch").hidden = !sync.fetch_in_flight;
+  document.getElementById("sync-proposals").innerHTML =
+    (rep.proposals || []).map(dir => `
+    <div class="proposal">обнаружен <b>${esc(dir)}</b> — отслеживать?
+      <button data-track="${esc(dir)}" data-action="track">track</button>
+      <button data-track="${esc(dir)}" data-action="ignore">ignore</button>
+    </div>`).join("");
+  // действия — copy-paste команды; живые кнопки придут в M2 (TASK-210)
+  const actions = (v, live) => v.verdict !== "pull-first" || !live ? "—" : `
+    <code class="cmd">github-checker pull ${esc(v.repo)}</code>
+    <button class="copy" data-cmd="github-checker pull ${esc(v.repo)}">copy</button>
+    <button disabled title="живая кнопка — M2 (TASK-210)">pull</button>`;
+  document.getElementById("sync-hosts").innerHTML =
+    (rep.hosts || []).map(h => {
+      const live = h.source === "live";
+      const meta = `<div class="hostmeta"><b>${esc(h.host)}</b>
+        · ${esc(h.source)} · age ${fmtAge(h.age_seconds)}
+        ${h.stale ? '· <span class="stale">stale</span>' : ""}
+        ${h.gh_error ? `· gh: ${esc(h.gh_error)}` : ""}
+        ${h.error ? `· <span class="err">${esc(h.error)}</span>` : ""}</div>`;
+      if (h.error) return meta;
+      const rows = h.verdicts.map(v => `
+        <tr class="${v.is_kb ? "kbrow" : ""}">
+        <td>${v.is_kb ? "📌 " : ""}${esc(v.repo)}</td>
+        <td class="${verdictCls(v.verdict)}">${esc(v.verdict)}</td>
+        <td class="msg">${esc(v.reason ?? "")}</td>
+        <td>${esc(v.branch ?? "—")}</td>
+        <td>${v.ahead ?? "—"}/${v.behind ?? "—"}${v.dirty ? " ✎" : ""}</td>
+        <td>${actions(v, live)}</td></tr>`).join("");
+      return meta + `<div class="tablewrap"><table>
+        <thead><tr><th>Repo</th><th>Verdict</th><th>Reason</th><th>Branch</th>
+        <th>↑/↓</th><th>Actions</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`;
+    }).join("") || "no sync data";
+}
+
+function renderSummary(summary) {
+  document.querySelector("#roadmap-summary tbody").innerHTML =
+    (summary.projects || []).map(p => `
+    <tr><td>${esc(p.project)}</td><td>${p.done}/${p.total}</td>
+    <td>${Math.round(p.readiness * 100)}%</td>
+    <td class="${p.lagging ? "warn" : ""}">${p.lagging ? "⚠ lagging" : "—"}</td>
+    <td class="${p.contract_drift ? "err" : ""}">
+      ${p.contract_drift ? "✗ drift" : "—"}</td></tr>`).join("")
+    || `<tr><td colspan="5">no projects</td></tr>`;
+}
+
+document.getElementById("sync-proposals").addEventListener("click", async e => {
+  const btn = e.target.closest("button[data-track]");
+  if (!btn) return;
+  btn.disabled = true;
+  await fetch("/api/sync/track", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({dir: btn.dataset.track, action: btn.dataset.action}),
+  });
+  refresh();
+});
+
+document.getElementById("sync-hosts").addEventListener("click", e => {
+  const btn = e.target.closest("button.copy");
+  if (!btn) return;
+  navigator.clipboard?.writeText(btn.dataset.cmd);
+  btn.textContent = "✓";
+  setTimeout(() => { btn.textContent = "copy"; }, 1200);
+});
+
 async function refresh() {
   try {
     const errorsUrl = "/api/errors?limit=50"
@@ -175,9 +293,13 @@ async function refresh() {
         ? "" : `&project=${encodeURIComponent(errorsProject)}`)
       + (errorsService === null
         ? "" : `&service=${encodeURIComponent(errorsService)}`);
-    const [ov, errors, models, contracts, roadmap] = await Promise.all([
+    const [ov, errors, models, contracts, roadmap, sync, summary] =
+      await Promise.all([
       get("/api/overview"), get(errorsUrl),
-      get("/api/models"), get("/api/contracts"), get("/api/roadmap")]);
+      get("/api/models"), get("/api/contracts"), get("/api/roadmap"),
+      get("/api/sync"), get("/api/roadmap/summary")]);
+    renderSync(sync);
+    renderSummary(summary);
     document.getElementById("projects").innerHTML = ov.projects.map(p => `
       <div class="card ${p.detected ? "" : "off"}"
            ${p.detected ? `data-name="${esc(p.name)}"` : ""}>
