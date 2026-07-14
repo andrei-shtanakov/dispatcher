@@ -212,7 +212,7 @@ spinner.
 **Depends on:** [TASK-202]
 
 ### TASK-204: Publisher `dispatcher publish-snapshot`
-🔴 P0 | ⬜ TODO | Est: 1d
+🔴 P0 | ✅ DONE | Est: 1d
 
 **Description:**
 CLI: run `github-checker snapshot --workspace`, atomically write
@@ -222,9 +222,9 @@ convention). Scheduling (cron/launchd ≤ 1 h) stays with the user; document
 the crontab line.
 
 **Checklist:**
-- [ ] Atomic write + KB git commit; failure exits non-zero (cron-visible)
-- [ ] Docs: crontab/launchd example per machine
-- [ ] Test: output validates against the vendored contract (TASK-201)
+- [x] Atomic write + KB git commit (`core/publish.py`: mkstemp+replace, no-op → «no changes», pull --rebase + push); failure exits non-zero (cron-visible)
+- [x] Docs: crontab/launchd example per machine (README «Sync snapshots»)
+- [x] Test: output validates against the vendored contract (`tests/test_publish.py`, 8; live run committed real KB snapshot)
 
 **Traces to:** [DESIGN-203], engineer AP-02/CON-01, brief G-03
 **Depends on:** [TASK-201]
