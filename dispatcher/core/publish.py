@@ -9,6 +9,7 @@ every failure exits non-zero so a dead cron is visible, not silent (RK-03).
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -37,9 +38,14 @@ def _run(argv: list[str], *, timeout: int, cwd: Path | None = None) -> str:
         raise PublishError(f"{argv[0]}: {err}") from err
     if proc.returncode != 0:
         raise PublishError(
-            f"{' '.join(argv[:3])}… failed: {proc.stderr.strip() or proc.returncode}"
+            f"{' '.join(argv)} failed: {proc.stderr.strip() or proc.returncode}"
         )
     return proc.stdout
+
+
+# hostnames: letters/digits/dot/hyphen/underscore — anything else could
+# escape snapshots_dir when used as a filename component
+_SAFE_HOST_RE = re.compile(r"[A-Za-z0-9._-]+")
 
 
 def take_snapshot(
@@ -58,8 +64,11 @@ def take_snapshot(
 
 def write_snapshot(snapshot: WorkspaceSnapshotV1, snapshots_dir: Path) -> Path:
     """Atomically (re)place `<host>.json`; the filename IS the host identity."""
+    host = snapshot.host
+    if not _SAFE_HOST_RE.fullmatch(host) or host in (".", ".."):
+        raise PublishError(f"unsafe host name for a filename: {host!r}")
     snapshots_dir.mkdir(parents=True, exist_ok=True)
-    target = snapshots_dir / f"{snapshot.host}.json"
+    target = snapshots_dir / f"{host}.json"
     payload = snapshot.model_dump_json(indent=2) + "\n"
     fd, tmp_name = tempfile.mkstemp(dir=snapshots_dir, suffix=".tmp")
     try:
@@ -78,7 +87,12 @@ def commit_and_push(vault_repo: Path, target: Path, *, push: bool = True) -> str
     Per-host files never conflict with each other, so `pull --rebase` only
     reconciles the branch pointer when several machines publish concurrently.
     """
-    rel = target.relative_to(vault_repo)
+    try:
+        rel = target.relative_to(vault_repo)
+    except ValueError as err:
+        raise PublishError(
+            f"snapshot {target} is outside the KB repo {vault_repo}"
+        ) from err
     _run(["git", "-C", str(vault_repo), "add", str(rel)], timeout=_GIT_TIMEOUT)
     status = _run(
         ["git", "-C", str(vault_repo), "status", "--porcelain", "--", str(rel)],
