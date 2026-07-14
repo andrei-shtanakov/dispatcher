@@ -26,6 +26,7 @@ from dispatcher.core.snapshot_contract import (
     WorkspaceSnapshotV1,
     parse_snapshot,
 )
+from dispatcher.core.tracking import TrackingState, load_tracking, seed_tracking
 
 KB_REPO = "prograph-vault"
 STALE_AFTER_SECONDS = 3600.0  # brief AP-02: publication freshness ≤ 1 h
@@ -79,6 +80,7 @@ class SyncReport(BaseModel):
     top_line: str
     top_reason: str | None = None
     hosts: list[HostPanel] = Field(default_factory=list)
+    proposals: list[str] = Field(default_factory=list)  # FR-02: «отслеживать?»
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -165,9 +167,15 @@ def build_report(
     live_error: str | None,
     kb_snapshots: list[WorkspaceSnapshotV1],
     kb_errors: list[tuple[str, str]] | None = None,
+    tracking: TrackingState | None = None,
     now: datetime | None = None,
 ) -> SyncReport:
-    """Pure assembly of the sync report from already-ingested snapshots."""
+    """Pure assembly of the sync report from already-ingested snapshots.
+
+    With *tracking* set (DESIGN-205), verdicts cover only tracked repos:
+    ignored repos disappear, unknown ones become proposals («отслеживать?»)
+    and never affect the top line until confirmed.
+    """
     kb_errors = kb_errors or []
     moment = now if now is not None else datetime.now(UTC)
     panels: list[HostPanel] = []
@@ -189,13 +197,25 @@ def build_report(
             "(contract pin: contracts/github-checker-snapshot/v1/)"
         )
 
+    proposals: list[str] = []
+    if tracking is not None:
+        seen = {v.repo for panel in panels for v in panel.verdicts}
+        proposals = sorted(seen - tracking.known())
+        for panel in panels:
+            panel.verdicts = [v for v in panel.verdicts if v.repo in tracking.tracked]
+
     _fill_no_data(panels)
 
     current = next((p for p in panels if p.host == current_host), None)
-    if current is None or not current.verdicts:
+    if current is None:
         top_line, top_reason = (
             VERDICT_UNKNOWN,
             "no snapshot for this host — работаем локально, синк не подтверждён",
+        )
+    elif not current.verdicts:
+        top_line, top_reason = (
+            VERDICT_UNKNOWN,
+            "no tracked repos on this host",
         )
     else:
         worst = max(current.verdicts, key=lambda v: _SEVERITY[v.verdict])
@@ -210,6 +230,7 @@ def build_report(
         top_line=top_line,
         top_reason=top_reason,
         hosts=panels,
+        proposals=proposals,
         warnings=warnings,
     )
 
@@ -289,11 +310,31 @@ def collect_sync(config: DispatcherConfig, now: datetime | None = None) -> SyncR
         except SyncSourceError as err:
             live_error = str(err)
     kb_snapshots, kb_errors = load_kb_snapshots(kb_snapshot_dirs(config.roots))
-    return build_report(
+
+    tracking: TrackingState | None = None
+    seeded = False
+    if config.tracking_file is not None:
+        tracking = load_tracking(config.tracking_file)
+        if tracking is None and live is not None:
+            # zero-docs bootstrap (FR-02): всё уже присутствующее — tracked,
+            # предложения дальше получают только действительно новые клоны
+            tracking = seed_tracking(
+                config.tracking_file, {repo.dir for repo in live.repos}
+            )
+            seeded = True
+
+    report = build_report(
         current_host=socket.gethostname(),
         live=live,
         live_error=live_error,
         kb_snapshots=kb_snapshots,
         kb_errors=kb_errors,
+        tracking=tracking,
         now=now,
     )
+    if seeded and tracking is not None:
+        report.warnings.append(
+            f"sync tracking initialized: {len(tracking.tracked)} repos tracked "
+            f"({config.tracking_file})"
+        )
+    return report

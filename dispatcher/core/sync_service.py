@@ -140,6 +140,11 @@ class SyncService:
         )
         self._fetch_thread.start()
 
+    def invalidate(self) -> None:
+        """Drop the cached report (a tracking decision changed the universe)."""
+        with self._lock:
+            self._report = None
+
     def wait_for_fetch(self, timeout: float | None = None) -> bool:
         """Block until the background run finishes (tests/shutdown); True if idle."""
         thread = self._fetch_thread

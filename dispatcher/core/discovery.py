@@ -29,6 +29,8 @@ class DispatcherConfig:
     port: int = DEFAULT_PORT
     # Empty tuple → derived from roots (prograph-vault/authored/roadmaps).
     roadmap_dirs: tuple[Path, ...] = ()
+    # None → sync auto-discovery off (tests/embedding); load_config always sets it.
+    tracking_file: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -51,11 +53,15 @@ def load_config(config_path: Path | None = None) -> DispatcherConfig:
         roots = (_monorepo_fallback_root(),)
     maestro_db = Path(data.get("maestro_db", str(_DEFAULT_MAESTRO_DB))).expanduser()
     roadmap_dirs = tuple(Path(p).expanduser() for p in data.get("roadmap_dirs", []))
+    tracking_file = Path(
+        data.get("tracking_file", str(path.parent / "dispatcher-sync.toml"))
+    ).expanduser()
     return DispatcherConfig(
         roots=roots,
         maestro_db=maestro_db,
         port=int(data.get("port", DEFAULT_PORT)),
         roadmap_dirs=roadmap_dirs,
+        tracking_file=tracking_file,
     )
 
 
