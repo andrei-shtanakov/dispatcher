@@ -10,6 +10,7 @@ cannot be expressed with these rules stays `unknown` — prose
 
 from __future__ import annotations
 
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -94,6 +95,25 @@ class PhasesResponse(BaseModel):
     """Response of GET /api/roadmap/phases."""
 
     phases: list[PhaseSummary]
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ProjectSummary(BaseModel):
+    """Readiness rollup of one owner project (DESIGN-206, brief FR-03)."""
+
+    project: str
+    total: int
+    done: int  # implemented + verified
+    readiness: float  # done / total
+    lagging: bool  # readiness строго ниже медианы по проектам
+    contract_drift: bool  # хотя бы один target_contract разъехался
+
+
+class SummaryResponse(BaseModel):
+    """Response of GET /api/roadmap/summary — «проекты × готовность × флаги»."""
+
+    projects: list[ProjectSummary]
+    median_readiness: float | None = None
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -200,6 +220,57 @@ def build_drift(
             )
         )
     return DriftResponse(items=entries, warnings=roadmap.warnings)
+
+
+def build_summary(
+    roadmap: RoadmapResponse, contracts: list[ContractStatus]
+) -> SummaryResponse:
+    """Per-project readiness with `lagging` and `contract-drift` flags.
+
+    Pure re-aggregation of `build_roadmap`/`build_drift` output — the closed
+    rule set is untouched (DESIGN-206). Items without `owner_project` are
+    grouped under ``(unassigned)``. `lagging` = readiness strictly below the
+    median readiness across projects; `contract_drift` = at least one of the
+    project's items has a target contract reported out of sync.
+    """
+    drifted_ids = {
+        entry.id
+        for entry in build_drift(roadmap, contracts).items
+        if entry.contract_in_sync is False
+    }
+    grouped: dict[str, list[RoadmapItemView]] = {}
+    for item in roadmap.items:
+        grouped.setdefault(item.owner_project or "(unassigned)", []).append(item)
+
+    # округляем ДО сравнения: lagging обязан совпадать с тем, что видит клиент
+    # (иначе возможен ответ readiness == median_readiness при lagging=true)
+    readiness_by_project = {
+        project: round(
+            sum(1 for i in items if i.computed_status in _DONE) / len(items), 4
+        )
+        for project, items in grouped.items()
+    }
+    median = (
+        round(statistics.median(readiness_by_project.values()), 4)
+        if readiness_by_project
+        else None
+    )
+    projects = [
+        ProjectSummary(
+            project=project,
+            total=len(items),
+            done=sum(1 for i in items if i.computed_status in _DONE),
+            readiness=readiness_by_project[project],
+            lagging=median is not None and readiness_by_project[project] < median,
+            contract_drift=any(i.id in drifted_ids for i in items),
+        )
+        for project, items in sorted(grouped.items())
+    ]
+    return SummaryResponse(
+        projects=projects,
+        median_readiness=median,
+        warnings=roadmap.warnings,
+    )
 
 
 def build_phases(roadmap: RoadmapResponse) -> PhasesResponse:

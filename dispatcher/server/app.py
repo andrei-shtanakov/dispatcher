@@ -25,10 +25,12 @@ from dispatcher.core.roadmap import (
     PhasesResponse,
     RoadmapItemView,
     RoadmapResponse,
+    SummaryResponse,
     build_blockers,
     build_drift,
     build_phases,
     build_roadmap,
+    build_summary,
     default_roadmap_dirs,
 )
 from dispatcher.core.service import SnapshotService, recent_errors
@@ -165,6 +167,15 @@ def create_app(config: DispatcherConfig) -> FastAPI:
     def roadmap_blockers() -> BlockersResponse:
         snapshots, _ = cache.get()
         return build_blockers(build_roadmap(roadmap_dirs, snapshots))
+
+    @app.get("/api/roadmap/summary", response_model=SummaryResponse)
+    def roadmap_summary() -> SummaryResponse:
+        """Один экран FR-03: проекты × готовность × флаги lagging/drift."""
+        snapshots, _ = cache.get()
+        projects = {s.name: Path(s.path) for s in snapshots if s.detected and s.path}
+        contracts_state = check_contracts(projects)
+        roadmap = build_roadmap(roadmap_dirs, snapshots, contracts=contracts_state)
+        return build_summary(roadmap, contracts_state)
 
     @app.get("/api/roadmap/{item_id}", response_model=RoadmapItemView)
     def roadmap_item(item_id: str) -> RoadmapItemView:
