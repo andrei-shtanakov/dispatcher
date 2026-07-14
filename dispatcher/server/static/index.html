@@ -69,13 +69,15 @@
   .hostmeta { color: var(--dim); font-size: 12px; margin: 12px 0 6px; }
   .hostmeta:first-child { margin-top: 0; }
   .stale { color: var(--warn); font-weight: 600; }
-  code.cmd { background: var(--bg); border: 1px solid var(--line);
-    border-radius: 4px; padding: 1px 6px; font-size: 12px;
-    font-family: ui-monospace, monospace; }
-  button.copy, .proposal button { background: none; border: 1px solid
+  button.act { background: none; border: 1px solid var(--ok);
+    border-radius: 4px; color: var(--ok); cursor: pointer;
+    font: inherit; font-size: 11px; padding: 0 8px; }
+  button.act:hover { background: var(--ok); color: var(--card); }
+  .act-result { font-size: 12px; }
+  .proposal button { background: none; border: 1px solid
     var(--line); border-radius: 4px; color: var(--dim); cursor: pointer;
     font: inherit; font-size: 11px; padding: 0 6px; }
-  button.copy:hover, .proposal button:hover { color: var(--ink); }
+  .proposal button:hover { color: var(--ink); }
   button[disabled] { opacity: .45; cursor: not-allowed; }
   .proposal { background: var(--card); border: 1px solid var(--warn);
     border-radius: 10px; padding: 10px 14px; margin-bottom: 10px;
@@ -225,11 +227,15 @@ function renderSync(sync) {
       <button data-track="${esc(dir)}" data-action="track">track</button>
       <button data-track="${esc(dir)}" data-action="ignore">ignore</button>
     </div>`).join("");
-  // действия — copy-paste команды; живые кнопки придут в M2 (TASK-210)
-  const actions = (v, live) => v.verdict !== "pull-first" || !live ? "—" : `
-    <code class="cmd">github-checker pull ${esc(v.repo)}</code>
-    <button class="copy" data-cmd="github-checker pull ${esc(v.repo)}">copy</button>
-    <button disabled title="живая кнопка — M2 (TASK-210)">pull</button>`;
+  // живые whitelist-действия (M2/TASK-210): только явный клик, только live-хост
+  const actions = (v, live) => {
+    if (v.verdict !== "pull-first" || !live) return "—";
+    const pr = v.ahead ? ` <button class="act" data-act="create-pr"
+      data-dir="${esc(v.repo)}">open PR</button>` : "";
+    return `<button class="act" data-act="pull"
+      data-dir="${esc(v.repo)}">pull</button>${pr}
+      <span class="act-result" data-for="${esc(v.repo)}"></span>`;
+  };
   document.getElementById("sync-hosts").innerHTML =
     (rep.hosts || []).map(h => {
       const live = h.source === "live";
@@ -285,17 +291,39 @@ document.getElementById("sync-proposals").addEventListener("click", async e => {
   }
 });
 
+let actionToken = null;
+async function ensureActionToken() {
+  if (actionToken === null)
+    actionToken = (await get("/api/actions/session")).token;
+  return actionToken;
+}
+
 document.getElementById("sync-hosts").addEventListener("click", async e => {
-  const btn = e.target.closest("button.copy");
+  const btn = e.target.closest("button.act");
   if (!btn) return;
+  btn.disabled = true;
+  const out = btn.parentElement.querySelector(".act-result");
+  out.textContent = "…";
   try {
-    if (!navigator.clipboard) throw new Error("clipboard unavailable");
-    await navigator.clipboard.writeText(btn.dataset.cmd);
-    btn.textContent = "✓";
-  } catch {
-    btn.textContent = "✗";  // ложной галочки при недоступном clipboard нет
+    const resp = await fetch(`/api/actions/${btn.dataset.act}`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json",
+                "X-Action-Token": await ensureActionToken()},
+      body: JSON.stringify({dir: btn.dataset.dir}),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail ?? `HTTP ${resp.status}`);
+    out.textContent = data.ok
+      ? "✓ " + (data.pr_url ?? data.detail ?? "done")
+      : "✗ " + (data.error ?? "failed");
+    out.className = "act-result " + (data.ok ? "ok" : "err");
+    if (data.ok) setTimeout(refresh, 800);
+  } catch (err) {
+    out.textContent = "✗ " + err;
+    out.className = "act-result err";
+  } finally {
+    btn.disabled = false;
   }
-  setTimeout(() => { btn.textContent = "copy"; }, 1200);
 });
 
 async function refresh() {

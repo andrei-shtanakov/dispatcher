@@ -288,6 +288,61 @@ async def test_web_page_wires_sync_and_summary(tmp_path: Path) -> None:
         '"/api/sync"',
         '"/api/roadmap/summary"',
         '"/api/sync/track"',
-        "github-checker pull",  # copy-paste действия до M2-кнопок
+        '"/api/actions/session"',  # CSRF-токен живых действий (M2)
+        "X-Action-Token",
     ):
         assert marker in page, f"index.html потерял {marker}"
+
+
+async def test_action_endpoints_require_token_and_delegate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from dispatcher.core.actions import ActionOutcome, ActionRunner
+
+    calls = []
+
+    def fake_run(self, action, repo_dir):
+        calls.append((action, repo_dir))
+        return ActionOutcome(action=action, dir=repo_dir, ok=True, detail="done")
+
+    monkeypatch.setattr(ActionRunner, "run", fake_run)
+    async with _client(tmp_path) as client:
+        # без токена — 403, действие не вызвано
+        resp = await client.post("/api/actions/pull", json={"dir": "alpha"})
+        assert resp.status_code == 403
+        assert calls == []
+
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/actions/pull",
+            json={"dir": "alpha"},
+            headers={"X-Action-Token": token},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert calls == [("pull", "alpha")]
+
+        resp = await client.post(
+            "/api/actions/create-pr",
+            json={"dir": "alpha"},
+            headers={"X-Action-Token": token},
+        )
+        assert resp.status_code == 200
+        assert calls[-1] == ("open-pr", "alpha")
+
+
+async def test_action_busy_maps_to_409(tmp_path: Path, monkeypatch) -> None:
+    from dispatcher.core.actions import ActionBusyError, ActionRunner
+
+    def busy_run(self, action, repo_dir):
+        raise ActionBusyError("alpha: action already in flight")
+
+    monkeypatch.setattr(ActionRunner, "run", busy_run)
+    async with _client(tmp_path) as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/actions/pull",
+            json={"dir": "alpha"},
+            headers={"X-Action-Token": token},
+        )
+        assert resp.status_code == 409

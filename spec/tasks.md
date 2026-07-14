@@ -303,7 +303,7 @@ FR-06 (Should) — M2.
 ## Iteration «sync & roadmap» — M2
 
 ### TASK-210: Live whitelist action buttons
-🟠 P1 | ⬜ TODO | Est: 1d
+🟠 P1 | ✅ DONE | Est: 1d
 
 **Description:**
 `POST /api/actions/pull` / `POST /api/actions/create-pr` delegating to the
@@ -360,7 +360,7 @@ TASK-001 ──► TASK-206 (roadmap summary) ──┘        └──► TASK
 | M2 Surface completion | TASK-101 | 1/1 ✅ | — |
 | M3 Post-MVP views | TASK-102..105 | 4/4 ✅ | — |
 | **sync & roadmap M1** | TASK-201..209 | 9/9 ✅ | — |
-| **sync & roadmap M2** | TASK-210..211 | 0/2 ⬜ | ~1.5d |
+| **sync & roadmap M2** | TASK-210..211 | 1/2 🔄 | ~0.5d |
 
 sync & roadmap **M1 complete** (2026-07-14): все три Must наблюдаемы
 end-to-end в web и TUI. Осталось M2: живые кнопки действий (TASK-210,
