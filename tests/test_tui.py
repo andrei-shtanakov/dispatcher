@@ -500,3 +500,27 @@ items:
         assert row[0] == "arbiter"
         assert row[1] == "1/1"
         assert row[2] == "100%"
+
+
+async def test_sync_tab_empty_and_error_panels_stay_visible(
+    tmp_path: Path, monkeypatch
+) -> None:
+    status = _sync_status()
+    status.report.hosts.append(
+        HostPanel(host="mac-empty", source="kb", age_seconds=60.0, verdicts=[])
+    )
+    status.report.hosts.append(
+        HostPanel(host="mac-broken", source="kb", error="unsupported schema_version=2")
+    )
+    app = _app(tmp_path)
+    monkeypatch.setattr(app._sync_service, "get", lambda **kw: status)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        table = app.query_one("#sync-table", DataTable)
+        rows = [[str(c) for c in table.get_row_at(i)] for i in range(table.row_count)]
+        empty_row = next(r for r in rows if r[0].startswith("mac-empty"))
+        assert "(kb)" in empty_row[0]  # source виден и у пустой панели
+        assert "no tracked repos" in empty_row[2]
+        broken_row = next(r for r in rows if r[0].startswith("mac-broken"))
+        assert "(kb)" in broken_row[0]  # ...и у панели-ошибки
+        assert "schema_version" in broken_row[4]

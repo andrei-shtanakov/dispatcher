@@ -236,13 +236,27 @@ class DispatcherApp(App[None]):
         ).label = f"Sync · {report.top_line}"
         for panel in report.hosts:
             first = True
+            host_cell = f"{panel.host} ({panel.source})"
             if panel.error is not None:
                 table.add_row(
-                    panel.host,
+                    host_cell,
                     "—",
                     "—",
                     Text("error", style="bold red"),
                     Text(panel.error, style="red"),
+                    "—",
+                    "—",
+                )
+                continue
+            if not panel.verdicts:
+                # хост без tracked-репо всё равно виден — пустая панель
+                # не должна молча исчезать с экрана
+                table.add_row(
+                    host_cell,
+                    _age_cell(panel.age_seconds, panel.stale),
+                    Text("no tracked repos", style="dim"),
+                    _verdict_cell("unknown"),
+                    "",
                     "—",
                     "—",
                 )
@@ -252,7 +266,7 @@ class DispatcherApp(App[None]):
                     Text(f"📌 {v.repo}", style="bold") if v.is_kb else v.repo
                 )
                 table.add_row(
-                    f"{panel.host} ({panel.source})" if first else "",
+                    host_cell if first else "",
                     _age_cell(panel.age_seconds, panel.stale) if first else "",
                     repo_cell,
                     _verdict_cell(v.verdict),
