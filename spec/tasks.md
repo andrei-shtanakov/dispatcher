@@ -147,6 +147,183 @@ written handoff, not code.
 
 ---
 
+## Iteration «sync & roadmap» — M1 (Gate 2 decomposition)
+
+> Traceability for this section: approved discovery bundle
+> ([discovery-brief-customer.md](discovery-brief-customer.md) FR/NFR/CON,
+> [discovery-brief-engineer.md](discovery-brief-engineer.md) AP/CON) and the
+> Gate 1 design
+> [2026-07-14-sync-roadmap-design.md](../docs/superpowers/specs/2026-07-14-sync-roadmap-design.md)
+> (DESIGN-201..207). External handoffs all landed: snapshot contract v1
+> (github-checker#7), headless `pull`/`open-pr` (github-checker#8), KB
+> `derived/snapshots/` convention (prograph-vault#24).
+
+### TASK-201: Vendor the snapshot contract v1
+🔴 P0 | ⬜ TODO | Est: 0.5d
+
+**Description:**
+Pinned copy of `github-checker/contracts/snapshot/v1/` (schema + both golden
+fixtures) into `contracts/github-checker-snapshot/v1/` with a pin header
+(source repo, commit, sha256) — ADR-ECO-003 vendoring discipline.
+
+**Checklist:**
+- [ ] Vendored schema + fixtures + pin header
+- [ ] Pydantic ingestion model validating `schema_version == 1`; anything else → explicit rejection, not best-effort parse
+- [ ] CI test: both vendored fixtures parse and round-trip against the vendored schema
+
+**Traces to:** [DESIGN-201], brief FR-01, engineer AP-01/IF-03
+
+### TASK-202: Sync verdict engine (`core/sync.py`)
+🔴 P0 | ⬜ TODO | Est: 1.5d
+
+**Description:**
+Verdict per `(repo, host)`: `ok | pull-first | no-data | unknown(reason)`
+from the local live snapshot (`github-checker snapshot --local-only`, no
+network) plus KB host snapshots (`prograph-vault/derived/snapshots/*.json`)
+with `generated_at` age. KB repo (`prograph-vault`) is a pinned first-class
+row; the top-line answer is the worst verdict across the current host's
+repos. `gh_error` degrades only PR fields; `local.error`, stale (> 1 h) and
+`schema_version != 1` → `unknown(reason)`; absent repo on a host → `no-data`.
+
+**Checklist:**
+- [ ] Live local-only ingestion via `github-checker snapshot` subprocess
+- [ ] KB host snapshots ingestion + age computation (age is data: stale ≠ error)
+- [ ] Verdict table per DESIGN-202 incl. degradation matrix §4; unit tests per row
+- [ ] Top-line verdict + KB-repo special-casing
+
+**Traces to:** [DESIGN-202], brief FR-01/G-03, CON-03/CON-04, engineer AP-02
+**Depends on:** [TASK-201]
+
+### TASK-203: Background fetch run (verdict freshness)
+🔴 P0 | ⬜ TODO | Est: 1d
+
+**Description:**
+Async fetch-enabled snapshot run refreshing ahead/behind vs origin without
+blocking render: screen serves cached data instantly (NFR-02 < 5 s), fresh
+verdict lands ≤ 30 s (NFR-03), an in-flight flag drives the UI corner
+spinner.
+
+**Checklist:**
+- [ ] Non-blocking background run + in-flight status exposed to API
+- [ ] Verdict timestamp/age on every response
+- [ ] Test: render path never awaits the network run
+
+**Traces to:** [DESIGN-202], brief NFR-02/NFR-03
+**Depends on:** [TASK-202]
+
+### TASK-204: Publisher `dispatcher publish-snapshot`
+🔴 P0 | ⬜ TODO | Est: 1d
+
+**Description:**
+CLI: run `github-checker snapshot --workspace`, atomically write
+`prograph-vault/derived/snapshots/<host>.json`, commit to the KB repo —
+the only write path, and only into the KB tool zone (prograph-vault#24
+convention). Scheduling (cron/launchd ≤ 1 h) stays with the user; document
+the crontab line.
+
+**Checklist:**
+- [ ] Atomic write + KB git commit; failure exits non-zero (cron-visible)
+- [ ] Docs: crontab/launchd example per machine
+- [ ] Test: output validates against the vendored contract (TASK-201)
+
+**Traces to:** [DESIGN-203], engineer AP-02/CON-01, brief G-03
+**Depends on:** [TASK-201]
+
+### TASK-205: Repo auto-discovery proposals
+🔴 P0 | ⬜ TODO | Est: 1d
+
+**Description:**
+Diff the snapshot workspace walk against dispatcher's tracked set; new repo
+→ proposal surfaced via API/UI; confirm/reject persisted in
+`dispatcher.toml` (`tracked`/`ignored`) — dispatcher's own config, not an
+observed-repo mutation. Appears at the next refresh, no daemon.
+
+**Checklist:**
+- [ ] Tracked/ignored persistence + `core/discovery.py` diff
+- [ ] Proposal rows in sync API; confirm/reject endpoint (dispatcher config only)
+- [ ] Test: clone → proposal at next refresh → confirm → tracked / reject → silent
+
+**Traces to:** [DESIGN-205], brief FR-02/G-04/J-05
+**Depends on:** [TASK-202]
+
+### TASK-206: Ecosystem roadmap summary
+🔴 P0 | ⬜ TODO | Est: 1d
+
+**Description:**
+Aggregation over the existing roadmap read-model: per `owner_project` —
+readiness share, `lagging` flag (below roadmap-file median), and
+`contract-drift` flag via `check_contracts`. `GET /api/roadmap/summary`.
+No new evidence rules (closed-set principle).
+
+**Checklist:**
+- [ ] Aggregation + summary endpoint with tests
+- [ ] Reuses existing `_RULES`/contracts checker only
+
+**Traces to:** [DESIGN-206], brief FR-03/G-01
+**Depends on:** [TASK-001]
+
+### TASK-207: Sync API endpoints
+🔴 P0 | ⬜ TODO | Est: 0.5d
+
+**Description:**
+`GET /api/sync` (verdict table + top-line + in-flight flag) and
+`GET /api/sync/hosts` (host panels with ages) in `server/app.py`,
+pydantic-typed like the rest of the API.
+
+**Traces to:** [DESIGN-207]
+**Depends on:** [TASK-202], [TASK-203]
+
+### TASK-208: Web Sync screen + roadmap summary row
+🔴 P0 | ⬜ TODO | Est: 1.5d
+
+**Description:**
+Sync section in `server/static/index.html`: host panels with age badges
+(> 1 h → amber `stale`), per-repo verdict rows, KB pinned on top, corner
+«Fetching…» spinner, discovery proposals with confirm/reject, whitelist
+actions rendered as copy-paste commands (`github-checker pull <dir>` /
+`open-pr <dir>`) next to disabled buttons — live buttons are M2
+(TASK-210). Roadmap section gains the summary header row (TASK-206).
+
+**Traces to:** [DESIGN-207], brief FR-01 acceptance (spinner in the corner, verdict ≤ 30 s)
+**Depends on:** [TASK-205], [TASK-206], [TASK-207]
+
+### TASK-209: TUI Sync tab
+🟠 P1 | ⬜ TODO | Est: 1d
+
+**Description:**
+`TabPane("Sync")` mirroring the web verdict table (hosts, ages, top-line);
+Roadmap tab gains the summary header. Full J-01/J-03 terminal parity is
+FR-06 (Should) — M2.
+
+**Traces to:** [DESIGN-207], brief G-05
+**Depends on:** [TASK-207]
+
+## Iteration «sync & roadmap» — M2
+
+### TASK-210: Live whitelist action buttons
+🟠 P1 | ⬜ TODO | Est: 1d
+
+**Description:**
+`POST /api/actions/pull` / `POST /api/actions/create-pr` delegating to the
+shipped github-checker headless commands (v0.3.0, github-checker#8):
+explicit click only, CSRF token, one in-flight action per repo, audit log
+line. Web/TUI buttons replace the copy-paste fallback.
+
+**Traces to:** [DESIGN-204], brief FR-01/NFR-01
+**Depends on:** [TASK-208]
+
+### TASK-211: VSCode status-bar verdict
+🟡 P2 | ⬜ TODO | Est: 0.5d
+
+**Description:**
+Aggregate top-line verdict in the VSCode extension status bar, consuming
+`GET /api/sync`.
+
+**Traces to:** [DESIGN-207]
+**Depends on:** [TASK-207]
+
+---
+
 ## Not planned
 
 Explicitly out of scope per the recommendation (§10, §13): Owners/load
@@ -165,6 +342,12 @@ TASK-001 (core ✅)
  ├──► TASK-102 (drift)
  ├──► TASK-103 (freshness)
  └──► TASK-105 (owner_role handoff)
+
+TASK-201 (vendored contract)
+ ├──► TASK-202 (verdict engine) ──► TASK-203 (bg fetch) ──► TASK-207 (sync API)
+ │        └──► TASK-205 (auto-discovery) ─┐                     ├──► TASK-209 (TUI tab)
+ └──► TASK-204 (KB publisher)             ├──► TASK-208 (web)   └──► TASK-211 (VSCode, M2)
+TASK-001 ──► TASK-206 (roadmap summary) ──┘        └──► TASK-210 (live buttons, M2)
 ```
 
 ## Summary
@@ -174,5 +357,8 @@ TASK-001 (core ✅)
 | M1 Roadmap MVP | TASK-001..004 | 4/4 ✅ | — |
 | M2 Surface completion | TASK-101 | 1/1 ✅ | — |
 | M3 Post-MVP views | TASK-102..105 | 4/4 ✅ | — |
+| **sync & roadmap M1** | TASK-201..209 | 0/9 ⬜ | ~8d |
+| **sync & roadmap M2** | TASK-210..211 | 0/2 ⬜ | ~1.5d |
 
-All roadmap M2/M3 tasks complete.
+Roadmap-module milestones complete; the sync & roadmap iteration
+(Gate 2 decomposition of the approved discovery bundle) is next.
