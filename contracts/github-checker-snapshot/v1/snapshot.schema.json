@@ -1,0 +1,417 @@
+{
+  "$defs": {
+    "Branch": {
+      "description": "A git branch.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "Branch",
+      "type": "object"
+    },
+    "CopilotReview": {
+      "description": "Summary of GitHub Copilot's review on a pull request.",
+      "properties": {
+        "state": {
+          "title": "State",
+          "type": "string"
+        },
+        "comment_count": {
+          "title": "Comment Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "state",
+        "comment_count"
+      ],
+      "title": "CopilotReview",
+      "type": "object"
+    },
+    "Issue": {
+      "description": "An open issue (pull requests excluded).",
+      "properties": {
+        "number": {
+          "title": "Number",
+          "type": "integer"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "author": {
+          "title": "Author",
+          "type": "string"
+        },
+        "labels": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Labels",
+          "type": "array"
+        }
+      },
+      "required": [
+        "number",
+        "title",
+        "author"
+      ],
+      "title": "Issue",
+      "type": "object"
+    },
+    "LocalStatus": {
+      "description": "State of a local clone relative to its upstream.",
+      "properties": {
+        "branch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Branch"
+        },
+        "ahead": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Ahead"
+        },
+        "behind": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Behind"
+        },
+        "dirty": {
+          "title": "Dirty",
+          "type": "boolean"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        }
+      },
+      "required": [
+        "branch",
+        "ahead",
+        "behind",
+        "dirty"
+      ],
+      "title": "LocalStatus",
+      "type": "object"
+    },
+    "PullRequest": {
+      "description": "An open pull request.",
+      "properties": {
+        "number": {
+          "title": "Number",
+          "type": "integer"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "author": {
+          "title": "Author",
+          "type": "string"
+        },
+        "head_branch": {
+          "title": "Head Branch",
+          "type": "string"
+        },
+        "is_dependabot": {
+          "title": "Is Dependabot",
+          "type": "boolean"
+        },
+        "copilot_review": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CopilotReview"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "number",
+        "title",
+        "author",
+        "head_branch",
+        "is_dependabot"
+      ],
+      "title": "PullRequest",
+      "type": "object"
+    },
+    "RepoSnapshot": {
+      "description": "One workspace repository: local git state plus optional GitHub state.",
+      "properties": {
+        "dir": {
+          "title": "Dir",
+          "type": "string"
+        },
+        "remote": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Remote"
+        },
+        "local": {
+          "$ref": "#/$defs/LocalStatus"
+        },
+        "github": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RepoState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "dir",
+        "remote",
+        "local"
+      ],
+      "title": "RepoSnapshot",
+      "type": "object"
+    },
+    "RepoState": {
+      "description": "Everything the TUI shows about one repository.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "pulls": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PullRequest"
+          },
+          "title": "Pulls",
+          "type": "array"
+        },
+        "issues": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/Issue"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Issues"
+        },
+        "branches": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Branch"
+          },
+          "title": "Branches",
+          "type": "array"
+        },
+        "alerts": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Alerts"
+        },
+        "rulesets": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/RulesetInfo"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rulesets"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "updated_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Updated At"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "local": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocalStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "RepoState",
+      "type": "object"
+    },
+    "RulesetInfo": {
+      "description": "Item of GET repos/{r}/rulesets.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "integer"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "enforcement": {
+          "title": "Enforcement",
+          "type": "string"
+        },
+        "target": {
+          "title": "Target",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "enforcement",
+        "target"
+      ],
+      "title": "RulesetInfo",
+      "type": "object"
+    }
+  },
+  "description": "Full fleet state; `host` marks whose clones the local data describes.\n\nThe JSON shape is a frozen contract (`contracts/snapshot/v1/`): consumers\nkey off `schema_version`, and any breaking change to this model or its\nparts must ship as v2 alongside v1 — never as an edit to v1.",
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "workspace": {
+      "format": "path",
+      "title": "Workspace",
+      "type": "string"
+    },
+    "host": {
+      "title": "Host",
+      "type": "string"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "gh_error": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Gh Error"
+    },
+    "repos": {
+      "items": {
+        "$ref": "#/$defs/RepoSnapshot"
+      },
+      "title": "Repos",
+      "type": "array"
+    }
+  },
+  "required": [
+    "workspace",
+    "host",
+    "generated_at",
+    "gh_error",
+    "repos"
+  ],
+  "title": "WorkspaceSnapshot",
+  "type": "object"
+}
