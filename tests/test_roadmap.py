@@ -788,3 +788,20 @@ def test_build_summary_contract_unknown_is_not_drift() -> None:
     contracts = [ContractStatus(name="obs", canonical_path="x", in_sync=None)]
     summary = build_summary(roadmap, contracts)
     assert not summary.projects[0].contract_drift
+
+
+def test_build_summary_lagging_consistent_with_rounded_values() -> None:
+    # 1/3 округляется до 0.3333 == медиана 0.3333 → lagging обязан быть False,
+    # хотя неокруглённые значения различаются в 5-м знаке
+    roadmap = _summary_roadmap(
+        [_view_for_summary(f"A-{i}", "alpha", "planned") for i in range(2)]
+        + [_view_for_summary("A-9", "alpha", "implemented")]  # alpha: 1/3
+        + [_view_for_summary(f"B-{i}", "beta", "planned") for i in range(9999)]
+        + [_view_for_summary(f"B-d{i}", "beta", "implemented") for i in range(3333)]
+    )  # beta: 3333/13332 = 0.24999… → 0.25; медиана (0.25+0.3333)/2 → 0.2917
+    summary = build_summary(roadmap, [])
+    for p in summary.projects:
+        assert p.lagging == (
+            summary.median_readiness is not None
+            and p.readiness < summary.median_readiness
+        ), f"{p.project}: флаг противоречит видимым значениям"

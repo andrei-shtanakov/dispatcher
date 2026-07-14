@@ -242,12 +242,16 @@ def build_summary(
     for item in roadmap.items:
         grouped.setdefault(item.owner_project or "(unassigned)", []).append(item)
 
+    # округляем ДО сравнения: lagging обязан совпадать с тем, что видит клиент
+    # (иначе возможен ответ readiness == median_readiness при lagging=true)
     readiness_by_project = {
-        project: sum(1 for i in items if i.computed_status in _DONE) / len(items)
+        project: round(
+            sum(1 for i in items if i.computed_status in _DONE) / len(items), 4
+        )
         for project, items in grouped.items()
     }
     median = (
-        statistics.median(readiness_by_project.values())
+        round(statistics.median(readiness_by_project.values()), 4)
         if readiness_by_project
         else None
     )
@@ -256,7 +260,7 @@ def build_summary(
             project=project,
             total=len(items),
             done=sum(1 for i in items if i.computed_status in _DONE),
-            readiness=round(readiness_by_project[project], 4),
+            readiness=readiness_by_project[project],
             lagging=median is not None and readiness_by_project[project] < median,
             contract_drift=any(i.id in drifted_ids for i in items),
         )
@@ -264,7 +268,7 @@ def build_summary(
     ]
     return SummaryResponse(
         projects=projects,
-        median_readiness=round(median, 4) if median is not None else None,
+        median_readiness=median,
         warnings=roadmap.warnings,
     )
 
