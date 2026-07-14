@@ -269,19 +269,32 @@ document.getElementById("sync-proposals").addEventListener("click", async e => {
   const btn = e.target.closest("button[data-track]");
   if (!btn) return;
   btn.disabled = true;
-  await fetch("/api/sync/track", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({dir: btn.dataset.track, action: btn.dataset.action}),
-  });
-  refresh();
+  try {
+    const resp = await fetch("/api/sync/track", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({dir: btn.dataset.track,
+                            action: btn.dataset.action}),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    refresh();
+  } catch (err) {
+    btn.disabled = false;  // ошибка не должна оставить кнопку мёртвой
+    btn.closest(".proposal").insertAdjacentHTML("beforeend",
+      ` <span class="err">✗ ${esc(String(err))}</span>`);
+  }
 });
 
-document.getElementById("sync-hosts").addEventListener("click", e => {
+document.getElementById("sync-hosts").addEventListener("click", async e => {
   const btn = e.target.closest("button.copy");
   if (!btn) return;
-  navigator.clipboard?.writeText(btn.dataset.cmd);
-  btn.textContent = "✓";
+  try {
+    if (!navigator.clipboard) throw new Error("clipboard unavailable");
+    await navigator.clipboard.writeText(btn.dataset.cmd);
+    btn.textContent = "✓";
+  } catch {
+    btn.textContent = "✗";  // ложной галочки при недоступном clipboard нет
+  }
   setTimeout(() => { btn.textContent = "copy"; }, 1200);
 });
 
