@@ -79,7 +79,9 @@ def parse_snapshot(payload: str) -> WorkspaceSnapshotV1:
     try:
         snapshot = WorkspaceSnapshotV1.model_validate_json(payload)
     except ValidationError as err:
-        raise SnapshotContractError(f"snapshot does not match contract v1: {err}") from err
+        raise SnapshotContractError(
+            f"snapshot does not match contract v1: {err}"
+        ) from err
     if snapshot.schema_version != SUPPORTED_SCHEMA_VERSION:
         raise SnapshotContractError(
             f"unsupported schema_version={snapshot.schema_version!r}; "

@@ -23,7 +23,9 @@ def test_pin_readme_hashes_match_vendored_files() -> None:
     assert rows, "pin README lists no hashes"
     for rel, expected in rows:
         actual = hashlib.sha256((VENDORED / rel).read_bytes()).hexdigest()
-        assert actual == expected, f"{rel} diverged from its pin — re-vendor consciously"
+        assert actual == expected, (
+            f"{rel} diverged from its pin — re-vendor consciously"
+        )
 
 
 @pytest.mark.parametrize("fixture", FIXTURES, ids=lambda p: p.name)
@@ -38,7 +40,9 @@ def test_vendored_fixture_parses_and_roundtrips(fixture: Path) -> None:
 
 
 def test_degraded_fixture_reports_gh_error() -> None:
-    degraded = parse_snapshot((VENDORED / "fixtures" / "snapshot_degraded.json").read_text())
+    degraded = parse_snapshot(
+        (VENDORED / "fixtures" / "snapshot_degraded.json").read_text()
+    )
     assert degraded.gh_error is not None
     assert all(repo.github is None for repo in degraded.repos)
 
@@ -64,5 +68,7 @@ def test_additive_unknown_fields_are_tolerated() -> None:
 
 
 def test_age_seconds_is_positive_for_fixture() -> None:
-    snapshot = parse_snapshot((VENDORED / "fixtures" / "snapshot_full.json").read_text())
+    snapshot = parse_snapshot(
+        (VENDORED / "fixtures" / "snapshot_full.json").read_text()
+    )
     assert snapshot.age_seconds() > 0

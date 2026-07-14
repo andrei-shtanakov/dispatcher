@@ -174,7 +174,7 @@ fixtures) into `contracts/github-checker-snapshot/v1/` with a pin header
 **Traces to:** [DESIGN-201], brief FR-01, engineer AP-01/IF-03
 
 ### TASK-202: Sync verdict engine (`core/sync.py`)
-🔴 P0 | ⬜ TODO | Est: 1.5d
+🔴 P0 | ✅ DONE | Est: 1.5d
 
 **Description:**
 Verdict per `(repo, host)`: `ok | pull-first | no-data | unknown(reason)`
@@ -186,10 +186,10 @@ repos. `gh_error` degrades only PR fields; `local.error`, stale (> 1 h) and
 `schema_version != 1` → `unknown(reason)`; absent repo on a host → `no-data`.
 
 **Checklist:**
-- [ ] Live local-only ingestion via `github-checker snapshot` subprocess
-- [ ] KB host snapshots ingestion + age computation (age is data: stale ≠ error)
-- [ ] Verdict table per DESIGN-202 incl. degradation matrix §4; unit tests per row
-- [ ] Top-line verdict + KB-repo special-casing
+- [x] Live local-only ingestion via `github-checker snapshot` subprocess (`run_live_snapshot`, command override for tests)
+- [x] KB host snapshots ingestion + age computation (`load_kb_snapshots`; stale > 1 h → panel amber, verdicts unknown)
+- [x] Verdict table per DESIGN-202 incl. degradation matrix §4; unit tests per row (`tests/test_sync.py`, 16)
+- [x] Top-line verdict (pull-first > unknown > ok) + KB-repo pinned first row
 
 **Traces to:** [DESIGN-202], brief FR-01/G-03, CON-03/CON-04, engineer AP-02
 **Depends on:** [TASK-201]
