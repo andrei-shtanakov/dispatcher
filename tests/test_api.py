@@ -183,3 +183,37 @@ async def test_sync_track_unconfigured_is_409(tmp_path: Path) -> None:
             "/api/sync/track", json={"dir": "a", "action": "track"}
         )
     assert resp.status_code == 409
+
+
+async def test_roadmap_summary_endpoint(tmp_path: Path) -> None:
+    roadmaps = tmp_path / "prograph-vault" / "authored" / "roadmaps"
+    roadmaps.mkdir(parents=True)
+    (roadmaps / "eco.yaml").write_text(
+        """
+version: 1
+roadmap: eco
+items:
+  - id: E-1
+    title: Detected project
+    owner_project: atp-platform
+    evidence_rules:
+      - rule: project_detected
+        kind: implementation
+        project: atp-platform
+  - id: E-2
+    title: Never detected
+    owner_project: ghost
+    evidence_rules:
+      - rule: project_detected
+        kind: implementation
+        project: ghost
+"""
+    )
+    async with _client(tmp_path) as client:
+        resp = await client.get("/api/roadmap/summary")
+    assert resp.status_code == 200
+    data = resp.json()
+    by_name = {p["project"]: p for p in data["projects"]}
+    assert by_name["atp-platform"]["readiness"] == 1.0
+    assert by_name["ghost"]["readiness"] == 0.0
+    assert by_name["ghost"]["lagging"] is True

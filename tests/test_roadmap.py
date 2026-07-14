@@ -12,10 +12,13 @@ from dispatcher.core.contracts import check_contracts
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.models import ContractStatus, ProjectSnapshot, TaskInfo
 from dispatcher.core.roadmap import (
+    RoadmapItemView,
+    RoadmapResponse,
     build_blockers,
     build_drift,
     build_phases,
     build_roadmap,
+    build_summary,
     contract_sync_by_name,
     default_roadmap_dirs,
 )
@@ -707,3 +710,81 @@ async def test_aggregation_endpoints(tmp_path: Path) -> None:
     # the catch-all /{item_id} still resolves a genuine roadmap item id
     assert item.status_code == 200
     assert item.json()["id"] == "RD-1"
+
+
+def _view_for_summary(
+    id: str,
+    owner: str | None,
+    status: str,
+    target_contract: str | None = None,
+) -> RoadmapItemView:
+    return RoadmapItemView(
+        id=id,
+        title=id,
+        owner_project=owner,
+        computed_status=status,
+        target_contract=target_contract,
+        source="t.yaml",
+    )
+
+
+def _summary_roadmap(items: list[RoadmapItemView]) -> RoadmapResponse:
+    return RoadmapResponse(roadmaps=["t.yaml"], items=items, warnings=[])
+
+
+def test_build_summary_readiness_and_lagging() -> None:
+    roadmap = _summary_roadmap(
+        [
+            _view_for_summary("A-1", "alpha", "implemented"),
+            _view_for_summary("A-2", "alpha", "verified"),
+            _view_for_summary("B-1", "beta", "implemented"),
+            _view_for_summary("B-2", "beta", "planned"),
+            _view_for_summary("C-1", "gamma", "unknown"),
+        ]
+    )
+    summary = build_summary(roadmap, [])
+    by_name = {p.project: p for p in summary.projects}
+    assert by_name["alpha"].readiness == 1.0
+    assert by_name["beta"].readiness == 0.5
+    assert by_name["gamma"].readiness == 0.0
+    assert summary.median_readiness == 0.5
+    # lagging = строго ниже медианы: только gamma
+    assert not by_name["alpha"].lagging
+    assert not by_name["beta"].lagging
+    assert by_name["gamma"].lagging
+
+
+def test_build_summary_contract_drift_flag() -> None:
+    roadmap = _summary_roadmap(
+        [
+            _view_for_summary("A-1", "alpha", "implemented", target_contract="obs"),
+            _view_for_summary("B-1", "beta", "implemented", target_contract="snap"),
+        ]
+    )
+    contracts = [
+        ContractStatus(name="obs", canonical_path="x", in_sync=False, detail="drift"),
+        ContractStatus(name="snap", canonical_path="y", in_sync=True),
+    ]
+    summary = build_summary(roadmap, contracts)
+    by_name = {p.project: p for p in summary.projects}
+    assert by_name["alpha"].contract_drift
+    assert not by_name["beta"].contract_drift
+
+
+def test_build_summary_unassigned_and_empty() -> None:
+    summary = build_summary(_summary_roadmap([]), [])
+    assert summary.projects == []
+    assert summary.median_readiness is None
+
+    roadmap = _summary_roadmap([_view_for_summary("X-1", None, "planned")])
+    summary = build_summary(roadmap, [])
+    assert summary.projects[0].project == "(unassigned)"
+
+
+def test_build_summary_contract_unknown_is_not_drift() -> None:
+    roadmap = _summary_roadmap(
+        [_view_for_summary("A-1", "alpha", "planned", target_contract="obs")]
+    )
+    contracts = [ContractStatus(name="obs", canonical_path="x", in_sync=None)]
+    summary = build_summary(roadmap, contracts)
+    assert not summary.projects[0].contract_drift

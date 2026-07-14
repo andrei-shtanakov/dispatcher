@@ -247,7 +247,7 @@ observed-repo mutation. Appears at the next refresh, no daemon.
 **Depends on:** [TASK-202]
 
 ### TASK-206: Ecosystem roadmap summary
-🔴 P0 | ⬜ TODO | Est: 1d
+🔴 P0 | ✅ DONE | Est: 1d
 
 **Description:**
 Aggregation over the existing roadmap read-model: per `owner_project` —
@@ -256,8 +256,8 @@ readiness share, `lagging` flag (below roadmap-file median), and
 No new evidence rules (closed-set principle).
 
 **Checklist:**
-- [ ] Aggregation + summary endpoint with tests
-- [ ] Reuses existing `_RULES`/contracts checker only
+- [x] Aggregation + summary endpoint with tests (`build_summary` в roadmap.py; `GET /api/roadmap/summary`; readiness = done/total, lagging = строго ниже медианы, contract_drift через build_drift)
+- [x] Reuses existing `_RULES`/contracts checker only (чистая проекция build_roadmap/build_drift; ноль новых правил)
 
 **Traces to:** [DESIGN-206], brief FR-03/G-01
 **Depends on:** [TASK-001]
