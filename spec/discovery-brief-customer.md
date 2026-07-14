@@ -5,7 +5,7 @@ version: 1
 generated_by: discovery-agent@claude-fable-5
 generated_at: 2026-07-14
 source_prompt_version: sha256:7e392c0deeb405d009944e80deb08f26def602eb0cef8b969623c540ac339fa6
-validation: pending
+validation: pass
 approved_by: null
 approved_at: null
 owner_role: product
@@ -34,21 +34,24 @@ open_questions: 2
 blocking_open_questions: 0
 conflicts: 0
 traces_to:
-  - dispatcher/README.md
-  - dispatcher/COWORK_CONTEXT.md
+  - README.md
+  - COWORK_CONTEXT.md
 ---
 
 # Discovery Brief — dispatcher, итерация «sync & roadmap» (customer-фрейм)
 
 ## Charter (→ Gate BR)
 
-Dispatcher (read-only агрегатор состояния полирепо-экосистемы: web UI, TUI, VSCode-ext,
-API) закрыл исходную боль «состояние видно только ручным обходом», но стейкхолдер
+Dispatcher (агрегатор состояния полирепо-экосистемы: web UI, TUI, VSCode-ext, API;
+до этой итерации — строго read-only) закрыл исходную боль «состояние видно только
+ручным обходом», но стейкхолдер
 регулярно возвращается в репо/git руками по трём причинам: проверка рассинхрона машин
 (разработка на нескольких машинах — риск дублирования работы и устаревшего KB),
 подключение новых репо требует документации и правки конфига, и постоянное переключение
 терминал↔браузер. Плюс появилась команда, которая не может войти в проект без
-вспомогательных средств. Итерация: синхронизация, авто-обнаружение, сводный roadmap.
+вспомогательных средств. Итерация: синхронизация, авто-обнаружение, сводный roadmap —
+и осознанное ослабление read-only до белого списка синк-действий (решение X-01,
+нормировано в NFR-01).
 
 ## Goals
 
