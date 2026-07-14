@@ -290,7 +290,7 @@ actions rendered as copy-paste commands (`github-checker pull <dir>` /
 **Depends on:** [TASK-205], [TASK-206], [TASK-207]
 
 ### TASK-209: TUI Sync tab
-🟠 P1 | ⬜ TODO | Est: 1d
+🟠 P1 | ✅ DONE | Est: 1d
 
 **Description:**
 `TabPane("Sync")` mirroring the web verdict table (hosts, ages, top-line);
@@ -359,8 +359,9 @@ TASK-001 ──► TASK-206 (roadmap summary) ──┘        └──► TASK
 | M1 Roadmap MVP | TASK-001..004 | 4/4 ✅ | — |
 | M2 Surface completion | TASK-101 | 1/1 ✅ | — |
 | M3 Post-MVP views | TASK-102..105 | 4/4 ✅ | — |
-| **sync & roadmap M1** | TASK-201..209 | 0/9 ⬜ | ~8d |
+| **sync & roadmap M1** | TASK-201..209 | 9/9 ✅ | — |
 | **sync & roadmap M2** | TASK-210..211 | 0/2 ⬜ | ~1.5d |
 
-Roadmap-module milestones complete; the sync & roadmap iteration
-(Gate 2 decomposition of the approved discovery bundle) is next.
+sync & roadmap **M1 complete** (2026-07-14): все три Must наблюдаемы
+end-to-end в web и TUI. Осталось M2: живые кнопки действий (TASK-210,
+github-checker headless-команды уже отгружены) и VSCode-вердикт (TASK-211).
