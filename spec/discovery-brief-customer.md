@@ -1,15 +1,15 @@
 ---
 spec_stage: discovery
-status: draft
+status: approved
 version: 1
 generated_by: discovery-agent@claude-fable-5
 generated_at: 2026-07-14
 source_prompt_version: sha256:7e392c0deeb405d009944e80deb08f26def602eb0cef8b969623c540ac339fa6
 validation: pass
-approved_by: null
-approved_at: null
+approved_by: discovery-agent@claude-fable-5
+approved_at: 2026-07-14
 owner_role: product
-approver: null
+approver: andrei-shtanakov
 schema: discovery-brief
 schema_version: 1
 feeds: [charter, requirements]
