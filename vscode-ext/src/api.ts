@@ -76,6 +76,19 @@ export interface ProjectDetail {
   warnings: string[];
 }
 
+export interface SyncReportSummary {
+  current_host: string;
+  top_line: string; // ok | pull-first | no-data | unknown
+  top_reason: string | null;
+}
+
+export interface SyncStatusResponse {
+  report: SyncReportSummary;
+  fetch_in_flight: boolean;
+  last_fetch_at: string | null;
+  last_fetch_error: string | null;
+}
+
 const TIMEOUT_MS = 3000;
 
 export class ApiClient {
@@ -105,5 +118,9 @@ export class ApiClient {
 
   roadmap(): Promise<RoadmapResponse> {
     return this.get("/api/roadmap");
+  }
+
+  sync(): Promise<SyncStatusResponse> {
+    return this.get("/api/sync");
   }
 }

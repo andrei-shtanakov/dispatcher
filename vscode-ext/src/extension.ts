@@ -77,15 +77,21 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       projects.setData(overview.projects);
-      status.update(overview);
       server.markOnline();
-      const [events, roadmapData] = await Promise.allSettled([
+      const [events, roadmapData, syncData] = await Promise.allSettled([
         api.errors(),
         api.roadmap(),
+        api.sync(),
       ]);
       errors.setData(events.status === "fulfilled" ? events.value : null);
       roadmap.setData(
         roadmapData.status === "fulfilled" ? roadmapData.value : null,
+      );
+      // вердикт деградирует независимо: старый сервер без /api/sync
+      // не гасит остальные вьюхи (тот же принцип, что errors/roadmap)
+      status.update(
+        overview,
+        syncData.status === "fulfilled" ? syncData.value : null,
       );
     } finally {
       polling = false;

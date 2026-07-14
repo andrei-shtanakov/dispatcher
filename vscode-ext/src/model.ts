@@ -8,6 +8,7 @@ import type {
   ProjectDetail,
   RoadmapItemView,
   RoadmapResponse,
+  SyncStatusResponse,
 } from "./api";
 
 export const MSG_LIMIT = 160; // same truncation as web and TUI
@@ -90,6 +91,21 @@ export function statusText(overview: OverviewResponse | null): string {
   const detected = overview.projects.filter((p) => p.detected);
   const withErrors = detected.filter((p) => (p.counts.errors ?? 0) > 0);
   return `$(pulse) disp: ${detected.length}✓ ${withErrors.length}✗`;
+}
+
+/** Sync verdict suffix for the status bar; empty when sync is unavailable. */
+export function verdictText(sync: SyncStatusResponse | null): string {
+  if (sync === null) {
+    return "";
+  }
+  const icon =
+    sync.report.top_line === "ok"
+      ? "$(check)"
+      : sync.report.top_line === "pull-first"
+        ? "$(warning)"
+        : "$(question)";
+  const spin = sync.fetch_in_flight ? " $(sync~spin)" : "";
+  return ` · ${icon} ${sync.report.top_line}${spin}`;
 }
 
 export interface StatusIcon {

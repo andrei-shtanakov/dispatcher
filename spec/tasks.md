@@ -315,7 +315,7 @@ line. Web/TUI buttons replace the copy-paste fallback.
 **Depends on:** [TASK-208]
 
 ### TASK-211: VSCode status-bar verdict
-🟡 P2 | ⬜ TODO | Est: 0.5d
+🟡 P2 | ✅ DONE | Est: 0.5d
 
 **Description:**
 Aggregate top-line verdict in the VSCode extension status bar, consuming
