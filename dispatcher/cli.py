@@ -26,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--workspace",
         type=Path,
         default=None,
-        help="polyrepo root (default: first configured root)",
+        help="polyrepo root (default: first configured root that exists on disk)",
     )
     publish.add_argument(
         "--no-push",

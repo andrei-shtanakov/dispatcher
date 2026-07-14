@@ -125,6 +125,22 @@ def test_publish_pushes_to_origin(tmp_path: Path) -> None:
     assert "chore(snapshots): mac-a" in remote_log
 
 
+def test_write_snapshot_rejects_traversal_host(tmp_path: Path) -> None:
+    evil = make_snapshot()
+    evil.host = "../escape"
+    with pytest.raises(PublishError, match="unsafe host"):
+        write_snapshot(evil, tmp_path / "snapshots")
+    assert not (tmp_path / "escape.json").exists()
+
+
+def test_commit_outside_vault_is_publish_error(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    stray = tmp_path / "elsewhere.json"
+    stray.write_text("{}")
+    with pytest.raises(PublishError, match="outside the KB repo"):
+        commit_and_push(vault, stray, push=False)
+
+
 def test_publish_without_kb_repo_fails(tmp_path: Path) -> None:
     with pytest.raises(PublishError, match="KB repo not found"):
         publish(tmp_path, push=False, snapshot=make_snapshot())
