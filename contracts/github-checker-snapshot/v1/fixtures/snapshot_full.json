@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "workspace": "/home/dev/workspace",
+  "host": "machine-a",
+  "generated_at": "2026-07-14T12:00:00Z",
+  "gh_error": null,
+  "repos": [
+    {
+      "dir": "alpha",
+      "remote": "owner/alpha",
+      "local": {
+        "branch": "master",
+        "ahead": 2,
+        "behind": 0,
+        "dirty": true,
+        "error": null
+      },
+      "github": {
+        "name": "owner/alpha",
+        "pulls": [
+          {
+            "number": 7,
+            "title": "Fix sync",
+            "author": "dev",
+            "head_branch": "fix/sync",
+            "is_dependabot": false,
+            "copilot_review": {
+              "state": "COMMENTED",
+              "comment_count": 3
+            }
+          }
+        ],
+        "issues": [
+          {
+            "number": 12,
+            "title": "Stale snapshot",
+            "author": "dev",
+            "labels": [
+              "bug"
+            ]
+          }
+        ],
+        "branches": [
+          {
+            "name": "master"
+          },
+          {
+            "name": "fix/sync"
+          }
+        ],
+        "alerts": 0,
+        "rulesets": null,
+        "error": null,
+        "updated_at": "2026-07-14T12:00:00Z",
+        "path": null,
+        "local": null
+      }
+    },
+    {
+      "dir": "no-remote",
+      "remote": null,
+      "local": {
+        "branch": "main",
+        "ahead": null,
+        "behind": null,
+        "dirty": false,
+        "error": "no upstream"
+      },
+      "github": null
+    }
+  ]
+}

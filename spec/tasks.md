@@ -159,7 +159,7 @@ written handoff, not code.
 > `derived/snapshots/` convention (prograph-vault#24).
 
 ### TASK-201: Vendor the snapshot contract v1
-🔴 P0 | ⬜ TODO | Est: 0.5d
+🔴 P0 | ✅ DONE | Est: 0.5d
 
 **Description:**
 Pinned copy of `github-checker/contracts/snapshot/v1/` (schema + both golden
@@ -167,9 +167,9 @@ fixtures) into `contracts/github-checker-snapshot/v1/` with a pin header
 (source repo, commit, sha256) — ADR-ECO-003 vendoring discipline.
 
 **Checklist:**
-- [ ] Vendored schema + fixtures + pin header
-- [ ] Pydantic ingestion model validating `schema_version == 1`; anything else → explicit rejection, not best-effort parse
-- [ ] CI test: both vendored fixtures parse and round-trip against the vendored schema
+- [x] Vendored schema + fixtures + pin header (`contracts/github-checker-snapshot/v1/`, source @ `787f6952d88b`)
+- [x] Pydantic ingestion model validating `schema_version == 1`; anything else → explicit rejection, not best-effort parse (`core/snapshot_contract.py`)
+- [x] CI test: both vendored fixtures parse and round-trip; pin hashes verified (`tests/test_snapshot_contract.py`, 8 tests)
 
 **Traces to:** [DESIGN-201], brief FR-01, engineer AP-01/IF-03
 
