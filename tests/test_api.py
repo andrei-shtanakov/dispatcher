@@ -217,3 +217,58 @@ items:
     assert by_name["atp-platform"]["readiness"] == 1.0
     assert by_name["ghost"]["readiness"] == 0.0
     assert by_name["ghost"]["lagging"] is True
+
+
+async def test_sync_endpoint_shape(tmp_path: Path, monkeypatch) -> None:
+    # детерминизм: live-путь выключен явно, а не через отсутствие
+    # github-checker в PATH конкретной машины
+    from dispatcher.core.sync import SyncSourceError
+
+    def no_live(*args, **kwargs):
+        raise SyncSourceError("disabled in test")
+
+    monkeypatch.setattr("dispatcher.core.sync.run_live_snapshot", no_live)
+    async with _client(tmp_path) as client:
+        resp = await client.get("/api/sync")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["report"]["top_line"] in ("ok", "pull-first", "no-data", "unknown")
+    assert isinstance(data["fetch_in_flight"], bool)
+    assert "report_generated_at" in data
+    assert isinstance(data["report"]["hosts"], list)
+    assert isinstance(data["report"]["proposals"], list)
+    # live отключён → честный unknown + warning, независимо от окружения
+    assert data["report"]["top_line"] == "unknown"
+    assert any("live snapshot unavailable" in w for w in data["report"]["warnings"])
+
+
+async def test_sync_hosts_endpoint_shape(tmp_path: Path) -> None:
+    async with _client(tmp_path) as client:
+        resp = await client.get("/api/sync/hosts")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert set(data) == {"current_host", "fetch_in_flight", "hosts"}
+    assert isinstance(data["hosts"], list)
+
+
+async def test_sync_hosts_reads_published_kb_snapshot(tmp_path: Path) -> None:
+    snapshots_dir = tmp_path / "prograph-vault" / "derived" / "snapshots"
+    snapshots_dir.mkdir(parents=True)
+    snapshots_dir.joinpath("mac-remote.json").write_text(
+        """
+{"schema_version": 1, "workspace": "/ws", "host": "mac-remote",
+ "generated_at": "2026-07-14T12:00:00Z", "gh_error": null,
+ "repos": [{"dir": "alpha", "remote": null,
+            "local": {"branch": "main", "ahead": 0, "behind": 2,
+                      "dirty": false, "error": null},
+            "github": null}]}
+"""
+    )
+    async with _client(tmp_path) as client:
+        resp = await client.get("/api/sync/hosts")
+    data = resp.json()
+    panel = next(h for h in data["hosts"] if h["host"] == "mac-remote")
+    assert panel["source"] == "kb"
+    assert panel["age_seconds"] is not None
+    verdict = next(v for v in panel["verdicts"] if v["repo"] == "alpha")
+    assert verdict["verdict"] in ("pull-first", "unknown")  # unknown если stale

@@ -263,12 +263,14 @@ No new evidence rules (closed-set principle).
 **Depends on:** [TASK-001]
 
 ### TASK-207: Sync API endpoints
-🔴 P0 | ⬜ TODO | Est: 0.5d
+🔴 P0 | ✅ DONE | Est: 0.5d
 
 **Description:**
 `GET /api/sync` (verdict table + top-line + in-flight flag) and
 `GET /api/sync/hosts` (host panels with ages) in `server/app.py`,
-pydantic-typed like the rest of the API.
+pydantic-typed like the rest of the API. Done: оба эндпоинта поверх
+SyncService (общий кэш с POST /api/sync/track); live-смоук реального
+сервера — top-line/панель/возраст читаются по HTTP.
 
 **Traces to:** [DESIGN-207]
 **Depends on:** [TASK-202], [TASK-203]

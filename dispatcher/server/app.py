@@ -34,7 +34,8 @@ from dispatcher.core.roadmap import (
     default_roadmap_dirs,
 )
 from dispatcher.core.service import SnapshotService, recent_errors
-from dispatcher.core.sync_service import SyncService
+from dispatcher.core.sync import HostPanel
+from dispatcher.core.sync_service import SyncService, SyncStatus
 from dispatcher.core.tracking import TrackAction, decide
 
 __all__ = ["create_app", "recent_errors"]  # re-export: old import path
@@ -54,6 +55,14 @@ class TrackingView(BaseModel):
 
     tracked: list[str]
     ignored: list[str]
+
+
+class SyncHostsResponse(BaseModel):
+    """GET /api/sync/hosts: host panels with snapshot ages (DESIGN-207)."""
+
+    current_host: str
+    fetch_in_flight: bool
+    hosts: list[HostPanel]
 
 
 def create_app(config: DispatcherConfig) -> FastAPI:
@@ -184,6 +193,20 @@ def create_app(config: DispatcherConfig) -> FastAPI:
             if item.id == item_id:
                 return item
         raise HTTPException(status_code=404, detail=f"unknown roadmap item: {item_id}")
+
+    @app.get("/api/sync", response_model=SyncStatus)
+    def sync() -> SyncStatus:
+        """Verdict table + top line + freshness metadata (corner spinner)."""
+        return sync_cache.get()
+
+    @app.get("/api/sync/hosts", response_model=SyncHostsResponse)
+    def sync_hosts() -> SyncHostsResponse:
+        status = sync_cache.get()
+        return SyncHostsResponse(
+            current_host=status.report.current_host,
+            fetch_in_flight=status.fetch_in_flight,
+            hosts=status.report.hosts,
+        )
 
     @app.post("/api/sync/track", response_model=TrackingView)
     def sync_track(decision: TrackDecision) -> TrackingView:
