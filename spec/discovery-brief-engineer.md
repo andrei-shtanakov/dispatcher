@@ -1,15 +1,15 @@
 ---
 spec_stage: discovery
-status: draft
+status: approved
 version: 1
 generated_by: discovery-agent@claude-fable-5
 generated_at: 2026-07-14
 source_prompt_version: sha256:5bf8fa2588dfeb262aa42350acb5b65075d57ed75395271eba3c7b5d14b2cdbb
 validation: pass
-approved_by: null
-approved_at: null
+approved_by: discovery-agent@claude-fable-5
+approved_at: 2026-07-14
 owner_role: architect
-approver: null
+approver: andrei-shtanakov
 schema: discovery-brief
 schema_version: 1
 feeds: [system-assessment, tech-selection]
