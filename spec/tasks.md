@@ -276,7 +276,7 @@ SyncService (общий кэш с POST /api/sync/track); live-смоук реа�
 **Depends on:** [TASK-202], [TASK-203]
 
 ### TASK-208: Web Sync screen + roadmap summary row
-🔴 P0 | ⬜ TODO | Est: 1.5d
+🔴 P0 | ✅ DONE | Est: 1.5d
 
 **Description:**
 Sync section in `server/static/index.html`: host panels with age badges
