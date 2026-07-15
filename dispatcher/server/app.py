@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import secrets
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from dispatcher.core.actions import (
+    Action,
+    ActionBusyError,
+    ActionOutcome,
+    ActionRejectedError,
+    ActionRunner,
+)
 from dispatcher.core.contracts import check_contracts
 from dispatcher.core.correlation import WorkItemsResponse, build_work_items
 from dispatcher.core.discovery import DispatcherConfig
@@ -65,11 +73,27 @@ class SyncHostsResponse(BaseModel):
     hosts: list[HostPanel]
 
 
+class ActionRequest(BaseModel):
+    """POST /api/actions/{pull|create-pr} body."""
+
+    dir: str
+
+
+class ActionSession(BaseModel):
+    """GET /api/actions/session: per-process CSRF token for action POSTs."""
+
+    token: str
+
+
 def create_app(config: DispatcherConfig) -> FastAPI:
     """Build the API app for the given configuration."""
     app = FastAPI(title="Dispatcher", version="0.1.0")
     cache = SnapshotService(config)
     sync_cache = SyncService(config)
+    actions = ActionRunner(config)
+    # CSRF-токен на процесс: SOP не даст чужой странице его прочитать,
+    # значит POST с токеном мог отправить только наш UI (DESIGN-204)
+    action_token = secrets.token_hex(16)
 
     @app.get("/api/overview", response_model=OverviewResponse)
     def overview() -> OverviewResponse:
@@ -221,6 +245,41 @@ def create_app(config: DispatcherConfig) -> FastAPI:
         return TrackingView(
             tracked=sorted(state.tracked), ignored=sorted(state.ignored)
         )
+
+    @app.get("/api/actions/session", response_model=ActionSession)
+    def action_session() -> ActionSession:
+        return ActionSession(token=action_token)
+
+    def _run_action(
+        action: Action, request: ActionRequest, token: str | None
+    ) -> ActionOutcome:
+        if token != action_token:
+            raise HTTPException(status_code=403, detail="bad or missing action token")
+        try:
+            outcome = actions.run(action, request.dir.strip())
+        except ActionRejectedError as err:
+            raise HTTPException(status_code=422, detail=str(err)) from err
+        except ActionBusyError as err:
+            raise HTTPException(status_code=409, detail=str(err)) from err
+        if outcome.ok:
+            sync_cache.invalidate()  # состояние репо изменилось — вердикты пересчитать
+        return outcome
+
+    @app.post("/api/actions/pull", response_model=ActionOutcome)
+    def action_pull(
+        request: ActionRequest,
+        x_action_token: str | None = Header(default=None),
+    ) -> ActionOutcome:
+        """Явный клик человека: ff-only pull через github-checker (NFR-01)."""
+        return _run_action("pull", request, x_action_token)
+
+    @app.post("/api/actions/create-pr", response_model=ActionOutcome)
+    def action_create_pr(
+        request: ActionRequest,
+        x_action_token: str | None = Header(default=None),
+    ) -> ActionOutcome:
+        """Явный клик человека: gh pr create через github-checker (идемпотентно)."""
+        return _run_action("open-pr", request, x_action_token)
 
     app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="static")
     return app
