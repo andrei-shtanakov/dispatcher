@@ -27,7 +27,7 @@ coverage:
   risks: covered
   feasibility_review: covered
   gate_passed: true
-open_questions: 1
+open_questions: 0
 blocking_open_questions: 0
 conflicts: 0
 traces_to:
@@ -125,9 +125,14 @@ Blocking-конфликтов с customer-брифом feasibility-проход 
   (schema + golden-фикстуры full/degraded), поле `schema_version: 1` в выходе,
   контракт-тест «breaking → только v2 рядом»; `generated_at` переведён на tz-aware
   RFC3339. Блокер FR-01 снят (закрывает и RK-02).
-- **Q-02** `owner_role: architect` · `blocking: false` — механика надёжности
-  cron-публикации (RK-03): heartbeat/возраст snapshot'а в UI обязателен; нужен ли alert
-  при протухании > 1 ч и где он живёт.
+- **Q-02** `owner_role: architect` · `blocking: false` · `resolved: true` — механика
+  надёжности cron-публикации (RK-03): heartbeat/возраст snapshot'а в UI обязателен;
+  нужен ли alert при протухании > 1 ч и где он живёт.
+  **Резолюция (2026-07-14, Gate 1 Design §5, реализовано в M1):** возраст = heartbeat;
+  каждая панель хоста несёт возраст snapshot'а, > 1 ч — панель amber-`stale`, её
+  вердикты травятся в `unknown(stale)`; stale-панель на первом экране и есть алерт,
+  отдельного канала нет (dispatcher#19, TASK-202/203/207–209). Плюс publisher даёт
+  exit≠0 — мёртвый cron виден в cron-mail (TASK-204).
 
 ## Stakeholder Conflicts
 
