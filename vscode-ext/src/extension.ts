@@ -3,6 +3,7 @@
 import * as vscode from "vscode";
 import { ApiClient } from "./api";
 import { ServerManager } from "./server";
+import type { SyncStatusResponse } from "./api";
 import { createStatusBar } from "./status";
 import { ErrorsProvider, ProjectsProvider, RoadmapProvider } from "./tree";
 
@@ -55,6 +56,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const status = createStatusBar();
 
   let polling = false;
+  let lastSync: SyncStatusResponse | null = null;
 
   async function poll(): Promise<void> {
     if (polling) {
@@ -77,16 +79,23 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       projects.setData(overview.projects);
-      status.update(overview);
+      // мгновенный базовый статус с ПОСЛЕДНИМ известным вердиктом:
+      // медленный /api/sync не задерживает статус-бар и не мигает им
+      status.update(overview, lastSync);
       server.markOnline();
-      const [events, roadmapData] = await Promise.allSettled([
+      const [events, roadmapData, syncData] = await Promise.allSettled([
         api.errors(),
         api.roadmap(),
+        api.sync(),
       ]);
       errors.setData(events.status === "fulfilled" ? events.value : null);
       roadmap.setData(
         roadmapData.status === "fulfilled" ? roadmapData.value : null,
       );
+      // вердикт деградирует независимо: старый сервер без /api/sync
+      // не гасит остальные вьюхи (тот же принцип, что errors/roadmap)
+      lastSync = syncData.status === "fulfilled" ? syncData.value : null;
+      status.update(overview, lastSync);
     } finally {
       polling = false;
     }

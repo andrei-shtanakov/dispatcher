@@ -9,6 +9,7 @@ import {
   projectView,
   shouldSpawn,
   statusText,
+  verdictText,
   truncate,
 } from "../src/model";
 
@@ -117,5 +118,38 @@ describe("server decisions", () => {
     expect(shouldSpawn({ ...base, autoStart: false })).toBe(false);
     expect(shouldSpawn({ ...base, projectDir: "  " })).toBe(false);
     expect(shouldSpawn({ ...base, alreadyTried: true })).toBe(false);
+  });
+});
+
+describe("verdictText", () => {
+  const sync = (top_line: string, fetching = false) => ({
+    report: { current_host: "mac-a", top_line, top_reason: null },
+    fetch_in_flight: fetching,
+    last_fetch_at: null,
+    last_fetch_error: null,
+  });
+
+  it("is empty when sync is unavailable (old server)", () => {
+    expect(verdictText(null)).toBe("");
+  });
+
+  it("renders ok with a check icon", () => {
+    expect(verdictText(sync("ok"))).toBe(" · $(check) ok");
+  });
+
+  it("renders pull-first with a warning icon", () => {
+    expect(verdictText(sync("pull-first"))).toBe(" · $(warning) pull-first");
+  });
+
+  it("renders unknown with a question icon", () => {
+    expect(verdictText(sync("unknown"))).toBe(" · $(question) unknown");
+  });
+
+  it("renders no-data with the same question icon as unknown", () => {
+    expect(verdictText(sync("no-data"))).toBe(" · $(question) no-data");
+  });
+
+  it("appends a spinner while the background fetch runs", () => {
+    expect(verdictText(sync("ok", true))).toBe(" · $(check) ok $(sync~spin)");
   });
 });
