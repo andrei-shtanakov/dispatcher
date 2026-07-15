@@ -75,12 +75,20 @@ class ActionRunner:
         return target
 
     def run(self, action: Action, repo_dir: str) -> ActionOutcome:
-        """Execute one action; every attempt leaves an audit line."""
-        target = self._target(repo_dir)
-        with self._lock:
-            if repo_dir in self._busy:
-                raise ActionBusyError(f"{repo_dir}: action already in flight")
-            self._busy.add(repo_dir)
+        """Execute one action; EVERY attempt leaves an audit line —
+        including rejected (422) and busy (409) ones."""
+        try:
+            # runtime-гарантия белого списка, независимая от тайпинга
+            if action not in ("pull", "open-pr"):
+                raise ActionRejectedError(f"action not whitelisted: {action!r}")
+            target = self._target(repo_dir)
+            with self._lock:
+                if repo_dir in self._busy:
+                    raise ActionBusyError(f"{repo_dir}: action already in flight")
+                self._busy.add(repo_dir)
+        except (ActionRejectedError, ActionBusyError) as err:
+            _audit.info("action=%s repo=%s ok=False rejected=%s", action, repo_dir, err)
+            raise
         try:
             outcome = self._invoke(action, target)
         finally:

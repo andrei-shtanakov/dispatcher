@@ -119,3 +119,18 @@ def test_audit_line_written(tmp_path: Path, caplog) -> None:
         "action=pull" in r.getMessage() and "repo=alpha" in r.getMessage()
         for r in caplog.records
     )
+
+
+def test_rejected_and_busy_attempts_leave_audit_lines(tmp_path: Path, caplog) -> None:
+    runner = ActionRunner(DispatcherConfig(roots=(tmp_path,)))
+    with caplog.at_level("INFO", logger="dispatcher.actions"):
+        with pytest.raises(ActionRejectedError):
+            runner.run("pull", "../etc")
+    assert any("rejected=" in r.getMessage() for r in caplog.records)
+
+
+def test_non_whitelisted_action_rejected_at_runtime(tmp_path: Path) -> None:
+    make_repo(tmp_path, "alpha")
+    runner = ActionRunner(DispatcherConfig(roots=(tmp_path,)))
+    with pytest.raises(ActionRejectedError, match="not whitelisted"):
+        runner.run("push --force", "alpha")  # type: ignore[arg-type]

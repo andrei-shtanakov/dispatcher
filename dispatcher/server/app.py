@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from dispatcher.core.actions import (
+    Action,
     ActionBusyError,
     ActionOutcome,
     ActionRejectedError,
@@ -250,12 +251,12 @@ def create_app(config: DispatcherConfig) -> FastAPI:
         return ActionSession(token=action_token)
 
     def _run_action(
-        action: str, request: ActionRequest, token: str | None
+        action: Action, request: ActionRequest, token: str | None
     ) -> ActionOutcome:
         if token != action_token:
             raise HTTPException(status_code=403, detail="bad or missing action token")
         try:
-            outcome = actions.run(action, request.dir.strip())  # type: ignore[arg-type]
+            outcome = actions.run(action, request.dir.strip())
         except ActionRejectedError as err:
             raise HTTPException(status_code=422, detail=str(err)) from err
         except ActionBusyError as err:
