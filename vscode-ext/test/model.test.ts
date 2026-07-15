@@ -145,6 +145,10 @@ describe("verdictText", () => {
     expect(verdictText(sync("unknown"))).toBe(" · $(question) unknown");
   });
 
+  it("renders no-data with the same question icon as unknown", () => {
+    expect(verdictText(sync("no-data"))).toBe(" · $(question) no-data");
+  });
+
   it("appends a spinner while the background fetch runs", () => {
     expect(verdictText(sync("ok", true))).toBe(" · $(check) ok $(sync~spin)");
   });
