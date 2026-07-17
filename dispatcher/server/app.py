@@ -62,13 +62,6 @@ __all__ = ["create_app", "recent_errors"]  # re-export: old import path
 
 _STATIC_DIR = Path(__file__).parent / "static"
 
-# TODO(gate): flip to False and delete this gate when github-checker ships
-# `propose-pr` (scoped branch+commit+push+PR from a temp worktree). The
-# shipped `open-pr` never branches/commits/pushes, so this write path cannot
-# produce a PR end-to-end yet. See handoff:
-# prograph-vault/authored/notes/2026-07-17-github-checker-open-pr-needs-branch-commit-push.md
-SPEC_RUNNER_CONFIG_WRITE_GATED = True
-
 
 class TrackDecision(BaseModel):
     """POST /api/sync/track body: one confirm/reject decision."""
@@ -329,15 +322,6 @@ def create_app(config: DispatcherConfig) -> FastAPI:
         """Явный клик человека: PR в spec_runner: блок project.yaml (DESIGN-304)."""
         if x_action_token != action_token:
             raise HTTPException(status_code=403, detail="bad or missing action token")
-        if SPEC_RUNNER_CONFIG_WRITE_GATED:
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "update-spec-runner-config is gated: awaiting "
-                    "github-checker propose-pr (see handoff "
-                    "2026-07-17-github-checker-open-pr-needs-branch-commit-push)"
-                ),
-            )
         candidate = ConfigCandidate(
             typed=request.typed,
             extra_executor_config=request.extra_executor_config,

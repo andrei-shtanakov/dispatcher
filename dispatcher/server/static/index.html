@@ -521,17 +521,11 @@ document.getElementById("spec-runner-config-submit").addEventListener(
 
   if (btn.dataset.armed !== "true") {
     renderSpecRunnerConfigDiff(typed);
+    btn.textContent = "Confirm & open PR";
     btn.dataset.armed = "true";
-    // Gated: github-checker open-pr never branches/commits/pushes, so the
-    // confirm step is disabled until propose-pr ships. See handoff:
-    // 2026-07-17-github-checker-open-pr-needs-branch-commit-push.
-    btn.disabled = true;
-    btn.textContent = "PR gated: awaiting github-checker propose-pr";
     return;
   }
 
-  // Unreachable while the button never arms above (kept for un-gating; see
-  // handoff 2026-07-17-github-checker-open-pr-needs-branch-commit-push).
   btn.disabled = true;
   result.textContent = "…";
   try {
@@ -548,10 +542,17 @@ document.getElementById("spec-runner-config-submit").addEventListener(
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail ?? `HTTP ${resp.status}`);
-    result.textContent = data.ok
-      ? "✓ PR: " + (data.pr_url ?? data.detail ?? "opened")
-      : "✗ " + (data.error ?? "failed");
-    result.className = data.ok ? "ok" : "err";
+    if (!data.ok && data.detail === "no-op") {
+      // English: the config panel's strings are uniformly English
+      // (the Russian strings elsewhere belong to the sync screen)
+      result.textContent = "config already in this state — no PR needed";
+      result.className = "fresh";
+    } else {
+      result.textContent = data.ok
+        ? "✓ PR: " + (data.pr_url ?? data.detail ?? "opened")
+        : "✗ " + (data.error ?? "failed");
+      result.className = data.ok ? "ok" : "err";
+    }
   } catch (err) {
     result.textContent = "✗ " + err;
     result.className = "err";

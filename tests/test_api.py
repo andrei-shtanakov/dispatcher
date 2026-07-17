@@ -351,11 +351,6 @@ async def test_action_busy_maps_to_409(tmp_path: Path, monkeypatch) -> None:
 async def test_spec_runner_config_view_and_update(tmp_path: Path, monkeypatch) -> None:
     import subprocess
 
-    import dispatcher.server.app as app_module
-
-    # gate off: this tests the post-gate path kept for un-gating
-    monkeypatch.setattr(app_module, "SPEC_RUNNER_CONFIG_WRITE_GATED", False)
-
     repo = tmp_path / "alpha"
     repo.mkdir()
     subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
@@ -414,11 +409,6 @@ async def test_spec_runner_config_invalid_candidate_maps_to_422(
 ) -> None:
     import subprocess
 
-    import dispatcher.server.app as app_module
-
-    # gate off: this tests the post-gate path kept for un-gating
-    monkeypatch.setattr(app_module, "SPEC_RUNNER_CONFIG_WRITE_GATED", False)
-
     repo = tmp_path / "alpha"
     repo.mkdir()
     subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
@@ -449,14 +439,10 @@ async def test_spec_runner_config_invalid_candidate_maps_to_422(
 
 
 async def test_spec_runner_config_busy_maps_to_409(tmp_path: Path, monkeypatch) -> None:
-    import dispatcher.server.app as app_module
     from dispatcher.core.spec_runner_config_actions import (
         SpecRunnerConfigActionRunner,
         SpecRunnerConfigBusyError,
     )
-
-    # gate off: this tests the post-gate path kept for un-gating
-    monkeypatch.setattr(app_module, "SPEC_RUNNER_CONFIG_WRITE_GATED", False)
 
     def busy_run(self, repo_dir, candidate):
         raise SpecRunnerConfigBusyError(f"{repo_dir}: update already in flight")
@@ -485,11 +471,6 @@ async def test_spec_runner_config_stale_mtime_maps_to_409(
 ) -> None:
     import subprocess
 
-    import dispatcher.server.app as app_module
-
-    # gate off: this tests the post-gate path kept for un-gating
-    monkeypatch.setattr(app_module, "SPEC_RUNNER_CONFIG_WRITE_GATED", False)
-
     repo = tmp_path / "alpha"
     repo.mkdir()
     subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
@@ -517,15 +498,33 @@ async def test_spec_runner_config_stale_mtime_maps_to_409(
         assert "max_retries: 3" in (repo / "project.yaml").read_text()
 
 
-async def test_spec_runner_config_update_gated_returns_503(tmp_path: Path) -> None:
-    """Gate defaults to on: POST must 503 before touching validation/disk."""
+async def test_spec_runner_config_noop_reaches_client(
+    tmp_path: Path, monkeypatch
+) -> None:
     import subprocess
+
+    from dispatcher.core.actions import ActionOutcome
+    from dispatcher.core.spec_runner_config_actions import (
+        SpecRunnerConfigActionRunner,
+    )
+
+    def noop_run(self, repo_dir, candidate):
+        return ActionOutcome(
+            action="update-spec-runner-config",
+            dir=repo_dir,
+            ok=False,
+            detail="no-op",
+            error="no changes vs main",
+        )
+
+    monkeypatch.setattr(SpecRunnerConfigActionRunner, "run", noop_run)
 
     repo = tmp_path / "alpha"
     repo.mkdir()
     subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
-    original_text = "project: alpha\nspec_runner:\n  max_retries: 3\nworkstreams: []\n"
-    (repo / "project.yaml").write_text(original_text)
+    (repo / "project.yaml").write_text(
+        "project: alpha\nspec_runner:\n  max_retries: 3\nworkstreams: []\n"
+    )
     config = DispatcherConfig(roots=(tmp_path,))
     app = create_app(config)
     transport = httpx.ASGITransport(app=app)
@@ -542,7 +541,7 @@ async def test_spec_runner_config_update_gated_returns_503(tmp_path: Path) -> No
                 "base_mtime": base_mtime,
             },
         )
-        assert resp.status_code == 503
-        assert "propose-pr" in resp.json()["detail"]
-        # gate must fire before any validation/write touches the file
-        assert (repo / "project.yaml").read_text() == original_text
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["detail"] == "no-op"
