@@ -331,8 +331,10 @@ def test_run_delegates_to_propose_pr_live_tree_untouched(tmp_path: Path) -> None
     msg = argv[argv.index("--message") + 1]
     assert msg.startswith("chore(spec-runner): update config")
     assert "max_retries" in msg
-    edit = next(a for a in argv if a.startswith("project.yaml=") and "--" not in a)
-    assert "--edit" in argv
+    # assert the value POSITIONALLY after its flag — a bare startswith scan
+    # could accidentally match the --if-match value instead
+    edit_arg = argv[argv.index("--edit") + 1]
+    assert edit_arg.startswith("project.yaml=")
     if_match = argv[argv.index("--if-match") + 1]
     expected_hex = hashlib.sha256(live_before).hexdigest()
     assert if_match == f"project.yaml={expected_hex}"
@@ -557,7 +559,9 @@ In the submit (second-click) result handling, branch on no-op before the generic
 
 ```javascript
     if (!data.ok && data.detail === "no-op") {
-      result.textContent = "конфиг уже в этом состоянии — PR не нужен";
+      // English: the config panel's strings are uniformly English
+      // (the Russian strings elsewhere belong to the sync screen)
+      result.textContent = "config already in this state — no PR needed";
       result.className = "fresh";
     } else {
       result.textContent = data.ok
