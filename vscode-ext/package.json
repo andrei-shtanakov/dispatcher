@@ -79,6 +79,10 @@
         "command": "dispatcher.ignore",
         "title": "Dispatcher: Ignore Repo",
         "icon": "$(x)"
+      },
+      {
+        "command": "dispatcher.editSpecRunnerConfig",
+        "title": "Dispatcher: Edit Spec-Runner Config"
       }
     ],
     "menus": {
