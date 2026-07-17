@@ -145,13 +145,17 @@ class SpecRunnerConfigActionRunner:
     def _target(self, repo_dir: str) -> Path:
         if not _SAFE_DIR_RE.fullmatch(repo_dir) or repo_dir in (".", ".."):
             raise SpecRunnerConfigRejectedError(f"unsafe repo dir: {repo_dir!r}")
-        workspace = next((r for r in self._config.roots if r.is_dir()), None)
-        if workspace is None:
+        existing = [r for r in self._config.roots if r.is_dir()]
+        if not existing:
             raise SpecRunnerConfigRejectedError("no existing workspace root configured")
-        project_yaml = workspace / repo_dir / "project.yaml"
-        if not project_yaml.is_file():
-            raise SpecRunnerConfigRejectedError(f"no project.yaml in: {repo_dir}")
-        return project_yaml
+        # Iterate ALL roots in discovery order — a config found by
+        # discover_project_configs in a later root must resolve to that
+        # root, never to a same-named dir in an earlier one.
+        for root in existing:
+            project_yaml = root / repo_dir / "project.yaml"
+            if project_yaml.is_file():
+                return project_yaml
+        raise SpecRunnerConfigRejectedError(f"no project.yaml in: {repo_dir}")
 
     def run(self, repo_dir: str, candidate: ConfigCandidate) -> ActionOutcome:
         """Validate, diff, write, and hand off to github-checker. Always audits."""
@@ -219,7 +223,7 @@ class SpecRunnerConfigActionRunner:
                 edit_file = Path(tmp_dir) / "project.yaml"
                 edit_file.write_text(new_text)
                 outcome = self._invoke(
-                    repo_dir,
+                    project_yaml.parent,
                     message=message,
                     edit_file=edit_file,
                     if_match_hex=if_match_hex,
@@ -248,14 +252,12 @@ class SpecRunnerConfigActionRunner:
 
     def _invoke(
         self,
-        repo_dir: str,
+        target: Path,
         *,
         message: str,
         edit_file: Path,
         if_match_hex: str,
     ) -> ActionOutcome:
-        workspace = next(r for r in self._config.roots if r.is_dir())
-        target = workspace / repo_dir
         argv = [
             *self._command,
             "propose-pr",

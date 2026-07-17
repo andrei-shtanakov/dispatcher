@@ -536,7 +536,7 @@ document.getElementById("spec-runner-config-submit").addEventListener(
       body: JSON.stringify({
         dir: currentSpecRunnerConfig.repoDir,
         typed,
-        extra_executor_config: currentSpecRunnerConfig.extra_executor_config,
+        extra_executor_config: null,  // tri-state: null = preserve current
         base_mtime: currentSpecRunnerConfig.base_mtime,
       }),
     });
