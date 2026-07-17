@@ -185,7 +185,7 @@ Config screen mirrored in the TUI, closing this feature's slice of `FR-06`
 |---|---|
 | candidate fails schema validation (DESIGN-303) | 422, no diff/branch/PR created, audit line records rejection |
 | `project.yaml` changed on disk between form render and submit | reject with "reload required" (detect via mtime/hash captured at render time), never silent overwrite |
-| repo already has an action in flight (either class) | 409, per-class lock (sync-action lock and content-PR lock are independent — a `pull` in flight on repo X does not block a config edit on repo X, and vice versa; each still serializes within its own class) |
+| repo already has an action in flight (either class) | 409, per-class lock (sync-action lock and content-PR lock are independent — a `pull` in flight on repo X does not block a config edit on repo X, and vice versa; each still serializes within its own class). **Caveat (review 2026-07-17):** lock independence is only safe while the two classes cannot touch the same checkout concurrently — a `pull` mutating files while the editor writes `project.yaml` in the same live tree would race. Currently moot: the write path shipped **gated** (see H-5 resolution). The un-gating direction (github-checker `propose-pr` applying content in a temporary worktree, per handoff `2026-07-17-github-checker-open-pr-needs-branch-commit-push.md`) removes live-tree writes entirely, making independence safe by construction; if un-gating ever keeps live-tree writes instead, the per-repo lock must be unified across both classes. |
 | `github-checker open-pr` fails (auth, network, `gh` missing) | surfaced as-is, no auto-retry, matches existing `pull`/`create-pr` behavior |
 | provisional schema (DESIGN-301) itself drifts from spec-runner's real `ExecutorConfig` | dispatcher has no way to detect this until the handoff schema lands — documented risk, not solved by this design |
 
@@ -199,7 +199,12 @@ Config screen mirrored in the TUI, closing this feature's slice of `FR-06`
   type) against the DESIGN-301 provisional schema.
 - Concurrency test: two submissions against the same repo → second gets 409 from the
   content-PR lock while the first is in flight; a simultaneous `pull` on the same
-  repo is unaffected (different lock).
+  repo is unaffected (different lock). **Amended (review 2026-07-17):** the
+  "pull unaffected" assertion is only valid under the gated/worktree regime
+  described in §4's caveat — the un-gating follow-up must either keep live-tree
+  writes out of the content-PR path (worktree isolation via `propose-pr`, in
+  which case this test stands) or unify the per-repo lock and flip this test to
+  assert `pull` is blocked too.
 - Audit line assertions: rejected, busy, and successful attempts each produce one
   line, matching the existing `core/actions.py` test pattern.
 - `github-checker open-pr` invocation itself is mocked/stubbed in dispatcher's test
