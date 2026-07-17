@@ -18,11 +18,12 @@ which overrides the default 8787.
 
 ### Terminal UI
 
-    uv run dispatcher tui                     # tabs: Projects / Errors / Models / Contracts
+    uv run dispatcher tui                     # tabs: Sync / Projects / Errors / Models / Contracts / Roadmap / Config
     uv run dispatcher tui --config dispatcher.toml
 
 Keys: `r` refresh · `a` toggle errors 14d/all · `e` errors for selected
-project · `Enter` drill down · `Esc` back · `q` quit. Auto-refresh: 10 s.
+project · `p` pull · `o` open PR · `t`/`i` track/ignore (Sync) · `Enter` edit config
+(Config) · `ctrl+d` diff · `ctrl+y` confirm · `Esc` back · `q` quit. Auto-refresh: 10 s.
 
 ### VSCode extension
 

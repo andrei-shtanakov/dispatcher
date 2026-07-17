@@ -175,12 +175,14 @@ def test_one_in_flight_per_repo(tmp_path: Path, monkeypatch) -> None:
     started = threading.Event()
     release = threading.Event()
 
-    def slow_invoke(repo_dir, **kwargs):
+    def slow_invoke(target, **kwargs):
         started.set()
         release.wait(timeout=10)
         from dispatcher.core.actions import ActionOutcome
 
-        return ActionOutcome(action="update-spec-runner-config", dir=repo_dir, ok=True)
+        return ActionOutcome(
+            action="update-spec-runner-config", dir=target.name, ok=True
+        )
 
     monkeypatch.setattr(runner, "_invoke", slow_invoke)
     candidate = _candidate(repo)
@@ -380,3 +382,51 @@ def test_commit_message_lists_changed_keys_with_fallback() -> None:
     )
     # no listable keys -> bare message, never empty parentheses
     assert _commit_message([], False) == "chore(spec-runner): update config"
+
+
+def test_target_resolves_across_roots(tmp_path: Path) -> None:
+    """A config in the SECOND root resolves there — and propose-pr is
+    invoked against that root, not a same-named dir in the first."""
+    import json as _json
+
+    root1 = tmp_path / "root1"
+    root1.mkdir()
+    root2 = tmp_path / "root2"
+    repo = root2 / "beta"
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-q")
+    (repo / "project.yaml").write_text(_PROJECT_YAML)
+
+    payload = {"ok": True, "detail": "pull request created"}
+    command, record = fake_checker(tmp_path, payload)
+    runner = SpecRunnerConfigActionRunner(
+        DispatcherConfig(roots=(root1, root2)), command=command
+    )
+    outcome = runner.run("beta", _candidate(repo))
+
+    assert outcome.ok, outcome.error
+    argv = _json.loads(record.read_text())["argv"]
+    assert argv[1] == str(root2 / "beta")  # the SECOND root's dir
+
+
+def test_target_prefers_first_root_on_name_collision(tmp_path: Path) -> None:
+    """Same-named config in both roots → first root wins (discovery order)."""
+    import json as _json
+
+    for i in (1, 2):
+        repo = tmp_path / f"root{i}" / "gamma"
+        repo.mkdir(parents=True)
+        _git(repo, "init", "-q")
+        (repo / "project.yaml").write_text(_PROJECT_YAML)
+
+    payload = {"ok": True, "detail": "pull request created"}
+    command, record = fake_checker(tmp_path, payload)
+    runner = SpecRunnerConfigActionRunner(
+        DispatcherConfig(roots=(tmp_path / "root1", tmp_path / "root2")),
+        command=command,
+    )
+    outcome = runner.run("gamma", _candidate(tmp_path / "root1" / "gamma"))
+
+    assert outcome.ok, outcome.error
+    argv = _json.loads(record.read_text())["argv"]
+    assert argv[1] == str(tmp_path / "root1" / "gamma")
