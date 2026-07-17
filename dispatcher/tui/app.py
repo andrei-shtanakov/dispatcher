@@ -44,6 +44,7 @@ from dispatcher.core.service import (
 )
 from dispatcher.core.spec_runner_config_actions import SpecRunnerConfigActionRunner
 from dispatcher.core.sync_service import SyncService, SyncStatus
+from dispatcher.core.tracking import TrackAction, decide
 from dispatcher.tui.detail import ErrorMessageScreen, ProjectDetailScreen
 
 MSG_LIMIT = 160  # same message truncation threshold as the web UI
@@ -125,6 +126,8 @@ class DispatcherApp(App[None]):
         ("r", "refresh", "Refresh"),
         ("a", "toggle_days", f"{ERRORS_DAYS_DEFAULT}d/all"),
         ("e", "project_errors", "Project errors"),
+        ("t", "sync_track", "Track"),
+        ("i", "sync_ignore", "Ignore"),
         ("p", "sync_pull", "Pull"),
         ("o", "sync_open_pr", "Open PR"),
         ("q", "quit", "Quit"),
@@ -333,6 +336,17 @@ class DispatcherApp(App[None]):
                     )
                 )
                 first = False
+        for proposal in report.proposals:
+            table.add_row(
+                "",
+                "",
+                Text(proposal, style="bold cyan"),
+                Text("proposal", style="cyan"),
+                "t = track · i = ignore",
+                "—",
+                "—",
+            )
+            self._sync_rows.append(SyncRow(kind="proposal", repo=proposal))
 
     def _render_summary(self) -> None:
         table = self.query_one("#roadmap-summary-table", DataTable)
@@ -558,6 +572,27 @@ class DispatcherApp(App[None]):
             )
             return
         self._run_sync_action("open-pr", row.repo)
+
+    def action_sync_track(self) -> None:
+        self._decide_proposal("track")
+
+    def action_sync_ignore(self) -> None:
+        self._decide_proposal("ignore")
+
+    def _decide_proposal(self, decision: TrackAction) -> None:
+        row = self._sync_row_at_cursor()
+        if row is None:
+            return
+        if row.kind != "proposal":
+            self.notify("track/ignore: proposal rows only", severity="warning")
+            return
+        if self._config.tracking_file is None:
+            self.notify("sync tracking not configured", severity="warning")
+            return
+        decide(self._config.tracking_file, row.repo, decision)
+        self._sync_service.invalidate()
+        self.notify(f"{decision}: {row.repo}")
+        self.action_refresh()
 
     @work(thread=True, group="actions")
     def _run_sync_action(self, action: Action, repo: str) -> None:

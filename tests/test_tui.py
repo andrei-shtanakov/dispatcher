@@ -686,3 +686,73 @@ def test_sync_action_visibility_matches_web() -> None:
     )
     assert not _can_pull(SyncRow(kind="verdict", repo="a", live=True, verdict="ok"))
     assert not _can_pull(SyncRow(kind="proposal", repo="a"))
+
+
+def _sync_with_proposal() -> SyncStatus:
+    report = SyncReport(
+        current_host="h1",
+        top_line="ok",
+        hosts=[
+            HostPanel(
+                host="h1",
+                source="live",
+                verdicts=[RepoVerdict(repo="alpha", verdict="ok")],
+            )
+        ],
+        proposals=["newrepo"],
+    )
+    return SyncStatus(
+        report=report,
+        report_generated_at=datetime.now(tz=UTC),
+        fetch_in_flight=False,
+    )
+
+
+async def test_proposal_row_renders_and_track_writes_sidecar(
+    tmp_path: Path, monkeypatch
+) -> None:
+    tracking = tmp_path / "dispatcher-sync.toml"
+    app = DispatcherApp(
+        DispatcherConfig(
+            roots=(tmp_path,),
+            maestro_db=make_maestro_home(tmp_path),
+            tracking_file=tracking,
+        )
+    )
+    make_atp(tmp_path)
+    monkeypatch.setattr(
+        "dispatcher.core.sync_service.SyncService.get",
+        lambda self: _sync_with_proposal(),
+    )
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        app.query_one(TabbedContent).active = "tab-sync"
+        await pilot.pause()
+        idx = next(i for i, r in enumerate(app._sync_rows) if r.kind == "proposal")
+        app.query_one("#sync-table", DataTable).move_cursor(row=idx)
+        await pilot.press("t")
+        await _settled(app, pilot)
+        assert tracking.is_file()
+        assert "newrepo" in tracking.read_text()
+
+
+async def test_track_key_unconfigured_and_wrong_row(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = _app(tmp_path)
+    monkeypatch.setattr(
+        "dispatcher.core.sync_service.SyncService.get",
+        lambda self: _sync_with_proposal(),
+    )
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        app.query_one(TabbedContent).active = "tab-sync"
+        await pilot.pause()
+        # wrong row (verdict row) → no crash, nothing written
+        app.query_one("#sync-table", DataTable).move_cursor(row=0)
+        await pilot.press("t")
+        # proposal row but tracking unconfigured → toast, no crash
+        idx = next(i for i, r in enumerate(app._sync_rows) if r.kind == "proposal")
+        app.query_one("#sync-table", DataTable).move_cursor(row=idx)
+        await pilot.press("i")
+        await _settled(app, pilot)
