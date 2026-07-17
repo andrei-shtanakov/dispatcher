@@ -1,10 +1,15 @@
-"""Live whitelist actions: pull / open-pr, delegated to github-checker (DESIGN-204).
+"""Sync whitelist actions: pull / open-pr, delegated to github-checker (DESIGN-204).
 
-Dispatcher never mutates observed repos itself — it shells out to the shipped
+This module never writes file content itself — it shells out to the shipped
 github-checker headless commands (`pull` is ff-only by construction, `open-pr`
 never pushes; github-checker#8). Guards here implement the design's word:
 explicit human action only, one in-flight action per repo, an audit line for
 every attempt.
+
+A second, independent action class — content-PR actions, where dispatcher
+itself renders a scoped diff before handing off to github-checker — lives in
+`core/spec_runner_config_actions.py` (DESIGN-304, resolves X-02). The two
+classes are deliberately not merged; see that module's docstring.
 """
 
 from __future__ import annotations

@@ -74,7 +74,8 @@ traces_to:
   prograph-vault); `authored/` недоступен.
 - **CON-02** Мутации наблюдаемых репо — только белый список {pull, создание PR} по
   явному действию человека (NFR-01 customer-брифа); исполнитель действий —
-  github-checker, dispatcher остаётся view.
+  github-checker, dispatcher остаётся view-only для sync-действий (pull/create-pr, NFR-01); для
+  content-PR действий (X-02) см. discovery-brief-customer.md
 - **CON-03** Машина может не содержать все репо проекта: отсутствие репо в snapshot'е
   машины ≠ «синхронизирован»; агрегация обязана различать «нет данных» и «ок».
 - **CON-04** `gh` может быть не авторизован / сети нет: вердикт «можно работать»
