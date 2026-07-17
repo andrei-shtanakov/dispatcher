@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from dispatcher.core.spec_runner_config import (
     discover_project_configs,
     effective_executor_config,
@@ -45,6 +47,8 @@ def test_read_typed_fields_and_explicit_flags(tmp_path: Path) -> None:
     project_yaml.write_text(_STEWARD_YAML)
     cfg = read_project_spec_runner_config(project_yaml)
     assert cfg.project == "steward"
+    assert isinstance(cfg.base_mtime, float)
+    assert cfg.base_mtime == pytest.approx(project_yaml.stat().st_mtime)
     assert cfg.typed["max_retries"].value == 3
     assert cfg.typed["max_retries"].explicit is True
     assert cfg.typed["claude_model"].value == ""

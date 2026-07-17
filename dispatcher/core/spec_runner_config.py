@@ -46,6 +46,7 @@ class ProjectSpecRunnerConfig(BaseModel):
 
     project: str
     project_yaml_path: str
+    base_mtime: float  # project_yaml's on-disk mtime; echoed back for conflict checks
     typed: dict[str, TypedField]
     extra_executor_config: dict[str, Any] = Field(default_factory=dict)
     extra_explicit: bool
@@ -107,6 +108,7 @@ def read_project_spec_runner_config(project_yaml: Path) -> ProjectSpecRunnerConf
     return ProjectSpecRunnerConfig(
         project=data.get("project") or project_yaml.parent.name,
         project_yaml_path=str(project_yaml),
+        base_mtime=project_yaml.stat().st_mtime,
         typed=typed,
         extra_executor_config=raw.get("extra_executor_config") or {},
         extra_explicit="extra_executor_config" in raw,

@@ -103,7 +103,15 @@
 
 <section id="detail-section" hidden>
   <h2>Project detail <span id="detail-name"></span></h2>
-  <div id="detail">click a project card…</div></section>
+  <div id="detail">click a project card…</div>
+  <div id="spec-runner-config" hidden>
+    <h3>Spec-runner config</h3>
+    <form id="spec-runner-config-form"></form>
+    <pre id="spec-runner-config-diff" hidden></pre>
+    <button id="spec-runner-config-submit" type="button" disabled>Preview diff</button>
+    <span id="spec-runner-config-result"></span>
+  </div>
+</section>
 
 <section><details id="errors-box">
   <summary><h2>Errors <span id="errors-count"></span>
@@ -427,16 +435,86 @@ async function refresh() {
   }
 }
 
+let currentSpecRunnerConfig = null;
+
+function renderSpecRunnerConfigForm(cfg) {
+  const panel = document.getElementById("spec-runner-config");
+  panel.hidden = false;
+  const form = document.getElementById("spec-runner-config-form");
+  form.innerHTML = Object.entries(cfg.typed).map(([key, field]) => `
+    <label>${esc(key)}${field.explicit ? "" : " (default)"}
+      <input data-typed="${esc(key)}" value="${esc(String(field.value))}">
+    </label>`).join("");
+  document.getElementById("spec-runner-config-submit").disabled = false;
+  document.getElementById("spec-runner-config-result").textContent = "";
+}
+
 async function detail(name) {
   const section = document.getElementById("detail-section");
   section.hidden = false;
   document.getElementById("detail-name").textContent = "— " + name;
   document.getElementById("detail").textContent = "loading…";
   const snap = await get("/api/projects/" + encodeURIComponent(name));
-  document.getElementById("detail").textContent =
-    JSON.stringify(snap, null, 2);
+  document.getElementById("detail").textContent = JSON.stringify(snap, null, 2);
+
+  const panel = document.getElementById("spec-runner-config");
+  panel.hidden = true;
+  currentSpecRunnerConfig = null;
+  try {
+    const resp = await fetch(
+      "/api/projects/" + encodeURIComponent(name) + "/spec-runner-config"
+    );
+    if (resp.ok) {
+      currentSpecRunnerConfig = await resp.json();
+      currentSpecRunnerConfig.repoDir = name;
+      renderSpecRunnerConfigForm(currentSpecRunnerConfig);
+    }
+  } catch {
+    // no project.yaml for this project — leave the panel hidden
+  }
   section.scrollIntoView({behavior: "smooth", block: "nearest"});
 }
+
+document.getElementById("spec-runner-config-submit").addEventListener(
+  "click", async () => {
+  if (!currentSpecRunnerConfig) return;
+  const btn = document.getElementById("spec-runner-config-submit");
+  const result = document.getElementById("spec-runner-config-result");
+  const form = document.getElementById("spec-runner-config-form");
+  const typed = {};
+  form.querySelectorAll("input[data-typed]").forEach(input => {
+    const original = currentSpecRunnerConfig.typed[input.dataset.typed].value;
+    typed[input.dataset.typed] = typeof original === "boolean"
+      ? input.value === "true"
+      : typeof original === "number" ? Number(input.value) : input.value;
+  });
+  btn.disabled = true;
+  result.textContent = "…";
+  try {
+    const resp = await fetch("/api/actions/update-spec-runner-config", {
+      method: "POST",
+      headers: {"Content-Type": "application/json",
+                "X-Action-Token": await ensureActionToken()},
+      body: JSON.stringify({
+        dir: currentSpecRunnerConfig.repoDir,
+        typed,
+        extra_executor_config: currentSpecRunnerConfig.extra_executor_config,
+        base_mtime: currentSpecRunnerConfig.base_mtime,
+      }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail ?? `HTTP ${resp.status}`);
+    result.textContent = data.ok
+      ? "✓ PR: " + (data.pr_url ?? data.detail ?? "opened")
+      : "✗ " + (data.error ?? "failed");
+    result.className = data.ok ? "ok" : "err";
+  } catch (err) {
+    result.textContent = "✗ " + err;
+    result.className = "err";
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 refresh();
 setInterval(refresh, 10000);
