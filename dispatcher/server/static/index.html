@@ -492,6 +492,7 @@ function resetSpecRunnerConfigPreview() {
   const diff = document.getElementById("spec-runner-config-diff");
   btn.textContent = "Preview diff";
   btn.dataset.armed = "false";
+  btn.disabled = false;
   diff.hidden = true;
   diff.innerHTML = "";
 }
@@ -520,11 +521,17 @@ document.getElementById("spec-runner-config-submit").addEventListener(
 
   if (btn.dataset.armed !== "true") {
     renderSpecRunnerConfigDiff(typed);
-    btn.textContent = "Confirm & open PR";
     btn.dataset.armed = "true";
+    // Gated: github-checker open-pr never branches/commits/pushes, so the
+    // confirm step is disabled until propose-pr ships. See handoff:
+    // 2026-07-17-github-checker-open-pr-needs-branch-commit-push.
+    btn.disabled = true;
+    btn.textContent = "PR gated: awaiting github-checker propose-pr";
     return;
   }
 
+  // Unreachable while the button never arms above (kept for un-gating; see
+  // handoff 2026-07-17-github-checker-open-pr-needs-branch-commit-push).
   btn.disabled = true;
   result.textContent = "…";
   try {
