@@ -1,9 +1,12 @@
 # Dispatcher
 
-Read-only monitoring dashboard for the AI-orchestrators ecosystem
+Primarily a read-only monitoring dashboard for the AI-orchestrators ecosystem
 (atp-platform, Maestro, arbiter, spec-runner, proctor). Reads on-disk
 artifacts directly — monitored projects don't need to be running or even
-installed; missing ones simply don't show up.
+installed; missing ones simply don't show up. The only mutations are a
+narrow, human-click-gated, PR-only whitelist (sync `pull`/`create-pr` +
+spec-runner config editor, all delegated to `github-checker`; dispatcher
+itself never pushes or merges).
 
 ## Run
 
@@ -64,8 +67,9 @@ same command works; staleness beyond 1 h renders the host's panel as
 `/api/overview`, `/api/projects/{name}`, `/api/errors?limit=N`,
 `/api/models`, `/api/contracts`,
 `/api/work-items?cross_only=bool&limit=N`,
-`/api/roadmap`, `/api/roadmap/{item_id}` — pydantic-typed JSON; this is
-the same contract the future VSCode extension consumes.
+`/api/roadmap`, `/api/roadmap/{item_id}`,
+`/api/projects/{name}/spec-runner-config`, `/api/actions/update-spec-runner-config`
+— pydantic-typed JSON; this is the same contract the future VSCode extension consumes.
 
 `/api/work-items` is the read-side correlation view: tasks from all
 projects grouped by their shared task id (Maestro passes `task.id`

@@ -6,25 +6,39 @@ before delegating branch/commit/push/PR to github-checker, a different
 mutation shape than the pure git-plumbing sync actions (pull/create-pr).
 Own lock, own audit logger, so the two action classes stay independently
 testable and reasoned about (explicit stakeholder requirement, spec §1).
+
+The write path never touches the live tree (DESIGN-401): the rendered
+`project.yaml` is written to a throwaway temp file and handed to
+`github-checker propose-pr --edit project.yaml=<tmp> --if-match
+project.yaml=<sha256 of the bytes actually read>`, which does its own
+branch/commit/push/PR from a scoped worktree. This runner's mutation
+surface on observed repos is therefore zero — every write, including a
+no-op, comes back as a parsed `ActionOutcome`, never a live-tree diff.
+`propose-pr` reports a no-op (nothing changed vs. the base branch) as
+`ok=False, detail=="no-op"` while still exiting non-zero and printing
+JSON on stdout; callers must check `detail`, not just the process's
+return code, to tell a no-op apart from a real failure.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
 import subprocess
+import tempfile
 import threading
 from io import StringIO
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from ruamel.yaml import YAML
 
 from dispatcher.core.actions import ActionOutcome
 from dispatcher.core.discovery import DispatcherConfig
-from dispatcher.core.spec_runner_config import TYPED_FIELDS
+from dispatcher.core.spec_runner_config import TYPED_DEFAULTS, TYPED_FIELDS
 from dispatcher.core.spec_runner_config_schema import (
     ConfigValidationError,
     validate_candidate,
@@ -39,7 +53,10 @@ class ConfigCandidate(BaseModel):
     """A proposed spec_runner: block, as submitted by the editor UI."""
 
     typed: dict[str, Any]
-    extra_executor_config: dict[str, Any] = Field(default_factory=dict)
+    # Tri-state: None -> preserve the current file's overlay untouched;
+    # {} -> intentional clear; non-empty dict -> replace (X-02 Copilot
+    # round 1 — a bare {} default was indistinguishable from "clear").
+    extra_executor_config: dict[str, Any] | None = None
     base_mtime: float  # project.yaml's mtime when the form was rendered
 
 
@@ -55,29 +72,60 @@ class SpecRunnerConfigConflictError(Exception):
     """project.yaml changed on disk since the form was rendered (-> 409)."""
 
 
-def build_new_yaml_text(project_yaml: Path, candidate: ConfigCandidate) -> str:
-    """Render `project.yaml` with only its `spec_runner:` key replaced.
+def build_new_yaml_text(
+    base_text: str, candidate: ConfigCandidate
+) -> tuple[str, list[str], bool]:
+    """Render project.yaml text with only its `spec_runner:` key replaced.
 
-    Uses ruamel.yaml's round-trip mode so comments, key order, and block
-    literals elsewhere in the file (e.g. `workstreams:`) are preserved —
-    plain PyYAML load+dump would rewrite the whole file and violate the
-    "only the spec_runner: block changes" constraint.
+    Takes the CAPTURED base text (never re-reads the file — the caller
+    hashed exactly these bytes for --if-match; a second read would reopen
+    the TOCTOU window). Emits a typed key iff it is explicit in the current
+    block OR its candidate value differs from the default (DESIGN-402) —
+    implicit defaults are never materialized, so a stale TYPED_DEFAULTS
+    mirror cannot leak into observed repos. `extra_executor_config` is
+    tri-state: `None` preserves the current file's overlay untouched,
+    `{}` is an intentional clear, and a non-empty dict replaces it.
+    Returns (rendered text, changed typed keys, extra-changed flag) for
+    the commit message.
 
-    `YAML()` defaults to `typ="rt"` (round-trip) — as safe as
-    `yaml.safe_load()`, no arbitrary object construction. Never pass
-    `typ="unsafe"` here.
+    ruamel round-trip mode preserves comments/order elsewhere in the file.
+    `YAML()` defaults to `typ="rt"` — as safe as yaml.safe_load(); never
+    pass `typ="unsafe"`.
     """
     yaml = YAML()
     yaml.preserve_quotes = True
-    with project_yaml.open() as fh:
-        doc = yaml.load(fh)
-    new_block: dict[str, Any] = dict(candidate.typed)
-    if candidate.extra_executor_config:
-        new_block["extra_executor_config"] = candidate.extra_executor_config
+    doc = yaml.load(StringIO(base_text))
+    current: dict[str, Any] = dict(doc.get("spec_runner") or {})
+    new_block: dict[str, Any] = {}
+    changed_keys: list[str] = []
+    for key in TYPED_FIELDS:
+        default = TYPED_DEFAULTS[key]
+        cand_val = candidate.typed.get(key, current.get(key, default))
+        if key in current or cand_val != default:
+            new_block[key] = cand_val
+        if cand_val != current.get(key, default):
+            changed_keys.append(key)
+    current_extra: dict[str, Any] = current.get("extra_executor_config") or {}
+    if candidate.extra_executor_config is None:
+        effective_extra = current_extra
+    else:
+        effective_extra = candidate.extra_executor_config
+    extra_changed = effective_extra != current_extra
+    if effective_extra:
+        new_block["extra_executor_config"] = effective_extra
     doc["spec_runner"] = new_block
     buf = StringIO()
     yaml.dump(doc, buf)
-    return buf.getvalue()
+    return buf.getvalue(), changed_keys, extra_changed
+
+
+def _commit_message(changed_keys: list[str], extra_changed: bool) -> str:
+    """`--message` for propose-pr; stable, greppable, no empty parentheses."""
+    parts = list(changed_keys)
+    if extra_changed:
+        parts.append("extra_executor_config")
+    base = "chore(spec-runner): update config"
+    return f"{base} ({', '.join(parts)})" if parts else base
 
 
 class SpecRunnerConfigActionRunner:
@@ -114,7 +162,9 @@ class SpecRunnerConfigActionRunner:
                     f"unknown typed field(s): {unknown}"
                 )
             try:
-                validate_candidate(candidate.typed, candidate.extra_executor_config)
+                validate_candidate(
+                    candidate.typed, candidate.extra_executor_config or {}
+                )
             except ConfigValidationError as verr:
                 raise SpecRunnerConfigRejectedError(str(verr)) from verr
             project_yaml = self._target(repo_dir)
@@ -157,18 +207,33 @@ class SpecRunnerConfigActionRunner:
             )
             raise
         try:
-            new_text = build_new_yaml_text(project_yaml, candidate)
-            project_yaml.write_text(new_text)
-            outcome = self._invoke(repo_dir)
-        except Exception as err:
-            # "Always audits" includes unexpected build/write failures —
-            # without this, such an attempt would leave no audit line.
-            _audit.info(
-                "action=update-spec-runner-config repo=%s ok=False error=%s",
-                repo_dir,
-                err,
+            base_bytes = project_yaml.read_bytes()
+            if_match_hex = hashlib.sha256(base_bytes).hexdigest()
+            new_text, changed_keys, extra_changed = build_new_yaml_text(
+                base_bytes.decode(), candidate
             )
-            raise
+            message = _commit_message(changed_keys, extra_changed)
+            with tempfile.TemporaryDirectory(
+                prefix="dispatcher-config-edit-"
+            ) as tmp_dir:
+                edit_file = Path(tmp_dir) / "project.yaml"
+                edit_file.write_text(new_text)
+                outcome = self._invoke(
+                    repo_dir,
+                    message=message,
+                    edit_file=edit_file,
+                    if_match_hex=if_match_hex,
+                )
+        except Exception as err:  # noqa: BLE001 — spec §3: degrade, never raise
+            # Everything past the guards becomes a failed outcome: temp-dir
+            # creation, decode, render, even unexpected bugs. The trailing
+            # audit line covers this path.
+            outcome = ActionOutcome(
+                action="update-spec-runner-config",
+                dir=repo_dir,
+                ok=False,
+                error=str(err),
+            )
         finally:
             with self._lock:
                 self._busy.discard(repo_dir)
@@ -181,10 +246,27 @@ class SpecRunnerConfigActionRunner:
         )
         return outcome
 
-    def _invoke(self, repo_dir: str) -> ActionOutcome:
+    def _invoke(
+        self,
+        repo_dir: str,
+        *,
+        message: str,
+        edit_file: Path,
+        if_match_hex: str,
+    ) -> ActionOutcome:
         workspace = next(r for r in self._config.roots if r.is_dir())
         target = workspace / repo_dir
-        argv = [*self._command, "open-pr", str(target)]
+        argv = [
+            *self._command,
+            "propose-pr",
+            str(target),
+            "--message",
+            message,
+            "--edit",
+            f"project.yaml={edit_file}",
+            "--if-match",
+            f"project.yaml={if_match_hex}",
+        ]
         try:
             proc = subprocess.run(
                 argv, capture_output=True, text=True, timeout=_ACTION_TIMEOUT
@@ -212,4 +294,8 @@ class SpecRunnerConfigActionRunner:
             detail=data.get("detail"),
             error=data.get("error"),
             pr_url=data.get("pr_url"),
+            branch=data.get("branch"),
+            base_branch=data.get("base_branch"),
+            commit_sha=data.get("commit_sha"),
+            changed_paths=data.get("changed_paths"),
         )
