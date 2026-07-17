@@ -33,7 +33,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from ruamel.yaml import YAML
 
 from dispatcher.core.actions import ActionOutcome
@@ -53,7 +53,10 @@ class ConfigCandidate(BaseModel):
     """A proposed spec_runner: block, as submitted by the editor UI."""
 
     typed: dict[str, Any]
-    extra_executor_config: dict[str, Any] = Field(default_factory=dict)
+    # Tri-state: None -> preserve the current file's overlay untouched;
+    # {} -> intentional clear; non-empty dict -> replace (X-02 Copilot
+    # round 1 — a bare {} default was indistinguishable from "clear").
+    extra_executor_config: dict[str, Any] | None = None
     base_mtime: float  # project.yaml's mtime when the form was rendered
 
 
@@ -79,8 +82,11 @@ def build_new_yaml_text(
     the TOCTOU window). Emits a typed key iff it is explicit in the current
     block OR its candidate value differs from the default (DESIGN-402) —
     implicit defaults are never materialized, so a stale TYPED_DEFAULTS
-    mirror cannot leak into observed repos. Returns (rendered text,
-    changed typed keys, extra-changed flag) for the commit message.
+    mirror cannot leak into observed repos. `extra_executor_config` is
+    tri-state: `None` preserves the current file's overlay untouched,
+    `{}` is an intentional clear, and a non-empty dict replaces it.
+    Returns (rendered text, changed typed keys, extra-changed flag) for
+    the commit message.
 
     ruamel round-trip mode preserves comments/order elsewhere in the file.
     `YAML()` defaults to `typ="rt"` — as safe as yaml.safe_load(); never
@@ -99,11 +105,14 @@ def build_new_yaml_text(
             new_block[key] = cand_val
         if cand_val != current.get(key, default):
             changed_keys.append(key)
-    extra_changed = (candidate.extra_executor_config or {}) != (
-        current.get("extra_executor_config") or {}
-    )
-    if candidate.extra_executor_config:
-        new_block["extra_executor_config"] = candidate.extra_executor_config
+    current_extra: dict[str, Any] = current.get("extra_executor_config") or {}
+    if candidate.extra_executor_config is None:
+        effective_extra = current_extra
+    else:
+        effective_extra = candidate.extra_executor_config
+    extra_changed = effective_extra != current_extra
+    if effective_extra:
+        new_block["extra_executor_config"] = effective_extra
     doc["spec_runner"] = new_block
     buf = StringIO()
     yaml.dump(doc, buf)
@@ -153,7 +162,9 @@ class SpecRunnerConfigActionRunner:
                     f"unknown typed field(s): {unknown}"
                 )
             try:
-                validate_candidate(candidate.typed, candidate.extra_executor_config)
+                validate_candidate(
+                    candidate.typed, candidate.extra_executor_config or {}
+                )
             except ConfigValidationError as verr:
                 raise SpecRunnerConfigRejectedError(str(verr)) from verr
             project_yaml = self._target(repo_dir)

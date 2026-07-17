@@ -257,6 +257,16 @@ spec_runner:
 workstreams: []
 """
 
+_BASE_YAML_WITH_EXTRA = """\
+project: alpha
+spec_runner:
+  max_retries: 5
+  extra_executor_config:
+    executor:
+      telegram_bot_token: "123:abc"
+workstreams: []
+"""
+
 
 def _cand(**typed_overrides) -> ConfigCandidate:
     from dispatcher.core.spec_runner_config import TYPED_DEFAULTS
@@ -324,6 +334,39 @@ def test_emission_preserves_rest_of_file() -> None:
     text, _, _ = build_new_yaml_text(_BASE_YAML, _cand(max_retries=7))
     assert "project: alpha" in text
     assert "workstreams: []" in text
+
+
+def test_emission_omitted_extra_preserves_current() -> None:
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
+
+    cand = ConfigCandidate(typed={"review_model": "y"}, base_mtime=0.0)
+    text, changed, extra_changed = build_new_yaml_text(_BASE_YAML_WITH_EXTRA, cand)
+    assert "telegram_bot_token" in text  # overlay preserved, not dropped
+    assert extra_changed is False
+    assert changed == ["review_model"]
+
+
+def test_emission_explicit_empty_extra_clears() -> None:
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
+
+    cand = ConfigCandidate(typed={}, extra_executor_config={}, base_mtime=0.0)
+    text, _, extra_changed = build_new_yaml_text(_BASE_YAML_WITH_EXTRA, cand)
+    assert "telegram_bot_token" not in text  # intentional clear
+    assert extra_changed is True
+
+
+def test_emission_nonempty_extra_replaces() -> None:
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
+
+    cand = ConfigCandidate(
+        typed={},
+        extra_executor_config={"executor": {"budget_usd": 5.0}},
+        base_mtime=0.0,
+    )
+    text, _, extra_changed = build_new_yaml_text(_BASE_YAML_WITH_EXTRA, cand)
+    assert "budget_usd" in text
+    assert "telegram_bot_token" not in text
+    assert extra_changed is True
 
 
 def test_commit_message_lists_changed_keys_with_fallback() -> None:

@@ -377,7 +377,6 @@ async def test_spec_runner_config_view_and_update(tmp_path: Path, monkeypatch) -
             json={
                 "dir": "alpha",
                 "typed": {"max_retries": 9},
-                "extra_executor_config": {},
                 "base_mtime": base_mtime,
             },
         )
@@ -397,7 +396,6 @@ async def test_spec_runner_config_view_and_update(tmp_path: Path, monkeypatch) -
             json={
                 "dir": "alpha",
                 "typed": {},
-                "extra_executor_config": {},
                 "base_mtime": 0,
             },
         )
@@ -429,7 +427,6 @@ async def test_spec_runner_config_invalid_candidate_maps_to_422(
                 # string where int is expected -> ConfigValidationError ->
                 # SpecRunnerConfigRejectedError -> 422 (app.py's own mapping).
                 "typed": {"max_retries": "not-an-int"},
-                "extra_executor_config": {},
                 "base_mtime": base_mtime,
             },
         )
@@ -459,7 +456,6 @@ async def test_spec_runner_config_busy_maps_to_409(tmp_path: Path, monkeypatch) 
             json={
                 "dir": "alpha",
                 "typed": {},
-                "extra_executor_config": {},
                 "base_mtime": 0,
             },
         )
@@ -489,7 +485,6 @@ async def test_spec_runner_config_stale_mtime_maps_to_409(
             json={
                 "dir": "alpha",
                 "typed": {"max_retries": 9},
-                "extra_executor_config": {},
                 "base_mtime": stale_mtime,
             },
         )
@@ -537,7 +532,6 @@ async def test_spec_runner_config_noop_reaches_client(
             json={
                 "dir": "alpha",
                 "typed": {"max_retries": 9},
-                "extra_executor_config": {},
                 "base_mtime": base_mtime,
             },
         )

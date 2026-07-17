@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from dispatcher.core.actions import (
     Action,
@@ -102,7 +102,10 @@ class UpdateSpecRunnerConfigRequest(BaseModel):
 
     dir: str
     typed: dict[str, Any]
-    extra_executor_config: dict[str, Any] = Field(default_factory=dict)
+    # Tri-state: None (omitted) preserves the current file's overlay;
+    # {} is an intentional clear; non-empty replaces it (X-02 Copilot
+    # round 1 on PR #40).
+    extra_executor_config: dict[str, Any] | None = None
     base_mtime: float
 
 
