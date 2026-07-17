@@ -230,7 +230,12 @@ export function activate(context: vscode.ExtensionContext): void {
         );
         return;
       }
-      throw e;
+      // parity with runAction/confirmConfig: never a silent unhandled
+      // rejection — offline/500/409 all surface as a toast
+      void vscode.window.showErrorMessage(
+        e instanceof ApiError ? e.detail : String(e),
+      );
+      return;
     }
     const picked = await vscode.window.showQuickPick(
       entries.map((entry) => ({
