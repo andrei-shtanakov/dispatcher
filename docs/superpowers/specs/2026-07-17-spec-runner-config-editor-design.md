@@ -147,6 +147,16 @@ but this design is the first caller that *itself* dirties the tree before invoki
 it. If that assumption is wrong, `open-pr` needs a small github-checker-side
 adjustment (new handoff, not this design's work).
 
+### DESIGN-304 amendment (2026-07-17, un-gated)
+
+DESIGN-304 as written assumed `github-checker open-pr` would branch/commit/
+push a dirty worktree — it does not (its documented contract), which is why
+the write path first shipped gated. The flow is now: render the new
+`project.yaml` to a temp file and delegate to `github-checker propose-pr
+--edit --if-match` — dispatcher never writes the live tree at all. This
+closes §4's cross-class lock-race caveat by construction. Full delta:
+`2026-07-17-config-editor-ungating-design.md` (DESIGN-401..406).
+
 ### DESIGN-305: API
 
 - `GET /api/projects/{name}/spec-runner-config` → effective config + per-field
