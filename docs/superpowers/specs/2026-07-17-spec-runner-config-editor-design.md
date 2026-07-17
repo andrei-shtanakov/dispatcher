@@ -187,7 +187,7 @@ directly.
 ### DESIGN-308: TUI parity (M2, deferred)
 
 Config screen mirrored in the TUI, closing this feature's slice of `FR-06`
-(terminal/IDE parity). Out of this design's M1 acceptance.
+(terminal/IDE parity). Out of this design's M1 acceptance. **Shipped 2026-07-17** in the FR-06 TUI iteration (`2026-07-17-tui-parity-design.md`); FR-06 status: TUI half closed, VSCode half remains.
 
 ## 4. Error handling / degradation
 
