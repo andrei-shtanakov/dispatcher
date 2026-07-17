@@ -6,8 +6,10 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.139.0",
+    "jsonschema>=4.26.0",
     "pydantic>=2.13.4",
     "pyyaml>=6.0.3",
+    "ruamel-yaml>=0.19.1",
     "textual>=8.2.8,<9",
     "uvicorn>=0.49.0",
 ]
@@ -70,6 +72,7 @@ reads = [
 dev = [
     "anyio>=4.14.1",
     "httpx>=0.28.1",
+    "jsonschema>=4.26.0",
     "pyrefly>=1.1.1",
     "pytest>=9.1.1",
     "ruff>=0.15.20",

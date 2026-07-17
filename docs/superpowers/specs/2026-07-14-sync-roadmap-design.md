@@ -125,6 +125,18 @@ yet — TUI keys `s`/`S` need CLI twins. Tracked as the successor of the Q-01
 handoff pattern; until H-2 lands, the UI renders the exact command as
 copy-paste next to a disabled button (degraded but honest M1 fallback).
 
+### DESIGN-204b: Sibling action class (forward reference)
+
+`DESIGN-204` covers **sync actions** only (`pull`, `create-pr`, pure git
+plumbing, no file content produced by dispatcher). A second, independent
+action class — **content-PR actions** — was added later
+(`docs/superpowers/specs/2026-07-17-spec-runner-config-editor-design.md`,
+resolves X-02): dispatcher itself renders a schema-validated diff scoped to
+one YAML block before handing off to `github-checker`. The two classes use
+separate runners, locks, and audit loggers (`core/actions.py` vs.
+`core/spec_runner_config_actions.py`) — this is a sibling, not a
+replacement.
+
 ### DESIGN-205: Repo auto-discovery confirmation (brief FR-02)
 
 `core/discovery.py` extension: diff the snapshot's workspace walk (it already
