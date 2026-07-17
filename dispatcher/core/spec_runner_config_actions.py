@@ -215,12 +215,8 @@ class SpecRunnerConfigActionRunner:
                 )
         except Exception as err:  # noqa: BLE001 — spec §3: degrade, never raise
             # Everything past the guards becomes a failed outcome: temp-dir
-            # creation, decode, render, even unexpected bugs. Still audits.
-            _audit.info(
-                "action=update-spec-runner-config repo=%s ok=False error=%s",
-                repo_dir,
-                err,
-            )
+            # creation, decode, render, even unexpected bugs. The trailing
+            # audit line covers this path.
             outcome = ActionOutcome(
                 action="update-spec-runner-config",
                 dir=repo_dir,

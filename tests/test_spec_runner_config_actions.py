@@ -219,6 +219,14 @@ def test_write_failure_audits_and_frees_busy_slot(
         "ok=False" in r.getMessage() and "yaml render exploded" in r.getMessage()
         for r in caplog.records
     )
+    # Invariant: exactly ONE audit line per attempt
+    attempt_lines = [
+        r
+        for r in caplog.records
+        if "action=update-spec-runner-config" in r.getMessage()
+        and "yaml render exploded" in r.getMessage()
+    ]
+    assert len(attempt_lines) == 1
     # busy slot must be freed: a follow-up run succeeds
     monkeypatch.undo()
     assert runner.run("alpha", _candidate(repo)).ok
