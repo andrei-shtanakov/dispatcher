@@ -42,6 +42,18 @@ from dispatcher.core.roadmap import (
     default_roadmap_dirs,
 )
 from dispatcher.core.service import SnapshotService, recent_errors
+from dispatcher.core.spec_runner_config import (
+    ProjectSpecRunnerConfig,
+    discover_project_configs,
+)
+from dispatcher.core.spec_runner_config_actions import (
+    ConfigCandidate,
+    SpecRunnerConfigActionRunner,
+    SpecRunnerConfigBusyError,
+    SpecRunnerConfigConflictError,
+    SpecRunnerConfigRejectedError,
+)
+from dispatcher.core.spec_runner_config_schema import ConfigValidationError
 from dispatcher.core.sync import HostPanel
 from dispatcher.core.sync_service import SyncService, SyncStatus
 from dispatcher.core.tracking import TrackAction, decide
@@ -85,12 +97,22 @@ class ActionSession(BaseModel):
     token: str
 
 
+class UpdateSpecRunnerConfigRequest(BaseModel):
+    """POST /api/actions/update-spec-runner-config body."""
+
+    dir: str
+    typed: dict[str, Any]
+    extra_executor_config: dict[str, Any] = {}
+    base_mtime: float
+
+
 def create_app(config: DispatcherConfig) -> FastAPI:
     """Build the API app for the given configuration."""
     app = FastAPI(title="Dispatcher", version="0.1.0")
     cache = SnapshotService(config)
     sync_cache = SyncService(config)
     actions = ActionRunner(config)
+    spec_runner_config_actions = SpecRunnerConfigActionRunner(config)
     # CSRF-токен на процесс: SOP не даст чужой странице его прочитать,
     # значит POST с токеном мог отправить только наш UI (DESIGN-204)
     action_token = secrets.token_hex(16)
@@ -280,6 +302,37 @@ def create_app(config: DispatcherConfig) -> FastAPI:
     ) -> ActionOutcome:
         """Явный клик человека: gh pr create через github-checker (идемпотентно)."""
         return _run_action("open-pr", request, x_action_token)
+
+    @app.get(
+        "/api/projects/{name}/spec-runner-config",
+        response_model=ProjectSpecRunnerConfig,
+    )
+    def spec_runner_config_view(name: str) -> ProjectSpecRunnerConfig:
+        configs, _ = discover_project_configs(config.roots)
+        for cfg in configs:
+            if Path(cfg.project_yaml_path).parent.name == name:
+                return cfg
+        raise HTTPException(status_code=404, detail=f"no project.yaml for: {name}")
+
+    @app.post("/api/actions/update-spec-runner-config", response_model=ActionOutcome)
+    def action_update_spec_runner_config(
+        request: UpdateSpecRunnerConfigRequest,
+        x_action_token: str | None = Header(default=None),
+    ) -> ActionOutcome:
+        """Явный клик человека: PR в spec_runner: блок project.yaml (DESIGN-304)."""
+        if x_action_token != action_token:
+            raise HTTPException(status_code=403, detail="bad or missing action token")
+        candidate = ConfigCandidate(
+            typed=request.typed,
+            extra_executor_config=request.extra_executor_config,
+            base_mtime=request.base_mtime,
+        )
+        try:
+            return spec_runner_config_actions.run(request.dir.strip(), candidate)
+        except (SpecRunnerConfigRejectedError, ConfigValidationError) as err:
+            raise HTTPException(status_code=422, detail=str(err)) from err
+        except (SpecRunnerConfigBusyError, SpecRunnerConfigConflictError) as err:
+            raise HTTPException(status_code=409, detail=str(err)) from err
 
     app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="static")
     return app

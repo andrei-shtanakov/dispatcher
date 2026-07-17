@@ -346,3 +346,55 @@ async def test_action_busy_maps_to_409(tmp_path: Path, monkeypatch) -> None:
             headers={"X-Action-Token": token},
         )
         assert resp.status_code == 409
+
+
+async def test_spec_runner_config_view_and_update(tmp_path: Path) -> None:
+    import subprocess
+
+    repo = tmp_path / "alpha"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    (repo / "project.yaml").write_text(
+        "project: alpha\nspec_runner:\n  max_retries: 3\nworkstreams: []\n"
+    )
+    config = DispatcherConfig(roots=(tmp_path,))
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        view = await client.get("/api/projects/alpha/spec-runner-config")
+        assert view.status_code == 200
+        assert view.json()["typed"]["max_retries"]["value"] == 3
+
+        missing = await client.get("/api/projects/no-such-project/spec-runner-config")
+        assert missing.status_code == 404
+
+        token = (await client.get("/api/actions/session")).json()["token"]
+        base_mtime = (repo / "project.yaml").stat().st_mtime
+        resp = await client.post(
+            "/api/actions/update-spec-runner-config",
+            headers={"X-Action-Token": token},
+            json={
+                "dir": "alpha",
+                "typed": {"max_retries": 9},
+                "extra_executor_config": {},
+                "base_mtime": base_mtime,
+            },
+        )
+        # github-checker isn't installed in the test env — expect a failed
+        # ActionOutcome (200 with ok=False), not a 5xx: the write itself must
+        # succeed even when the PR-creation subprocess can't run.
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is False
+        assert "max_retries: 9" in (repo / "project.yaml").read_text()
+
+        bad_token = await client.post(
+            "/api/actions/update-spec-runner-config",
+            headers={"X-Action-Token": "wrong"},
+            json={
+                "dir": "alpha",
+                "typed": {},
+                "extra_executor_config": {},
+                "base_mtime": 0,
+            },
+        )
+        assert bad_token.status_code == 403
