@@ -447,6 +447,7 @@ function renderSpecRunnerConfigForm(cfg) {
     </label>`).join("");
   document.getElementById("spec-runner-config-submit").disabled = false;
   document.getElementById("spec-runner-config-result").textContent = "";
+  resetSpecRunnerConfigPreview();
 }
 
 async function detail(name) {
@@ -475,12 +476,7 @@ async function detail(name) {
   section.scrollIntoView({behavior: "smooth", block: "nearest"});
 }
 
-document.getElementById("spec-runner-config-submit").addEventListener(
-  "click", async () => {
-  if (!currentSpecRunnerConfig) return;
-  const btn = document.getElementById("spec-runner-config-submit");
-  const result = document.getElementById("spec-runner-config-result");
-  const form = document.getElementById("spec-runner-config-form");
+function readSpecRunnerConfigTyped(form) {
   const typed = {};
   form.querySelectorAll("input[data-typed]").forEach(input => {
     const original = currentSpecRunnerConfig.typed[input.dataset.typed].value;
@@ -488,6 +484,47 @@ document.getElementById("spec-runner-config-submit").addEventListener(
       ? input.value === "true"
       : typeof original === "number" ? Number(input.value) : input.value;
   });
+  return typed;
+}
+
+function resetSpecRunnerConfigPreview() {
+  const btn = document.getElementById("spec-runner-config-submit");
+  const diff = document.getElementById("spec-runner-config-diff");
+  btn.textContent = "Preview diff";
+  btn.dataset.armed = "false";
+  diff.hidden = true;
+  diff.innerHTML = "";
+}
+
+function renderSpecRunnerConfigDiff(typed) {
+  const diff = document.getElementById("spec-runner-config-diff");
+  const lines = [];
+  Object.entries(typed).forEach(([key, value]) => {
+    const original = currentSpecRunnerConfig.typed[key].value;
+    if (value !== original) {
+      lines.push(`- ${esc(key)}: ${esc(String(original))}`);
+      lines.push(`+ ${esc(key)}: ${esc(String(value))}`);
+    }
+  });
+  diff.innerHTML = lines.length ? lines.join("\n") : "(no changes)";
+  diff.hidden = false;
+}
+
+document.getElementById("spec-runner-config-submit").addEventListener(
+  "click", async () => {
+  if (!currentSpecRunnerConfig) return;
+  const btn = document.getElementById("spec-runner-config-submit");
+  const result = document.getElementById("spec-runner-config-result");
+  const form = document.getElementById("spec-runner-config-form");
+  const typed = readSpecRunnerConfigTyped(form);
+
+  if (btn.dataset.armed !== "true") {
+    renderSpecRunnerConfigDiff(typed);
+    btn.textContent = "Confirm & open PR";
+    btn.dataset.armed = "true";
+    return;
+  }
+
   btn.disabled = true;
   result.textContent = "…";
   try {
@@ -513,6 +550,15 @@ document.getElementById("spec-runner-config-submit").addEventListener(
     result.className = "err";
   } finally {
     btn.disabled = false;
+    resetSpecRunnerConfigPreview();
+  }
+});
+
+document.getElementById("spec-runner-config-form").addEventListener(
+  "input", () => {
+  if (document.getElementById("spec-runner-config-submit").dataset.armed
+      === "true") {
+    resetSpecRunnerConfigPreview();
   }
 });
 
