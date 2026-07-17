@@ -55,14 +55,19 @@ live tree. New flow:
    `[*self._command, "propose-pr", str(target_dir), "--message", <msg>,
    "--edit", f"project.yaml={tmp_file}",
    "--if-match", f"project.yaml={sha256}"]`
-   with the existing timeout/JSON-parse handling. Parse the additive
-   `branch` field into `ActionOutcome` (new optional field, additive) for
-   audit; `pr_url/detail/error` as today.
+   with the existing timeout/JSON-parse handling. Parse ALL four additive
+   fields into `ActionOutcome` (new optional fields, additive: `branch`,
+   `base_branch`, `commit_sha`, `changed_paths`) — propose-pr already emits
+   them and they are audit/debug gold; the UI may ignore them.
+   `pr_url/detail/error` as today.
 5. Temp dir cleanup in `finally`.
 
 `--message` format: `chore(spec-runner): update config (<comma-separated
 changed typed keys>[, extra_executor_config])` — derived from the DESIGN-402
-diff, stable and greppable.
+diff, stable and greppable. **Fallback:** when the changed-keys list is
+empty (structural-only change, or anything else that yields no listable
+keys), the message is the bare `chore(spec-runner): update config` — never
+empty parentheses.
 
 **`--if-match` divergence semantics (accepted, by design):** the hash is of
 the live on-disk file; `propose-pr` compares against `origin/<default>`. If
@@ -70,7 +75,12 @@ the observed repo's `project.yaml` has local uncommitted changes or the
 clone is ahead/behind origin on that file, the guard mismatches and
 `propose-pr` refuses with "base file changed; reload required". That is the
 honest outcome — the form was rendered from a state that is not what the PR
-would be based on. No dispatcher-side special-casing.
+would be based on. No dispatcher-side special-casing. **Known limitation
+(named, accepted):** git filters/EOL normalization could make worktree
+bytes differ from the raw blob bytes even without a semantic difference;
+`project.yaml` is treated as ordinary text without custom filters, and a
+filter/EOL mismatch is simply a reload-required refusal, not something
+dispatcher compensates for.
 
 The live tree is now **read-only** for this action class: `run()` reads
 `project.yaml` (as the read-model always has) and writes nothing outside its
@@ -145,8 +155,20 @@ The un-gated write path is therefore tested at three levels:
    github-checker is installed; skipped in dispatcher CI. The binary's own
    contract is covered by its repo's 162 tests.
 
-No-op path: a unit test drives `detail="no-op"` through the runner and (via
-the API test client) confirms the outcome reaches the client unmangled.
+No-op path — pinned at the subprocess boundary: the fake binary for this
+test MUST exit with **returncode 1 while printing the `ActionResult` JSON
+(`ok=false, detail="no-op"`) on stdout** — exactly propose-pr's real
+behavior. `_invoke` parses stdout independently of the return code today;
+this test exists so nobody later "fixes" non-zero exits into a blanket
+"github-checker returned no JSON" error and breaks the no-op contract. The
+API test client additionally confirms `detail` reaches the HTTP client
+unmangled.
+
+Note on level 3's reach: the live smoke skips wherever the binary is not on
+PATH — which currently includes the primary dev machine, not just CI. Level
+2 (real-git fake binary) is therefore the acceptance bar for this PR; the
+live smoke is opportunistic extra assurance once `github-checker` is
+installed.
 
 ### DESIGN-406: Documentation updates
 
@@ -157,6 +179,13 @@ the API test client) confirms the outcome reaches the client unmangled.
 - `core/spec_runner_config_actions.py` module docstring: reflect the new
   flow (renders content, hands it to propose-pr; never writes the live
   tree — the module's mutation surface is now zero on observed repos).
+- `README.md`: it still describes dispatcher as a "read-only monitoring
+  dashboard" — no longer accurate once the write path is live. Amend the
+  opening description to name the narrow, click-gated PR-only mutation
+  whitelist (sync actions + the config-editor content-PR action).
+- `CLAUDE.md`: verify the runtime-exception wording (the X-02 bullet) still
+  reads correctly now that the write path is live rather than gated; adjust
+  the gate reference if it names the flag.
 - Project memory / COWORK_CONTEXT: gate removed, write path live.
 
 ## 3. Error handling (delta rows)
