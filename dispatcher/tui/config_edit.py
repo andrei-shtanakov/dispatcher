@@ -124,6 +124,9 @@ class ConfigEditScreen(Screen[None]):
             extra_executor_config=None,  # tri-state: preserve current overlay
             base_mtime=self._cfg.base_mtime,
         )
+        # Basename-keyed contract: a same-named dir in two roots would
+        # resolve to the FIRST root — but base_mtime then mismatches and
+        # the runner rejects with "reload required". Fails closed.
         repo_dir = Path(self._cfg.project_yaml_path).parent.name
         try:
             outcome = self._runner.run(repo_dir, candidate)
