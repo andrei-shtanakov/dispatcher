@@ -67,10 +67,14 @@ def validate_typed_fields(candidate: dict[str, Any]) -> list[str]:
             errors.append(f"typed.{key}: not a known typed field")
             continue
         expected = _TYPED_TYPES[key]
+        # bool is a subclass of int: without this guard, max_retries=true
+        # would silently pass as an int and get written into project.yaml.
+        if isinstance(value, bool) and expected is not bool:
+            errors.append(f"typed.{key}: expected {expected.__name__}, got bool")
+            continue
         if not isinstance(value, expected):
             errors.append(
-                f"typed.{key}: expected {expected.__name__}, "
-                f"got {type(value).__name__}"
+                f"typed.{key}: expected {expected.__name__}, got {type(value).__name__}"
             )
     return errors
 

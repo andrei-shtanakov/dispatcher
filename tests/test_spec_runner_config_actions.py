@@ -119,6 +119,35 @@ def test_one_in_flight_per_repo(tmp_path: Path, monkeypatch) -> None:
     thread.join(timeout=2)
 
 
+def test_write_failure_audits_and_frees_busy_slot(
+    tmp_path: Path, caplog, monkeypatch
+) -> None:
+    """An unexpected build/write exception must still audit and not leak busy."""
+    import dispatcher.core.spec_runner_config_actions as mod
+
+    repo = make_project(tmp_path, "alpha")
+    payload = {"ok": True, "detail": "opened"}
+    runner = SpecRunnerConfigActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    candidate = _candidate(repo)
+
+    def boom(project_yaml, cand):
+        raise RuntimeError("yaml render exploded")
+
+    monkeypatch.setattr(mod, "build_new_yaml_text", boom)
+    with caplog.at_level("INFO", logger="dispatcher.actions.spec_runner_config"):
+        with pytest.raises(RuntimeError, match="yaml render exploded"):
+            runner.run("alpha", candidate)
+    assert any(
+        "ok=False" in r.getMessage() and "yaml render exploded" in r.getMessage()
+        for r in caplog.records
+    )
+    # busy slot must be freed: a follow-up run succeeds
+    monkeypatch.undo()
+    assert runner.run("alpha", _candidate(repo)).ok
+
+
 def test_audit_line_written(tmp_path: Path, caplog) -> None:
     repo = make_project(tmp_path, "alpha")
     payload = {"ok": True, "detail": "opened"}
@@ -129,6 +158,7 @@ def test_audit_line_written(tmp_path: Path, caplog) -> None:
     with caplog.at_level("INFO", logger="dispatcher.actions.spec_runner_config"):
         runner.run("alpha", candidate)
     assert any(
-        "action=update-spec-runner-config" in r.getMessage() and "repo=alpha" in r.getMessage()
+        "action=update-spec-runner-config" in r.getMessage()
+        and "repo=alpha" in r.getMessage()
         for r in caplog.records
     )

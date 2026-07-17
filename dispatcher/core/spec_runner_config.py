@@ -118,7 +118,12 @@ def read_project_spec_runner_config(project_yaml: Path) -> ProjectSpecRunnerConf
 def discover_project_configs(
     roots: tuple[Path, ...],
 ) -> tuple[list[ProjectSpecRunnerConfig], list[str]]:
-    """Scan `roots` for `<child>/project.yaml` files with a `spec_runner:` block."""
+    """Scan `roots` for `<child>/project.yaml` files (Maestro projects).
+
+    A missing `spec_runner:` block is not skipped — the config is returned
+    with every typed field at its default (`explicit=False`), matching how
+    Maestro itself would load such a file.
+    """
     found: list[ProjectSpecRunnerConfig] = []
     warnings: list[str] = []
     for root in roots:

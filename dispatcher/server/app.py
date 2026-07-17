@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from dispatcher.core.actions import (
     Action,
@@ -109,7 +109,7 @@ class UpdateSpecRunnerConfigRequest(BaseModel):
 
     dir: str
     typed: dict[str, Any]
-    extra_executor_config: dict[str, Any] = {}
+    extra_executor_config: dict[str, Any] = Field(default_factory=dict)
     base_mtime: float
 
 

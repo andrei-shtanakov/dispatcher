@@ -348,9 +348,7 @@ async def test_action_busy_maps_to_409(tmp_path: Path, monkeypatch) -> None:
         assert resp.status_code == 409
 
 
-async def test_spec_runner_config_view_and_update(
-    tmp_path: Path, monkeypatch
-) -> None:
+async def test_spec_runner_config_view_and_update(tmp_path: Path, monkeypatch) -> None:
     import subprocess
 
     import dispatcher.server.app as app_module
@@ -446,9 +444,7 @@ async def test_spec_runner_config_invalid_candidate_maps_to_422(
         assert "max_retries: 3" in (repo / "project.yaml").read_text()
 
 
-async def test_spec_runner_config_busy_maps_to_409(
-    tmp_path: Path, monkeypatch
-) -> None:
+async def test_spec_runner_config_busy_maps_to_409(tmp_path: Path, monkeypatch) -> None:
     import dispatcher.server.app as app_module
     from dispatcher.core.spec_runner_config_actions import (
         SpecRunnerConfigActionRunner,

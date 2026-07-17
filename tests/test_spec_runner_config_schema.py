@@ -13,7 +13,10 @@ from dispatcher.core.spec_runner_config_schema import (
 
 _SCHEMA_PATH = (
     Path(__file__).resolve().parents[1]
-    / "contracts" / "executor-config" / "v0-provisional" / "schema.json"
+    / "contracts"
+    / "executor-config"
+    / "v0-provisional"
+    / "schema.json"
 )
 
 
@@ -63,6 +66,14 @@ def test_validate_typed_fields_rejects_unknown_key() -> None:
 def test_validate_typed_fields_rejects_wrong_type() -> None:
     errors = validate_typed_fields({"max_retries": "five"})
     assert any("expected int" in e for e in errors)
+
+
+def test_validate_typed_fields_rejects_bool_for_int() -> None:
+    # bool subclasses int: max_retries=true must not pass as an int
+    errors = validate_typed_fields({"max_retries": True})
+    assert any("got bool" in e for e in errors)
+    # a genuine bool field still accepts bools
+    assert validate_typed_fields({"auto_commit": False}) == []
 
 
 def test_validate_extra_executor_config_accepts_valid_shape() -> None:

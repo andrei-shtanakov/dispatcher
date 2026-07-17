@@ -19,7 +19,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from ruamel.yaml import YAML
 
 from dispatcher.core.actions import ActionOutcome
@@ -39,7 +39,7 @@ class ConfigCandidate(BaseModel):
     """A proposed spec_runner: block, as submitted by the editor UI."""
 
     typed: dict[str, Any]
-    extra_executor_config: dict[str, Any] = {}
+    extra_executor_config: dict[str, Any] = Field(default_factory=dict)
     base_mtime: float  # project.yaml's mtime when the form was rendered
 
 
@@ -110,7 +110,9 @@ class SpecRunnerConfigActionRunner:
         try:
             unknown = set(candidate.typed) - set(TYPED_FIELDS)
             if unknown:
-                raise SpecRunnerConfigRejectedError(f"unknown typed field(s): {unknown}")
+                raise SpecRunnerConfigRejectedError(
+                    f"unknown typed field(s): {unknown}"
+                )
             try:
                 validate_candidate(candidate.typed, candidate.extra_executor_config)
             except ConfigValidationError as verr:
@@ -123,9 +125,21 @@ class SpecRunnerConfigActionRunner:
             # SpecRunnerConfigConflictError caused by that in-flight write.
             with self._lock:
                 if repo_dir in self._busy:
-                    raise SpecRunnerConfigBusyError(f"{repo_dir}: update already in flight")
+                    raise SpecRunnerConfigBusyError(
+                        f"{repo_dir}: update already in flight"
+                    )
                 self._busy.add(repo_dir)
-            if project_yaml.stat().st_mtime != candidate.base_mtime:
+            try:
+                stale = project_yaml.stat().st_mtime != candidate.base_mtime
+            except OSError as err:
+                # project.yaml vanished between _target()'s is_file() and
+                # here — release the just-claimed busy slot, don't leak it.
+                with self._lock:
+                    self._busy.discard(repo_dir)
+                raise SpecRunnerConfigRejectedError(
+                    f"{repo_dir}: project.yaml unreadable: {err}"
+                ) from err
+            if stale:
                 with self._lock:
                     self._busy.discard(repo_dir)
                 raise SpecRunnerConfigConflictError(
@@ -146,6 +160,15 @@ class SpecRunnerConfigActionRunner:
             new_text = build_new_yaml_text(project_yaml, candidate)
             project_yaml.write_text(new_text)
             outcome = self._invoke(repo_dir)
+        except Exception as err:
+            # "Always audits" includes unexpected build/write failures —
+            # without this, such an attempt would leave no audit line.
+            _audit.info(
+                "action=update-spec-runner-config repo=%s ok=False error=%s",
+                repo_dir,
+                err,
+            )
+            raise
         finally:
             with self._lock:
                 self._busy.discard(repo_dir)
