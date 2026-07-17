@@ -1,11 +1,17 @@
 /** Extension entry point: config, poller, commands, wiring. */
 
 import * as vscode from "vscode";
-import { ApiClient } from "./api";
+import { ApiClient, ApiError } from "./api";
 import { ServerManager } from "./server";
 import type { SyncStatusResponse } from "./api";
 import { createStatusBar } from "./status";
-import { ErrorsProvider, ProjectsProvider, RoadmapProvider } from "./tree";
+import {
+  ErrorsProvider,
+  ProjectsProvider,
+  RoadmapProvider,
+  SyncProvider,
+} from "./tree";
+import type { SyncNode } from "./tree";
 
 interface Config {
   url: string;
@@ -53,6 +59,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const projects = new ProjectsProvider(client);
   const errors = new ErrorsProvider();
   const roadmap = new RoadmapProvider();
+  const sync = new SyncProvider();
   const status = createStatusBar();
 
   let polling = false;
@@ -74,6 +81,7 @@ export function activate(context: vscode.ExtensionContext): void {
         projects.setData(null);
         errors.setData(null);
         roadmap.setData(null);
+        sync.setData(null);
         status.update(null);
         await server.ensureRunning();
         return;
@@ -95,10 +103,69 @@ export function activate(context: vscode.ExtensionContext): void {
       // вердикт деградирует независимо: старый сервер без /api/sync
       // не гасит остальные вьюхи (тот же принцип, что errors/roadmap)
       lastSync = syncData.status === "fulfilled" ? syncData.value : null;
+      sync.setData(lastSync);
       status.update(overview, lastSync);
     } finally {
       polling = false;
     }
+  }
+
+  async function runAction(
+    action: "pull" | "create-pr",
+    node: SyncNode,
+  ): Promise<void> {
+    if (node.kind !== "verdict") {
+      return;
+    }
+    const dir = node.v.repo;
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `dispatcher: ${action} ${dir}`,
+      },
+      async () => {
+        try {
+          const api = client();
+          const outcome =
+            action === "pull" ? await api.pull(dir) : await api.createPr(dir);
+          if (outcome.ok) {
+            const message = outcome.pr_url ?? outcome.detail ?? "done";
+            const choice = outcome.pr_url
+              ? await vscode.window.showInformationMessage(message, "Open PR")
+              : await vscode.window.showInformationMessage(message);
+            if (choice === "Open PR" && outcome.pr_url) {
+              void vscode.env.openExternal(vscode.Uri.parse(outcome.pr_url));
+            }
+          } else {
+            void vscode.window.showErrorMessage(
+              outcome.error ?? "dispatcher action failed",
+            );
+          }
+        } catch (e) {
+          void vscode.window.showErrorMessage(
+            e instanceof ApiError ? e.detail : String(e),
+          );
+        }
+      },
+    );
+    void poll();
+  }
+
+  async function decideProposal(
+    action: "track" | "ignore",
+    node: SyncNode,
+  ): Promise<void> {
+    if (node.kind !== "proposal") {
+      return;
+    }
+    try {
+      await client().track(node.dir, action);
+    } catch (e) {
+      void vscode.window.showErrorMessage(
+        e instanceof ApiError ? e.detail : String(e),
+      );
+    }
+    void poll();
   }
 
   const timer = setInterval(() => void poll(), readConfig().pollSeconds * 1000);
@@ -107,8 +174,25 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerTreeDataProvider("dispatcherProjects", projects),
     vscode.window.registerTreeDataProvider("dispatcherErrors", errors),
     vscode.window.registerTreeDataProvider("dispatcherRoadmap", roadmap),
+    vscode.window.registerTreeDataProvider("dispatcherSync", sync),
     status.item,
     vscode.commands.registerCommand("dispatcher.refresh", () => void poll()),
+    vscode.commands.registerCommand(
+      "dispatcher.pull",
+      (node: SyncNode) => void runAction("pull", node),
+    ),
+    vscode.commands.registerCommand(
+      "dispatcher.openPr",
+      (node: SyncNode) => void runAction("create-pr", node),
+    ),
+    vscode.commands.registerCommand(
+      "dispatcher.track",
+      (node: SyncNode) => void decideProposal("track", node),
+    ),
+    vscode.commands.registerCommand(
+      "dispatcher.ignore",
+      (node: SyncNode) => void decideProposal("ignore", node),
+    ),
     vscode.commands.registerCommand("dispatcher.startServer", () => {
       if (readConfig().projectDir.trim() === "") {
         void vscode.window.showWarningMessage(
@@ -134,6 +218,7 @@ export function activate(context: vscode.ExtensionContext): void {
     { dispose: () => projects.dispose() },
     { dispose: () => errors.dispose() },
     { dispose: () => roadmap.dispose() },
+    { dispose: () => sync.dispose() },
   );
 
   void poll();

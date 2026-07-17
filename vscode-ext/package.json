@@ -40,6 +40,10 @@
         {
           "id": "dispatcherRoadmap",
           "name": "Roadmap"
+        },
+        {
+          "id": "dispatcherSync",
+          "name": "Sync"
         }
       ]
     },
@@ -55,19 +59,82 @@
       {
         "command": "dispatcher.showError",
         "title": "Dispatcher: Show Error Body"
+      },
+      {
+        "command": "dispatcher.pull",
+        "title": "Dispatcher: Pull",
+        "icon": "$(arrow-down)"
+      },
+      {
+        "command": "dispatcher.openPr",
+        "title": "Dispatcher: Open PR",
+        "icon": "$(git-pull-request)"
+      },
+      {
+        "command": "dispatcher.track",
+        "title": "Dispatcher: Track Repo",
+        "icon": "$(add)"
+      },
+      {
+        "command": "dispatcher.ignore",
+        "title": "Dispatcher: Ignore Repo",
+        "icon": "$(x)"
       }
     ],
     "menus": {
       "view/title": [
         {
           "command": "dispatcher.refresh",
-          "when": "view == dispatcherProjects || view == dispatcherErrors || view == dispatcherRoadmap",
+          "when": "view == dispatcherProjects || view == dispatcherErrors || view == dispatcherRoadmap || view == dispatcherSync",
           "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "dispatcher.pull",
+          "when": "view == dispatcherSync && viewItem == dispatcherSyncVerdict.pull",
+          "group": "inline"
+        },
+        {
+          "command": "dispatcher.pull",
+          "when": "view == dispatcherSync && viewItem == dispatcherSyncVerdict.pullPr",
+          "group": "inline"
+        },
+        {
+          "command": "dispatcher.openPr",
+          "when": "view == dispatcherSync && viewItem == dispatcherSyncVerdict.pullPr",
+          "group": "inline"
+        },
+        {
+          "command": "dispatcher.track",
+          "when": "view == dispatcherSync && viewItem == dispatcherSyncProposal",
+          "group": "inline"
+        },
+        {
+          "command": "dispatcher.ignore",
+          "when": "view == dispatcherSync && viewItem == dispatcherSyncProposal",
+          "group": "inline"
         }
       ],
       "commandPalette": [
         {
           "command": "dispatcher.showError",
+          "when": "false"
+        },
+        {
+          "command": "dispatcher.pull",
+          "when": "false"
+        },
+        {
+          "command": "dispatcher.openPr",
+          "when": "false"
+        },
+        {
+          "command": "dispatcher.track",
+          "when": "false"
+        },
+        {
+          "command": "dispatcher.ignore",
           "when": "false"
         }
       ]

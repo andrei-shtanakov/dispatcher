@@ -5,9 +5,12 @@ import type {
   ApiClient,
   ErrorEvent,
   EvidenceResult,
+  HostPanel,
   OverviewEntry,
+  RepoVerdict,
   RoadmapItemView,
   RoadmapResponse,
+  SyncStatusResponse,
 } from "./api";
 import {
   detailLines,
@@ -19,6 +22,9 @@ import {
   roadmapItemDescription,
   roadmapItemLabel,
   roadmapStatusIcon,
+  syncAgeLabel,
+  syncItemContext,
+  syncVerdictIcon,
 } from "./model";
 
 export type ProjectNode =
@@ -244,6 +250,94 @@ export class ErrorsProvider implements vscode.TreeDataProvider<ErrorNode> {
       return [{ kind: "empty" }];
     }
     return this.events.map((event) => ({ kind: "error", event }));
+  }
+
+  dispose(): void {
+    this.changed.dispose();
+  }
+}
+
+export type SyncNode =
+  | { kind: "host"; panel: HostPanel }
+  | { kind: "verdict"; v: RepoVerdict; live: boolean }
+  | { kind: "proposal"; dir: string }
+  | { kind: "offline" };
+
+export class SyncProvider implements vscode.TreeDataProvider<SyncNode> {
+  private readonly changed = new vscode.EventEmitter<void>();
+  readonly onDidChangeTreeData = this.changed.event;
+  private sync: SyncStatusResponse | null = null; // null = offline
+
+  setData(sync: SyncStatusResponse | null): void {
+    this.sync = sync;
+    this.changed.fire();
+  }
+
+  getTreeItem(node: SyncNode): vscode.TreeItem {
+    if (node.kind === "offline") {
+      return offlineItem();
+    }
+    if (node.kind === "proposal") {
+      const item = new vscode.TreeItem(node.dir);
+      item.description = "proposal";
+      item.contextValue = "dispatcherSyncProposal";
+      item.iconPath = new vscode.ThemeIcon("question");
+      return item;
+    }
+    if (node.kind === "host") {
+      const panel = node.panel;
+      const item = new vscode.TreeItem(
+        `${panel.host} (${panel.source})`,
+        panel.error === null && panel.verdicts.length > 0
+          ? vscode.TreeItemCollapsibleState.Collapsed
+          : vscode.TreeItemCollapsibleState.None,
+      );
+      if (panel.error !== null) {
+        item.description = panel.error;
+        item.iconPath = new vscode.ThemeIcon(
+          "error",
+          new vscode.ThemeColor("testing.iconFailed"),
+        );
+        return item;
+      }
+      item.description = syncAgeLabel(panel.age_seconds, panel.stale);
+      item.iconPath = new vscode.ThemeIcon("server-environment");
+      return item;
+    }
+    const v = node.v;
+    const item = new vscode.TreeItem(v.is_kb ? `📌 ${v.repo}` : v.repo);
+    item.description =
+      `↑${v.ahead ?? "—"}/↓${v.behind ?? "—"}` + (v.dirty ? " ✎" : "");
+    item.tooltip = v.reason ?? undefined;
+    const icon = syncVerdictIcon(v.verdict);
+    item.iconPath =
+      icon.color === null
+        ? new vscode.ThemeIcon(icon.icon)
+        : new vscode.ThemeIcon(icon.icon, new vscode.ThemeColor(icon.color));
+    item.contextValue = syncItemContext(v, node.live) ?? undefined;
+    return item;
+  }
+
+  getChildren(node?: SyncNode): SyncNode[] {
+    if (node === undefined) {
+      if (this.sync === null) {
+        return [{ kind: "offline" }];
+      }
+      const hosts: SyncNode[] = this.sync.report.hosts.map((panel) => ({
+        kind: "host",
+        panel,
+      }));
+      const proposals: SyncNode[] = this.sync.report.proposals.map((dir) => ({
+        kind: "proposal",
+        dir,
+      }));
+      return [...hosts, ...proposals];
+    }
+    if (node.kind !== "host" || node.panel.error !== null) {
+      return [];
+    }
+    const live = node.panel.source === "live";
+    return node.panel.verdicts.map((v) => ({ kind: "verdict", v, live }));
   }
 
   dispose(): void {

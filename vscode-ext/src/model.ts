@@ -6,6 +6,7 @@ import type {
   OverviewEntry,
   OverviewResponse,
   ProjectDetail,
+  RepoVerdict,
   RoadmapItemView,
   RoadmapResponse,
   SyncStatusResponse,
@@ -108,6 +109,33 @@ export function verdictText(sync: SyncStatusResponse | null): string {
   return ` · ${icon} ${sync.report.top_line}${spin}`;
 }
 
+/** Finite contextValue for a sync verdict row — web/TUI visibility parity:
+ * pull ⇔ live && pull-first; open PR additionally needs truthy ahead. */
+export function syncItemContext(
+  v: RepoVerdict,
+  live: boolean,
+): string | null {
+  if (!live || v.verdict !== "pull-first") {
+    return null;
+  }
+  return v.ahead ? "dispatcherSyncVerdict.pullPr" : "dispatcherSyncVerdict.pull";
+}
+
+/** Host-panel age label, ported from the TUI's `_age_cell` thresholds
+ * (90s, 5400s) — web/TUI parity for the sync view. */
+export function syncAgeLabel(seconds: number | null, stale: boolean): string {
+  if (seconds === null) {
+    return "—";
+  }
+  const base =
+    seconds < 90
+      ? `${Math.round(seconds)}s`
+      : seconds < 5400
+        ? `${Math.round(seconds / 60)}m`
+        : `${(seconds / 3600).toFixed(1)}h`;
+  return stale ? `${base} stale` : base;
+}
+
 export interface StatusIcon {
   icon: string;
   color: string | null;
@@ -125,6 +153,18 @@ const ROADMAP_ICONS: Record<string, StatusIcon> = {
 
 export function roadmapStatusIcon(status: string): StatusIcon {
   return ROADMAP_ICONS[status] ?? ROADMAP_ICONS.unknown;
+}
+
+const SYNC_VERDICT_ICONS: Record<string, StatusIcon> = {
+  ok: { icon: "check", color: "testing.iconPassed" },
+  "pull-first": { icon: "warning", color: "list.warningForeground" },
+};
+const SYNC_VERDICT_DEFAULT: StatusIcon = { icon: "circle-outline", color: null };
+
+/** Sync verdict icon — ok/pull-first/other, mirrors the projects-provider
+ * (passed/warn/dim) icon pattern used for detected-project health. */
+export function syncVerdictIcon(verdict: string): StatusIcon {
+  return SYNC_VERDICT_ICONS[verdict] ?? SYNC_VERDICT_DEFAULT;
 }
 
 export function evidenceSummary(item: RoadmapItemView): string {

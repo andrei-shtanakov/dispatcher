@@ -14,12 +14,17 @@ describe("manifest", () => {
       "dispatcherProjects",
       "dispatcherErrors",
       "dispatcherRoadmap",
+      "dispatcherSync",
     ]);
     const commands = manifest.contributes.commands.map(
       (c: { command: string }) => c.command,
     );
     expect(commands).toContain("dispatcher.refresh");
     expect(commands).toContain("dispatcher.startServer");
+    expect(commands).toContain("dispatcher.pull");
+    expect(commands).toContain("dispatcher.openPr");
+    expect(commands).toContain("dispatcher.track");
+    expect(commands).toContain("dispatcher.ignore");
   });
 
   it("ships spec §5 defaults", () => {
