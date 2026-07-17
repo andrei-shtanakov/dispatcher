@@ -44,17 +44,22 @@ live tree. New flow:
    `validate_candidate`, `_target`, busy-lock, mtime conflict check — all
    guards and their order stay exactly as shipped).
 2. Read the on-disk `project.yaml` bytes **once** (read-only — the same file
-   the read-model already reads); compute `sha256` of those raw bytes. The
-   mtime check just proved the file equals what the form was rendered from,
-   so this hash represents the render-time base.
-3. Render the new YAML text with the existing `build_new_yaml_text`
-   round-trip logic (reads the live file as base, per DESIGN-402's key
-   emission) — but write it to a **temp file** under a
-   `tempfile.TemporaryDirectory()`, never to the live tree.
+   the read-model already reads); compute the `sha256` **hex digest string**
+   of those raw bytes. The mtime check just proved the file equals what the
+   form was rendered from, so this hash represents the render-time base.
+3. Render the new YAML text with the `build_new_yaml_text` round-trip logic
+   using **the bytes captured in step 2 as the base** — the function's
+   signature changes to accept the captured text instead of a path, so
+   there is NO second read of the live file (a second read would reopen the
+   TOCTOU window between the hash and the rendered base). Write the result
+   to a **temp file** under a `tempfile.TemporaryDirectory()`, never to the
+   live tree. Key emission per DESIGN-402.
 4. Invoke:
    `[*self._command, "propose-pr", str(target_dir), "--message", <msg>,
    "--edit", f"project.yaml={tmp_file}",
-   "--if-match", f"project.yaml={sha256}"]`
+   "--if-match", f"project.yaml={sha256_hex}"]`
+   (`sha256_hex` is the lowercase hex digest string from step 2 —
+   propose-pr's `--if-match` takes hex, not raw bytes or a hash object).
    with the existing timeout/JSON-parse handling. Parse ALL four additive
    fields into `ActionOutcome` (new optional fields, additive: `branch`,
    `base_branch`, `commit_sha`, `changed_paths`) — propose-pr already emits
