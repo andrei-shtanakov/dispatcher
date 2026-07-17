@@ -257,7 +257,7 @@ describe("action POSTs and the token cache", () => {
 });
 
 describe("specRunnerConfigs degradation", () => {
-  it("maps 404 to the UnsupportedError marker", async () => {
+  it("surfaces 404 as ApiError(status=404) for the old-server branch", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(jsonResponse({ detail: "Not Found" }, 404)),
@@ -295,8 +295,10 @@ export interface RepoVerdict {
 export interface HostPanel {
   host: string;
   source: string; // "live" | "kb"
+  generated_at: string | null;
   age_seconds: number | null;
   stale: boolean;
+  gh_error: string | null;
   error: string | null;
   verdicts: RepoVerdict[];
 }
@@ -307,6 +309,7 @@ export interface SyncReportSummary {
   top_reason: string | null;
   hosts: HostPanel[];
   proposals: string[];
+  warnings: string[];
 }
 
 export interface ActionOutcome {
