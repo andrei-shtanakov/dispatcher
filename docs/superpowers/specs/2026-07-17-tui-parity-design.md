@@ -22,7 +22,8 @@
 2. **Visibility rules mirror the web exactly** (review 1 amendment):
    - `p` (pull): row is a live-host verdict row AND verdict == `pull-first`;
    - `o` (open PR): same AND `ahead > 0` — matching
-     `static/index.html`'s button logic verbatim (`v.ahead ? ...`).
+     `dispatcher/server/static/index.html`'s button logic verbatim
+     (`v.ahead ? ...`).
    Wrong row / wrong tab → informational toast, never an error.
 3. **Anti-stub mandate continues**: TUI tests assert the live tree is
    byte-for-byte untouched through the TUI path, with fake runners injected
