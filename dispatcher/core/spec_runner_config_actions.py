@@ -24,7 +24,7 @@ from ruamel.yaml import YAML
 
 from dispatcher.core.actions import ActionOutcome
 from dispatcher.core.discovery import DispatcherConfig
-from dispatcher.core.spec_runner_config import TYPED_FIELDS
+from dispatcher.core.spec_runner_config import TYPED_DEFAULTS, TYPED_FIELDS
 from dispatcher.core.spec_runner_config_schema import (
     ConfigValidationError,
     validate_candidate,
@@ -55,29 +55,54 @@ class SpecRunnerConfigConflictError(Exception):
     """project.yaml changed on disk since the form was rendered (-> 409)."""
 
 
-def build_new_yaml_text(project_yaml: Path, candidate: ConfigCandidate) -> str:
-    """Render `project.yaml` with only its `spec_runner:` key replaced.
+def build_new_yaml_text(
+    base_text: str, candidate: ConfigCandidate
+) -> tuple[str, list[str], bool]:
+    """Render project.yaml text with only its `spec_runner:` key replaced.
 
-    Uses ruamel.yaml's round-trip mode so comments, key order, and block
-    literals elsewhere in the file (e.g. `workstreams:`) are preserved —
-    plain PyYAML load+dump would rewrite the whole file and violate the
-    "only the spec_runner: block changes" constraint.
+    Takes the CAPTURED base text (never re-reads the file — the caller
+    hashed exactly these bytes for --if-match; a second read would reopen
+    the TOCTOU window). Emits a typed key iff it is explicit in the current
+    block OR its candidate value differs from the default (DESIGN-402) —
+    implicit defaults are never materialized, so a stale TYPED_DEFAULTS
+    mirror cannot leak into observed repos. Returns (rendered text,
+    changed typed keys, extra-changed flag) for the commit message.
 
-    `YAML()` defaults to `typ="rt"` (round-trip) — as safe as
-    `yaml.safe_load()`, no arbitrary object construction. Never pass
-    `typ="unsafe"` here.
+    ruamel round-trip mode preserves comments/order elsewhere in the file.
+    `YAML()` defaults to `typ="rt"` — as safe as yaml.safe_load(); never
+    pass `typ="unsafe"`.
     """
     yaml = YAML()
     yaml.preserve_quotes = True
-    with project_yaml.open() as fh:
-        doc = yaml.load(fh)
-    new_block: dict[str, Any] = dict(candidate.typed)
+    doc = yaml.load(StringIO(base_text))
+    current: dict[str, Any] = dict(doc.get("spec_runner") or {})
+    new_block: dict[str, Any] = {}
+    changed_keys: list[str] = []
+    for key in TYPED_FIELDS:
+        default = TYPED_DEFAULTS[key]
+        cand_val = candidate.typed.get(key, current.get(key, default))
+        if key in current or cand_val != default:
+            new_block[key] = cand_val
+        if cand_val != current.get(key, default):
+            changed_keys.append(key)
+    extra_changed = (candidate.extra_executor_config or {}) != (
+        current.get("extra_executor_config") or {}
+    )
     if candidate.extra_executor_config:
         new_block["extra_executor_config"] = candidate.extra_executor_config
     doc["spec_runner"] = new_block
     buf = StringIO()
     yaml.dump(doc, buf)
-    return buf.getvalue()
+    return buf.getvalue(), changed_keys, extra_changed
+
+
+def _commit_message(changed_keys: list[str], extra_changed: bool) -> str:
+    """`--message` for propose-pr; stable, greppable, no empty parentheses."""
+    parts = list(changed_keys)
+    if extra_changed:
+        parts.append("extra_executor_config")
+    base = "chore(spec-runner): update config"
+    return f"{base} ({', '.join(parts)})" if parts else base
 
 
 class SpecRunnerConfigActionRunner:
@@ -157,7 +182,7 @@ class SpecRunnerConfigActionRunner:
             )
             raise
         try:
-            new_text = build_new_yaml_text(project_yaml, candidate)
+            new_text, _, _ = build_new_yaml_text(project_yaml.read_text(), candidate)
             project_yaml.write_text(new_text)
             outcome = self._invoke(repo_dir)
         except Exception as err:

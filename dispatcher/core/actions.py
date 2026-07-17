@@ -44,6 +44,10 @@ class ActionOutcome(BaseModel):
     pr_url: str | None = None
     local_behind: int | None = None
     local_dirty: bool | None = None
+    branch: str | None = None
+    base_branch: str | None = None
+    commit_sha: str | None = None
+    changed_paths: list[str] | None = None
 
 
 class ActionBusyError(Exception):

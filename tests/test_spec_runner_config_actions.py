@@ -162,3 +162,93 @@ def test_audit_line_written(tmp_path: Path, caplog) -> None:
         and "repo=alpha" in r.getMessage()
         for r in caplog.records
     )
+
+
+_BASE_YAML = """\
+project: alpha
+spec_runner:
+  max_retries: 5
+  claude_model: claude-opus-4-8
+workstreams: []
+"""
+
+
+def _cand(**typed_overrides) -> ConfigCandidate:
+    from dispatcher.core.spec_runner_config import TYPED_DEFAULTS
+
+    return ConfigCandidate(typed={**TYPED_DEFAULTS, **typed_overrides}, base_mtime=0.0)
+
+
+def test_emission_omits_implicit_defaults() -> None:
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
+
+    text, changed, extra_changed = build_new_yaml_text(
+        _BASE_YAML, _cand(max_retries=5, claude_model="claude-opus-4-8")
+    )
+    # explicit keys stay; implicit-at-default keys are NOT materialized
+    assert "max_retries: 5" in text
+    assert "claude_model: claude-opus-4-8" in text
+    assert "task_timeout_minutes" not in text
+    assert "auto_commit" not in text
+    assert changed == []
+    assert extra_changed is False
+
+
+def test_emission_adds_changed_from_default() -> None:
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
+
+    text, changed, _ = build_new_yaml_text(
+        _BASE_YAML,
+        _cand(max_retries=5, claude_model="claude-opus-4-8", review_model="x"),
+    )
+    assert "review_model: x" in text
+    assert changed == ["review_model"]
+
+
+def test_emission_keeps_explicit_even_when_set_back_to_default() -> None:
+    from dispatcher.core.spec_runner_config import TYPED_DEFAULTS
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
+
+    text, changed, _ = build_new_yaml_text(
+        _BASE_YAML,
+        _cand(
+            max_retries=TYPED_DEFAULTS["max_retries"],
+            claude_model="claude-opus-4-8",
+        ),
+    )
+    # max_retries was explicit (5); setting it to default 3 keeps it explicit
+    assert f"max_retries: {TYPED_DEFAULTS['max_retries']}" in text
+    assert changed == ["max_retries"]
+
+
+def test_emission_partial_candidate_preserves_explicit_current() -> None:
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
+
+    cand = ConfigCandidate(typed={"review_model": "y"}, base_mtime=0.0)
+    text, changed, _ = build_new_yaml_text(_BASE_YAML, cand)
+    # keys absent from the candidate keep their current-file values
+    assert "max_retries: 5" in text
+    assert "claude_model: claude-opus-4-8" in text
+    assert "review_model: y" in text
+    assert changed == ["review_model"]
+
+
+def test_emission_preserves_rest_of_file() -> None:
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
+
+    text, _, _ = build_new_yaml_text(_BASE_YAML, _cand(max_retries=7))
+    assert "project: alpha" in text
+    assert "workstreams: []" in text
+
+
+def test_commit_message_lists_changed_keys_with_fallback() -> None:
+    from dispatcher.core.spec_runner_config_actions import _commit_message
+
+    assert _commit_message(["max_retries", "review_model"], False) == (
+        "chore(spec-runner): update config (max_retries, review_model)"
+    )
+    assert _commit_message(["claude_model"], True) == (
+        "chore(spec-runner): update config (claude_model, extra_executor_config)"
+    )
+    # no listable keys -> bare message, never empty parentheses
+    assert _commit_message([], False) == "chore(spec-runner): update config"
