@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiClient } from "../src/api";
+import { ApiClient, ApiError } from "../src/api";
 
 function fixture(name: string): unknown {
   return JSON.parse(
@@ -10,6 +10,10 @@ function fixture(name: string): unknown {
 
 function okResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), { status: 200 });
+}
+
+function jsonResponse(payload: unknown, status: number): Response {
+  return new Response(JSON.stringify(payload), { status });
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -59,5 +63,128 @@ describe("ApiClient", () => {
     vi.stubGlobal("fetch", fetchMock);
     await new ApiClient("http://x").overview();
     expect(fetchMock.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
+  });
+});
+
+describe("ApiClient sync shape", () => {
+  it("parses hosts, verdicts and proposals", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(okResponse(fixture("sync_full.json"))),
+    );
+    const sync = await new ApiClient("http://x").sync();
+    expect(sync.report.hosts).toHaveLength(2);
+    expect(sync.report.hosts[0].verdicts[0].ahead).toBe(2);
+    expect(sync.report.proposals).toEqual(["newrepo"]);
+  });
+});
+
+describe("ApiError", () => {
+  it("carries the body detail on non-ok responses", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonResponse({ detail: "alpha: update already in flight" }, 409),
+        ),
+    );
+    const err = await new ApiClient("http://x")
+      .sync()
+      .then(() => null)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(409);
+    expect((err as ApiError).detail).toBe("alpha: update already in flight");
+  });
+
+  it("falls back to HTTP status text when the body is not JSON", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response("nope", { status: 500 })),
+    );
+    const err = await new ApiClient("http://x")
+      .sync()
+      .then(() => null)
+      .catch((e: unknown) => e);
+    expect((err as ApiError).detail).toContain("HTTP 500");
+  });
+});
+
+describe("action POSTs and the token cache", () => {
+  it("fetches the token once and reuses it", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(okResponse({ token: "tok1" }))
+      .mockResolvedValueOnce(okResponse(fixture("action_outcome_ok.json")))
+      .mockResolvedValueOnce(okResponse(fixture("action_outcome_ok.json")));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient("http://x");
+    await api.pull("alpha");
+    await api.createPr("alpha");
+    const calls = fetchMock.mock.calls;
+    expect(calls[0][0]).toBe("http://x/api/actions/session");
+    expect(calls[1][0]).toBe("http://x/api/actions/pull");
+    expect((calls[1][1] as RequestInit).headers).toMatchObject({
+      "X-Action-Token": "tok1",
+    });
+    expect(calls[2][0]).toBe("http://x/api/actions/create-pr");
+    expect(calls).toHaveLength(3); // token fetched once, reused
+  });
+
+  it("on 403 refetches the token exactly once and retries", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(okResponse({ token: "stale" }))
+      .mockResolvedValueOnce(jsonResponse({ detail: "bad token" }, 403))
+      .mockResolvedValueOnce(okResponse({ token: "fresh" }))
+      .mockResolvedValueOnce(okResponse(fixture("action_outcome_ok.json")));
+    vi.stubGlobal("fetch", fetchMock);
+    const outcome = await new ApiClient("http://x").pull("alpha");
+    expect(outcome.ok).toBe(true);
+    expect(fetchMock.mock.calls).toHaveLength(4);
+  });
+
+  it("fails after the second 403", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(okResponse({ token: "stale" }))
+      .mockResolvedValueOnce(jsonResponse({ detail: "bad token" }, 403))
+      .mockResolvedValueOnce(okResponse({ token: "still-stale" }))
+      .mockResolvedValueOnce(jsonResponse({ detail: "bad token" }, 403));
+    vi.stubGlobal("fetch", fetchMock);
+    const err = await new ApiClient("http://x")
+      .pull("alpha")
+      .then(() => null)
+      .catch((e: unknown) => e);
+    expect((err as ApiError).status).toBe(403);
+    expect(fetchMock.mock.calls).toHaveLength(4); // no third refetch
+  });
+
+  it("track posts without a token", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(okResponse({ tracked: ["newrepo"], ignored: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    await new ApiClient("http://x").track("newrepo", "track");
+    expect(fetchMock.mock.calls[0][0]).toBe("http://x/api/sync/track");
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(
+      (init.headers as Record<string, string>)["X-Action-Token"],
+    ).toBeUndefined();
+  });
+});
+
+describe("specRunnerConfigs degradation", () => {
+  it("surfaces 404 as ApiError(status=404) for the old-server branch", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ detail: "Not Found" }, 404)),
+    );
+    const err = await new ApiClient("http://x")
+      .specRunnerConfigs()
+      .then(() => null)
+      .catch((e: unknown) => e);
+    expect((err as ApiError).status).toBe(404);
   });
 });

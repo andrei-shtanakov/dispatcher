@@ -123,7 +123,14 @@ describe("server decisions", () => {
 
 describe("verdictText", () => {
   const sync = (top_line: string, fetching = false) => ({
-    report: { current_host: "mac-a", top_line, top_reason: null },
+    report: {
+      current_host: "mac-a",
+      top_line,
+      top_reason: null,
+      hosts: [],
+      proposals: [],
+      warnings: [],
+    },
     fetch_in_flight: fetching,
     last_fetch_at: null,
     last_fetch_error: null,

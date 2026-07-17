@@ -1,0 +1,76 @@
+{
+  "report": {
+    "current_host": "host-a",
+    "top_line": "pull-first",
+    "top_reason": "alpha: 2 commits behind",
+    "hosts": [
+      {
+        "host": "host-a",
+        "source": "live",
+        "generated_at": "2026-07-17T10:00:00Z",
+        "age_seconds": 5.0,
+        "stale": false,
+        "gh_error": null,
+        "error": null,
+        "verdicts": [
+          {
+            "repo": "alpha",
+            "verdict": "pull-first",
+            "reason": "2 commits behind",
+            "branch": "main",
+            "ahead": 2,
+            "behind": 0,
+            "dirty": false,
+            "is_kb": false
+          },
+          {
+            "repo": "beta",
+            "verdict": "ok",
+            "reason": null,
+            "branch": "main",
+            "ahead": 0,
+            "behind": 0,
+            "dirty": false,
+            "is_kb": false
+          },
+          {
+            "repo": "gamma",
+            "verdict": "pull-first",
+            "reason": "unknown ahead count",
+            "branch": null,
+            "ahead": null,
+            "behind": null,
+            "dirty": true,
+            "is_kb": false
+          }
+        ]
+      },
+      {
+        "host": "host-b",
+        "source": "kb",
+        "generated_at": "2026-07-17T09:00:00Z",
+        "age_seconds": 3600.0,
+        "stale": true,
+        "gh_error": "gh api rate limited",
+        "error": null,
+        "verdicts": [
+          {
+            "repo": "kb-repo",
+            "verdict": "ok",
+            "reason": null,
+            "branch": "main",
+            "ahead": 0,
+            "behind": 0,
+            "dirty": false,
+            "is_kb": true
+          }
+        ]
+      }
+    ],
+    "proposals": ["newrepo"],
+    "warnings": ["live snapshot unavailable: github-checker timeout"]
+  },
+  "fetch_in_flight": false,
+  "last_fetch_at": "2026-07-17T10:00:00Z",
+  "last_fetch_error": null
+}

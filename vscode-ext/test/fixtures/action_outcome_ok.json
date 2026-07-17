@@ -1,0 +1,14 @@
+{
+  "action": "pull",
+  "dir": "alpha",
+  "ok": true,
+  "detail": "fast-forwarded",
+  "error": null,
+  "pr_url": null,
+  "local_behind": null,
+  "local_dirty": null,
+  "branch": null,
+  "base_branch": null,
+  "commit_sha": null,
+  "changed_paths": null
+}
