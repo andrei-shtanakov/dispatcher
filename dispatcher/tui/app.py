@@ -42,9 +42,14 @@ from dispatcher.core.service import (
     SnapshotService,
     recent_errors,
 )
+from dispatcher.core.spec_runner_config import (
+    ProjectSpecRunnerConfig,
+    discover_project_configs,
+)
 from dispatcher.core.spec_runner_config_actions import SpecRunnerConfigActionRunner
 from dispatcher.core.sync_service import SyncService, SyncStatus
 from dispatcher.core.tracking import TrackAction, decide
+from dispatcher.tui.config_edit import ConfigEditScreen
 from dispatcher.tui.detail import ErrorMessageScreen, ProjectDetailScreen
 
 MSG_LIMIT = 160  # same message truncation threshold as the web UI
@@ -153,6 +158,7 @@ class DispatcherApp(App[None]):
         self._roadmap: RoadmapResponse | None = None
         self._sync: SyncStatus | None = None
         self._sync_rows: list[SyncRow] = []
+        self._configs: list[ProjectSpecRunnerConfig] = []
         self._summary: SummaryResponse | None = None
         self._errors_days: int | None = ERRORS_DAYS_DEFAULT
         self._errors_project: str | None = None
@@ -178,6 +184,8 @@ class DispatcherApp(App[None]):
             with TabPane("Roadmap", id="tab-roadmap"):
                 yield DataTable(id="roadmap-summary-table", cursor_type="row")
                 yield DataTable(id="roadmap-table", cursor_type="row")
+            with TabPane("Config", id="tab-config"):
+                yield DataTable(id="config-table", cursor_type="row")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -215,6 +223,9 @@ class DispatcherApp(App[None]):
             "evidence",
             "freshness",
         )
+        self.query_one("#config-table", DataTable).add_columns(
+            "dir", "project", "explicit fields", "extra"
+        )
         self.set_interval(10.0, self.action_refresh)
         self.action_refresh()
 
@@ -235,13 +246,14 @@ class DispatcherApp(App[None]):
             roadmap = build_roadmap(self._roadmap_dirs, snapshots, contracts)
             summary = build_summary(roadmap, contracts)
             sync = self._sync_service.get()
+            configs, _ = discover_project_configs(self._config.roots)
         except Exception as err:  # noqa: BLE001 — keep last data on screen
             self.call_from_thread(
                 self.notify, f"refresh failed: {err}", severity="error"
             )
             return
         self.call_from_thread(
-            self._apply, snapshots, warnings, contracts, roadmap, summary, sync
+            self._apply, snapshots, warnings, contracts, roadmap, summary, sync, configs
         )
 
     def _apply(
@@ -252,6 +264,7 @@ class DispatcherApp(App[None]):
         roadmap: RoadmapResponse,
         summary: SummaryResponse,
         sync: SyncStatus,
+        configs: list[ProjectSpecRunnerConfig],
     ) -> None:
         self._snapshots = snapshots
         self._warnings = warnings
@@ -259,6 +272,7 @@ class DispatcherApp(App[None]):
         self._roadmap = roadmap
         self._summary = summary
         self._sync = sync
+        self._configs = configs
         # «шестерёнка в углу»: индикатор фонового fetch живёт в sub-title
         fetching = " · ⚙ fetching" if sync.fetch_in_flight else ""
         self.sub_title = (
@@ -270,6 +284,7 @@ class DispatcherApp(App[None]):
         self._render_models()
         self._render_contracts()
         self._render_roadmap()
+        self._render_config()
 
     def _render_sync(self) -> None:
         table = self.query_one("#sync-table", DataTable)
@@ -505,6 +520,18 @@ class DispatcherApp(App[None]):
                 key=item.id,
             )
 
+    def _render_config(self) -> None:
+        table = self.query_one("#config-table", DataTable)
+        table.clear()
+        for cfg in self._configs:
+            explicit = sum(1 for f in cfg.typed.values() if f.explicit)
+            table.add_row(
+                Path(cfg.project_yaml_path).parent.name,
+                cfg.project,
+                str(explicit),
+                "yes" if cfg.extra_executor_config else "—",
+            )
+
     def action_toggle_days(self) -> None:
         self._errors_days = (
             None if self._errors_days is not None else ERRORS_DAYS_DEFAULT
@@ -521,6 +548,12 @@ class DispatcherApp(App[None]):
             idx = event.cursor_row
             if 0 <= idx < len(self._shown_errors):
                 self.push_screen(ErrorMessageScreen(self._shown_errors[idx].body))
+        elif event.data_table.id == "config-table":
+            idx = event.cursor_row
+            if 0 <= idx < len(self._configs):
+                self.push_screen(
+                    ConfigEditScreen(self._configs[idx], self._config_runner)
+                )
 
     def action_project_errors(self) -> None:
         tabs = self.query_one(TabbedContent)

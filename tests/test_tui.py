@@ -14,6 +14,7 @@ from conftest import (
 from textual.widgets import DataTable, Select, Static, TabbedContent, TabPane
 
 from dispatcher.core.discovery import DispatcherConfig
+from dispatcher.core.spec_runner_config_actions import ConfigCandidate
 from dispatcher.core.sync import HostPanel, RepoVerdict, SyncReport
 from dispatcher.core.sync_service import SyncStatus
 from dispatcher.tui.app import (
@@ -43,11 +44,11 @@ async def _settled(app: DispatcherApp, pilot) -> None:
     await pilot.pause()
 
 
-async def test_app_boots_with_six_tabs(tmp_path: Path) -> None:
+async def test_app_boots_with_seven_tabs(tmp_path: Path) -> None:
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await _settled(app, pilot)
-        assert len(app.query(TabPane)) == 6
+        assert len(app.query(TabPane)) == 7
         for table_id in (
             "sync-table",
             "roadmap-summary-table",
@@ -56,6 +57,7 @@ async def test_app_boots_with_six_tabs(tmp_path: Path) -> None:
             "models-table",
             "contracts-table",
             "roadmap-table",
+            "config-table",
         ):
             assert len(app.query_one(f"#{table_id}", DataTable).columns) > 0
 
@@ -756,3 +758,144 @@ async def test_track_key_unconfigured_and_wrong_row(
         app.query_one("#sync-table", DataTable).move_cursor(row=idx)
         await pilot.press("i")
         await _settled(app, pilot)
+
+
+class _FakeConfigRunner:
+    def __init__(self, outcome=None) -> None:
+        from dispatcher.core.actions import ActionOutcome
+
+        self.calls: list[tuple[str, ConfigCandidate]] = []
+        self.outcome = outcome or ActionOutcome(
+            action="update-spec-runner-config",
+            dir="steward",
+            ok=True,
+            pr_url="https://example/pr/9",
+        )
+
+    def run(self, repo_dir, candidate):
+        self.calls.append((repo_dir, candidate))
+        return self.outcome
+
+
+def _add_config_project(tmp_path: Path) -> Path:
+    repo = tmp_path / "steward"
+    repo.mkdir()
+    (repo / "project.yaml").write_text(
+        "project: steward\nspec_runner:\n  max_retries: 5\nworkstreams: []\n"
+    )
+    return repo
+
+
+async def test_boots_with_seven_tabs_incl_config(tmp_path: Path) -> None:
+    _add_config_project(tmp_path)
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        assert len(app.query(TabPane)) == 7
+        table = app.query_one("#config-table", DataTable)
+        assert table.row_count == 1  # steward listed
+
+
+async def test_config_editor_confirm_sends_candidate_live_tree_untouched(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import Input
+
+    from dispatcher.tui.config_edit import ConfigEditScreen
+
+    repo = _add_config_project(tmp_path)
+    live_before = (repo / "project.yaml").read_bytes()
+    runner = _FakeConfigRunner()
+    app = _app_with_config_runner(tmp_path, runner)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        app.query_one(TabbedContent).active = "tab-config"
+        await pilot.pause()
+        table = app.query_one("#config-table", DataTable)
+        table.focus()
+        table.move_cursor(row=0)
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfigEditScreen)
+        field = app.screen.query_one("#field-max_retries", Input)
+        field.value = "9"
+        await pilot.press("ctrl+y")
+        await _settled(app, pilot)
+
+    assert len(runner.calls) == 1
+    repo_dir, candidate = runner.calls[0]
+    assert repo_dir == "steward"
+    assert candidate.typed["max_retries"] == 9
+    assert candidate.extra_executor_config is None  # tri-state preserve
+    assert candidate.base_mtime > 0
+    assert (repo / "project.yaml").read_bytes() == live_before
+
+
+async def test_config_editor_strict_coercion_blocks_runner(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import Input
+
+    _add_config_project(tmp_path)
+    runner = _FakeConfigRunner()
+    app = _app_with_config_runner(tmp_path, runner)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        app.query_one(TabbedContent).active = "tab-config"
+        await pilot.pause()
+        table = app.query_one("#config-table", DataTable)
+        table.focus()
+        table.move_cursor(row=0)
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        app.screen.query_one("#field-auto_commit", Input).value = "yes"
+        await pilot.press("ctrl+y")
+        await _settled(app, pilot)
+        assert runner.calls == []  # invalid bool never reaches the runner
+        app.screen.query_one("#field-auto_commit", Input).value = "true"
+        app.screen.query_one("#field-max_retries", Input).value = "3.5"
+        await pilot.press("ctrl+y")
+        await _settled(app, pilot)
+        assert runner.calls == []  # invalid int refused too
+
+
+async def test_config_editor_noop_outcome_benign(tmp_path: Path) -> None:
+    from dispatcher.core.actions import ActionOutcome
+
+    _add_config_project(tmp_path)
+    runner = _FakeConfigRunner(
+        ActionOutcome(
+            action="update-spec-runner-config",
+            dir="steward",
+            ok=False,
+            detail="no-op",
+            error="no changes vs main",
+        )
+    )
+    app = _app_with_config_runner(tmp_path, runner)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        app.query_one(TabbedContent).active = "tab-config"
+        await pilot.pause()
+        table = app.query_one("#config-table", DataTable)
+        table.focus()
+        table.move_cursor(row=0)
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("ctrl+y")
+        await _settled(app, pilot)
+        assert len(runner.calls) == 1  # ran, and the app didn't crash on no-op
+
+
+def _app_with_config_runner(tmp_path: Path, runner) -> DispatcherApp:
+    make_atp(tmp_path)
+    make_arbiter(tmp_path)
+    make_spec_runner(tmp_path)
+    db = make_maestro_home(tmp_path)
+    return DispatcherApp(
+        DispatcherConfig(roots=(tmp_path,), maestro_db=db),
+        config_runner=runner,
+    )
