@@ -398,3 +398,97 @@ async def test_spec_runner_config_view_and_update(tmp_path: Path) -> None:
             },
         )
         assert bad_token.status_code == 403
+
+
+async def test_spec_runner_config_invalid_candidate_maps_to_422(
+    tmp_path: Path,
+) -> None:
+    import subprocess
+
+    repo = tmp_path / "alpha"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    (repo / "project.yaml").write_text(
+        "project: alpha\nspec_runner:\n  max_retries: 3\nworkstreams: []\n"
+    )
+    config = DispatcherConfig(roots=(tmp_path,))
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        base_mtime = (repo / "project.yaml").stat().st_mtime
+        resp = await client.post(
+            "/api/actions/update-spec-runner-config",
+            headers={"X-Action-Token": token},
+            json={
+                "dir": "alpha",
+                # string where int is expected -> ConfigValidationError ->
+                # SpecRunnerConfigRejectedError -> 422 (app.py's own mapping).
+                "typed": {"max_retries": "not-an-int"},
+                "extra_executor_config": {},
+                "base_mtime": base_mtime,
+            },
+        )
+        assert resp.status_code == 422
+        # the rejected write must never touch disk
+        assert "max_retries: 3" in (repo / "project.yaml").read_text()
+
+
+async def test_spec_runner_config_busy_maps_to_409(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from dispatcher.core.spec_runner_config_actions import (
+        SpecRunnerConfigActionRunner,
+        SpecRunnerConfigBusyError,
+    )
+
+    def busy_run(self, repo_dir, candidate):
+        raise SpecRunnerConfigBusyError(f"{repo_dir}: update already in flight")
+
+    monkeypatch.setattr(SpecRunnerConfigActionRunner, "run", busy_run)
+    config = DispatcherConfig(roots=(tmp_path,))
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/actions/update-spec-runner-config",
+            headers={"X-Action-Token": token},
+            json={
+                "dir": "alpha",
+                "typed": {},
+                "extra_executor_config": {},
+                "base_mtime": 0,
+            },
+        )
+        assert resp.status_code == 409
+
+
+async def test_spec_runner_config_stale_mtime_maps_to_409(tmp_path: Path) -> None:
+    import subprocess
+
+    repo = tmp_path / "alpha"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    (repo / "project.yaml").write_text(
+        "project: alpha\nspec_runner:\n  max_retries: 3\nworkstreams: []\n"
+    )
+    config = DispatcherConfig(roots=(tmp_path,))
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        stale_mtime = (repo / "project.yaml").stat().st_mtime - 1000
+        resp = await client.post(
+            "/api/actions/update-spec-runner-config",
+            headers={"X-Action-Token": token},
+            json={
+                "dir": "alpha",
+                "typed": {"max_retries": 9},
+                "extra_executor_config": {},
+                "base_mtime": stale_mtime,
+            },
+        )
+        assert resp.status_code == 409
+        # SpecRunnerConfigConflictError must not have written the file
+        assert "max_retries: 3" in (repo / "project.yaml").read_text()
