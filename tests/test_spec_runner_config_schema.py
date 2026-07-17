@@ -4,6 +4,13 @@ from pathlib import Path
 import jsonschema
 import pytest
 
+from dispatcher.core.spec_runner_config_schema import (
+    ConfigValidationError,
+    validate_candidate,
+    validate_extra_executor_config,
+    validate_typed_fields,
+)
+
 _SCHEMA_PATH = (
     Path(__file__).resolve().parents[1]
     / "contracts" / "executor-config" / "v0-provisional" / "schema.json"
@@ -42,14 +49,6 @@ def test_pinned_schema_rejects_unknown_key_typo() -> None:
     candidate = {"executor": {"telegrm_bot_token": "oops"}}  # typo
     errors = list(jsonschema.Draft202012Validator(schema).iter_errors(candidate))
     assert errors
-
-
-from dispatcher.core.spec_runner_config_schema import (
-    ConfigValidationError,
-    validate_candidate,
-    validate_extra_executor_config,
-    validate_typed_fields,
-)
 
 
 def test_validate_typed_fields_accepts_known_values() -> None:
