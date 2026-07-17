@@ -47,7 +47,11 @@ duplicate listing is documented, not hidden.
 
 pytest pins the key property (review 2): the list includes configs whose
 dir matches NO overview project card (e.g. a bare `steward/project.yaml`
-in the workspace) — the exact reach the web's per-name GET can't offer.
+in the workspace). Precision (Copilot): the per-name GET can already FETCH
+any discovered config if the caller knows the dir name — what's missing is
+ENUMERATION: no endpoint lists the names, so the web UI only surfaces the
+panel for overview-card names it happens to have. This endpoint closes the
+discovery gap, not a fetch gap.
 
 ### DESIGN-602: `ApiClient` — full sync parsing, POSTs, error detail
 
