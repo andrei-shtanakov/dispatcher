@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dispatcher.local/contracts/executor-config/v0-provisional/schema.json",
+  "title": "spec-runner ExecutorConfig — extra_executor_config overlay (provisional)",
+  "$comment": "source: spec-runner@72db9f5, hand-derived from ExecutorConfig/Persona in spec-runner/src/spec_runner/config.py — no upstream contracts/schemas/executor-config.schema.json yet (handoff H-4, see docs/superpowers/specs/2026-07-17-spec-runner-config-editor-design.md). Covers only the fields carried through Maestro's extra_executor_config overlay (maestro/models.py:1152, commit 0122942) — typed SpecRunnerConfig fields are validated separately in dispatcher/core/spec_runner_config_schema.py::validate_typed_fields.",
+  "$defs": {
+    "Persona": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "system_prompt": {"type": "string"},
+        "model": {"type": "string"},
+        "focus": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  },
+  "type": "object",
+  "required": ["executor"],
+  "additionalProperties": false,
+  "properties": {
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "personas": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/Persona"}
+        },
+        "telegram_bot_token": {"type": "string"},
+        "telegram_chat_id": {"type": "string"},
+        "webhook_url": {"type": "string"},
+        "webhook_method": {"type": "string"},
+        "webhook_headers": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        },
+        "webhook_template": {"type": "string"},
+        "budget_usd": {"type": ["number", "null"]},
+        "task_budget_usd": {"type": ["number", "null"]},
+        "max_retry_cost_usd": {"type": ["number", "null"]},
+        "integration_pr": {"type": "boolean"},
+        "main_branch": {"type": "string"},
+        "hooks": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "pre_start": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sync_deps": {"type": "boolean"}
+              }
+            },
+            "post_done": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "review_parallel": {"type": "boolean"},
+                "review_roles": {"type": "array", "items": {"type": "string"}},
+                "lint_blocking": {"type": "boolean"}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
