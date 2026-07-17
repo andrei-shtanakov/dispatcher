@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from rich.text import Text
 from textual import work
@@ -18,6 +20,12 @@ from textual.widgets import (
     TabPane,
 )
 
+from dispatcher.core.actions import (
+    Action,
+    ActionBusyError,
+    ActionRejectedError,
+    ActionRunner,
+)
 from dispatcher.core.contracts import check_contracts
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.models import ContractStatus, ErrorEvent, ProjectSnapshot
@@ -34,6 +42,7 @@ from dispatcher.core.service import (
     SnapshotService,
     recent_errors,
 )
+from dispatcher.core.spec_runner_config_actions import SpecRunnerConfigActionRunner
 from dispatcher.core.sync_service import SyncService, SyncStatus
 from dispatcher.tui.detail import ErrorMessageScreen, ProjectDetailScreen
 
@@ -82,6 +91,28 @@ def _contract_cell(
     return f"{name} n/a"
 
 
+@dataclass(frozen=True)
+class SyncRow:
+    """Cursor-addressable meaning of one sync-table row (no cell-scraping)."""
+
+    kind: Literal["verdict", "proposal", "error", "empty"]
+    host: str = ""
+    repo: str = ""
+    live: bool = False
+    verdict: str = ""
+    ahead: int | None = None
+
+
+def _can_pull(row: SyncRow) -> bool:
+    """Web parity: the pull button exists ⇔ live host && pull-first."""
+    return row.kind == "verdict" and row.live and row.verdict == "pull-first"
+
+
+def _can_open_pr(row: SyncRow) -> bool:
+    """Web parity: open PR additionally needs truthy ahead (`v.ahead ?`)."""
+    return _can_pull(row) and bool(row.ahead)
+
+
 class DispatcherApp(App[None]):
     """Read-only terminal dashboard over ecosystem project snapshots."""
 
@@ -94,19 +125,31 @@ class DispatcherApp(App[None]):
         ("r", "refresh", "Refresh"),
         ("a", "toggle_days", f"{ERRORS_DAYS_DEFAULT}d/all"),
         ("e", "project_errors", "Project errors"),
+        ("p", "sync_pull", "Pull"),
+        ("o", "sync_open_pr", "Open PR"),
         ("q", "quit", "Quit"),
     ]
 
-    def __init__(self, config: DispatcherConfig) -> None:
+    def __init__(
+        self,
+        config: DispatcherConfig,
+        *,
+        action_runner: ActionRunner | None = None,
+        config_runner: SpecRunnerConfigActionRunner | None = None,
+    ) -> None:
         super().__init__()
+        self._config = config
         self._service = SnapshotService(config)
         self._sync_service = SyncService(config)
+        self._action_runner = action_runner or ActionRunner(config)
+        self._config_runner = config_runner or SpecRunnerConfigActionRunner(config)
         self._roadmap_dirs = config.roadmap_dirs or default_roadmap_dirs(config.roots)
         self._snapshots: list[ProjectSnapshot] = []
         self._warnings: list[str] = []
         self._contracts: list[ContractStatus] = []
         self._roadmap: RoadmapResponse | None = None
         self._sync: SyncStatus | None = None
+        self._sync_rows: list[SyncRow] = []
         self._summary: SummaryResponse | None = None
         self._errors_days: int | None = ERRORS_DAYS_DEFAULT
         self._errors_project: str | None = None
@@ -228,6 +271,7 @@ class DispatcherApp(App[None]):
     def _render_sync(self) -> None:
         table = self.query_one("#sync-table", DataTable)
         table.clear()
+        self._sync_rows = []
         if self._sync is None:
             return
         report = self._sync.report
@@ -247,6 +291,7 @@ class DispatcherApp(App[None]):
                     "—",
                     "—",
                 )
+                self._sync_rows.append(SyncRow(kind="error", host=panel.host))
                 continue
             if not panel.verdicts:
                 # хост без tracked-репо всё равно виден — пустая панель
@@ -260,6 +305,7 @@ class DispatcherApp(App[None]):
                     "—",
                     "—",
                 )
+                self._sync_rows.append(SyncRow(kind="empty", host=panel.host))
                 continue
             for v in panel.verdicts:
                 repo_cell: Text | str = (
@@ -275,6 +321,16 @@ class DispatcherApp(App[None]):
                     f"{v.ahead if v.ahead is not None else '—'}/"
                     f"{v.behind if v.behind is not None else '—'}"
                     + (" ✎" if v.dirty else ""),
+                )
+                self._sync_rows.append(
+                    SyncRow(
+                        kind="verdict",
+                        host=panel.host,
+                        repo=v.repo,
+                        live=panel.source == "live",
+                        verdict=v.verdict,
+                        ahead=v.ahead,
+                    )
                 )
                 first = False
 
@@ -470,3 +526,55 @@ class DispatcherApp(App[None]):
         with select.prevent(Select.Changed):
             select.value = name
         self._render_errors()
+
+    def _sync_row_at_cursor(self) -> SyncRow | None:
+        """Row meaning at the CURRENT cursor — snapshotted at keypress
+        (the 10s auto-refresh may redraw between aiming and pressing)."""
+        if self.query_one(TabbedContent).active != "tab-sync":
+            return None
+        table = self.query_one("#sync-table", DataTable)
+        idx = table.cursor_coordinate.row
+        if not (0 <= idx < len(self._sync_rows)):
+            return None
+        return self._sync_rows[idx]
+
+    def action_sync_pull(self) -> None:
+        row = self._sync_row_at_cursor()
+        if row is None:
+            return
+        if not _can_pull(row):
+            self.notify("pull: needs a live pull-first row", severity="warning")
+            return
+        self._run_sync_action("pull", row.repo)
+
+    def action_sync_open_pr(self) -> None:
+        row = self._sync_row_at_cursor()
+        if row is None:
+            return
+        if not _can_open_pr(row):
+            self.notify(
+                "open PR: needs a live pull-first row with ahead > 0",
+                severity="warning",
+            )
+            return
+        self._run_sync_action("open-pr", row.repo)
+
+    @work(thread=True, group="actions")
+    def _run_sync_action(self, action: Action, repo: str) -> None:
+        """Whitelist action off the event loop; separate group from _collect
+        (exclusive=True there would cancel us or vice versa)."""
+        try:
+            outcome = self._action_runner.run(action, repo)
+        except (ActionRejectedError, ActionBusyError) as err:
+            self.call_from_thread(self.notify, str(err), severity="warning")
+            return
+        if outcome.ok:
+            self.call_from_thread(
+                self.notify, f"✓ {outcome.pr_url or outcome.detail or action}"
+            )
+        else:
+            self.call_from_thread(
+                self.notify, f"✗ {outcome.error or action}", severity="error"
+            )
+        self._sync_service.invalidate()
+        self.call_from_thread(self.action_refresh)

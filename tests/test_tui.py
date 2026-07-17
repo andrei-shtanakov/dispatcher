@@ -16,7 +16,14 @@ from textual.widgets import DataTable, Select, Static, TabbedContent, TabPane
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.sync import HostPanel, RepoVerdict, SyncReport
 from dispatcher.core.sync_service import SyncStatus
-from dispatcher.tui.app import DispatcherApp, _contract_cell, truncate
+from dispatcher.tui.app import (
+    DispatcherApp,
+    SyncRow,
+    _can_open_pr,
+    _can_pull,
+    _contract_cell,
+    truncate,
+)
 from dispatcher.tui.detail import ErrorMessageScreen, ProjectDetailScreen
 
 pytestmark = pytest.mark.anyio
@@ -524,3 +531,158 @@ async def test_sync_tab_empty_and_error_panels_stay_visible(
         broken_row = next(r for r in rows if r[0].startswith("mac-broken"))
         assert "(kb)" in broken_row[0]  # ...и у панели-ошибки
         assert "schema_version" in broken_row[4]
+
+
+class _FakeActionRunner:
+    """Records calls; returns a preset ActionOutcome."""
+
+    def __init__(self, outcome=None) -> None:
+        from dispatcher.core.actions import ActionOutcome
+
+        self.calls: list[tuple[str, str]] = []
+        self.outcome = outcome or ActionOutcome(
+            action="pull", dir="alpha", ok=True, detail="fast-forwarded"
+        )
+
+    def run(self, action, repo_dir):
+        self.calls.append((action, repo_dir))
+        return self.outcome
+
+
+def _sync_with_rows() -> SyncStatus:
+    report = SyncReport(
+        current_host="h1",
+        top_line="pull-first",
+        hosts=[
+            HostPanel(
+                host="h1",
+                source="live",
+                verdicts=[
+                    RepoVerdict(repo="alpha", verdict="pull-first", ahead=2),
+                    RepoVerdict(repo="beta", verdict="ok"),
+                    RepoVerdict(repo="gamma", verdict="pull-first", ahead=None),
+                ],
+            ),
+            HostPanel(
+                host="h2",
+                source="kb",
+                verdicts=[RepoVerdict(repo="alpha", verdict="pull-first", ahead=1)],
+            ),
+        ],
+    )
+    return SyncStatus(
+        report=report,
+        report_generated_at=datetime.now(tz=UTC),
+        fetch_in_flight=False,
+    )
+
+
+def _app_with_runner(tmp_path: Path, runner) -> DispatcherApp:
+    make_atp(tmp_path)
+    make_arbiter(tmp_path)
+    make_spec_runner(tmp_path)
+    db = make_maestro_home(tmp_path)
+    return DispatcherApp(
+        DispatcherConfig(roots=(tmp_path,), maestro_db=db),
+        action_runner=runner,
+    )
+
+
+async def _sync_app(tmp_path, monkeypatch, runner) -> DispatcherApp:
+    app = _app_with_runner(tmp_path, runner)
+    # Matches this file's existing instance-level SyncService.get monkeypatch
+    # convention (see test_sync_tab_renders_verdicts_and_topline) rather than
+    # patching the class attribute directly.
+    monkeypatch.setattr(app._sync_service, "get", lambda **kw: _sync_with_rows())
+    return app
+
+
+def _move_sync_cursor(app: DispatcherApp, repo: str, live: bool) -> None:
+    """Position the sync-table cursor on the row for (repo, live)."""
+    rows = app._sync_rows
+    idx = next(
+        i
+        for i, r in enumerate(rows)
+        if r.repo == repo and r.live is live and r.kind == "verdict"
+    )
+    table = app.query_one("#sync-table", DataTable)
+    table.move_cursor(row=idx)
+
+
+async def test_pull_key_runs_action_on_live_pull_first(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runner = _FakeActionRunner()
+    app = await _sync_app(tmp_path, monkeypatch, runner)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        app.query_one(TabbedContent).active = "tab-sync"
+        await pilot.pause()
+        _move_sync_cursor(app, "alpha", live=True)
+        await pilot.press("p")
+        await _settled(app, pilot)
+        assert runner.calls == [("pull", "alpha")]
+
+
+async def test_pull_key_refuses_ok_and_non_live_rows(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runner = _FakeActionRunner()
+    app = await _sync_app(tmp_path, monkeypatch, runner)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        app.query_one(TabbedContent).active = "tab-sync"
+        await pilot.pause()
+        _move_sync_cursor(app, "beta", live=True)  # verdict ok
+        await pilot.press("p")
+        _move_sync_cursor(app, "alpha", live=False)  # kb host row
+        await pilot.press("p")
+        await _settled(app, pilot)
+        assert runner.calls == []
+
+
+async def test_open_pr_key_requires_ahead(tmp_path: Path, monkeypatch) -> None:
+    runner = _FakeActionRunner()
+    app = await _sync_app(tmp_path, monkeypatch, runner)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        app.query_one(TabbedContent).active = "tab-sync"
+        await pilot.pause()
+        _move_sync_cursor(app, "gamma", live=True)  # pull-first, ahead=None
+        await pilot.press("o")
+        await _settled(app, pilot)
+        assert runner.calls == []
+        _move_sync_cursor(app, "alpha", live=True)  # ahead=2
+        await pilot.press("o")
+        await _settled(app, pilot)
+        assert runner.calls == [("open-pr", "alpha")]
+
+
+async def test_action_keys_ignore_other_tabs_and_empty_table(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runner = _FakeActionRunner()
+    app = await _sync_app(tmp_path, monkeypatch, runner)
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        # Sync is the default active tab on boot; force a non-sync tab.
+        app.query_one(TabbedContent).active = "tab-projects"
+        await pilot.press("p")
+        await _settled(app, pilot)
+        assert runner.calls == []
+
+
+def test_sync_action_visibility_matches_web() -> None:
+    """Web: pull ⇔ live && pull-first; open PR ⇔ additionally truthy ahead
+    (dispatcher/server/static/index.html, the `actions` helper)."""
+    live_pf = SyncRow(kind="verdict", repo="a", live=True, verdict="pull-first")
+    assert _can_pull(live_pf)
+    assert not _can_open_pr(live_pf)  # ahead None → falsy, web hides the button
+    assert _can_open_pr(
+        SyncRow(kind="verdict", repo="a", live=True, verdict="pull-first", ahead=2)
+    )
+    assert not _can_pull(
+        SyncRow(kind="verdict", repo="a", live=False, verdict="pull-first", ahead=2)
+    )
+    assert not _can_pull(SyncRow(kind="verdict", repo="a", live=True, verdict="ok"))
+    assert not _can_pull(SyncRow(kind="proposal", repo="a"))
