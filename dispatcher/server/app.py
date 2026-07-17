@@ -306,6 +306,20 @@ def create_app(config: DispatcherConfig) -> FastAPI:
         """Явный клик человека: gh pr create через github-checker (идемпотентно)."""
         return _run_action("open-pr", request, x_action_token)
 
+    @app.get("/api/spec-runner-configs", response_model=list[ProjectSpecRunnerConfig])
+    def spec_runner_configs_list() -> list[ProjectSpecRunnerConfig]:
+        """Enumerate every discovered project.yaml across all roots.
+
+        Basename-keyed action contract: the action key is the directory
+        NAME. Same-named dirs in two roots appear twice here and BOTH
+        resolve to the first root at action time — fail-closed via the
+        base_mtime conflict (409), but visible as duplicates. Closes the
+        DISCOVERY gap (no other endpoint lists names); fetching a known
+        name was already possible via the per-name GET.
+        """
+        configs, _ = discover_project_configs(config.roots)
+        return configs
+
     @app.get(
         "/api/projects/{name}/spec-runner-config",
         response_model=ProjectSpecRunnerConfig,
