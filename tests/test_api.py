@@ -375,6 +375,7 @@ async def test_spec_runner_config_view_and_update(tmp_path: Path, monkeypatch) -
 
         token = (await client.get("/api/actions/session")).json()["token"]
         base_mtime = (repo / "project.yaml").stat().st_mtime
+        live_before = (repo / "project.yaml").read_bytes()
         resp = await client.post(
             "/api/actions/update-spec-runner-config",
             headers={"X-Action-Token": token},
@@ -386,11 +387,14 @@ async def test_spec_runner_config_view_and_update(tmp_path: Path, monkeypatch) -
             },
         )
         # github-checker isn't installed in the test env — expect a failed
-        # ActionOutcome (200 with ok=False), not a 5xx: the write itself must
-        # succeed even when the PR-creation subprocess can't run.
+        # ActionOutcome (200 with ok=False), not a 5xx: the runner degrades
+        # to a failed outcome rather than raising. The write path never
+        # touches the live tree (DESIGN-401) — it renders to a temp file
+        # and delegates to `propose-pr`, so project.yaml is unchanged here
+        # regardless of whether the subprocess could run.
         assert resp.status_code == 200
         assert resp.json()["ok"] is False
-        assert "max_retries: 9" in (repo / "project.yaml").read_text()
+        assert (repo / "project.yaml").read_bytes() == live_before
 
         bad_token = await client.post(
             "/api/actions/update-spec-runner-config",

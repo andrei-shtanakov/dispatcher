@@ -6,14 +6,28 @@ before delegating branch/commit/push/PR to github-checker, a different
 mutation shape than the pure git-plumbing sync actions (pull/create-pr).
 Own lock, own audit logger, so the two action classes stay independently
 testable and reasoned about (explicit stakeholder requirement, spec §1).
+
+The write path never touches the live tree (DESIGN-401): the rendered
+`project.yaml` is written to a throwaway temp file and handed to
+`github-checker propose-pr --edit project.yaml=<tmp> --if-match
+project.yaml=<sha256 of the bytes actually read>`, which does its own
+branch/commit/push/PR from a scoped worktree. This runner's mutation
+surface on observed repos is therefore zero — every write, including a
+no-op, comes back as a parsed `ActionOutcome`, never a live-tree diff.
+`propose-pr` reports a no-op (nothing changed vs. the base branch) as
+`ok=False, detail=="no-op"` while still exiting non-zero and printing
+JSON on stdout; callers must check `detail`, not just the process's
+return code, to tell a no-op apart from a real failure.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
 import subprocess
+import tempfile
 import threading
 from io import StringIO
 from pathlib import Path
@@ -182,18 +196,37 @@ class SpecRunnerConfigActionRunner:
             )
             raise
         try:
-            new_text, _, _ = build_new_yaml_text(project_yaml.read_text(), candidate)
-            project_yaml.write_text(new_text)
-            outcome = self._invoke(repo_dir)
-        except Exception as err:
-            # "Always audits" includes unexpected build/write failures —
-            # without this, such an attempt would leave no audit line.
+            base_bytes = project_yaml.read_bytes()
+            if_match_hex = hashlib.sha256(base_bytes).hexdigest()
+            new_text, changed_keys, extra_changed = build_new_yaml_text(
+                base_bytes.decode(), candidate
+            )
+            message = _commit_message(changed_keys, extra_changed)
+            with tempfile.TemporaryDirectory(
+                prefix="dispatcher-config-edit-"
+            ) as tmp_dir:
+                edit_file = Path(tmp_dir) / "project.yaml"
+                edit_file.write_text(new_text)
+                outcome = self._invoke(
+                    repo_dir,
+                    message=message,
+                    edit_file=edit_file,
+                    if_match_hex=if_match_hex,
+                )
+        except Exception as err:  # noqa: BLE001 — spec §3: degrade, never raise
+            # Everything past the guards becomes a failed outcome: temp-dir
+            # creation, decode, render, even unexpected bugs. Still audits.
             _audit.info(
                 "action=update-spec-runner-config repo=%s ok=False error=%s",
                 repo_dir,
                 err,
             )
-            raise
+            outcome = ActionOutcome(
+                action="update-spec-runner-config",
+                dir=repo_dir,
+                ok=False,
+                error=str(err),
+            )
         finally:
             with self._lock:
                 self._busy.discard(repo_dir)
@@ -206,10 +239,27 @@ class SpecRunnerConfigActionRunner:
         )
         return outcome
 
-    def _invoke(self, repo_dir: str) -> ActionOutcome:
+    def _invoke(
+        self,
+        repo_dir: str,
+        *,
+        message: str,
+        edit_file: Path,
+        if_match_hex: str,
+    ) -> ActionOutcome:
         workspace = next(r for r in self._config.roots if r.is_dir())
         target = workspace / repo_dir
-        argv = [*self._command, "open-pr", str(target)]
+        argv = [
+            *self._command,
+            "propose-pr",
+            str(target),
+            "--message",
+            message,
+            "--edit",
+            f"project.yaml={edit_file}",
+            "--if-match",
+            f"project.yaml={if_match_hex}",
+        ]
         try:
             proc = subprocess.run(
                 argv, capture_output=True, text=True, timeout=_ACTION_TIMEOUT
@@ -237,4 +287,8 @@ class SpecRunnerConfigActionRunner:
             detail=data.get("detail"),
             error=data.get("error"),
             pr_url=data.get("pr_url"),
+            branch=data.get("branch"),
+            base_branch=data.get("base_branch"),
+            commit_sha=data.get("commit_sha"),
+            changed_paths=data.get("changed_paths"),
         )

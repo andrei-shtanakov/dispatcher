@@ -46,10 +46,36 @@ def make_project(tmp_path: Path, name: str) -> Path:
     return repo
 
 
-def fake_checker(tmp_path: Path, payload: dict) -> tuple[str, ...]:
+def fake_checker(
+    tmp_path: Path, payload: dict, *, returncode: int = 0
+) -> tuple[tuple[str, ...], Path]:
+    """Fake github-checker: records argv + the --edit file's content.
+
+    Returns (command, record_path). The record is written AT INVOCATION
+    TIME because the runner's temp edit file is deleted before assertions
+    can see it. Exits with `returncode` while STILL printing JSON on
+    stdout — propose-pr's real no-op behavior (rc=1 + JSON) must never be
+    misread as "no JSON".
+    """
+    record = tmp_path / "record.json"
     script = tmp_path / "fake_checker.py"
-    script.write_text(f"import sys, json; json.dump({payload!r}, sys.stdout)")
-    return ("python3", str(script))
+    script.write_text(
+        "import json, sys\n"
+        "argv = sys.argv[1:]\n"
+        "edit_content = None\n"
+        "for a in argv:\n"
+        "    if a.startswith('project.yaml='):\n"
+        "        p = a.split('=', 1)[1]\n"
+        "        try:\n"
+        "            edit_content = open(p).read()\n"
+        "        except OSError:\n"
+        "            pass\n"
+        f"json.dump({{'argv': argv, 'edit_content': edit_content}}, "
+        f"open({str(record)!r}, 'w'))\n"
+        f"json.dump({payload!r}, sys.stdout)\n"
+        f"sys.exit({returncode})\n"
+    )
+    return ("python3", str(script)), record
 
 
 def _candidate(repo: Path, **typed_overrides) -> ConfigCandidate:
@@ -79,20 +105,68 @@ def test_run_rejects_stale_mtime(tmp_path: Path) -> None:
         runner.run("alpha", candidate)
 
 
-def test_run_writes_diff_and_delegates_to_github_checker(tmp_path: Path) -> None:
+def test_run_delegates_to_propose_pr_live_tree_untouched(tmp_path: Path) -> None:
+    import hashlib
+    import json as _json
+
     repo = make_project(tmp_path, "alpha")
-    payload = {"ok": True, "detail": "opened", "pr_url": "https://example/pr/1"}
+    live_before = (repo / "project.yaml").read_bytes()
+    payload = {
+        "ok": True,
+        "detail": "pull request created",
+        "pr_url": "https://example/pr/1",
+        "branch": "propose/x",
+        "base_branch": "main",
+        "commit_sha": "abc123",
+        "changed_paths": ["project.yaml"],
+    }
+    command, record = fake_checker(tmp_path, payload)
     runner = SpecRunnerConfigActionRunner(
-        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+        DispatcherConfig(roots=(tmp_path,)), command=command
     )
-    candidate = _candidate(repo, max_retries=7, claude_model="claude-opus-4-8")
-    outcome = runner.run("alpha", candidate)
+    outcome = runner.run("alpha", _candidate(repo, max_retries=7))
+
     assert outcome.ok
     assert outcome.pr_url == "https://example/pr/1"
-    written = (repo / "project.yaml").read_text()
-    assert "max_retries: 7" in written
-    assert "claude-opus-4-8" in written
-    assert "workstreams" in written  # rest of the file survives
+    assert outcome.branch == "propose/x"
+    assert outcome.base_branch == "main"
+    assert outcome.commit_sha == "abc123"
+    assert outcome.changed_paths == ["project.yaml"]
+    # THE invariant: the live tree was never written
+    assert (repo / "project.yaml").read_bytes() == live_before
+
+    rec = _json.loads(record.read_text())
+    argv = rec["argv"]
+    assert argv[0] == "propose-pr"
+    assert argv[1] == str(tmp_path / "alpha")
+    assert "--message" in argv
+    msg = argv[argv.index("--message") + 1]
+    assert msg.startswith("chore(spec-runner): update config")
+    assert "max_retries" in msg
+    # assert the value POSITIONALLY after its flag — a bare startswith scan
+    # could accidentally match the --if-match value instead
+    edit_arg = argv[argv.index("--edit") + 1]
+    assert edit_arg.startswith("project.yaml=")
+    if_match = argv[argv.index("--if-match") + 1]
+    expected_hex = hashlib.sha256(live_before).hexdigest()
+    assert if_match == f"project.yaml={expected_hex}"
+    # the temp edit file carried the DESIGN-402-filtered YAML
+    assert "max_retries: 7" in rec["edit_content"]
+    assert "workstreams" in rec["edit_content"]
+
+
+def test_noop_rc1_with_json_is_parsed_not_no_json(tmp_path: Path) -> None:
+    repo = make_project(tmp_path, "alpha")
+    payload = {"ok": False, "detail": "no-op", "error": "no changes vs main"}
+    command, _ = fake_checker(tmp_path, payload, returncode=1)
+    runner = SpecRunnerConfigActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=command
+    )
+    outcome = runner.run("alpha", _candidate(repo))
+    assert not outcome.ok
+    assert outcome.detail == "no-op"
+    assert outcome.error == "no changes vs main"
+    assert "no JSON" not in (outcome.error or "")
 
 
 def test_one_in_flight_per_repo(tmp_path: Path, monkeypatch) -> None:
@@ -101,7 +175,7 @@ def test_one_in_flight_per_repo(tmp_path: Path, monkeypatch) -> None:
     started = threading.Event()
     release = threading.Event()
 
-    def slow_invoke(repo_dir):
+    def slow_invoke(repo_dir, **kwargs):
         started.set()
         release.wait(timeout=10)
         from dispatcher.core.actions import ActionOutcome
@@ -126,19 +200,21 @@ def test_write_failure_audits_and_frees_busy_slot(
     import dispatcher.core.spec_runner_config_actions as mod
 
     repo = make_project(tmp_path, "alpha")
-    payload = {"ok": True, "detail": "opened"}
+    payload = {"ok": True, "detail": "pull request created"}
+    command, _record = fake_checker(tmp_path, payload)
     runner = SpecRunnerConfigActionRunner(
-        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+        DispatcherConfig(roots=(tmp_path,)), command=command
     )
     candidate = _candidate(repo)
 
-    def boom(project_yaml, cand):
+    def boom(base_text, cand):
         raise RuntimeError("yaml render exploded")
 
     monkeypatch.setattr(mod, "build_new_yaml_text", boom)
     with caplog.at_level("INFO", logger="dispatcher.actions.spec_runner_config"):
-        with pytest.raises(RuntimeError, match="yaml render exploded"):
-            runner.run("alpha", candidate)
+        outcome = runner.run("alpha", candidate)
+    assert not outcome.ok
+    assert "yaml render exploded" in (outcome.error or "")
     assert any(
         "ok=False" in r.getMessage() and "yaml render exploded" in r.getMessage()
         for r in caplog.records
@@ -150,9 +226,10 @@ def test_write_failure_audits_and_frees_busy_slot(
 
 def test_audit_line_written(tmp_path: Path, caplog) -> None:
     repo = make_project(tmp_path, "alpha")
-    payload = {"ok": True, "detail": "opened"}
+    payload = {"ok": True, "detail": "pull request created"}
+    command, _record = fake_checker(tmp_path, payload)
     runner = SpecRunnerConfigActionRunner(
-        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+        DispatcherConfig(roots=(tmp_path,)), command=command
     )
     candidate = _candidate(repo)
     with caplog.at_level("INFO", logger="dispatcher.actions.spec_runner_config"):
