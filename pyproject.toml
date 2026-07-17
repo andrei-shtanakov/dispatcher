@@ -9,6 +9,7 @@ dependencies = [
     "jsonschema>=4.26.0",
     "pydantic>=2.13.4",
     "pyyaml>=6.0.3",
+    "ruamel-yaml>=0.19.1",
     "textual>=8.2.8,<9",
     "uvicorn>=0.49.0",
 ]
