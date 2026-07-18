@@ -52,7 +52,7 @@ def build_server(
     def project(
         name: Annotated[
             str,
-            Field(description="Collector name, e.g. 'maestro' or 'arbiter'"),
+            Field(description="Collector name, e.g. 'Maestro' or 'arbiter'"),
         ],
     ) -> dict[str, Any]:
         """Full snapshot of ONE project: schema checks, models, tasks,
@@ -150,12 +150,14 @@ def build_server(
 
     @mcp.tool
     def roadmap_phases() -> dict[str, Any]:
-        """Per-phase status counts and which items block each phase."""
+        """Phase-level rollup: per-phase status counts plus which items
+        block each phase from completing."""
         return read_api.roadmap_phases(cache, roadmap_dirs).model_dump(mode="json")
 
     @mcp.tool
     def roadmap_blockers() -> dict[str, Any]:
-        """Reverse dependency view: which items block which others."""
+        """Item-to-item dependency edges: for each blocking item, the list
+        of items it blocks (the reverse of depends_on)."""
         return read_api.roadmap_blockers(cache, roadmap_dirs).model_dump(mode="json")
 
     @mcp.tool

@@ -14,6 +14,8 @@ from pathlib import Path
 # ignore in front of it, THEN import fastmcp; the one-shot import-time
 # warning never fires and later imports hit the module cache.
 with warnings.catch_warnings():
+    # NOTE: relies on authlib.deprecate staying importable (fine under the
+    # fastmcp<3 cap); a restructure would fail loudly here, not silently
     import authlib.deprecate  # noqa: F401  (its simplefilter lands here)
 
     warnings.simplefilter("ignore")
