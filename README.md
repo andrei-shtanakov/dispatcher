@@ -92,6 +92,20 @@ rules stay `unknown`. Status ladder: `planned / implemented / verified
 / unknown`, plus `blocked` when a `depends_on` item is not
 implemented+.
 
+## MCP server
+
+Agents (robin, Maestro, Claude Code) get the same read API as MCP tools
+via `dispatcher mcp --config /path/dispatcher.toml`. Register with:
+
+    claude mcp add dispatcher -- uv run --project /path/to/dispatcher dispatcher mcp --config /path/dispatcher.toml
+
+Exposes 14 read-only tools: `overview`, `project`, `errors`, `models`,
+`contracts`, `work_items`, `roadmap`, `roadmap_item`, `roadmap_summary`,
+`roadmap_drift`, `roadmap_phases`, `roadmap_blockers`, `sync_status`,
+`spec_runner_configs`. No action tools by design — mutations require a
+human click in the UI; `sync_status` never triggers a background fetch
+(`start_fetch=False`).
+
 ## Design
 
 See `docs/superpowers/specs/2026-07-03-dispatcher-design.md` (Stage 1) and

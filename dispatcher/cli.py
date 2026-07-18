@@ -1,4 +1,4 @@
-"""Command-line entry point: `dispatcher serve|tui|publish-snapshot`."""
+"""Command-line entry point: `dispatcher serve|tui|mcp|publish-snapshot`."""
 
 from __future__ import annotations
 
