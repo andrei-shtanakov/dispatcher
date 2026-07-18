@@ -19,7 +19,7 @@ suggestion-sidecar.
 
 1. **Dispatcher держит ноль секретов — это граница, не случайность.**
    Ни БД-кредов, ни TLS; коллекторы активно РЕДАЧАТ чужие секреты
-   (`_KEY_RE`/`_TOKEN_VALUE_RE`, `collectors/base.py`); единственный
+   (`_KEY_RE`/`_TOKEN_VALUE_RE`, `dispatcher/core/collectors/base.py`); единственный
    сетевой выход (git fetch / gh pr) уже отдан делегацией
    github-checker-у. Первый API-ключ в конфиге dispatcher — слом
    инварианта на категорию («не касается кредов» → «касается»), а не
@@ -43,7 +43,7 @@ suggestion-sidecar.
 
 | # | Решение | Обоснование |
 |---|---|---|
-| H-1 | Контекст — ТОЛЬКО stdin; команда — из allowlist (`claude` / абсолютный путь до него в конфиге), флаги фиксированы кодом; `shell=False` | интерполяция контекста в argv = классический путь к инъекции/RCE |
+| H-1 | Контекст — ТОЛЬКО stdin; команда: либо `claude` с PATH, либо АБСОЛЮТНЫЙ путь из конфига, чей basename ОБЯЗАН быть `claude`; никаких аргументов в конфиге — все флаги фиксированы кодом; `shell=False` | интерполяция контекста в argv = классический путь к инъекции/RCE; «любой абсолютный путь» — это уже не allowlist |
 | H-2 | Пин `--output-format json`: stdout — конверт агента (`type`, `result`, `cost_usd`, …), полезная нагрузка — СТРОКА в `.result`, которая парсится вторым проходом | «первый JSON в stdout» поймал бы конверт, и валидация честно отвалилась бы на его структуре; без пина формат stdout не гарантирован между версиями CLI |
 | H-3 | Вся CLI-специфика (конверт, извлечение `.result`, версия CLI) изолирована в адаптере DESIGN-902 | замена spawn→HTTP (sidecar) не должна тянуть предположения о конверте |
 | H-4 | Bundle строится из УЖЕ ЗАМАСКИРОВАННОГО вывода (те же регэспы коллекторов) — чужой токен не уезжает в модель | иначе фича сама ломает свидетельство №1 из §1 |
@@ -83,8 +83,10 @@ suggestion-sidecar.
 
 ### Peers — распределения с анти-эхо-камерой
 
-Для каждого из 12 полей: `{value → {count, explicit_count}}`, топ-5
-значений по частоте + `"other": N`. Закрывает разом:
+Для каждого из 12 полей: СПИСОК `[{value, count, explicit_count}]`
+(НЕ объект с value-ключами: JSON-ключи — строки, bool/int-значения
+стали бы `"true"`/`"5"`), топ-5 по частоте + запись
+`{"other": N}`. Закрывает разом:
 - **cap**: размер ограничен distinct-значениями, не числом проектов;
   отбор проектов — все при ≤15, иначе топ-15 по freshness (правило
   простое и наблюдаемое);
@@ -122,18 +124,26 @@ suggestion-sidecar.
 `SuggestOutcome {suggestions, dropped, cli_version, duration_s, cost_usd|None}`
 — НИКАКИХ деталей конверта выше адаптера (H-3). Держит handle процесса;
 `terminate()` — публичный метод для cancel (H-6). Один in-flight на
-процесс (паттерн ActionRunner): занято → `SuggestBusyError`.
+процесс (паттерн ActionRunner): занято → `SuggestRunnerBusyError` (имя привязано к раннеру — паттерн `ActionBusyError`/`SpecRunnerConfigBusyError`).
 
 ### DESIGN-903: endpoints + audit
 
 - `POST /api/projects/{name}/spec-runner-config/suggest` — требует
   `X-Action-Token`: не потому что мутация (её нет), а потому что вызов
   ТРАТИТ ДЕНЬГИ — drive-by-cost закрывается той же CSRF-машинерией.
-  Ошибки: 404 unknown project, 409 busy, 409 cancelled, 422 «suggestion
-  invalid», 503 CLI не настроен/не найден (паттерн gated-фичи).
+  Тело: `{base_mtime: float}` — mtime конфига, из которого построена
+  форма; расхождение с текущим mtime файла → 409 «config changed —
+  reload» (тот же conflict-паттерн, что у update-действия): подсказки,
+  посчитанные по свежему файлу, не приклеиваются к устаревшей форме.
+  Ошибки: 404 unknown project, 409 busy, 409 cancelled, 409 timed out,
+  409 stale base_mtime, 422 «suggestion invalid», 503 CLI не
+  настроен/не найден (паттерн gated-фичи).
 - `POST /api/projects/{name}/spec-runner-config/suggest/cancel` — тот же
-  токен; `terminate()` текущего процесса; идемпотентен (нет in-flight →
-  200 «nothing to cancel»).
+  токен. In-flight в процессе ОДИН и глобальный, а endpoint —
+  per-project, поэтому семантика зафиксирована явно: terminate
+  выполняется ТОЛЬКО если текущий in-flight принадлежит `{name}`;
+  чужой in-flight не убивается — 409 `busy: suggest in flight for
+  <other>`. Нет in-flight → 200 «nothing to cancel» (идемпотентно).
 - Audit: логгер `dispatcher.actions.spec_runner_config` (существующий):
   строка на каждый запуск — project, cli_version, duration, поля
   suggested/dropped, `cost_usd` — **optional** (subscription/OAuth-конверт
@@ -160,7 +170,7 @@ disabled с подсказкой «suggestions unavailable: claude CLI not found
 | bundle | состав §3 (roadmap ОТСУТСТВУЕТ — негативный пин); распределения peers с explicit_count и топ-5+other; отбор топ-15 по freshness; **редакция: фикстура с токеном в чужом explicit-значении → в bundle он замаскирован** |
 | адаптер | fake-CLI бинарь (прецедент fake github-checker): валидный конверт; конверт без cost_usd; `.result` — не-JSON (→ invalid); лишние/невалидные поля (→ dropped, остальные приняты); совпадение с дефолтом (→ dropped); таймаут; отсутствие бинаря |
 | cancel | terminate освобождает лок НЕМЕДЛЕННО (следующий suggest не ловит 409-busy); cancel без in-flight идемпотентен |
-| endpoints | токен-403; busy-409; 503 при ненастроенном CLI; audit-строка на каждый исход, включая пропущенный cost_usd |
+| endpoints | токен-403; busy-409; stale-base_mtime-409; cancel чужого in-flight → 409 с именем проекта; 503 при ненастроенном CLI; audit-строка на каждый исход, включая пропущенный cost_usd |
 | web | static-пины: suggest-кнопка, cancel, suggested-маркер, dropped-контейнер в index.html |
 | injection | фикстурный «злой» конфиг соседа с инструкцией в значении поля → пин, что значение уезжает в bundle ЗАМАСКИРОВАННЫМ (если матчит секрет-регэспы) и что невалидный выход всё равно дропается типизацией (H-5 blast radius) |
 
@@ -169,8 +179,10 @@ disabled с подсказкой «suggestions unavailable: claude CLI not found
 README: секция «AI suggestions» (требования: claude CLI на PATH или путь
 в dispatcher.toml; секрет живёт в CLI-конфиге — релоцирован, не
 устранён; стоимость — на аккаунте пользователя). COWORK_CONTEXT:
-interfaces line. Конфиг: `suggest_cli` (optional path) в
-`DispatcherConfig`/`dispatcher.toml`.
+interfaces line. Конфиг: `suggest_claude_cli` (optional АБСОЛЮТНЫЙ путь к claude-бинарю
+для suggestions; basename обязан быть `claude`; НЕ путать с typed-полем
+`spec_runner.claude_command` в project.yaml — то поле конфигурирует
+spec-runner, это — сам dispatcher) в `DispatcherConfig`/`dispatcher.toml`.
 
 ## 5. Error handling
 
