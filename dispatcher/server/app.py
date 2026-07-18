@@ -27,6 +27,7 @@ from dispatcher.core.models import (
     OverviewResponse,
     ProjectSnapshot,
 )
+from dispatcher.core.onboarding import OnboardingView
 from dispatcher.core.roadmap import (
     BlockersResponse,
     DriftResponse,
@@ -185,6 +186,14 @@ def create_app(
     def roadmap_summary() -> SummaryResponse:
         """Один экран FR-03: проекты × готовность × флаги lagging/drift."""
         return read_api.roadmap_summary(cache, roadmap_dirs)
+
+    @app.get("/api/projects/{name}/onboarding", response_model=OnboardingView)
+    def project_onboarding(name: str) -> OnboardingView:
+        """FR-04: описание + позиция в roadmap + предстоящие задачи."""
+        try:
+            return read_api.onboarding(cache, roadmap_dirs, name)
+        except read_api.ReadLookupError as err:
+            raise HTTPException(status_code=404, detail=str(err)) from err
 
     @app.get("/api/roadmap/{item_id}", response_model=RoadmapItemView)
     def roadmap_item(item_id: str) -> RoadmapItemView:
