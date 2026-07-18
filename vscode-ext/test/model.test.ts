@@ -1,6 +1,11 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import type { ErrorEvent, OverviewResponse, ProjectDetail } from "../src/api";
+import type {
+  ErrorEvent,
+  OverviewResponse,
+  ProjectDetail,
+  RepoVerdict,
+} from "../src/api";
 import {
   detailLines,
   errorLabel,
@@ -9,6 +14,8 @@ import {
   projectView,
   shouldSpawn,
   statusText,
+  syncAgeLabel,
+  syncItemContext,
   verdictText,
   truncate,
 } from "../src/model";
@@ -123,7 +130,14 @@ describe("server decisions", () => {
 
 describe("verdictText", () => {
   const sync = (top_line: string, fetching = false) => ({
-    report: { current_host: "mac-a", top_line, top_reason: null },
+    report: {
+      current_host: "mac-a",
+      top_line,
+      top_reason: null,
+      hosts: [],
+      proposals: [],
+      warnings: [],
+    },
     fetch_in_flight: fetching,
     last_fetch_at: null,
     last_fetch_error: null,
@@ -151,5 +165,58 @@ describe("verdictText", () => {
 
   it("appends a spinner while the background fetch runs", () => {
     expect(verdictText(sync("ok", true))).toBe(" · $(check) ok $(sync~spin)");
+  });
+});
+
+describe("syncItemContext (web/TUI parity)", () => {
+  const v = (o: Partial<RepoVerdict>): RepoVerdict => ({
+    repo: "a",
+    verdict: "ok",
+    reason: null,
+    branch: null,
+    ahead: null,
+    behind: null,
+    dirty: false,
+    is_kb: false,
+    ...o,
+  });
+
+  it("pull-first + live + ahead -> pullPr (both actions)", () => {
+    expect(syncItemContext(v({ verdict: "pull-first", ahead: 2 }), true)).toBe(
+      "dispatcherSyncVerdict.pullPr",
+    );
+  });
+  it("pull-first + live without ahead -> pull only (None and 0 both)", () => {
+    expect(syncItemContext(v({ verdict: "pull-first" }), true)).toBe(
+      "dispatcherSyncVerdict.pull",
+    );
+    expect(syncItemContext(v({ verdict: "pull-first", ahead: 0 }), true)).toBe(
+      "dispatcherSyncVerdict.pull",
+    );
+  });
+  it("non-live or non-pull-first -> null", () => {
+    expect(syncItemContext(v({ verdict: "pull-first", ahead: 2 }), false)).toBe(
+      null,
+    );
+    expect(syncItemContext(v({ verdict: "ok" }), true)).toBe(null);
+  });
+});
+
+describe("syncAgeLabel (TUI _age_cell parity)", () => {
+  it("renders seconds under the 90s threshold", () => {
+    expect(syncAgeLabel(45, false)).toBe("45s");
+  });
+  it("renders minutes under the 5400s threshold", () => {
+    expect(syncAgeLabel(120, false)).toBe("2m");
+  });
+  it("renders hours with one decimal past the threshold", () => {
+    expect(syncAgeLabel(7200, false)).toBe("2.0h");
+  });
+  it("renders a placeholder for missing age", () => {
+    expect(syncAgeLabel(null, false)).toBe("—");
+  });
+  it("appends a stale suffix", () => {
+    expect(syncAgeLabel(45, true)).toBe("45s stale");
+    expect(syncAgeLabel(null, true)).toBe("—");
   });
 });

@@ -1,0 +1,23 @@
+[
+  {
+    "project": "maestro",
+    "project_yaml_path": "/workspace/maestro/project.yaml",
+    "base_mtime": 1737100000.123,
+    "typed": {
+      "max_retries": { "value": 3, "explicit": false },
+      "task_timeout_minutes": { "value": 30, "explicit": false },
+      "claude_command": { "value": "claude", "explicit": false },
+      "auto_commit": { "value": true, "explicit": false },
+      "create_git_branch": { "value": true, "explicit": false },
+      "run_tests_on_done": { "value": true, "explicit": false },
+      "test_command": { "value": "uv run pytest", "explicit": false },
+      "run_lint_on_done": { "value": true, "explicit": false },
+      "lint_command": { "value": "uv run ruff check .", "explicit": false },
+      "claude_model": { "value": "", "explicit": false },
+      "review_command": { "value": "", "explicit": false },
+      "review_model": { "value": "", "explicit": false }
+    },
+    "extra_executor_config": {},
+    "extra_explicit": false
+  }
+]

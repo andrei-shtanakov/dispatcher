@@ -539,3 +539,31 @@ async def test_spec_runner_config_noop_reaches_client(
         data = resp.json()
         assert data["ok"] is False
         assert data["detail"] == "no-op"
+
+
+async def test_spec_runner_configs_list_reaches_non_overview_projects(
+    tmp_path: Path,
+) -> None:
+    """DESIGN-601: enumeration across roots — incl. dirs that are NOT
+    overview cards (a bare steward/project.yaml). This is the discovery
+    gap the per-name GET can't close (it needs a known name)."""
+    # workspace with one collector project (overview card) and one bare
+    # config-only dir (no collector match)
+    make_atp(tmp_path)
+    steward = tmp_path / "steward"
+    steward.mkdir()
+    (steward / "project.yaml").write_text(
+        "project: steward\nspec_runner:\n  max_retries: 5\nworkstreams: []\n"
+    )
+    config = DispatcherConfig(roots=(tmp_path,))
+    transport = httpx.ASGITransport(app=create_app(config))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/spec-runner-configs")
+    assert resp.status_code == 200
+    data = resp.json()
+    dirs = [Path(c["project_yaml_path"]).parent.name for c in data]
+    assert "steward" in dirs  # not an overview card, still listed
+    entry = next(c for c in data if c["project"] == "steward")
+    assert entry["typed"]["max_retries"]["value"] == 5
+    assert entry["typed"]["max_retries"]["explicit"] is True
+    assert entry["base_mtime"] > 0

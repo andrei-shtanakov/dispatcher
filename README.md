@@ -30,10 +30,13 @@ project · `p` pull · `o` open PR · `t`/`i` track/ignore (Sync) · `Enter` edi
     cd vscode-ext && npm install && npm run package   # builds .vsix
 
 Install via "Extensions: Install from VSIX…". Adds a Dispatcher sidebar
-(projects + recent errors) and a status-bar health indicator; the server
-is auto-started when unreachable (`dispatcher.projectDir` setting must
-point at this repo). Settings: `dispatcher.url`, `dispatcher.projectDir`,
-`dispatcher.autoStart`, `dispatcher.pollSeconds`.
+with projects, recent errors, and a Sync view (row actions: pull / open PR /
+track / ignore); status-bar health indicator; the server is auto-started
+when unreachable (`dispatcher.projectDir` setting must point at this repo).
+"Dispatcher: Edit Spec-Runner Config" command opens a QuickPick flow to
+propose spec-runner config changes via PR (github-checker). Settings:
+`dispatcher.url`, `dispatcher.projectDir`, `dispatcher.autoStart`,
+`dispatcher.pollSeconds`.
 
 ## Configure (optional `dispatcher.toml`)
 
@@ -69,8 +72,9 @@ same command works; staleness beyond 1 h renders the host's panel as
 `/api/models`, `/api/contracts`,
 `/api/work-items?cross_only=bool&limit=N`,
 `/api/roadmap`, `/api/roadmap/{item_id}`,
-`/api/projects/{name}/spec-runner-config`, `/api/actions/update-spec-runner-config`
-— pydantic-typed JSON; this is the same contract the future VSCode extension consumes.
+`/api/projects/{name}/spec-runner-config`, `/api/spec-runner-configs`,
+`/api/actions/update-spec-runner-config`
+— pydantic-typed JSON; this is the same contract the VSCode extension consumes.
 
 `/api/work-items` is the read-side correlation view: tasks from all
 projects grouped by their shared task id (Maestro passes `task.id`

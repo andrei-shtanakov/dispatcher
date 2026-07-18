@@ -7,7 +7,7 @@
 > proposal track/ignore (today the TUI silently drops `report.proposals` — a
 > real parity gap found in exploration), and the config-editor screen
 > (DESIGN-308, deferred twice). The VSCode half of FR-06 is explicitly a
-> separate follow-up iteration (different stack, own PR series).
+> separate follow-up iteration (different stack, own PR series; shipped same day — see `2026-07-17-vscode-parity-design.md`; FR-06 closed).
 > Numbering: DESIGN-501+. Two pre-write reviews are folded in below.
 
 ## 1. Principles
