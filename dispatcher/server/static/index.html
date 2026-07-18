@@ -457,7 +457,12 @@ async function updateSuggestAvailability() {
       ? "Suggest values"
       : "Suggest values (unavailable)";
   } catch {
-    // fetch failed — leave the button enabled; click-time 503 still guards
+    // probe failed (transient / server restart): fail open — the
+    // click-time 503 still guards; a permanently dead button would
+    // contradict the documented behavior
+    btn.disabled = false;
+    btn.title = "";
+    btn.textContent = "Suggest values";
   }
 }
 
