@@ -90,6 +90,9 @@
   .kbrow td:first-child { font-weight: 600; }
   .suggest-marker { color: var(--accent); font-size: 11px; margin-left: 4px; }
   .suggest-rationale { color: var(--dim); font-size: 11px; display: block; }
+  #overlay-editor { width: 100%; font-family: ui-monospace, monospace;
+    font-size: 12px; margin-top: 6px; }
+  #overlay-warning { color: var(--bad); margin-top: 6px; }
 </style>
 </head>
 <body>
@@ -114,6 +117,16 @@
   <div id="spec-runner-config" hidden>
     <h3>Spec-runner config</h3>
     <form id="spec-runner-config-form"></form>
+    <div id="overlay-section">
+      <div id="overlay-summary" class="fresh"></div>
+      <button id="overlay-edit" type="button">Edit overlay</button>
+      <button id="overlay-clear" type="button">Clear overlay</button>
+      <button id="overlay-cancel" type="button" hidden>Cancel</button>
+      <textarea id="overlay-editor" rows="10" spellcheck="false" hidden></textarea>
+      <div id="overlay-error" class="fresh"></div>
+      <div id="overlay-warning" hidden>⚠ the extra_executor_config block
+        will be REMOVED from project.yaml</div>
+    </div>
     <pre id="spec-runner-config-diff" hidden></pre>
     <button id="spec-runner-config-submit" type="button" disabled>Preview diff</button>
     <button id="spec-runner-config-suggest" type="button" disabled>Suggest values</button>
@@ -479,6 +492,7 @@ function renderSpecRunnerConfigForm(cfg) {
   document.getElementById("spec-runner-config-result").textContent = "";
   document.getElementById("suggest-dropped").textContent = "";
   resetSpecRunnerConfigPreview();
+  overlaySetState("preserve");
 }
 
 function renderOnboarding(ob) {
@@ -561,6 +575,94 @@ function readSpecRunnerConfigTyped(form) {
   return typed;
 }
 
+let overlayState = "preserve";  // preserve | edit | clear (spec §2)
+
+function overlayParse() {
+  const text = document.getElementById("overlay-editor").value;
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    return {ok: false, error: "invalid JSON: " + err.message};
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {ok: false, error: "overlay must be a JSON object"};
+  }
+  return {ok: true, value: parsed};
+}
+
+function readSpecRunnerConfigOverlay() {
+  if (overlayState === "clear") return {};
+  if (overlayState === "edit") {
+    const res = overlayParse();
+    return res.ok ? res.value : null;  // unreachable armed: submit locked
+  }
+  return null;  // preserve
+}
+
+function renderOverlaySummary() {
+  const out = document.getElementById("overlay-summary");
+  if (overlayState === "edit") {
+    out.textContent = "editing overlay — replaces the block on submit";
+    return;
+  }
+  if (overlayState === "clear") {
+    out.textContent = "";
+    return;
+  }
+  const overlay = currentSpecRunnerConfig?.extra_executor_config ?? {};
+  const n = Object.keys(overlay).length;
+  // preserve NEVER renders the content (token exposure, spec §1.4)
+  out.textContent = n
+    ? `overlay present (${n} keys), preserved as-is`
+    : "no overlay";
+}
+
+function overlayUpdateSubmitLock() {
+  const submit = document.getElementById("spec-runner-config-submit");
+  const error = document.getElementById("overlay-error");
+  if (overlayState !== "edit") {
+    error.textContent = "";
+    submit.disabled = !currentSpecRunnerConfig;
+    return;
+  }
+  const res = overlayParse();
+  error.textContent = res.ok ? "" : "✗ " + res.error;
+  submit.disabled = !res.ok;
+}
+
+function overlaySetState(state) {
+  overlayState = state;
+  document.getElementById("overlay-editor").hidden = state !== "edit";
+  document.getElementById("overlay-warning").hidden = state !== "clear";
+  document.getElementById("overlay-cancel").hidden = state === "preserve";
+  document.getElementById("overlay-edit").hidden = state !== "preserve";
+  document.getElementById("overlay-clear").hidden = state !== "preserve";
+  renderOverlaySummary();
+  if (document.getElementById("spec-runner-config-submit")
+      .dataset.armed === "true") {
+    resetSpecRunnerConfigPreview();
+  }
+  overlayUpdateSubmitLock();
+}
+
+document.getElementById("overlay-edit").addEventListener("click", () => {
+  document.getElementById("overlay-editor").value = JSON.stringify(
+    currentSpecRunnerConfig?.extra_executor_config ?? {}, null, 2);
+  overlaySetState("edit");
+});
+document.getElementById("overlay-clear").addEventListener("click",
+  () => overlaySetState("clear"));
+document.getElementById("overlay-cancel").addEventListener("click",
+  () => overlaySetState("preserve"));
+document.getElementById("overlay-editor").addEventListener("input", () => {
+  if (document.getElementById("spec-runner-config-submit")
+      .dataset.armed === "true") {
+    resetSpecRunnerConfigPreview();
+  }
+  overlayUpdateSubmitLock();
+});
+
 function resetSpecRunnerConfigPreview() {
   const btn = document.getElementById("spec-runner-config-submit");
   const diff = document.getElementById("spec-runner-config-diff");
@@ -581,6 +683,14 @@ function renderSpecRunnerConfigDiff(typed) {
       lines.push(`+ ${esc(key)}: ${esc(String(value))}`);
     }
   });
+  const overlay = readSpecRunnerConfigOverlay();
+  if (overlay === null) {
+    lines.push("overlay: preserved");
+  } else if (Object.keys(overlay).length === 0) {
+    lines.push("overlay: will be cleared");
+  } else {
+    lines.push(`overlay: replaced (${Object.keys(overlay).length} top-level keys)`);
+  }
   diff.innerHTML = lines.length ? lines.join("\n") : "(no changes)";
   diff.hidden = false;
 }
@@ -610,7 +720,7 @@ document.getElementById("spec-runner-config-submit").addEventListener(
       body: JSON.stringify({
         dir: currentSpecRunnerConfig.repoDir,
         typed,
-        extra_executor_config: null,  // tri-state: null = preserve current
+        extra_executor_config: readSpecRunnerConfigOverlay(),  // tri-state: spec §2
         base_mtime: currentSpecRunnerConfig.base_mtime,
       }),
     });
@@ -621,11 +731,17 @@ document.getElementById("spec-runner-config-submit").addEventListener(
       // (the Russian strings elsewhere belong to the sync screen)
       result.textContent = "config already in this state — no PR needed";
       result.className = "fresh";
+      // panel does not reload via detail() on submit — reset the overlay
+      // editor back to its safe default now that the submit succeeded.
+      overlaySetState("preserve");
     } else {
       result.textContent = data.ok
         ? "✓ PR: " + (data.pr_url ?? data.detail ?? "opened")
         : "✗ " + (data.error ?? "failed");
       result.className = data.ok ? "ok" : "err";
+      // only reset on genuine success; keep the overlay editor content on
+      // failure so the user can retry without re-typing it.
+      if (data.ok) overlaySetState("preserve");
     }
   } catch (err) {
     result.textContent = "✗ " + err;

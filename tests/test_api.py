@@ -208,6 +208,14 @@ async def test_index_served(tmp_path: Path) -> None:
     assert 'colspan="8"' in resp.text
     assert "/onboarding" in resp.text  # detail() fetches the onboarding view
     assert "onboarding-next" in resp.text  # structured sections replaced raw JSON
+    # extra_executor_config overlay editing UI (DESIGN-1001/1002)
+    assert "overlay-editor" in resp.text
+    assert "overlay-edit" in resp.text
+    assert "overlay-clear" in resp.text
+    assert "overlay-cancel" in resp.text
+    assert "overlay-warning" in resp.text
+    assert "overlay-summary" in resp.text
+    assert "readSpecRunnerConfigOverlay" in resp.text
 
 
 async def test_sync_track_endpoint_writes_sidecar(tmp_path: Path) -> None:
