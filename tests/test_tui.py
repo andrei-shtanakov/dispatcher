@@ -285,8 +285,10 @@ async def test_detail_renders_onboarding_sections(tmp_path: Path) -> None:
     from dispatcher.core.onboarding import (
         OnboardingNextItem,
         OnboardingProject,
+        OnboardingRoadmapPosition,
         OnboardingView,
     )
+    from dispatcher.core.roadmap import ProjectSummary
     from dispatcher.tui.detail import ProjectDetailScreen
 
     snap = ProjectSnapshot(name="arbiter", path="/w/arbiter")
@@ -296,6 +298,18 @@ async def test_detail_renders_onboarding_sections(tmp_path: Path) -> None:
             path="/w/arbiter",
             description="Arbiter routes agents.",
             description_source="readme",
+        ),
+        roadmap_position=OnboardingRoadmapPosition(
+            summary=ProjectSummary(
+                project="arbiter",
+                total=2,
+                done=1,
+                readiness=0.5,
+                lagging=True,
+                contract_drift=False,
+            ),
+            median_readiness=0.75,
+            phases=[],
         ),
         next_items=[
             OnboardingNextItem(
@@ -308,6 +322,7 @@ async def test_detail_renders_onboarding_sections(tmp_path: Path) -> None:
             )
         ],
         live_tasks=[TaskInfo(task_id="T-7", status="pending", source="db")],
+        warnings=["unknown dependency id: RD-0 (item RD-1)"],
     )
     screen = ProjectDetailScreen(snap, view)
     rendered = "\n".join(screen._render_texts())
@@ -315,6 +330,10 @@ async def test_detail_renders_onboarding_sections(tmp_path: Path) -> None:
     assert "RD-1" in rendered and "blocked by: RD-0" in rendered
     assert "T-7" in rendered
     assert "collected:" in rendered  # old snapshot sections still live
+    assert "readiness 50%" in rendered
+    assert "median 75%" in rendered
+    assert "LAGGING" in rendered
+    assert "unknown dependency id: RD-0 (item RD-1)" in rendered
 
 
 async def test_detail_without_onboarding_degrades(tmp_path: Path) -> None:

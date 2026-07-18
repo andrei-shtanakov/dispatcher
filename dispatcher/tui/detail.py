@@ -88,6 +88,11 @@ def _onboarding_sections(view: OnboardingView) -> list[tuple[str, list[str]]]:
                 f"({pos.summary.done}/{pos.summary.total})"
                 + (" · LAGGING" if pos.summary.lagging else "")
                 + (" · CONTRACT DRIFT" if pos.summary.contract_drift else "")
+                + (
+                    f" · median {pos.median_readiness:.0%}"
+                    if pos.median_readiness is not None
+                    else " · median —"
+                )
             ),
             *[
                 escape(
@@ -153,10 +158,12 @@ class ProjectDetailScreen(Screen[None]):
             f"detected: {s.detected}"
         ]
         if self._onboarding is not None:
+            view = self._onboarding
             texts.extend(
-                _section(title, lines)
-                for title, lines in _onboarding_sections(self._onboarding)
+                _section(title, lines) for title, lines in _onboarding_sections(view)
             )
+            extra = [w for w in view.warnings if w not in set(s.warnings)]
+            texts.append(_section("onboarding warnings", [escape(w) for w in extra]))
         texts.extend(_section(title, lines) for title, lines in _sections(s))
         return texts
 
