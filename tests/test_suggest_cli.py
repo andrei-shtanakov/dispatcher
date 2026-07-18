@@ -179,6 +179,12 @@ def test_cancel_idle_returns_false(tmp_path: Path) -> None:
     assert runner.cancel("steward") is False
 
 
+def test_non_string_cli_version_is_coerced(tmp_path: Path) -> None:
+    envelope = _envelope({"suggestions": {}}, version=2)
+    runner = SuggestRunner(_config(tmp_path), command=_fake_cli(tmp_path, envelope))
+    assert runner.run("steward", _BUNDLE, requested=set()).cli_version == "2"
+
+
 def test_busy_second_run_raises(tmp_path: Path) -> None:
     slow = _fake_cli(tmp_path, _envelope({"suggestions": {}}), sleep_s=30)
     runner = SuggestRunner(_config(tmp_path), command=slow)

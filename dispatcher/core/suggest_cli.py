@@ -42,7 +42,13 @@ def _stop(proc: subprocess.Popen[str]) -> None:
         proc.wait(timeout=_KILL_WAIT_S)
     except subprocess.TimeoutExpired:
         proc.kill()
-        proc.wait(timeout=_KILL_WAIT_S)
+        try:
+            proc.wait(timeout=_KILL_WAIT_S)
+        except subprocess.TimeoutExpired:
+            # D-state child: unreapable even after SIGKILL — give up
+            # rather than leak TimeoutExpired past the Suggest*Error
+            # contract; the zombie is reaped by the OS eventually.
+            pass
 
 
 class SuggestUnavailableError(Exception):
