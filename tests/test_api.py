@@ -1,5 +1,6 @@
 """Integration tests for the HTTP API over a fixtures root."""
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from conftest import (
 )
 
 from dispatcher.core.discovery import DispatcherConfig
+from dispatcher.core.suggest_cli import SuggestRunner
 from dispatcher.server.app import create_app
 
 pytestmark = pytest.mark.anyio
@@ -671,3 +673,144 @@ async def test_onboarding_endpoint(tmp_path: Path) -> None:
         missing = await client.get("/api/projects/no-such/onboarding")
         assert missing.status_code == 404
         assert missing.json()["detail"] == "unknown project: no-such"
+
+
+def _fake_cli(tmp_path: Path, envelope: dict, sleep_s: float = 0.0) -> tuple[str, ...]:
+    """A stand-in claude binary: reads stdin, prints the given envelope."""
+    script = tmp_path / "fake_claude.py"
+    script.write_text(
+        "import json, sys, time\n"
+        "_ = sys.stdin.read()\n"
+        f"time.sleep({sleep_s})\n"
+        f"print(json.dumps({envelope!r}))\n"
+    )
+    return ("python3", str(script))
+
+
+def _envelope(result_payload: dict, **extra: object) -> dict:
+    return {"type": "result", "result": json.dumps(result_payload), **extra}
+
+
+def _suggest_workspace(tmp_path: Path) -> None:
+    steward = tmp_path / "steward"
+    steward.mkdir()
+    (steward / "project.yaml").write_text(
+        "project: steward\nspec_runner:\n  max_retries: 5\nworkstreams: []\n"
+    )
+
+
+async def _token(client: httpx.AsyncClient) -> str:
+    return (await client.get("/api/actions/session")).json()["token"]
+
+
+async def test_suggest_endpoint_happy_and_errors(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    _suggest_workspace(tmp_path)
+    envelope = _envelope(
+        {"suggestions": {"claude_model": {"value": "sonnet", "rationale": "r"}}},
+        total_cost_usd=0.02,
+    )
+    config = DispatcherConfig(roots=(tmp_path,))
+    app = create_app(
+        config,
+        suggest_runner=SuggestRunner(config, command=_fake_cli(tmp_path, envelope)),
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        token = await _token(client)
+        mtime = (tmp_path / "steward" / "project.yaml").stat().st_mtime
+
+        # 403 without token
+        resp = await client.post(
+            "/api/projects/steward/spec-runner-config/suggest",
+            json={"base_mtime": mtime},
+        )
+        assert resp.status_code == 403
+
+        # 200 happy path
+        with caplog.at_level("INFO", logger="dispatcher.actions.spec_runner_config"):
+            resp = await client.post(
+                "/api/projects/steward/spec-runner-config/suggest",
+                json={"base_mtime": mtime},
+                headers={"X-Action-Token": token},
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["suggestions"]["claude_model"]["value"] == "sonnet"
+        assert body["cost_usd"] == 0.02
+        assert any(
+            "action=suggest project=steward outcome=ok" in r.message
+            and "cost=0.02" in r.message
+            for r in caplog.records
+        )
+
+        # 409 stale base_mtime
+        resp = await client.post(
+            "/api/projects/steward/spec-runner-config/suggest",
+            json={"base_mtime": mtime - 10},
+            headers={"X-Action-Token": token},
+        )
+        assert resp.status_code == 409
+        assert "config changed" in resp.json()["detail"]
+
+        # 404 unknown project
+        resp = await client.post(
+            "/api/projects/nope/spec-runner-config/suggest",
+            json={"base_mtime": 1.0},
+            headers={"X-Action-Token": token},
+        )
+        assert resp.status_code == 404
+
+        # cancel with nothing in flight: idempotent 200 false
+        resp = await client.post(
+            "/api/projects/steward/spec-runner-config/suggest/cancel",
+            headers={"X-Action-Token": token},
+        )
+        assert resp.status_code == 200 and resp.json() == {"cancelled": False}
+
+
+async def test_suggest_unavailable_is_503(tmp_path: Path) -> None:
+    _suggest_workspace(tmp_path)
+    config = DispatcherConfig(roots=(tmp_path,))
+    app = create_app(
+        config,
+        suggest_runner=SuggestRunner(config, command=(str(tmp_path / "missing"),)),
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        token = await _token(client)
+        mtime = (tmp_path / "steward" / "project.yaml").stat().st_mtime
+        resp = await client.post(
+            "/api/projects/steward/spec-runner-config/suggest",
+            json={"base_mtime": mtime},
+            headers={"X-Action-Token": token},
+        )
+        assert resp.status_code == 503
+
+
+async def test_suggest_invalid_is_422_and_audited(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    _suggest_workspace(tmp_path)
+    envelope = {"type": "result", "result": "not json"}
+    config = DispatcherConfig(roots=(tmp_path,))
+    app = create_app(
+        config,
+        suggest_runner=SuggestRunner(config, command=_fake_cli(tmp_path, envelope)),
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        token = await _token(client)
+        mtime = (tmp_path / "steward" / "project.yaml").stat().st_mtime
+        with caplog.at_level("INFO", logger="dispatcher.actions.spec_runner_config"):
+            resp = await client.post(
+                "/api/projects/steward/spec-runner-config/suggest",
+                json={"base_mtime": mtime},
+                headers={"X-Action-Token": token},
+            )
+        assert resp.status_code == 422
+        assert any(
+            "action=suggest" in r.message and "outcome=invalid" in r.message
+            for r in caplog.records
+        )
