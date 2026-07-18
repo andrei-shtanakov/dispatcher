@@ -241,6 +241,10 @@ export function activate(context: vscode.ExtensionContext): void {
       entries.map((entry) => ({
         label: path.basename(path.dirname(entry.project_yaml_path)),
         description: entry.project,
+        // full path disambiguates duplicate basenames across roots
+        // (the server documents that case; both resolve to the first
+        // root at action time, so at least make the ambiguity visible)
+        detail: entry.project_yaml_path,
         entry,
       })),
       { title: "spec-runner config: choose a project" },

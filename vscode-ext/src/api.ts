@@ -181,12 +181,13 @@ export class ApiClient {
     path: string,
     body: unknown,
     headers: Record<string, string>,
+    timeoutMs: number = ACTION_TIMEOUT_MS,
   ): Promise<Response> {
     return fetch(`${this.baseUrl}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...headers },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(ACTION_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   }
 
@@ -242,7 +243,14 @@ export class ApiClient {
     dir: string,
     action: "track" | "ignore",
   ): Promise<{ tracked: string[]; ignored: string[] }> {
-    const resp = await this.postJson("/api/sync/track", { dir, action }, {});
+    // lightweight local TOML write server-side — short GET-class timeout,
+    // not the 130s action timeout (no subprocess behind this route)
+    const resp = await this.postJson(
+      "/api/sync/track",
+      { dir, action },
+      {},
+      TIMEOUT_MS,
+    );
     if (!resp.ok) {
       await this.raise(resp, "POST /api/sync/track");
     }
