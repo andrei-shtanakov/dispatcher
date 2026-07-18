@@ -672,15 +672,23 @@ function applySuggestions(data) {
     const input = form.querySelector(`input[data-typed="${CSS.escape(field)}"]`);
     if (!input) continue;
     input.value = String(s.value);
+    input.dispatchEvent(new Event("input", {bubbles: true}));
     const label = input.closest("label");
-    if (label && !label.querySelector(".suggest-marker")) {
-      const marker = document.createElement("span");
-      marker.className = "suggest-marker";
-      marker.textContent = "(suggested)";
-      const rationale = document.createElement("span");
-      rationale.className = "suggest-rationale";
+    if (label) {
+      let marker = label.querySelector(".suggest-marker");
+      let rationale = label.querySelector(".suggest-rationale");
+      if (!marker) {
+        marker = document.createElement("span");
+        marker.className = "suggest-marker";
+        marker.textContent = "(suggested)";
+        label.append(marker);
+      }
+      if (!rationale) {
+        rationale = document.createElement("span");
+        rationale.className = "suggest-rationale";
+        label.append(rationale);
+      }
       rationale.textContent = s.rationale;
-      label.append(marker, rationale);
     }
   }
   const out = document.getElementById("suggest-dropped");
@@ -691,10 +699,15 @@ function applySuggestions(data) {
 async function cancelSuggest() {
   const cfg = currentSpecRunnerConfig;
   if (!cfg) return;
-  await fetch(
-    "/api/projects/" + encodeURIComponent(cfg.repoDir) +
-      "/spec-runner-config/suggest/cancel",
-    {method: "POST", headers: {"X-Action-Token": await ensureActionToken()}});
+  try {
+    await fetch(
+      "/api/projects/" + encodeURIComponent(cfg.repoDir) +
+        "/spec-runner-config/suggest/cancel",
+      {method: "POST", headers: {"X-Action-Token": await ensureActionToken()}});
+  } catch (err) {
+    document.getElementById("suggest-dropped").textContent =
+      "✗ cancel failed: " + err.message;
+  }
 }
 
 document.getElementById("spec-runner-config-suggest")
