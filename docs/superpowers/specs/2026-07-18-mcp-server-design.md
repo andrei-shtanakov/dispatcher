@@ -39,9 +39,13 @@
 
 ## 2. Tool surface — 14 tools, curation stated explicitly
 
-All read GETs are exposed except two, and each exception is a decision,
-not an accident (review 2 flagged the earlier 11-tool cut as
-under-justified against FR-05's literal "read-эндпоинты доступны"):
+Every read GET maps into the tool surface: 14 tools, two endpoints
+curated out as explicit decisions, and `/api/sync/hosts` needing no tool
+at all — it is a strict PROJECTION of `/api/sync`'s `SyncStatus`
+(`current_host`/`fetch_in_flight`/`hosts` are all fields of it,
+app.py:254) — a UI convenience, not data. (Review 2 flagged the earlier
+11-tool cut as under-justified against FR-05's literal "read-эндпоинты
+доступны"; the derived roadmap views are restored below.)
 
 | Tool | Backing | Notes |
 |---|---|---|
@@ -57,11 +61,11 @@ under-justified against FR-05's literal "read-эндпоинты доступн�
 | `roadmap_drift()` | `/api/roadmap/drift` | RESTORED (review 2): `build_drift`'s contract join is canonical and test-covered — an agent must not re-derive it |
 | `roadmap_phases()` | `/api/roadmap/phases` | restored, same reasoning |
 | `roadmap_blockers()` | `/api/roadmap/blockers` | restored |
-| `sync_status()` | `/api/sync` + `/api/sync/hosts` | merged: one tool returns the full `SyncStatus` (hosts and proposals are inside `report`); the hosts endpoint adds no data the status lacks. Parity caveat (review 2): this tool's parity test compares against the COMPOSITION of the two HTTP responses, not one — recorded here so the test doesn't pretend otherwise. `start_fetch=False` per §1.3 |
+| `sync_status()` | `/api/sync` | mirrors `/api/sync`'s `SyncStatus` shape 1:1 (`/api/sync/hosts` is a projection — see intro). Parity is NOT byte-literal by design (Copilot): the HTTP route runs `get(start_fetch=True)`, the tool runs `start_fetch=False`, so the fetch-lifecycle fields (`fetch_in_flight`, `last_fetch_at`, `last_fetch_error`) are the DESIGNED divergence. The parity test asserts `report` (the data payload) equal against a shared service instance, and separately pins the tool's `fetch_in_flight is False` — the no-fetch invariant |
 | `spec_runner_configs()` | `/api/spec-runner-configs` | |
 
 **Curated out (explicit decisions):**
-- `/api/spec-runner-config/{name}` (per-name): the list tool returns full
+- `/api/projects/{name}/spec-runner-config` (per-name): the list tool returns full
   entries; per-name is a trivial client-side filter with no server-side
   join — unlike drift, nothing canonical would be re-derived.
 - `/api/actions/session`: CSRF token for the write path — meaningless and
@@ -98,8 +102,8 @@ prompt surface, a hard requirement, not a nicety (review 2): what the tool
 answers, when to prefer it over siblings (e.g. `roadmap_summary` vs
 `roadmap`), parameter meanings and defaults.
 
-New dependency: `fastmcp` (same major as maestro's `fastmcp>=2.14.5`),
-pinned with a floor in pyproject.
+New dependency: `fastmcp>=2.14.5,<3` — floor AND major cap, otherwise
+"same major as maestro" is a hope, not a constraint (review 1).
 
 ### DESIGN-704: Error semantics for lookup tools
 
@@ -107,7 +111,11 @@ HTTP 404 has no MCP equivalent (review 2). The three lookup-shaped tools
 (`project`, `roadmap_item`; plus any future one) raise FastMCP's
 `ToolError` with EXACTLY the HTTP detail text (`unknown project: {name}`,
 `unknown roadmap item: {item_id}`) — the agent sees an isError result with
-the same message an HTTP client gets in `detail`. Non-lookup tools let
+the same message an HTTP client gets in `detail` — and it reaches the
+agent PRECISELY because it is `ToolError`: FastMCP's default
+`mask_error_details` masks generic exceptions but passes `ToolError`
+messages through (the lookup-error test doubles as the pin for this).
+Non-lookup tools let
 unexpected exceptions propagate as FastMCP's generic tool failure
 (collectors already degrade to warnings inside snapshots, so this path is
 rare by construction).
@@ -126,10 +134,25 @@ config exactly like `serve`, builds the services, calls
 - **Parity tests** on a real workspace fixture (the established
   `make_atp`/`make_arbiter`/... conftest builders): for each tool, the
   tool result's JSON equals the corresponding HTTP response's `.json()`
-  via `httpx.ASGITransport` against the same config — `sync_status`
-  compares against the documented two-endpoint composition; both surfaces
-  must call with equivalent parameters (defaults for the parametrized
-  ones, plus one non-default `errors(...)` case).
+  via `httpx.ASGITransport`. **Determinism (review 1): both surfaces
+  share ONE set of service instances** — `create_app` gains optional
+  keyword-only service-injection parameters (the `DispatcherApp` DI
+  precedent from the TUI slice), so `collected_at`/`report_generated_at`
+  come from the same TTL-cached objects instead of two fresh collections
+  racing the clock. Parametrized coverage beyond defaults (review 2):
+  one non-default `errors(...)`, `work_items(cross_only=True)`, and
+  `roadmap_item` both found and not-found. `sync_status` parity per its
+  §2 row (report-payload equality + `fetch_in_flight is False` pin).
+- **Serializer guard** (review 2): FastAPI serializes via
+  `jsonable_encoder`, tools via `model_dump(mode="json")` — one test per
+  response model asserts `jsonable_encoder(m) == m.model_dump(mode="json")`
+  on a populated instance (datetime fields are the sensitive spot), so
+  "parity by construction" is enforced at the serializer level too, not
+  assumed.
+- **Description completeness** (review 1): a test asserts every tool has
+  a non-empty description AND every parameter in every tool's input
+  schema carries a description — DESIGN-703's requirement enforced, not
+  prose-only.
 - **Lookup errors**: `project("no-such")` → isError with the exact detail
   text.
 - **No-fetch pin**: `sync_status` invoked through the in-memory client
@@ -184,6 +207,11 @@ robin, tool list, read-only statement). COWORK_CONTEXT: interfaces line.
 
 ## 7. Milestone
 
-Single PR series: DESIGN-701..707 together (the facade refactor and the
-MCP consumer must land atomically — a facade with one consumer is churn,
-an MCP server without the facade is the duplication review 1 vetoed).
+Two PRs (review 2 — the atomic version was too large for the
+Copilot-review/human-merge flow):
+
+1. **Prep PR**: DESIGN-701 (facade refactor — pure move, behavior frozen
+   by the existing suite) + DESIGN-702 (`ModelUsageRow`, non-breaking).
+   The facade lands with HTTP as its first real consumer, so this is
+   staging, not churn.
+2. **MCP PR**: DESIGN-703..707 — the server, CLI, tests, docs.
