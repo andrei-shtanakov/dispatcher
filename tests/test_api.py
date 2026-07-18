@@ -743,6 +743,7 @@ async def test_suggest_endpoint_happy_and_errors(
         body = resp.json()
         assert body["suggestions"]["claude_model"]["value"] == "sonnet"
         assert body["cost_usd"] == 0.02
+        assert "cli_version" not in body  # response_model_exclude pin
         assert any(
             "action=suggest project=steward outcome=ok" in r.message
             and "cost=0.02" in r.message

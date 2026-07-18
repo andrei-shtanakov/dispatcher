@@ -365,8 +365,6 @@ def create_app(
         except SuggestUnavailableError as err:
             _suggest_audit.info("action=suggest project=%s outcome=unavailable", name)
             raise HTTPException(status_code=503, detail=str(err)) from err
-        except SuggestRunnerBusyError as err:
-            raise HTTPException(status_code=409, detail=str(err)) from err
         except SuggestTimeoutError as err:
             _suggest_audit.info("action=suggest project=%s outcome=timeout", name)
             raise HTTPException(status_code=409, detail=str(err)) from err
@@ -376,6 +374,9 @@ def create_app(
         except SuggestInvalidError as err:
             _suggest_audit.info("action=suggest project=%s outcome=invalid", name)
             raise HTTPException(status_code=422, detail=str(err)) from err
+        except SuggestRunnerBusyError as err:
+            _suggest_audit.info("action=suggest project=%s outcome=busy", name)
+            raise HTTPException(status_code=409, detail=str(err)) from err
         _suggest_audit.info(
             "action=suggest project=%s outcome=ok duration=%.1fs fields=%s "
             "dropped=%s cost=%s cli=%s",

@@ -41,7 +41,7 @@ propose spec-runner config changes via PR (github-checker). Settings:
 ## AI suggestions
 
 Dispatcher can propose spec-runner configuration changes using Claude.
-The "Suggest config" button in the web dashboard prefills config values
+The "Suggest values" button in the web dashboard prefills config values
 based on project context and peer distributions; you review and edit the
 proposal before it becomes a PR.
 
@@ -61,7 +61,7 @@ holds no secrets.
 
 **Availability:** The dashboard probes `GET
 /api/spec-runner-config/suggest-availability` when the config panel loads;
-if the `claude` CLI is not available, the "Suggest config" button is
+if the `claude` CLI is not available, the "Suggest values" button is
 disabled with a tooltip explaining why. If the probe itself fails (e.g. a
 network hiccup), the button stays enabled — a click-time 503 still surfaces
 an inline error, so the feature degrades honestly either way.
