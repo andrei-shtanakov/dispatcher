@@ -671,6 +671,12 @@ function resetSpecRunnerConfigPreview() {
   btn.disabled = false;
   diff.hidden = true;
   diff.innerHTML = "";
+  // the overlay edit-state lock must survive a preview reset — without
+  // this, editing a typed field re-enables Confirm past invalid overlay
+  // JSON (Copilot, PR #63)
+  if (typeof overlayUpdateSubmitLock === "function") {
+    overlayUpdateSubmitLock();
+  }
 }
 
 function renderSpecRunnerConfigDiff(typed) {
