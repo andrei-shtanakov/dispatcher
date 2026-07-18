@@ -69,11 +69,15 @@ def build_server(
     @mcp.tool
     def errors(
         limit: Annotated[
-            int, Field(description="Max events returned (newest first)")
+            int,
+            Field(ge=0, description="Max events returned (newest first)"),
         ] = 100,
         days: Annotated[
             int | None,
-            Field(description="Only events from the last N days; None = all"),
+            Field(
+                ge=1,
+                description="Only events from the last N days; None = all",
+            ),
         ] = None,
         project: Annotated[
             str | None,
@@ -109,7 +113,7 @@ def build_server(
             bool,
             Field(description="Only items spanning more than one project"),
         ] = False,
-        limit: Annotated[int, Field(description="Max items returned")] = 100,
+        limit: Annotated[int, Field(ge=0, description="Max items returned")] = 100,
     ) -> dict[str, Any]:
         """Tasks correlated across projects by shared task id — the
         read-side view of Maestro→spec-runner/arbiter handoffs."""

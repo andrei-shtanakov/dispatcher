@@ -16,9 +16,11 @@ from pathlib import Path
 with warnings.catch_warnings():
     # NOTE: relies on authlib.deprecate staying importable (fine under the
     # fastmcp<3 cap); a restructure would fail loudly here, not silently
-    import authlib.deprecate  # noqa: F401  (its simplefilter lands here)
+    import authlib.deprecate  # (its simplefilter lands here)
 
-    warnings.simplefilter("ignore")
+    # scoped to the one known warning — a broad ignore would hide
+    # unrelated deprecations raised during fastmcp's import
+    warnings.simplefilter("ignore", authlib.deprecate.AuthlibDeprecationWarning)
     import fastmcp  # noqa: F401
 
 import pytest

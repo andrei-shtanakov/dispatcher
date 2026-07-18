@@ -8,6 +8,7 @@ import pytest
 from conftest import make_arbiter, make_atp, make_maestro_home, make_spec_runner
 from fastapi.encoders import jsonable_encoder
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
 from fastmcp.client.client import CallToolResult
 
 from dispatcher.core.discovery import DispatcherConfig
@@ -191,9 +192,19 @@ async def test_sync_status_parity_report_payload(tmp_path: Path) -> None:
     assert _tool_json(tool_result)["report"] == direct.model_dump(mode="json")["report"]
 
 
-async def test_lookup_errors_carry_http_detail_text(tmp_path: Path) -> None:
-    from fastmcp.exceptions import ToolError
+async def test_numeric_constraints_mirror_http(tmp_path: Path) -> None:
+    """HTTP has Query(ge=0/ge=1); the tools carry the same Field bounds —
+    a negative limit is a validation error, never a negative slice."""
+    async with Client(build_server(_config(tmp_path))) as client:
+        with pytest.raises(ToolError):
+            await client.call_tool("errors", {"limit": -1})
+        with pytest.raises(ToolError):
+            await client.call_tool("errors", {"days": 0})
+        with pytest.raises(ToolError):
+            await client.call_tool("work_items", {"limit": -1})
 
+
+async def test_lookup_errors_carry_http_detail_text(tmp_path: Path) -> None:
     async with Client(build_server(_config(tmp_path))) as client:
         with pytest.raises(ToolError, match="unknown project: nope"):
             await client.call_tool("project", {"name": "nope"})
