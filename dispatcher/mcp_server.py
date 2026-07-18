@@ -29,8 +29,11 @@ def build_server(
     sync_service: SyncService | None = None,
 ) -> FastMCP:
     """The dispatcher MCP server; service injection mirrors create_app."""
-    cache = snapshot_service or SnapshotService(config)
-    sync_cache = sync_service or SyncService(config)
+    # explicit is-None: mirrors create_app's DI contract exactly
+    cache = (
+        snapshot_service if snapshot_service is not None else SnapshotService(config)
+    )
+    sync_cache = sync_service if sync_service is not None else SyncService(config)
     roadmap_dirs = config.roadmap_dirs or default_roadmap_dirs(config.roots)
     mcp: FastMCP = FastMCP(
         "dispatcher",
