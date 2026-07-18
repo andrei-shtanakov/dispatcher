@@ -2,8 +2,9 @@
 
 > **Context (2026-07-18):** последний UI-хвост конфиг-редактора: overlay
 > `extra_executor_config` сегодня preserve-only (web пинит `null`, TUI
-> показывает read-only). Бэкенд ПОЛНОСТЬЮ готов с PR #40: tri-state
-> `null|{}|dict` в `ConfigCandidate`, `validate_extra_executor_config`
+> показывает read-only). Бэкенд ПОЛНОСТЬЮ готов с PR #40: tri-state в
+> `ConfigCandidate` — `null` (preserve) | `{}` (intentional clear) |
+> непустой dict (replace), `validate_extra_executor_config`
 > против pinned-схемы `contracts/executor-config/v0-provisional/schema.json`,
 > preserve/clear/replace-тесты, propose-pr. Фича — чисто клиентская
 > (index.html); серверных правок НОЛЬ. Numbering: DESIGN-1001+. Одно
@@ -64,8 +65,10 @@
 
 ## 3. DESIGN-1002: сборка запроса
 
-Новый хелпер `readSpecRunnerConfigOverlay()` возвращает `null | {} | dict`
-по состоянию секции; результат подставляется в body POST
+Новый хелпер `readSpecRunnerConfigOverlay()` возвращает по состоянию
+секции: `null` (preserve) | `{}` (clear) | непустой dict (replace).
+Ввод `{}` руками в edit-режиме эквивалентен clear — это консистентно с
+бэкендом и НЕ считается отдельным состоянием; результат подставляется в body POST
 `update-spec-runner-config` вместо сегодняшнего хардкода
 `extra_executor_config: null`. Серверные 422 (schema-перечень от
 `validate_extra_executor_config`) рендерятся существующим error-путём
