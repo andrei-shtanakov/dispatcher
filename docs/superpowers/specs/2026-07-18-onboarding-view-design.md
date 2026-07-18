@@ -3,9 +3,10 @@
 > **Context (2026-07-18):** FR-04 («выбор проекта → описание, позиция в
 > roadmap и предстоящие задачи одним экраном», Should, traces G-06/J-04,
 > persona P-02 — новичок на онбординге). Последний открытый Should-item
-> брифа. Numbering: DESIGN-801+. Два пре-спековых ревью и разбор
-> `../_cowork_output/dispatcher-onboarding-feature-handoff-2026-07-18.md`
-> folded ниже; все утверждения разбора проверены против кода.
+> брифа. Numbering: DESIGN-801+. Folded ниже: два пре-спековых ревью и
+> внешний имплементационный разбор (dev-workspace-заметка
+> `dispatcher-onboarding-feature-handoff-2026-07-18.md`, вне этого
+> репо); все утверждения разбора проверены против кода.
 
 ## 1. Principles
 
@@ -237,7 +238,7 @@ README: секция API — `/api/projects/{name}/onboarding`; секция MCP
 | Review 1: dep в drift блокирует | §2 S-2 |
 | Review 2 §2: `actionable`, не `ready` | §2 naming |
 | Review 2 §3: .rst/plain README, README-first как названный компромисс, деградация, word-boundary trim, `Literal` source | DESIGN-801 |
-| Review 2 §4: порядок пинуется, ready-first — продуктовое решение | §2 |
+| Review 2 §4: порядок пинуется, actionable-first — продуктовое решение | §2 |
 | Review 2 §5: отдельный тул + анти-overlap формула в описании | DESIGN-806 |
 | Review 2 minors: warnings dedup, source-winner тест, S-4 одной строкой | DESIGN-802, DESIGN-807, §2 S-4 |
 
