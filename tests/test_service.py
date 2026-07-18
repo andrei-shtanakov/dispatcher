@@ -84,3 +84,16 @@ def test_web_days_default_matches_core() -> None:
     errors_limit_match = re.search(r"/api/errors\?limit=(\d+)", html_text)
     assert errors_limit_match is not None
     assert int(errors_limit_match.group(1)) == ERRORS_LIMIT
+
+
+def test_collect_enriches_descriptions(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    arbiter_path = tmp_path / "arbiter"
+    (arbiter_path / "README.md").write_text("Arbiter routes agents.\n")
+    svc = SnapshotService(config)
+    snapshots, _ = svc.get()
+    arb = next(s for s in snapshots if s.name == "arbiter")
+    assert arb.description == "Arbiter routes agents."
+    assert arb.description_source == "readme"
+    undetected = [s for s in snapshots if not s.detected]
+    assert all(s.description is None for s in undetected)
