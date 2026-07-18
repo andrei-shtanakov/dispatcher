@@ -112,8 +112,9 @@ def create_app(
 ) -> FastAPI:
     """Build the API app for the given configuration."""
     app = FastAPI(title="Dispatcher", version="0.1.0")
-    cache = snapshot_service or SnapshotService(config)
-    sync_cache = sync_service or SyncService(config)
+    # explicit is-None: a falsey mock/service must not be silently replaced
+    cache = snapshot_service if snapshot_service is not None else SnapshotService(config)
+    sync_cache = sync_service if sync_service is not None else SyncService(config)
     actions = ActionRunner(config)
     spec_runner_config_actions = SpecRunnerConfigActionRunner(config)
     # CSRF-токен на процесс: SOP не даст чужой странице его прочитать,
