@@ -67,8 +67,8 @@ median M% · LAGGING · CONTRACT DRIFT` + phase-строки), next items
 - **Рендер — `TextDocumentContentProvider` со схемой
   `dispatcher-onboarding:`** (ревью 2 §3), НЕ untitled-документ:
   untitled приходит «грязным» (Save?-промпт на закрытии, новый буфер на
-  каждый вызов) — editable-паттерн config-editor-а не подходит
-  read-only экрану. Провайдер отдаёт последний отрендеренный markdown
+  каждый вызов — известный недостаток untitled-подхода) —
+  editable-паттерн config-editor-а не подходит read-only экрану. Провайдер отдаёт последний отрендеренный markdown
   из кэша по URI `dispatcher-onboarding:/<name>.md`; команда обновляет
   кэш, дёргает `onDidChange`, затем
   `vscode.workspace.openTextDocument(uri)` →
@@ -110,7 +110,7 @@ median M% · LAGGING · CONTRACT DRIFT` + phase-строки), next items
 |---|---|
 | Ревью 2 §1: мир A подтверждён кодом, анти-третий-источник-истины | §1 (named invariant + анти-пересортировка пин) |
 | Ревью 2 §2 + ревью 1 §4: двухслойный эскейп, точный алгоритм, матрица | DESIGN-1101, DESIGN-1103 |
-| Ревью 2 §3: untitled-папироз назван, ContentProvider выбран | DESIGN-1102 |
+| Ревью 2 §3: недостаток untitled-подхода назван, ContentProvider выбран | DESIGN-1102 |
 | Ревью 2 §4: required/optional-таблица, тотальность, кросс-матрица | DESIGN-1101, DESIGN-1103 |
 | Ревью 1 §1: contextValue + menu-rule | DESIGN-1102 |
 | Ревью 1 §2: QuickPick от свежего overview | DESIGN-1102 |
