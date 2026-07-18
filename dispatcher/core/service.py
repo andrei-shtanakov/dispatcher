@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from dispatcher.core.collectors import COLLECTORS, CollectContext
+from dispatcher.core.descriptions import extract_project_description
 from dispatcher.core.discovery import DispatcherConfig, discover
 from dispatcher.core.models import ErrorEvent, ProjectSnapshot
 
@@ -92,4 +93,11 @@ class SnapshotService:
             for c in COLLECTORS
             if c.name not in detected
         )
+        # DESIGN-801: one post-collect enrichment instead of five
+        # per-collector implementations; undetected rows (path="") stay None.
+        for snap in snapshots:
+            if snap.detected and snap.path:
+                desc, source = extract_project_description(Path(snap.path))
+                snap.description = desc
+                snap.description_source = source
         return snapshots, warnings

@@ -1,15 +1,61 @@
 """Integration tests for the HTTP API over a fixtures root."""
 
+import sqlite3
 from pathlib import Path
 
 import httpx
 import pytest
-from conftest import make_arbiter, make_atp, make_maestro_home, make_spec_runner
+from conftest import (
+    make_arbiter,
+    make_atp,
+    make_maestro,
+    make_maestro_home,
+    make_spec_runner,
+)
 
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.server.app import create_app
 
 pytestmark = pytest.mark.anyio
+
+_ONBOARDING_ROADMAP = """
+version: 1
+roadmap: onboarding-api-fixture
+title: Fixture
+items:
+  - id: RD-OB-DONE
+    title: Done dep
+    phase: "1"
+    owner_project: arbiter
+    evidence_rules:
+      - rule: project_detected
+        kind: implementation
+        project: arbiter
+      - rule: work_item_chain
+        kind: verification
+        work_item_id: T-9
+        min_links: 2
+  - id: RD-OB-NEXT
+    title: Actionable next
+    phase: "2"
+    owner_project: arbiter
+    depends_on: [RD-OB-DONE]
+    evidence_rules:
+      - rule: file_exists
+        kind: implementation
+        project: arbiter
+        path: contracts/nope.json
+  - id: RD-OB-BLOCKED
+    title: Blocked by ghost
+    phase: "2"
+    owner_project: arbiter
+    depends_on: [RD-OB-GHOST]
+    evidence_rules:
+      - rule: file_exists
+        kind: implementation
+        project: arbiter
+        path: contracts/also-nope.json
+"""
 
 
 def _client(tmp_path: Path) -> httpx.AsyncClient:
@@ -579,3 +625,47 @@ async def test_spec_runner_configs_list_reaches_non_overview_projects(
     assert entry["typed"]["max_retries"]["value"] == 5
     assert entry["typed"]["max_retries"]["explicit"] is True
     assert entry["base_mtime"] > 0
+
+
+async def test_onboarding_endpoint(tmp_path: Path) -> None:
+    make_arbiter(tmp_path)
+    (tmp_path / "arbiter" / "README.md").write_text("Arbiter routes agents.\n")
+    # RD-OB-DONE's work_item_chain rule needs min_links=2 for T-9; arbiter's
+    # own fixture only contributes one (its `decisions` row). Add a second
+    # link via Maestro's task DB, same as test_roadmap_endpoint's identical
+    # RD-A rule in tests/test_roadmap.py.
+    make_maestro(tmp_path)
+    maestro_db = make_maestro_home(tmp_path)
+    with sqlite3.connect(maestro_db) as conn:
+        conn.execute(
+            "INSERT INTO tasks VALUES ('T-9', 'Route me', 'done', 'auto', "
+            "'2026-07-02T09:58:00', '2026-07-02T09:59:00', "
+            "'2026-07-02T10:06:00')"
+        )
+    vault = tmp_path / "prograph-vault" / "authored" / "roadmaps"
+    vault.mkdir(parents=True)
+    (vault / "fixture.yaml").write_text(_ONBOARDING_ROADMAP)
+    app = create_app(DispatcherConfig(roots=(tmp_path,), maestro_db=maestro_db))
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        roadmap = (await client.get("/api/roadmap")).json()
+        statuses = {i["id"]: i["computed_status"] for i in roadmap["items"]}
+        assert statuses["RD-OB-DONE"] == "verified"  # fixture precondition
+
+        resp = await client.get("/api/projects/arbiter/onboarding")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["project"]["description"] == "Arbiter routes agents."
+        assert body["project"]["description_source"] == "readme"
+        pos = body["roadmap_position"]
+        assert pos["summary"]["project"] == "arbiter"
+        ids = [n["id"] for n in body["next_items"]]
+        assert ids == ["RD-OB-NEXT", "RD-OB-BLOCKED"]  # actionable first
+        by_id = {n["id"]: n for n in body["next_items"]}
+        assert by_id["RD-OB-NEXT"]["actionable"] is True
+        assert by_id["RD-OB-BLOCKED"]["blocked_by"] == ["RD-OB-GHOST"]
+        assert any("unknown dependency id" in w for w in body["warnings"])
+
+        missing = await client.get("/api/projects/no-such/onboarding")
+        assert missing.status_code == 404
+        assert missing.json()["detail"] == "unknown project: no-such"

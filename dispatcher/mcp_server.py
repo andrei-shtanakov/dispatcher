@@ -184,4 +184,24 @@ def build_server(
         the dispatcher UI's PR flow, never through MCP."""
         return [c.model_dump(mode="json") for c in read_api.spec_runner_configs(config)]
 
+    @mcp.tool
+    def onboarding(
+        project: Annotated[
+            str,
+            Field(description="Collector name, e.g. 'Maestro' or 'arbiter'"),
+        ],
+    ) -> dict[str, Any]:
+        """One-screen onboarding join for ONE project: description,
+        roadmap position (readiness vs median, own-phase cuts), next_items
+        with actionable/blocked_by verdicts, and live pending/in_progress
+        tasks. For 'what should I do next in project X' prefer THIS over
+        combining project() + roadmap_summary(). Errors with
+        'unknown project: <name>' if the name is not monitored."""
+        try:
+            return read_api.onboarding(cache, roadmap_dirs, project).model_dump(
+                mode="json"
+            )
+        except read_api.ReadLookupError as err:
+            raise ToolError(str(err)) from err
+
     return mcp

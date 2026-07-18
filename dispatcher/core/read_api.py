@@ -21,6 +21,7 @@ from dispatcher.core.models import (
     OverviewResponse,
     ProjectSnapshot,
 )
+from dispatcher.core.onboarding import OnboardingView, build_onboarding
 from dispatcher.core.roadmap import (
     BlockersResponse,
     DriftResponse,
@@ -184,6 +185,22 @@ def roadmap_item(
         if item.id == item_id:
             return item
     raise ReadLookupError(f"unknown roadmap item: {item_id}")
+
+
+def onboarding(
+    cache: SnapshotService, roadmap_dirs: tuple[Path, ...], name: str
+) -> OnboardingView:
+    """FR-04 one-screen join: description, roadmap position, next items."""
+    snapshots, _ = cache.get()
+    snap = next((s for s in snapshots if s.name == name), None)
+    if snap is None:
+        raise ReadLookupError(f"unknown project: {name}")
+    projects = {s.name: Path(s.path) for s in snapshots if s.detected and s.path}
+    # One checker run feeds the roadmap projection AND the summary join,
+    # same as roadmap_summary (ADR-R5).
+    contracts_state = check_contracts(projects)
+    roadmap_state = build_roadmap(roadmap_dirs, snapshots, contracts=contracts_state)
+    return build_onboarding(snap, roadmap_state, contracts_state)
 
 
 def sync_status(sync_cache: SyncService, *, start_fetch: bool = True) -> SyncStatus:

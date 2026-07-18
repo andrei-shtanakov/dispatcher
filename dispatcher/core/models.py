@@ -7,13 +7,16 @@ These pydantic schemas are the public contract of the dispatcher API
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 
 def _now() -> datetime:
     return datetime.now(tz=UTC)
+
+
+DescriptionSource = Literal["readme", "pyproject", "package.json"]
 
 
 class ModelInUse(BaseModel):
@@ -104,6 +107,10 @@ class ProjectSnapshot(BaseModel):
     detected: bool = True
     collected_at: datetime = Field(default_factory=_now)
     freshness: str | None = None  # ISO timestamp of newest source mtime
+    # DESIGN-801: onboarding description, filled post-collect by
+    # SnapshotService — collectors never set it.
+    description: str | None = None
+    description_source: DescriptionSource | None = None
     schema_versions: list[SchemaVersionCheck] = Field(default_factory=list)
     models: list[ModelInUse] = Field(default_factory=list)
     tasks: list[TaskInfo] = Field(default_factory=list)
