@@ -59,6 +59,13 @@ def _config(tmp_path: Path) -> DispatcherConfig:
     vault = tmp_path / "prograph-vault" / "authored" / "roadmaps"
     vault.mkdir(parents=True)
     (vault / "fixture.yaml").write_text(_ROADMAP_FIXTURE)
+    # one project.yaml so spec_runner_configs is POPULATED — otherwise its
+    # parity row is [] == [] and its serializer-guard entry is vacuous
+    steward = tmp_path / "steward"
+    steward.mkdir()
+    (steward / "project.yaml").write_text(
+        "project: steward\nspec_runner:\n  max_retries: 5\nworkstreams: []\n"
+    )
     return DispatcherConfig(roots=(tmp_path,), maestro_db=db)
 
 
