@@ -4,4 +4,10 @@ node_modules/
 esbuild.mjs
 tsconfig.json
 .gitignore
-*.map
+package-lock.json
+**/*.map
+*.vsix
+# stray spec-runner session artifacts must never ship (nor must editor cfg)
+spec/
+logs/
+.vscode/
