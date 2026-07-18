@@ -9,7 +9,6 @@ IS the HTTP detail text (the API maps it to 404, MCP to ToolError).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from dispatcher.core.contracts import check_contracts
 from dispatcher.core.correlation import WorkItemsResponse, build_work_items
@@ -17,6 +16,7 @@ from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.models import (
     ContractStatus,
     ErrorEvent,
+    ModelUsageRow,
     OverviewEntry,
     OverviewResponse,
     ProjectSnapshot,
@@ -98,10 +98,14 @@ def errors(
     return merged[:limit]
 
 
-def models(cache: SnapshotService) -> list[dict[str, Any]]:
+def models(cache: SnapshotService) -> list[ModelUsageRow]:
     """Every model referenced by any project's configs/catalogs."""
     snapshots, _ = cache.get()
-    return [{"project": s.name, **m.model_dump()} for s in snapshots for m in s.models]
+    return [
+        ModelUsageRow(project=s.name, **m.model_dump())
+        for s in snapshots
+        for m in s.models
+    ]
 
 
 def contracts(cache: SnapshotService) -> list[ContractStatus]:

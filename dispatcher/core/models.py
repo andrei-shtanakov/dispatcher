@@ -27,6 +27,12 @@ class ModelInUse(BaseModel):
     source: str
 
 
+class ModelUsageRow(ModelInUse):
+    """`ModelInUse` + its owning project — the /api/models row shape."""
+
+    project: str
+
+
 class TaskInfo(BaseModel):
     """A task/decision/schedule row from a project's state store."""
 

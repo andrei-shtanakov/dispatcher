@@ -23,6 +23,7 @@ from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.models import (
     ContractStatus,
     ErrorEvent,
+    ModelUsageRow,
     OverviewResponse,
     ProjectSnapshot,
 )
@@ -141,8 +142,8 @@ def create_app(
             cache, limit=limit, days=days, project=project, service=service
         )
 
-    @app.get("/api/models")
-    def models() -> list[dict[str, Any]]:
+    @app.get("/api/models", response_model=list[ModelUsageRow])
+    def models() -> list[ModelUsageRow]:
         return read_api.models(cache)
 
     @app.get("/api/contracts", response_model=list[ContractStatus])

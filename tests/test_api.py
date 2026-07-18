@@ -121,6 +121,18 @@ async def test_models_and_contracts(tmp_path: Path) -> None:
         models = (await client.get("/api/models")).json()
         contracts = (await client.get("/api/contracts")).json()
     assert any(m["project"] == "arbiter" and m["role"] == "routable" for m in models)
+    # DESIGN-702: the endpoint now carries a response model; the JSON
+    # shape is unchanged (same keys as the old ad-hoc dict)
+    row = models[0]
+    assert set(row) == {
+        "project",
+        "model_id",
+        "vendor",
+        "harness",
+        "role",
+        "status",
+        "source",
+    }
     catalog = next(c for c in contracts if c["name"] == "agents-catalog")
     assert catalog["in_sync"] is False  # fixture vendored copy differs
 
