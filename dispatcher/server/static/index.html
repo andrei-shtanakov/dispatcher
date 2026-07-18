@@ -7,10 +7,11 @@
 <style>
   :root { color-scheme: light dark;
     --bg: #f6f7f9; --card: #fff; --ink: #1c2733; --dim: #68788c;
-    --line: #e3e8ee; --bad: #c0392b; --ok: #1e8e5a; --warn: #b26a00; }
+    --line: #e3e8ee; --bad: #c0392b; --ok: #1e8e5a; --warn: #b26a00;
+    --accent: #2b6cb0; }
   @media (prefers-color-scheme: dark) {
     :root { --bg: #12161b; --card: #1b222b; --ink: #e7edf3;
-      --dim: #8fa0b3; --line: #2a3441; } }
+      --dim: #8fa0b3; --line: #2a3441; --accent: #6fa8dc; } }
   * { box-sizing: border-box; margin: 0; }
   body { background: var(--bg); color: var(--ink);
     font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; padding: 24px; }
@@ -87,6 +88,8 @@
     border-radius: 10px; padding: 10px 14px; margin-bottom: 10px;
     font-size: 13px; }
   .kbrow td:first-child { font-weight: 600; }
+  .suggest-marker { color: var(--accent); font-size: 11px; margin-left: 4px; }
+  .suggest-rationale { color: var(--dim); font-size: 11px; display: block; }
 </style>
 </head>
 <body>
@@ -113,7 +116,10 @@
     <form id="spec-runner-config-form"></form>
     <pre id="spec-runner-config-diff" hidden></pre>
     <button id="spec-runner-config-submit" type="button" disabled>Preview diff</button>
+    <button id="spec-runner-config-suggest" type="button" disabled>Suggest values</button>
+    <button id="spec-runner-config-suggest-cancel" type="button" hidden>Cancel</button>
     <span id="spec-runner-config-result"></span>
+    <div id="suggest-dropped" class="fresh"></div>
   </div>
 </section>
 
@@ -450,7 +456,9 @@ function renderSpecRunnerConfigForm(cfg) {
       <input data-typed="${esc(key)}" value="${esc(String(field.value))}">
     </label>`).join("");
   document.getElementById("spec-runner-config-submit").disabled = false;
+  document.getElementById("spec-runner-config-suggest").disabled = false;
   document.getElementById("spec-runner-config-result").textContent = "";
+  document.getElementById("suggest-dropped").textContent = "";
   resetSpecRunnerConfigPreview();
 }
 
@@ -616,6 +624,83 @@ document.getElementById("spec-runner-config-form").addEventListener(
     resetSpecRunnerConfigPreview();
   }
 });
+
+let suggestTimer = null;
+
+function suggestSetBusy(busy, elapsed) {
+  const btn = document.getElementById("spec-runner-config-suggest");
+  const cancel = document.getElementById("spec-runner-config-suggest-cancel");
+  btn.disabled = busy;
+  btn.textContent = busy ? `Suggesting… ${elapsed}s` : "Suggest values";
+  cancel.hidden = !busy;
+}
+
+async function suggestValues() {
+  const cfg = currentSpecRunnerConfig;
+  if (!cfg) return;
+  const out = document.getElementById("suggest-dropped");
+  out.textContent = "";
+  let elapsed = 0;
+  suggestSetBusy(true, 0);
+  suggestTimer = setInterval(() => suggestSetBusy(true, ++elapsed), 1000);
+  try {
+    const resp = await fetch(
+      "/api/projects/" + encodeURIComponent(cfg.repoDir) +
+        "/spec-runner-config/suggest",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Action-Token": await ensureActionToken(),
+        },
+        body: JSON.stringify({base_mtime: cfg.base_mtime}),
+      });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail ?? `HTTP ${resp.status}`);
+    applySuggestions(data);
+  } catch (err) {
+    out.textContent = "✗ " + err.message;
+  } finally {
+    clearInterval(suggestTimer);
+    suggestSetBusy(false, 0);
+  }
+}
+
+function applySuggestions(data) {
+  const form = document.getElementById("spec-runner-config-form");
+  for (const [field, s] of Object.entries(data.suggestions)) {
+    const input = form.querySelector(`input[data-typed="${CSS.escape(field)}"]`);
+    if (!input) continue;
+    input.value = String(s.value);
+    const label = input.closest("label");
+    if (label && !label.querySelector(".suggest-marker")) {
+      const marker = document.createElement("span");
+      marker.className = "suggest-marker";
+      marker.textContent = "(suggested)";
+      const rationale = document.createElement("span");
+      rationale.className = "suggest-rationale";
+      rationale.textContent = s.rationale;
+      label.append(marker, rationale);
+    }
+  }
+  const out = document.getElementById("suggest-dropped");
+  out.textContent = data.dropped.length
+    ? `${data.dropped.length} dropped: ${data.dropped.join(", ")}` : "";
+}
+
+async function cancelSuggest() {
+  const cfg = currentSpecRunnerConfig;
+  if (!cfg) return;
+  await fetch(
+    "/api/projects/" + encodeURIComponent(cfg.repoDir) +
+      "/spec-runner-config/suggest/cancel",
+    {method: "POST", headers: {"X-Action-Token": await ensureActionToken()}});
+}
+
+document.getElementById("spec-runner-config-suggest")
+  .addEventListener("click", suggestValues);
+document.getElementById("spec-runner-config-suggest-cancel")
+  .addEventListener("click", cancelSuggest);
 
 refresh();
 setInterval(refresh, 10000);

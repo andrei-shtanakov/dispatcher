@@ -197,6 +197,10 @@ async def test_index_served(tmp_path: Path) -> None:
     # Regression guard: cards use data-name + a delegated listener; inline
     # onclick would be XSS-prone (project names reach a JS-string context).
     assert "data-name=" in resp.text
+    assert "spec-runner-config-suggest" in resp.text
+    assert "spec-runner-config-suggest-cancel" in resp.text
+    assert "suggest-marker" in resp.text
+    assert "suggest-dropped" in resp.text
     assert "onclick=" not in resp.text
     # Roadmap table carries Contract + Freshness columns; empty row spans all 8
     assert "<th>Contract</th>" in resp.text
