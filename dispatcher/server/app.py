@@ -113,7 +113,9 @@ def create_app(
     """Build the API app for the given configuration."""
     app = FastAPI(title="Dispatcher", version="0.1.0")
     # explicit is-None: a falsey mock/service must not be silently replaced
-    cache = snapshot_service if snapshot_service is not None else SnapshotService(config)
+    cache = (
+        snapshot_service if snapshot_service is not None else SnapshotService(config)
+    )
     sync_cache = sync_service if sync_service is not None else SyncService(config)
     actions = ActionRunner(config)
     spec_runner_config_actions = SpecRunnerConfigActionRunner(config)
