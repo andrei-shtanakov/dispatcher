@@ -34,12 +34,20 @@ EXPECTED_TOOLS = {
     "roadmap_blockers",
     "sync_status",
     "spec_runner_configs",
+    "onboarding",
 }
 
 # A minimal roadmap item so the fixture workspace's /api/roadmap is
 # non-empty: without it test_roadmap_item_parity_found would always hit
 # its skip branch and never exercise the found-id path (silently gutting
 # the test). Any evidence-free item is fine — parity only needs a real id.
+#
+# RD-MCP-DONE/NEXT/BLOCKED exercise the onboarding tool (DESIGN-806): a
+# dep resolved via `project_detected` ALONE reaches computed_status
+# "implemented" (in DONE_STATUSES) without any work_item_chain/maestro
+# plumbing — the simpler shape found while implementing Task 3's API
+# test. RD-MCP-NEXT becomes actionable, RD-MCP-BLOCKED stays blocked by
+# a ghost id, so the fixture exercises both next_items verdicts.
 _ROADMAP_FIXTURE = """
 version: 1
 roadmap: mcp-parity-fixture
@@ -49,6 +57,34 @@ items:
     title: Minimal item for parity coverage
     phase: "1"
     evidence_rules: []
+  - id: RD-MCP-DONE
+    title: Done dep
+    phase: "1"
+    owner_project: arbiter
+    evidence_rules:
+      - rule: project_detected
+        kind: implementation
+        project: arbiter
+  - id: RD-MCP-NEXT
+    title: Actionable next
+    phase: "2"
+    owner_project: arbiter
+    depends_on: [RD-MCP-DONE]
+    evidence_rules:
+      - rule: file_exists
+        kind: implementation
+        project: arbiter
+        path: contracts/nope.json
+  - id: RD-MCP-BLOCKED
+    title: Blocked by ghost
+    phase: "2"
+    owner_project: arbiter
+    depends_on: [RD-MCP-GHOST]
+    evidence_rules:
+      - rule: file_exists
+        kind: implementation
+        project: arbiter
+        path: contracts/also-nope.json
 """
 
 
@@ -126,6 +162,7 @@ PARITY: list[tuple[str, dict, str]] = [
     ("roadmap_phases", {}, "/api/roadmap/phases"),
     ("roadmap_blockers", {}, "/api/roadmap/blockers"),
     ("spec_runner_configs", {}, "/api/spec-runner-configs"),
+    ("onboarding", {"project": "arbiter"}, "/api/projects/arbiter/onboarding"),
 ]
 
 
@@ -144,7 +181,18 @@ async def test_tool_json_equals_http_json(tmp_path: Path) -> None:
         for tool_name, tool_args, http_path in PARITY:
             tool_result = await mcp_client.call_tool(tool_name, tool_args)
             http_json = (await http_client.get(http_path)).json()
-            assert _tool_json(tool_result) == http_json, (tool_name, http_path)
+            tool_json = _tool_json(tool_result)
+            assert tool_json == http_json, (tool_name, http_path)
+            if tool_name == "roadmap":
+                # fixture precondition: the dep resolves via
+                # project_detected ALONE, landing on "implemented" (not
+                # "verified") — no work_item_chain/maestro plumbing here.
+                statuses = {i["id"]: i["computed_status"] for i in tool_json["items"]}
+                assert statuses["RD-MCP-DONE"] == "implemented"
+            if tool_name == "onboarding":
+                # fixture must exercise both verdicts, not compare empty lists
+                flags = {n["actionable"] for n in tool_json["next_items"]}
+                assert flags == {True, False}
 
 
 async def test_roadmap_item_parity_found(tmp_path: Path) -> None:
@@ -210,6 +258,8 @@ async def test_lookup_errors_carry_http_detail_text(tmp_path: Path) -> None:
             await client.call_tool("project", {"name": "nope"})
         with pytest.raises(ToolError, match="unknown roadmap item: RD-404"):
             await client.call_tool("roadmap_item", {"item_id": "RD-404"})
+        with pytest.raises(ToolError, match="unknown project: no-such"):
+            await client.call_tool("onboarding", {"project": "no-such"})
 
 
 async def test_serializers_agree_for_every_read_model(tmp_path: Path) -> None:
@@ -235,6 +285,7 @@ async def test_serializers_agree_for_every_read_model(tmp_path: Path) -> None:
         read_api.roadmap_blockers(cache, dirs),
         read_api.sync_status(sync_cache, start_fetch=False),
         *read_api.spec_runner_configs(config),
+        read_api.onboarding(cache, dirs, "arbiter"),
     ]
     for obj in objects:
         assert jsonable_encoder(obj) == obj.model_dump(mode="json"), type(obj)
