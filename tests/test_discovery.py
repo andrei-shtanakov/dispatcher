@@ -71,3 +71,12 @@ def test_config_is_frozen(tmp_path: Path) -> None:
         raise AssertionError("should be frozen")
     except AttributeError:
         pass
+
+
+def test_load_config_suggest_claude_cli(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "dispatcher.toml"
+    cfg_file.write_text('suggest_claude_cli = "/opt/bin/claude"\n')
+    cfg = load_config(cfg_file)
+    assert cfg.suggest_claude_cli == Path("/opt/bin/claude")
+    cfg_file.write_text("")
+    assert load_config(cfg_file).suggest_claude_cli is None

@@ -31,6 +31,10 @@ class DispatcherConfig:
     roadmap_dirs: tuple[Path, ...] = ()
     # None → sync auto-discovery off (tests/embedding); load_config always sets it.
     tracking_file: Path | None = None
+    # Optional ABSOLUTE path to the claude binary for config suggestions
+    # (DESIGN-902). Distinct from spec_runner.claude_command in project.yaml
+    # (that configures spec-runner; this configures dispatcher itself).
+    suggest_claude_cli: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -56,12 +60,15 @@ def load_config(config_path: Path | None = None) -> DispatcherConfig:
     tracking_file = Path(
         data.get("tracking_file", str(path.parent / "dispatcher-sync.toml"))
     ).expanduser()
+    raw_suggest = data.get("suggest_claude_cli")
+    suggest_claude_cli = Path(raw_suggest).expanduser() if raw_suggest else None
     return DispatcherConfig(
         roots=roots,
         maestro_db=maestro_db,
         port=int(data.get("port", DEFAULT_PORT)),
         roadmap_dirs=roadmap_dirs,
         tracking_file=tracking_file,
+        suggest_claude_cli=suggest_claude_cli,
     )
 
 
