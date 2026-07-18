@@ -54,9 +54,11 @@
   #errors-service { background: var(--card); border: 1px solid var(--line);
     color: var(--dim); border-radius: 6px; font: inherit; font-size: 12px;
     padding: 2px 6px; margin-left: 8px; vertical-align: 2px; }
-  #detail { white-space: pre-wrap; font-family: ui-monospace, monospace;
-    font-size: 12px; background: var(--card); border: 1px solid var(--line);
-    border-radius: 10px; padding: 14px; max-height: 480px; overflow: auto; }
+  #detail { font-size: 13px; }
+  #detail h3 { font-size: 14px; margin: 12px 0 6px; }
+  #detail .dim { color: var(--dim); }
+  #detail li.blocked { color: var(--dim); }
+  #detail ul { margin: 0; padding-left: 18px; }
   .badge { display: inline-block; border: 1px solid var(--line);
     border-radius: 6px; padding: 1px 10px; font-size: 13px; font-weight: 600; }
   .badge.ok { color: var(--ok); border-color: var(--ok); }
@@ -450,13 +452,56 @@ function renderSpecRunnerConfigForm(cfg) {
   resetSpecRunnerConfigPreview();
 }
 
+function renderOnboarding(ob) {
+  const p = ob.project;
+  const desc = p.description
+    ? `<p>${esc(p.description)} <span class="dim">[${esc(p.description_source)}]</span></p>`
+    : `<p class="dim">no description (README/pyproject/package.json)</p>`;
+  const pos = ob.roadmap_position;
+  const position = pos ? `
+    <h3>Roadmap position</h3>
+    <p>readiness ${(pos.summary.readiness * 100).toFixed(0)}%
+      (${pos.summary.done}/${pos.summary.total})
+      · median ${pos.median_readiness == null ? "—"
+        : (pos.median_readiness * 100).toFixed(0) + "%"}
+      ${pos.summary.lagging ? " · <b>lagging</b>" : ""}
+      ${pos.summary.contract_drift ? " · <b>contract drift</b>" : ""}</p>
+    <ul>${pos.phases.map(ph => `<li>phase ${esc(ph.phase ?? "—")}: ${
+      esc(Object.entries(ph.counts).map(([k, v]) => `${k}=${v}`).join(", "))
+    }</li>`).join("")}</ul>`
+    : `<p class="dim">no roadmap items for this project</p>`;
+  const next = ob.next_items.length ? `
+    <h3>Next items</h3>
+    <ul id="onboarding-next">${ob.next_items.map(n => `
+      <li class="${n.actionable ? "actionable" : "blocked"}">
+        ${n.actionable ? "▶" : "⛔"} ${esc(n.id)} · ${esc(n.title)}
+        · ${esc(n.computed_status)}${n.blocked_by.length
+          ? ` · blocked by: ${esc(n.blocked_by.join(", "))}` : ""}
+      </li>`).join("")}</ul>`
+    : `<ul id="onboarding-next" hidden></ul>`;
+  const live = ob.live_tasks.length ? `
+    <h3>Live tasks</h3>
+    <ul>${ob.live_tasks.map(t => `
+      <li>${esc(t.task_id)} · ${esc(t.status)} · ${esc(t.title ?? "")}</li>`
+    ).join("")}</ul>` : "";
+  const warn = ob.warnings.length
+    ? `<p class="dim">⚠ ${esc(ob.warnings.join(" · "))}</p>` : "";
+  return desc + position + next + live + warn;
+}
+
 async function detail(name) {
   const section = document.getElementById("detail-section");
   section.hidden = false;
   document.getElementById("detail-name").textContent = "— " + name;
   document.getElementById("detail").textContent = "loading…";
-  const snap = await get("/api/projects/" + encodeURIComponent(name));
-  document.getElementById("detail").textContent = JSON.stringify(snap, null, 2);
+  try {
+    const ob = await get(
+      "/api/projects/" + encodeURIComponent(name) + "/onboarding"
+    );
+    document.getElementById("detail").innerHTML = renderOnboarding(ob);
+  } catch (err) {
+    document.getElementById("detail").textContent = String(err);
+  }
 
   const panel = document.getElementById("spec-runner-config");
   panel.hidden = true;

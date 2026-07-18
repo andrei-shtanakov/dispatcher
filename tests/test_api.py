@@ -200,6 +200,8 @@ async def test_index_served(tmp_path: Path) -> None:
     assert "<th>Contract</th>" in resp.text
     assert "<th>Freshness</th>" in resp.text
     assert 'colspan="8"' in resp.text
+    assert "/onboarding" in resp.text  # detail() fetches the onboarding view
+    assert "onboarding-next" in resp.text  # structured sections replaced raw JSON
 
 
 async def test_sync_track_endpoint_writes_sidecar(tmp_path: Path) -> None:
