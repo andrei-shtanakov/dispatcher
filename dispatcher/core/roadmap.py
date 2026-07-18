@@ -22,7 +22,7 @@ from dispatcher.core.contracts import check_contracts
 from dispatcher.core.correlation import build_work_items
 from dispatcher.core.models import ContractStatus, ProjectSnapshot
 
-_DONE = ("implemented", "verified")
+DONE_STATUSES = ("implemented", "verified")
 _RULE_KINDS = ("implementation", "verification")
 
 
@@ -246,7 +246,8 @@ def build_summary(
     # (иначе возможен ответ readiness == median_readiness при lagging=true)
     readiness_by_project = {
         project: round(
-            sum(1 for i in items if i.computed_status in _DONE) / len(items), 4
+            sum(1 for i in items if i.computed_status in DONE_STATUSES) / len(items),
+            4,
         )
         for project, items in grouped.items()
     }
@@ -259,7 +260,7 @@ def build_summary(
         ProjectSummary(
             project=project,
             total=len(items),
-            done=sum(1 for i in items if i.computed_status in _DONE),
+            done=sum(1 for i in items if i.computed_status in DONE_STATUSES),
             readiness=readiness_by_project[project],
             lagging=median is not None and readiness_by_project[project] < median,
             contract_drift=any(i.id in drifted_ids for i in items),
@@ -318,7 +319,7 @@ def build_blockers(roadmap: RoadmapResponse) -> BlockersResponse:
     entries: list[BlockerEntry] = []
     for dep, dependents in sorted(blocks.items()):
         dep_view = views.get(dep)
-        unresolved = dep_view is None or dep_view.computed_status not in _DONE
+        unresolved = dep_view is None or dep_view.computed_status not in DONE_STATUSES
         entries.append(
             BlockerEntry(
                 id=dep,
@@ -475,7 +476,7 @@ def _apply_blocked(views: dict[str, RoadmapItemView]) -> None:
         blockers = [
             dep
             for dep in view.depends_on
-            if dep not in views or views[dep].computed_status not in _DONE
+            if dep not in views or views[dep].computed_status not in DONE_STATUSES
         ]
         if blockers:
             view.computed_status = "blocked"
