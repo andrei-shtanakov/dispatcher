@@ -66,6 +66,18 @@ disabled with a tooltip explaining why. If the probe itself fails (e.g. a
 network hiccup), the button stays enabled — a click-time 503 still surfaces
 an inline error, so the feature degrades honestly either way.
 
+## Config editor
+
+The web dashboard's config editor panel includes an `extra_executor_config`
+overlay section with three explicit states: **Preserve** (default, content
+hidden; displays only "overlay present (N keys)"), **Edit** (JSON textarea
+with live syntax validation blocking invalid input), and **Clear** (removal
+with a confirmation warning). Local validation catches syntax errors and
+rejects non-object values (arrays, scalars, null); schema validation runs
+server-side when you click "Confirm & open PR", returning a 422 error list
+if the overlay violates the executor-config contract. The Terminal UI and
+VSCode extension keep `extra_executor_config` read-only.
+
 ## Configure (optional `dispatcher.toml`)
 
     roots = ["/Users/you/labs/all_ai_orchestrators"]
