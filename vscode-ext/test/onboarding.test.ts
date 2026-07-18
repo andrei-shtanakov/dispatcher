@@ -29,7 +29,6 @@ function base(): OnboardingView {
       {
         id: "RD-2",
         title: "Blocked one",
-        phase: "2",
         computed_status: "blocked",
         actionable: false,
         blocked_by: ["RD-9"],
@@ -37,7 +36,6 @@ function base(): OnboardingView {
       {
         id: "RD-1",
         title: "Do it",
-        phase: "1",
         computed_status: "planned",
         actionable: true,
         blocked_by: [],

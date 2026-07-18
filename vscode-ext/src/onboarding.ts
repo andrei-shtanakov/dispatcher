@@ -36,7 +36,6 @@ export interface OnboardingPosition {
 export interface OnboardingNextItem {
   id?: string | null;
   title?: string | null;
-  phase?: string | null;
   computed_status?: string | null;
   actionable?: boolean | null;
   blocked_by?: string[] | null;
