@@ -322,7 +322,7 @@ git commit -m "feat: project description extraction + snapshot enrichment (DESIG
 
 **Files:**
 - Create: `dispatcher/core/onboarding.py`
-- Modify: `dispatcher/core/roadmap.py` (переименовать `_DONE` → `DONE_STATUSES`; 4 использования: строки 25, 249, 262 и в `_apply_blocked` ~478)
+- Modify: `dispatcher/core/roadmap.py` (переименовать `_DONE` → `DONE_STATUSES`; 5 использований: строки 25, 249, 262, 321 (`build_blockers`) и в `_apply_blocked` ~478 — после правки `grep -n "_DONE" dispatcher/core/roadmap.py` обязан вернуть пусто)
 - Test: `tests/test_onboarding.py` (create)
 
 **Interfaces:**
@@ -331,7 +331,7 @@ git commit -m "feat: project description extraction + snapshot enrichment (DESIG
 
 - [ ] **Step 1: Rename `_DONE` → `DONE_STATUSES` in roadmap.py**
 
-Механическая замена всех 4 вхождений `_DONE` на `DONE_STATUSES` (semantics S-1: константа реиспользуется, не перепечатывается). `uv run pytest tests/test_roadmap.py -q` — PASS (чистое переименование).
+Механическая замена всех 5 вхождений `_DONE` на `DONE_STATUSES` (semantics S-1: константа реиспользуется, не перепечатывается). Проверка полноты: `grep -n "_DONE" dispatcher/core/roadmap.py` → пусто. `uv run pytest tests/test_roadmap.py -q` — PASS (чистое переименование).
 
 - [ ] **Step 2: Write the failing tests**
 
