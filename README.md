@@ -73,6 +73,7 @@ same command works; staleness beyond 1 h renders the host's panel as
 `/api/work-items?cross_only=bool&limit=N`,
 `/api/roadmap`, `/api/roadmap/{item_id}`,
 `/api/projects/{name}/spec-runner-config`, `/api/spec-runner-configs`,
+`/api/projects/{name}/onboarding`,
 `/api/actions/update-spec-runner-config`
 — pydantic-typed JSON; this is the same contract the VSCode extension consumes.
 
@@ -99,10 +100,10 @@ via `dispatcher mcp --config /path/dispatcher.toml`. Register with:
 
     claude mcp add dispatcher -- uv run --project /path/to/dispatcher dispatcher mcp --config /path/dispatcher.toml
 
-Exposes 14 read-only tools: `overview`, `project`, `errors`, `models`,
+Exposes 15 read-only tools: `overview`, `project`, `errors`, `models`,
 `contracts`, `work_items`, `roadmap`, `roadmap_item`, `roadmap_summary`,
 `roadmap_drift`, `roadmap_phases`, `roadmap_blockers`, `sync_status`,
-`spec_runner_configs`. No action tools by design — mutations require a
+`spec_runner_configs`, `onboarding`. No action tools by design — mutations require a
 human click in the UI; `sync_status` never triggers a background fetch
 (`start_fetch=False`).
 
