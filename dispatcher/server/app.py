@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import secrets
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,16 @@ from dispatcher.core.spec_runner_config_actions import (
     SpecRunnerConfigRejectedError,
 )
 from dispatcher.core.spec_runner_config_schema import ConfigValidationError
+from dispatcher.core.suggest_bundle import build_suggest_bundle
+from dispatcher.core.suggest_cli import (
+    SuggestCancelledError,
+    SuggestInvalidError,
+    SuggestOutcome,
+    SuggestRunner,
+    SuggestRunnerBusyError,
+    SuggestTimeoutError,
+    SuggestUnavailableError,
+)
 from dispatcher.core.sync import HostPanel
 from dispatcher.core.sync_service import SyncService, SyncStatus
 from dispatcher.core.tracking import TrackAction, decide
@@ -105,11 +116,31 @@ class UpdateSpecRunnerConfigRequest(BaseModel):
     base_mtime: float
 
 
+class SuggestRequest(BaseModel):
+    """POST .../suggest body: mtime of the config the form was built from."""
+
+    base_mtime: float
+
+
+class CancelResponse(BaseModel):
+    """POST .../suggest/cancel result."""
+
+    cancelled: bool
+
+
+class SuggestAvailability(BaseModel):
+    """GET /api/spec-runner-config/suggest-availability result."""
+
+    available: bool
+    detail: str | None = None
+
+
 def create_app(
     config: DispatcherConfig,
     *,
     snapshot_service: SnapshotService | None = None,
     sync_service: SyncService | None = None,
+    suggest_runner: SuggestRunner | None = None,
 ) -> FastAPI:
     """Build the API app for the given configuration."""
     app = FastAPI(title="Dispatcher", version="0.1.0")
@@ -120,6 +151,8 @@ def create_app(
     sync_cache = sync_service if sync_service is not None else SyncService(config)
     actions = ActionRunner(config)
     spec_runner_config_actions = SpecRunnerConfigActionRunner(config)
+    suggest = suggest_runner if suggest_runner is not None else SuggestRunner(config)
+    _suggest_audit = logging.getLogger("dispatcher.actions.spec_runner_config")
     # CSRF-токен на процесс: SOP не даст чужой странице его прочитать,
     # значит POST с токеном мог отправить только наш UI (DESIGN-204)
     action_token = secrets.token_hex(16)
@@ -288,6 +321,88 @@ def create_app(
             if Path(cfg.project_yaml_path).parent.name == name:
                 return cfg
         raise HTTPException(status_code=404, detail=f"no project.yaml for: {name}")
+
+    @app.get(
+        "/api/spec-runner-config/suggest-availability",
+        response_model=SuggestAvailability,
+    )
+    def spec_runner_config_suggest_availability() -> SuggestAvailability:
+        detail = suggest.availability()
+        return SuggestAvailability(available=detail is None, detail=detail)
+
+    @app.post(
+        "/api/projects/{name}/spec-runner-config/suggest",
+        response_model=SuggestOutcome,
+        response_model_exclude={"cli_version"},
+    )
+    def spec_runner_config_suggest(
+        name: str,
+        request: SuggestRequest,
+        x_action_token: str | None = Header(default=None),
+    ) -> SuggestOutcome:
+        """Явный клик человека: CLI-вызов ТРАТИТ ДЕНЬГИ — токен обязателен."""
+        if x_action_token != action_token:
+            raise HTTPException(status_code=403, detail="bad or missing action token")
+        configs, _ = discover_project_configs(config.roots)
+        target = next(
+            (c for c in configs if Path(c.project_yaml_path).parent.name == name),
+            None,
+        )
+        if target is None:
+            raise HTTPException(status_code=404, detail=f"no project.yaml for: {name}")
+        if target.base_mtime != request.base_mtime:
+            raise HTTPException(
+                status_code=409, detail="config changed — reload the form"
+            )
+        peers = [c for c in configs if c is not target]
+        snapshots, _w = cache.get()
+        target_dir = str(Path(target.project_yaml_path).parent)
+        snap = next((s for s in snapshots if s.path == target_dir), None)
+        bundle = build_suggest_bundle(target, peers, snap)
+        requested = set(bundle["requested_fields"])
+        try:
+            outcome = suggest.run(name, bundle, requested)
+        except SuggestUnavailableError as err:
+            _suggest_audit.info("action=suggest project=%s outcome=unavailable", name)
+            raise HTTPException(status_code=503, detail=str(err)) from err
+        except SuggestTimeoutError as err:
+            _suggest_audit.info("action=suggest project=%s outcome=timeout", name)
+            raise HTTPException(status_code=409, detail=str(err)) from err
+        except SuggestCancelledError as err:
+            _suggest_audit.info("action=suggest project=%s outcome=cancelled", name)
+            raise HTTPException(status_code=409, detail="cancelled") from err
+        except SuggestInvalidError as err:
+            _suggest_audit.info("action=suggest project=%s outcome=invalid", name)
+            raise HTTPException(status_code=422, detail=str(err)) from err
+        except SuggestRunnerBusyError as err:
+            _suggest_audit.info("action=suggest project=%s outcome=busy", name)
+            raise HTTPException(status_code=409, detail=str(err)) from err
+        _suggest_audit.info(
+            "action=suggest project=%s outcome=ok duration=%.1fs fields=%s "
+            "dropped=%s cost=%s cli=%s",
+            name,
+            outcome.duration_s,
+            sorted(outcome.suggestions),
+            outcome.dropped,
+            outcome.cost_usd,
+            outcome.cli_version,
+        )
+        return outcome
+
+    @app.post(
+        "/api/projects/{name}/spec-runner-config/suggest/cancel",
+        response_model=CancelResponse,
+    )
+    def spec_runner_config_suggest_cancel(
+        name: str,
+        x_action_token: str | None = Header(default=None),
+    ) -> CancelResponse:
+        if x_action_token != action_token:
+            raise HTTPException(status_code=403, detail="bad or missing action token")
+        try:
+            return CancelResponse(cancelled=suggest.cancel(name))
+        except SuggestRunnerBusyError as err:
+            raise HTTPException(status_code=409, detail=str(err)) from err
 
     @app.post("/api/actions/update-spec-runner-config", response_model=ActionOutcome)
     def action_update_spec_runner_config(
