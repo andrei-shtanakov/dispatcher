@@ -1,9 +1,9 @@
 # Dispatcher
 
-Primarily a read-only monitoring dashboard for the AI-orchestrators ecosystem
-(atp-platform, Maestro, arbiter, spec-runner, proctor). Reads on-disk
-artifacts directly — monitored projects don't need to be running or even
-installed; missing ones simply don't show up. The only mutations are a
+Read-heavy dashboard and guarded action surface for the AI-orchestrators
+ecosystem (atp-platform, Maestro, arbiter, spec-runner, proctor). It reads
+on-disk artifacts directly — monitored projects don't need to be running or
+even installed; missing ones simply don't show up. Mutations are limited to a
 narrow, human-click-gated, PR-only whitelist (sync `pull`/`create-pr` +
 spec-runner config editor, all delegated to `github-checker`; dispatcher
 itself never pushes or merges).
