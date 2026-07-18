@@ -61,6 +61,13 @@ def test_happy_path_with_cost_and_partial_drop(tmp_path: Path) -> None:
     assert outcome.duration_s >= 0
 
 
+def test_non_dict_suggestion_entry_is_dropped(tmp_path: Path) -> None:
+    envelope = _envelope({"suggestions": {"claude_model": "sonnet"}})
+    runner = SuggestRunner(_config(tmp_path), command=_fake_cli(tmp_path, envelope))
+    outcome = runner.run("steward", _BUNDLE, requested={"claude_model"})
+    assert outcome.suggestions == {} and outcome.dropped == ["claude_model"]
+
+
 def test_missing_cost_is_none(tmp_path: Path) -> None:
     envelope = _envelope({"suggestions": {}})
     runner = SuggestRunner(_config(tmp_path), command=_fake_cli(tmp_path, envelope))
@@ -107,6 +114,22 @@ def test_timeout_terminates_and_frees_lock(tmp_path: Path, monkeypatch) -> None:
     with pytest.raises(SuggestTimeoutError):
         runner.run("steward", _BUNDLE, requested=set())
     assert runner.current_project is None  # SAME runner's lock freed
+
+
+def test_timeout_kills_sigterm_ignoring_child(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("dispatcher.core.suggest_cli.SUGGEST_TIMEOUT_S", 0.2)
+    monkeypatch.setattr("dispatcher.core.suggest_cli._KILL_WAIT_S", 0.5)
+    script = tmp_path / "ignores_sigterm.py"
+    script.write_text(
+        "import signal, sys, time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "_ = sys.stdin.read()\n"
+        "time.sleep(30)\n"
+    )
+    runner = SuggestRunner(_config(tmp_path), command=("python3", str(script)))
+    with pytest.raises(SuggestTimeoutError):
+        runner.run("steward", _BUNDLE, requested=set())
+    assert runner.current_project is None  # lock freed, child reaped
 
 
 def test_cancel_frees_lock_immediately(tmp_path: Path) -> None:

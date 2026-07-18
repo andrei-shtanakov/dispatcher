@@ -25,6 +25,24 @@ from dispatcher.core.spec_runner_config_schema import validate_typed_fields
 
 SUGGEST_TIMEOUT_S = 60.0
 _FIXED_FLAGS = ("-p", "--output-format", "json")
+_KILL_WAIT_S = 5.0
+
+
+def _stop(proc: subprocess.Popen[str]) -> None:
+    """Terminate, escalating to SIGKILL if the child ignores SIGTERM.
+
+    Used only where WE own reaping the child (the timeout path in `run()`).
+    `cancel()` deliberately does NOT use this: it holds the lock while the
+    run-thread is still blocked in `communicate()`, and that thread reaps
+    the child once `communicate()` returns — a second, blocking `wait()`
+    here would just extend the lock hold for no benefit.
+    """
+    proc.terminate()
+    try:
+        proc.wait(timeout=_KILL_WAIT_S)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=_KILL_WAIT_S)
 
 
 class SuggestUnavailableError(Exception):
@@ -137,8 +155,7 @@ class SuggestRunner:
                 timeout=SUGGEST_TIMEOUT_S,
             )
         except subprocess.TimeoutExpired as err:
-            proc.terminate()
-            proc.wait(timeout=5)
+            _stop(proc)  # we own reaping here; cancel() does not, see _stop
             raise SuggestTimeoutError("suggest timed out") from err
         finally:
             with self._lock:
@@ -159,6 +176,10 @@ class SuggestRunner:
                 raise SuggestRunnerBusyError(self._current)
             self._cancelled = True
             if self._proc is not None:
+                # No kill-fallback here (unlike the timeout path's `_stop`):
+                # the run-thread's `communicate()` reaps the child once it
+                # exits, so we don't own reaping and mustn't block the lock
+                # holder on a second `wait()` for it.
                 self._proc.terminate()
             return True
 
@@ -189,10 +210,11 @@ class SuggestRunner:
                 value=value, rationale=str(entry.get("rationale", ""))
             )
         cost = envelope.get("total_cost_usd", envelope.get("cost_usd"))
+        version = envelope.get("version")
         return SuggestOutcome(
             suggestions=suggestions,
             dropped=sorted(dropped),
-            cli_version=envelope.get("version"),
+            cli_version=str(version) if version is not None else None,
             duration_s=round(duration, 3),
             cost_usd=cost if isinstance(cost, (int, float)) else None,
         )
