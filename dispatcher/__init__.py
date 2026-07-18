@@ -1,1 +1,1 @@
-"""Dispatcher — read-only monitoring dashboard for the ecosystem projects."""
+"""Dispatcher — ecosystem dashboard with guarded git and config actions."""
