@@ -38,6 +38,7 @@ def test_s1_verified_dep_makes_item_actionable() -> None:
     (next_a,) = [n for n in view.next_items if n.id == "A"]
     assert next_a.actionable is True
     assert next_a.blocked_by == []
+    assert not any("unknown dependency" in w for w in view.warnings)
 
 
 def test_s1_planned_dep_blocks() -> None:
