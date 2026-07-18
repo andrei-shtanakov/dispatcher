@@ -128,6 +128,13 @@ class CancelResponse(BaseModel):
     cancelled: bool
 
 
+class SuggestAvailability(BaseModel):
+    """GET /api/spec-runner-config/suggest-availability result."""
+
+    available: bool
+    detail: str | None = None
+
+
 def create_app(
     config: DispatcherConfig,
     *,
@@ -314,6 +321,14 @@ def create_app(
             if Path(cfg.project_yaml_path).parent.name == name:
                 return cfg
         raise HTTPException(status_code=404, detail=f"no project.yaml for: {name}")
+
+    @app.get(
+        "/api/spec-runner-config/suggest-availability",
+        response_model=SuggestAvailability,
+    )
+    def spec_runner_config_suggest_availability() -> SuggestAvailability:
+        detail = suggest.availability()
+        return SuggestAvailability(available=detail is None, detail=detail)
 
     @app.post(
         "/api/projects/{name}/spec-runner-config/suggest",

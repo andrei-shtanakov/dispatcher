@@ -112,6 +112,14 @@ class SuggestRunner:
     def current_project(self) -> str | None:
         return self._current
 
+    def availability(self) -> str | None:
+        """None when the CLI resolves; else the human-readable reason."""
+        try:
+            self._argv()
+        except SuggestUnavailableError as err:
+            return str(err)
+        return None
+
     def _argv(self) -> tuple[str, ...]:
         if self._command is not None:  # test injection, mirrors fake_checker
             return self._command

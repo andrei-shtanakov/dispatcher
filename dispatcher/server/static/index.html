@@ -447,6 +447,20 @@ async function refresh() {
 
 let currentSpecRunnerConfig = null;
 
+async function updateSuggestAvailability() {
+  const btn = document.getElementById("spec-runner-config-suggest");
+  try {
+    const data = await get("/api/spec-runner-config/suggest-availability");
+    btn.disabled = !data.available;
+    btn.title = data.available ? "" : (data.detail ?? "");
+    btn.textContent = data.available
+      ? "Suggest values"
+      : "Suggest values (unavailable)";
+  } catch {
+    // fetch failed — leave the button enabled; click-time 503 still guards
+  }
+}
+
 function renderSpecRunnerConfigForm(cfg) {
   const panel = document.getElementById("spec-runner-config");
   panel.hidden = false;
@@ -456,7 +470,7 @@ function renderSpecRunnerConfigForm(cfg) {
       <input data-typed="${esc(key)}" value="${esc(String(field.value))}">
     </label>`).join("");
   document.getElementById("spec-runner-config-submit").disabled = false;
-  document.getElementById("spec-runner-config-suggest").disabled = false;
+  updateSuggestAvailability();
   document.getElementById("spec-runner-config-result").textContent = "";
   document.getElementById("suggest-dropped").textContent = "";
   resetSpecRunnerConfigPreview();

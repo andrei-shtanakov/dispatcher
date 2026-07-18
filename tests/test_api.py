@@ -818,3 +818,41 @@ async def test_suggest_invalid_is_422_and_audited(
             "action=suggest" in r.message and "outcome=invalid" in r.message
             for r in caplog.records
         )
+
+
+async def test_suggest_availability_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DESIGN-904: gate the suggest button on CLI availability, not just click."""
+    _suggest_workspace(tmp_path)
+    config = DispatcherConfig(roots=(tmp_path,))
+
+    # unavailable: no configured command and `claude` not on PATH
+    monkeypatch.setattr("shutil.which", lambda _: None)
+    app = create_app(config, suggest_runner=SuggestRunner(config))
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.get("/api/spec-runner-config/suggest-availability")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["available"] is False
+        assert body["detail"] == "claude CLI not found on PATH"
+
+    # available: injected fake CLI resolves without touching shutil.which
+    envelope = _envelope({"suggestions": {}})
+    app = create_app(
+        config,
+        suggest_runner=SuggestRunner(config, command=_fake_cli(tmp_path, envelope)),
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.get("/api/spec-runner-config/suggest-availability")
+        assert resp.status_code == 200
+        assert resp.json() == {"available": True, "detail": None}
+
+
+def test_static_index_pins_suggest_availability_endpoint() -> None:
+    static_path = (
+        Path(__file__).parent.parent / "dispatcher" / "server" / "static" / "index.html"
+    )
+    assert "suggest-availability" in static_path.read_text()

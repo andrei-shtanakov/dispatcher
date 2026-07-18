@@ -107,6 +107,17 @@ def test_unconfigured_and_bad_basename(tmp_path: Path, monkeypatch) -> None:
         SuggestRunner(bad).run("steward", _BUNDLE, requested=set())
 
 
+def test_availability_none_when_configured(tmp_path: Path) -> None:
+    runner = SuggestRunner(_config(tmp_path), command=("claude",))
+    assert runner.availability() is None
+
+
+def test_availability_message_when_unconfigured(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("shutil.which", lambda _: None)
+    detail = SuggestRunner(_config(tmp_path)).availability()
+    assert detail == "claude CLI not found on PATH"
+
+
 def test_timeout_terminates_and_frees_lock(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("dispatcher.core.suggest_cli.SUGGEST_TIMEOUT_S", 0.2)
     slow = _fake_cli(tmp_path, _envelope({"suggestions": {}}), sleep_s=30)

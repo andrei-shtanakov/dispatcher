@@ -41,9 +41,9 @@ propose spec-runner config changes via PR (github-checker). Settings:
 ## AI suggestions
 
 Dispatcher can propose spec-runner configuration changes using Claude.
-The "Suggest config" button in the web dashboard and VSCode extension
-prefills config values based on project context and peer distributions;
-you review and edit the proposal before it becomes a PR.
+The "Suggest config" button in the web dashboard prefills config values
+based on project context and peer distributions; you review and edit the
+proposal before it becomes a PR.
 
 **Requirements:** `claude` CLI on PATH, or explicitly configured:
 
@@ -59,8 +59,12 @@ holds no secrets.
 
 **Cost:** Requests are charged to your Anthropic account.
 
-**Availability:** The "Suggest config" button is visible only when the
-`claude` CLI is available and configured.
+**Availability:** The dashboard probes `GET
+/api/spec-runner-config/suggest-availability` when the config panel loads;
+if the `claude` CLI is not available, the "Suggest config" button is
+disabled with a tooltip explaining why. If the probe itself fails (e.g. a
+network hiccup), the button stays enabled — a click-time 503 still surfaces
+an inline error, so the feature degrades honestly either way.
 
 ## Configure (optional `dispatcher.toml`)
 
@@ -98,9 +102,11 @@ same command works; staleness beyond 1 h renders the host's panel as
 `/api/roadmap`, `/api/roadmap/{item_id}`,
 `/api/projects/{name}/spec-runner-config`, `/api/spec-runner-configs`,
 `/api/projects/{name}/onboarding`,
-`/api/actions/update-spec-runner-config`,
-`POST /api/projects/{name}/spec-runner-config/suggest`, `POST /api/projects/{name}/spec-runner-config/suggest/cancel`
+`/api/actions/update-spec-runner-config`
 — pydantic-typed JSON; this is the same contract the VSCode extension consumes.
+`/api/spec-runner-config/suggest-availability`,
+`POST /api/projects/{name}/spec-runner-config/suggest`, `POST /api/projects/{name}/spec-runner-config/suggest/cancel`
+are web-dashboard-only; the VSCode extension does not call them.
 
 `/api/work-items` is the read-side correlation view: tasks from all
 projects grouped by their shared task id (Maestro passes `task.id`
