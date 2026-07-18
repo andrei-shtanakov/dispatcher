@@ -8,8 +8,8 @@ import pytest
 from conftest import make_arbiter, make_atp, make_maestro_home, make_spec_runner
 from fastapi.encoders import jsonable_encoder
 from fastmcp import Client
-from fastmcp.exceptions import ToolError
 from fastmcp.client.client import CallToolResult
+from fastmcp.exceptions import ToolError
 
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.service import SnapshotService
