@@ -3,8 +3,21 @@
 import json
 import sqlite3
 import time
+import warnings
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+# fastmcp's jwt module imports authlib.jose, and authlib.deprecate
+# self-inserts simplefilter("always", AuthlibDeprecationWarning) DURING that
+# import — overriding both pytest's ini filters and any ignore set before
+# the import. Counter-order: let authlib's filter land first, THEN put our
+# ignore in front of it, THEN import fastmcp; the one-shot import-time
+# warning never fires and later imports hit the module cache.
+with warnings.catch_warnings():
+    import authlib.deprecate  # noqa: F401  (its simplefilter lands here)
+
+    warnings.simplefilter("ignore")
+    import fastmcp  # noqa: F401
 
 import pytest
 
