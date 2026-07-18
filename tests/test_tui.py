@@ -14,6 +14,7 @@ from conftest import (
 from textual.widgets import DataTable, Select, Static, TabbedContent, TabPane
 
 from dispatcher.core.discovery import DispatcherConfig
+from dispatcher.core.models import ProjectSnapshot, TaskInfo
 from dispatcher.core.spec_runner_config_actions import ConfigCandidate
 from dispatcher.core.sync import HostPanel, RepoVerdict, SyncReport
 from dispatcher.core.sync_service import SyncStatus
@@ -275,6 +276,54 @@ async def test_enter_opens_project_detail(tmp_path: Path) -> None:
         assert "T-9" in texts  # arbiter fixture task rendered in sections
         await pilot.press("escape")
         assert not isinstance(app.screen, ProjectDetailScreen)
+
+
+async def test_detail_renders_onboarding_sections(tmp_path: Path) -> None:
+    # fixture: snapshot + synthetic OnboardingView (the builder is already
+    # pinned by its own unit tests — here only the section rendering is
+    # pinned).
+    from dispatcher.core.onboarding import (
+        OnboardingNextItem,
+        OnboardingProject,
+        OnboardingView,
+    )
+    from dispatcher.tui.detail import ProjectDetailScreen
+
+    snap = ProjectSnapshot(name="arbiter", path="/w/arbiter")
+    view = OnboardingView(
+        project=OnboardingProject(
+            name="arbiter",
+            path="/w/arbiter",
+            description="Arbiter routes agents.",
+            description_source="readme",
+        ),
+        next_items=[
+            OnboardingNextItem(
+                id="RD-1",
+                title="Do the thing",
+                phase="1",
+                computed_status="planned",
+                actionable=False,
+                blocked_by=["RD-0"],
+            )
+        ],
+        live_tasks=[TaskInfo(task_id="T-7", status="pending", source="db")],
+    )
+    screen = ProjectDetailScreen(snap, view)
+    rendered = "\n".join(screen._render_texts())
+    assert "Arbiter routes agents." in rendered
+    assert "RD-1" in rendered and "blocked by: RD-0" in rendered
+    assert "T-7" in rendered
+    assert "collected:" in rendered  # old snapshot sections still live
+
+
+async def test_detail_without_onboarding_degrades(tmp_path: Path) -> None:
+    from dispatcher.tui.detail import ProjectDetailScreen
+
+    snap = ProjectSnapshot(name="arbiter", path="/w/arbiter")
+    rendered = "\n".join(ProjectDetailScreen(snap)._render_texts())
+    assert "collected:" in rendered
+    assert "next items" not in rendered
 
 
 async def test_enter_ignored_on_undetected_project(tmp_path: Path) -> None:

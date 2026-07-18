@@ -29,6 +29,7 @@ from dispatcher.core.actions import (
 from dispatcher.core.contracts import check_contracts
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.models import ContractStatus, ErrorEvent, ProjectSnapshot
+from dispatcher.core.onboarding import build_onboarding
 from dispatcher.core.roadmap import (
     RoadmapResponse,
     SummaryResponse,
@@ -543,7 +544,12 @@ class DispatcherApp(App[None]):
             name = str(event.row_key.value)
             snap = self._snapshot(name)
             if snap is not None and snap.detected:
-                self.push_screen(ProjectDetailScreen(snap))
+                onboarding = (
+                    build_onboarding(snap, self._roadmap, self._contracts)
+                    if self._roadmap is not None
+                    else None
+                )
+                self.push_screen(ProjectDetailScreen(snap, onboarding))
         elif event.data_table.id == "errors-table":
             idx = event.cursor_row
             if 0 <= idx < len(self._shown_errors):
