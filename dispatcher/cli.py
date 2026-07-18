@@ -17,6 +17,11 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--config", type=Path, default=None)
     tui = sub.add_parser("tui", help="run the terminal dashboard")
     tui.add_argument("--config", type=Path, default=None)
+    mcp = sub.add_parser(
+        "mcp",
+        help="run the MCP stdio server over the read API (for agents)",
+    )
+    mcp.add_argument("--config", type=Path, default=None)
     publish = sub.add_parser(
         "publish-snapshot",
         help="publish this host's sync snapshot to the KB (derived/snapshots/)",
@@ -57,6 +62,12 @@ def main() -> None:
             # non-zero is the cron-visibility contract (RK-03)
             print(f"publish failed: {err}", file=sys.stderr)
             raise SystemExit(1) from err
+        return
+    if args.command == "mcp":
+        # Imported lazily: serve/tui should not pay fastmcp's import cost.
+        from dispatcher.mcp_server import build_server
+
+        build_server(config).run()
         return
     if args.command == "tui":
         # Imported lazily: `serve` should not pay textual's import cost.
