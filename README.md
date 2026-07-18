@@ -34,7 +34,11 @@ with projects, recent errors, and a Sync view (row actions: pull / open PR /
 track / ignore); status-bar health indicator; the server is auto-started
 when unreachable (`dispatcher.projectDir` setting must point at this repo).
 "Dispatcher: Edit Spec-Runner Config" command opens a QuickPick flow to
-propose spec-runner config changes via PR (github-checker). Settings:
+propose spec-runner config changes via PR (github-checker). "Dispatcher:
+Project Onboarding" (command palette or a project's context menu) opens a
+read-only markdown preview of the FR-04 onboarding screen (description,
+roadmap position, next items, live tasks); running it again refreshes the
+same document. Settings:
 `dispatcher.url`, `dispatcher.projectDir`, `dispatcher.autoStart`,
 `dispatcher.pollSeconds`.
 

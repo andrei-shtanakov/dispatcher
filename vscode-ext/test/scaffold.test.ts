@@ -35,4 +35,42 @@ describe("manifest", () => {
     expect(props["dispatcher.pollSeconds"].default).toBe(10);
     expect(props["dispatcher.pollSeconds"].minimum).toBe(5);
   });
+
+  it("contributes the project onboarding command, palette-visible", () => {
+    const commands = manifest.contributes.commands as Array<{
+      command: string;
+      title: string;
+    }>;
+    expect(
+      commands.some(
+        (c) =>
+          c.command === "dispatcher.projectOnboarding" &&
+          c.title === "Dispatcher: Project Onboarding",
+      ),
+    ).toBe(true);
+    // must NOT be hidden from the palette
+    const palette = (manifest.contributes.menus?.commandPalette ?? []) as Array<{
+      command: string;
+      when?: string;
+    }>;
+    expect(
+      palette.some(
+        (m) => m.command === "dispatcher.projectOnboarding" && m.when === "false",
+      ),
+    ).toBe(false);
+  });
+
+  it("contributes the project context-menu entry with the exact when-rule", () => {
+    const ctx = manifest.contributes.menus["view/item/context"] as Array<{
+      command: string;
+      when: string;
+    }>;
+    expect(
+      ctx.some(
+        (m) =>
+          m.command === "dispatcher.projectOnboarding" &&
+          m.when === "view == dispatcherProjects && viewItem == dispatcherProject",
+      ),
+    ).toBe(true);
+  });
 });
