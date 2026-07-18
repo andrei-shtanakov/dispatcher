@@ -38,6 +38,30 @@ propose spec-runner config changes via PR (github-checker). Settings:
 `dispatcher.url`, `dispatcher.projectDir`, `dispatcher.autoStart`,
 `dispatcher.pollSeconds`.
 
+## AI suggestions
+
+Dispatcher can propose spec-runner configuration changes using Claude.
+The "Suggest config" button in the web dashboard and VSCode extension
+prefills config values based on project context and peer distributions;
+you review and edit the proposal before it becomes a PR.
+
+**Requirements:** `claude` CLI on PATH, or explicitly configured:
+
+    suggest_claude_cli = "/absolute/path/to/claude"
+
+The path must be absolute, and the basename must be exactly `claude`.
+This is distinct from the `spec_runner.claude_command` configuration key.
+
+**Secret handling:** The authentication secret (API token) lives in the
+Claude CLI's configuration on the same host — it is relocated to the CLI's
+isolated storage, not eliminated from your configuration. Dispatcher itself
+holds no secrets.
+
+**Cost:** Requests are charged to your Anthropic account.
+
+**Availability:** The "Suggest config" button is visible only when the
+`claude` CLI is available and configured.
+
 ## Configure (optional `dispatcher.toml`)
 
     roots = ["/Users/you/labs/all_ai_orchestrators"]
@@ -74,7 +98,8 @@ same command works; staleness beyond 1 h renders the host's panel as
 `/api/roadmap`, `/api/roadmap/{item_id}`,
 `/api/projects/{name}/spec-runner-config`, `/api/spec-runner-configs`,
 `/api/projects/{name}/onboarding`,
-`/api/actions/update-spec-runner-config`
+`/api/actions/update-spec-runner-config`,
+`POST /api/projects/{name}/spec-runner-config/suggest`, `POST /api/projects/{name}/spec-runner-config/suggest/cancel`
 — pydantic-typed JSON; this is the same contract the VSCode extension consumes.
 
 `/api/work-items` is the read-side correlation view: tasks from all
