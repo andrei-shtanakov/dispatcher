@@ -1,6 +1,8 @@
 # Vendored governance caller (ADR-ECO-004 D5). The @<sha> pin IS the vendored copy.
 # Canon: ai-orchestrators-workspace/ci/governance/ (governance-gate.yml).
 name: governance
+permissions:
+  contents: read          # gate only reads (2× checkout of public repos); least-privilege
 on:
   pull_request:
   workflow_dispatch:
