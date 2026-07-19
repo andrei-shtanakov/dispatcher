@@ -83,6 +83,10 @@
       {
         "command": "dispatcher.editSpecRunnerConfig",
         "title": "Dispatcher: Edit Spec-Runner Config"
+      },
+      {
+        "command": "dispatcher.projectOnboarding",
+        "title": "Dispatcher: Project Onboarding"
       }
     ],
     "menus": {
@@ -94,6 +98,11 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "dispatcher.projectOnboarding",
+          "when": "view == dispatcherProjects && viewItem == dispatcherProject",
+          "group": "navigation"
+        },
         {
           "command": "dispatcher.pull",
           "when": "view == dispatcherSync && viewItem == dispatcherSyncVerdict.pull",

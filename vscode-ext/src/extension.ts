@@ -6,6 +6,7 @@ import { ApiClient, ApiError } from "./api";
 import { ServerManager } from "./server";
 import type { ActionOutcome, SpecRunnerConfigEntry, SyncStatusResponse } from "./api";
 import { createStatusBar } from "./status";
+import { renderOnboardingMarkdown } from "./onboarding";
 import {
   applyEdit,
   diffLines,
@@ -21,7 +22,7 @@ import {
   RoadmapProvider,
   SyncProvider,
 } from "./tree";
-import type { SyncNode } from "./tree";
+import type { ProjectNode, SyncNode } from "./tree";
 
 interface Config {
   url: string;
@@ -292,6 +293,60 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   }
 
+  const onboardingDocs = new Map<string, string>();
+  const onboardingChanged = new vscode.EventEmitter<vscode.Uri>();
+  const onboardingProvider: vscode.TextDocumentContentProvider = {
+    onDidChange: onboardingChanged.event,
+    provideTextDocumentContent: (uri) =>
+      onboardingDocs.get(uri.path) ??
+      "onboarding not loaded — run “Dispatcher: Project Onboarding”",
+  };
+
+  async function showOnboarding(name: string): Promise<void> {
+    try {
+      const view = await client().getOnboarding(name);
+      if (typeof view?.project?.name !== "string") {
+        void vscode.window.showErrorMessage("malformed onboarding response");
+        return;
+      }
+      const uri = vscode.Uri.parse(
+        `dispatcher-onboarding:/${encodeURIComponent(name)}.md`,
+      );
+      onboardingDocs.set(uri.path, renderOnboardingMarkdown(view));
+      onboardingChanged.fire(uri); // re-run refreshes the SAME document
+      const doc = await vscode.workspace.openTextDocument(uri);
+      await vscode.commands.executeCommand("markdown.showPreview", doc.uri);
+    } catch (err) {
+      void vscode.window.showErrorMessage(
+        err instanceof ApiError ? err.detail : String(err),
+      );
+    }
+  }
+
+  async function onboardingCommand(node?: ProjectNode): Promise<void> {
+    if (node !== undefined && node.kind === "project") {
+      await showOnboarding(node.entry.name);
+      return;
+    }
+    // palette path: FRESH overview, never the provider's poll state
+    let names: string[];
+    try {
+      const overview = await client().overview();
+      names = overview.projects.filter((p) => p.detected).map((p) => p.name);
+    } catch (err) {
+      void vscode.window.showErrorMessage(
+        err instanceof ApiError ? err.detail : String(err),
+      );
+      return;
+    }
+    const pick = await vscode.window.showQuickPick(names, {
+      title: "Project onboarding",
+    });
+    if (pick !== undefined) {
+      await showOnboarding(pick);
+    }
+  }
+
   const timer = setInterval(() => void poll(), readConfig().pollSeconds * 1000);
 
   context.subscriptions.push(
@@ -321,6 +376,15 @@ export function activate(context: vscode.ExtensionContext): void {
       "dispatcher.editSpecRunnerConfig",
       () => void editConfigCommand(),
     ),
+    vscode.workspace.registerTextDocumentContentProvider(
+      "dispatcher-onboarding",
+      onboardingProvider,
+    ),
+    vscode.commands.registerCommand(
+      "dispatcher.projectOnboarding",
+      (node?: ProjectNode) => void onboardingCommand(node),
+    ),
+    onboardingChanged,
     vscode.commands.registerCommand("dispatcher.startServer", () => {
       if (readConfig().projectDir.trim() === "") {
         void vscode.window.showWarningMessage(

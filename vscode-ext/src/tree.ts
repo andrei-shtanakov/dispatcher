@@ -83,6 +83,9 @@ export class ProjectsProvider
               new vscode.ThemeColor("testing.iconFailed"),
             )
           : new vscode.ThemeIcon("circle-outline");
+    if (view.detected) {
+      item.contextValue = "dispatcherProject";
+    }
     return item;
   }
 

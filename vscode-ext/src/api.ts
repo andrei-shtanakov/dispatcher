@@ -1,5 +1,7 @@
 /** Typed client for the dispatcher HTTP API. Must stay vscode-free. */
 
+import type { OnboardingView } from "./onboarding";
+
 export interface Counts {
   tasks: number;
   models: number;
@@ -268,5 +270,11 @@ export class ApiClient {
     base_mtime: number;
   }): Promise<ActionOutcome> {
     return this.postWithToken("/api/actions/update-spec-runner-config", body);
+  }
+
+  async getOnboarding(name: string): Promise<OnboardingView> {
+    return this.get<OnboardingView>(
+      `/api/projects/${encodeURIComponent(name)}/onboarding`,
+    );
   }
 }

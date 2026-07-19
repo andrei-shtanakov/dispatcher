@@ -188,3 +188,29 @@ describe("specRunnerConfigs degradation", () => {
     expect((err as ApiError).status).toBe(404);
   });
 });
+
+describe("getOnboarding", () => {
+  it("URL-encodes the onboarding project name and parses the view", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(okResponse({ project: { name: "a b" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const view = await new ApiClient("http://x").getOnboarding("a b");
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "http://x/api/projects/a%20b/onboarding",
+    );
+    expect(view.project.name).toBe("a b");
+  });
+
+  it("propagates the 404 detail for an unknown onboarding project", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse({ detail: "unknown project: nope" }, 404),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(
+      new ApiClient("http://x").getOnboarding("nope"),
+    ).rejects.toMatchObject({ status: 404, detail: "unknown project: nope" });
+  });
+});
