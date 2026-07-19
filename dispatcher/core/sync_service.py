@@ -48,7 +48,7 @@ def fetch_workspace(workspace: Path) -> list[str]:
     """`git fetch --prune` every `<workspace>/*/.git` repo; collect error lines.
 
     Hidden and underscore-prefixed dirs are skipped (same rule as discovery:
-    `_cowork_output` must never be read).
+    `_cowork_output` must never be read).  gov:allow-cowork — doc mention, not a resolve.
     """
     errors: list[str] = []
     for git_dir in sorted(workspace.glob("*/.git")):
