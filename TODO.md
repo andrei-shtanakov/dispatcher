@@ -36,9 +36,9 @@
 - ✅ Итерация «sync & roadmap» M1+M2: вендоренный snapshot-контракт v1, verdict-движок,
   фоновый fetch, `dispatcher publish-snapshot`, auto-discovery предложений, живые
   whitelist-действия, VSCode status-bar вердикт (TASK-201..211)
-- ✅ Spec-runner config editor: чтение + запись через `github-checker propose-pr --edit
-  --if-match`, ноль записей в живое дерево (PR #37, #40); tri-state
-  `extra_executor_config` + web-overlay редактор (PR #63)
+- ✅ Spec-runner config editor: чтение + запись через
+  `github-checker propose-pr --edit --if-match`, ноль записей в живое дерево
+  (PR #37, #40); tri-state `extra_executor_config` + web-overlay редактор (PR #63)
 - ✅ FR-04 onboarding-view (web/TUI/MCP + VSCode, PR #58, #59, #65), FR-05 MCP-сервер
   (`dispatcher mcp`, read-only whitelist, PR #52, #53), FR-06 паритет TUI/VSCode
   (PR #44, #47), DESIGN-307 AI-подсказки через локальный claude-CLI (PR #61)
