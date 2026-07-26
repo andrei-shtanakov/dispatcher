@@ -20,7 +20,7 @@ on-disk артефакты напрямую — наблюдаемым прое�
   (без сборки), поллинг 10s
 - **TUI**: textual (вкладки Sync/Projects/Errors/Models/Contracts/Roadmap/Config), читает
   dispatcher.core напрямую через SnapshotService; + whitelist-действия (p/o/t/i) и конфиг-редактор — те же core-раннеры, что у HTTP API
-- **MCP**: fastmcp stdio (`dispatcher mcp`), 14 read-тулзов поверх `core/read_api` — те же модели, что HTTP
+- **MCP**: fastmcp stdio (`dispatcher mcp`), 15 read-тулзов поверх `core/read_api` — те же модели, что HTTP (whitelist запинен равенством в `tests/test_mcp_server.py`)
 - **Источники**: SQLite (только `mode=ro` + busy_timeout + 1 retry),
   TOML/YAML конфиги, OTel-JSONL логи (`SeverityNumber ≥ 17`)
 - **Тесты**: pytest + anyio + httpx (ASGITransport), фикстуры-миникопии
@@ -80,6 +80,12 @@ version-gated; долгосрочный план — стабильный read-m
 - **Stage 3 (done, 2026-07-05)**: VSCode-плагин (vscode-ext/) поверх HTTP API.
 - **Config editor (done, 2026-07-17)**: spec-runner config editor (read + write via
   propose-pr).
+- **Sync & roadmap (done, 2026-07-14/15)**: vendored snapshot-контракт v1, verdict-движок,
+  фоновый fetch, `publish-snapshot`, auto-discovery, живые whitelist-кнопки, VSCode-вердикт.
+- **FR-04..06 + DESIGN-307 (done, 2026-07-18/19)**: onboarding-view (web/TUI/MCP/VSCode),
+  MCP-сервер, паритет TUI/VSCode, AI-подсказки значений через локальный claude-CLI.
+- **Открытая работа** — `TODO.md` в корне (пункты уровня команды); реализационный бэклог —
+  `spec/tasks.md`.
 
 ## Документы
 
