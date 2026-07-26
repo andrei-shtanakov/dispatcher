@@ -360,8 +360,12 @@ TASK-001 ──► TASK-206 (roadmap summary) ──┘        └──► TASK
 | M2 Surface completion | TASK-101 | 1/1 ✅ | — |
 | M3 Post-MVP views | TASK-102..105 | 4/4 ✅ | — |
 | **sync & roadmap M1** | TASK-201..209 | 9/9 ✅ | — |
-| **sync & roadmap M2** | TASK-210..211 | 1/2 🔄 | ~0.5d |
+| **sync & roadmap M2** | TASK-210..211 | 2/2 ✅ | — |
 
 sync & roadmap **M1 complete** (2026-07-14): все три Must наблюдаемы
-end-to-end в web и TUI. Осталось M2: живые кнопки действий (TASK-210,
-github-checker headless-команды уже отгружены) и VSCode-вердикт (TASK-211).
+end-to-end в web и TUI. **M2 complete**: живые кнопки действий (TASK-210,
+поверх headless-команд github-checker) и VSCode status-bar вердикт
+(TASK-211, `vscode-ext/src/extension.ts` поверх `GET /api/sync`).
+
+Открытых TASK-NNN в этом файле не осталось; кросс-проектные точки и хвосты
+качества — в `TODO.md` в корне репо.
