@@ -41,6 +41,8 @@ semantics, and vice versa.
 | `rules.yaml` | evidence rule registry with `evidence_grade` (machine \| attestation) |
 | `diagnostics.yaml` | diagnostic code registry — `default_severity` / `scope` / `escalation` policy |
 | `fixtures/` | input `.md` + pinned `expected.json` (the machine-checkable spec) |
+| `manifest.json` | canonical surface fingerprint — per-file `sha256` + `tree_sha256` rollup (drift control, PF-6) |
+| `drift-control.md` | drift-control policy — surface, compatibility, warn→error escalation, consumer registry (PF-6) |
 
 > **The one open object:** `raw` (the `RawTags` `$def`) is intentionally
 > `additionalProperties: true` — it preserves tag values exactly as written, including tags
@@ -130,4 +132,8 @@ repo `demo`); history-dependent cases (`reused-id/`) are bundles with `previous.
 ## Consumers
 
 Vendor a pinned copy of this directory inward; run the PF-3 validator against these fixtures
-in your own CI. Contract-drift control (canonical vs pinned copies) is **PF-6**.
+in your own CI. Contract-drift control (canonical vs pinned copies) is defined in
+`drift-control.md` with the machine fingerprint in `manifest.json` (**PF-6**): recompute your
+vendored surface hashes and compare to `manifest.json` to detect drift — offline, from your
+own repo. The executable checkers are code-repo companions (dispatcher `contract_in_sync`
+live-compare + each consumer's offline verify), not part of this knowledge base.
