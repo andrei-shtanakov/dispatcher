@@ -53,6 +53,17 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run pyrefly check
       - run: uv run pytest
+      # PF-7 external-install guard: the package must BUILD with its contract
+      # data and run conformance from a CLEAN venv (not the editable in-tree
+      # install). The editable install hid a force-include double-add that broke
+      # every external consumer; this step is the standing proof that a pinned
+      # git/wheel dependency resolves and works.
+      - name: wheel builds and conforms from a clean install
+        run: |
+          uv build
+          uv venv /tmp/pf-smoke
+          uv pip install --python /tmp/pf-smoke dist/*.whl
+          /tmp/pf-smoke/bin/plan-fields conformance
 
   vscode-ext:
     runs-on: ubuntu-latest
