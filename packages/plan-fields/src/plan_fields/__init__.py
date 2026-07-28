@@ -11,7 +11,7 @@ from plan_fields.parser import parse_todo
 from plan_fields.scrape import ScrapedItem, scrape_items
 from plan_fields.validator import load_schema, run_conformance, validate_document
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 __all__ = [
     "ScrapedItem",

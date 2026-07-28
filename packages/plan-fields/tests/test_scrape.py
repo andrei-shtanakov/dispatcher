@@ -54,6 +54,18 @@ def test_multiple_tags_extracted_including_unmodeled() -> None:
     }
 
 
+def test_tag_written_about_in_prose_is_not_a_tag() -> None:
+    # the `@` must start the line or follow whitespace: a tag NAMED in prose
+    # (here inside backticks) is not a real tag, so neither its "value" nor the
+    # surrounding text is corrupted. Regression for the 1/203 fleet divergence.
+    it = scrape_items(
+        "- [ ] graph has 15 `@blocked_by:` and 20 `@trigger:` edges @owner:andrei\n"
+    )[0]
+    assert dict(it.tags) == {"owner": "andrei"}
+    assert it.item_id is None
+    assert it.display_text == "graph has 15 `@blocked_by:` and 20 `@trigger:` edges"
+
+
 def test_raw_text_is_preserved_verbatim() -> None:
     it = scrape_items("- [ ]   spaced   out   @owner:a  \n")[0]
     assert it.raw_text == "spaced   out   @owner:a"  # inner spacing kept, ends trimmed
