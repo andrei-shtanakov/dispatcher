@@ -42,6 +42,22 @@ def test_classify_flags_ambiguous_and_closed() -> None:
     assert refs["seam"] == "ambiguous"
 
 
+def test_resolution_ignores_slug_inside_a_tag_and_is_case_insensitive() -> None:
+    fleet = {
+        # the slug appears ONLY in another item's @blocked_by tag, never in prose:
+        # that citer must not be mistaken for the target.
+        "t": _items(
+            "- [ ] Ship the R-99 feature now\n"  # real target (prose, mixed case)
+            "- [ ] unrelated @blocked_by:t#R-99\n"  # merely cites it
+        ),
+        "s": _items("- [ ] w @blocked_by:t#r-99\n"),  # lowercase ref
+    }
+    refs = [r for r in classify_legacy(fleet, {"t", "s"}) if r.source_repo == "s"]
+    assert len(refs) == 1
+    assert refs[0].resolution == "clean-open"  # case-insensitive, prose-scoped
+    assert refs[0].target_line == 1  # the prose item, not the citer
+
+
 def test_suggest_reuses_clean_slug_only_for_its_line() -> None:
     items = _items("- [ ] target seam item\n- [ ] another seam item\n")
     # only line 1 is the clean target; line 2 must NOT inherit the slug

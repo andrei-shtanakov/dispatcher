@@ -155,6 +155,17 @@ def classify_legacy(
     return out
 
 
+def _matches(item: ScrapedItem, slug: str) -> bool:
+    """Does `slug` name `item`? Once the item carries an `@id`, only an exact
+    (case-insensitive) `@id` match counts — the canonical identity. Before the
+    backfill, fall back to the slug appearing in the tag-stripped `display_text`
+    (case-insensitive), so casing and tag values never mis-resolve."""
+    low = slug.lower()
+    if item.item_id:
+        return item.item_id.lower() == low
+    return low in item.display_text.lower()
+
+
 def _resolve(repo, line, raw, trepo, slug, fleet, manifest) -> LegacyRef:
     def ref(res, tline=None):
         return LegacyRef(repo, line, raw, trepo, slug, res, tline)
@@ -163,7 +174,7 @@ def _resolve(repo, line, raw, trepo, slug, fleet, manifest) -> LegacyRef:
         return ref("not-in-manifest")  # plan defect
     if trepo not in fleet:
         return ref("absent")  # in manifest, not scanned here — environmental
-    hits = [i for i in fleet[trepo] if slug in i.raw_text]
+    hits = [i for i in fleet[trepo] if _matches(i, slug)]
     if not hits:
         return ref("missing")
     if len(hits) > 1:
