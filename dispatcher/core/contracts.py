@@ -8,6 +8,7 @@ elsewhere carry the same name and must not produce false drift.
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 from dispatcher.core.models import ContractStatus
@@ -19,6 +20,20 @@ _VENDORED_WHITELIST: dict[str, Path] = {
 }
 _SCHEMA_PROJECT = "spec-runner"
 _SCHEMA_DIR = Path("schemas")
+
+# plan-fields drift control (PF-6). The canonical fingerprint (manifest.json)
+# lives in prograph-vault; the one vendored copy is dispatcher's own package.
+# Neither is a "detected project", so resolve them from the monorepo layout
+# (overridable via the projects map, which keeps this hermetically testable).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_PF_CONTRACT_NAME = "plan-fields-v1"  # matches roadmap items' target_contract
+_PF_CANON_PROJECT = "prograph-vault"
+_PF_CANON_DIR_REL = Path("authored/contracts/plan-fields/v1")
+_PF_MANIFEST_REL = _PF_CANON_DIR_REL / "manifest.json"
+_PF_VENDORED_REL = Path("packages/plan-fields/src/plan_fields/contract")
+# excluded from the fingerprinted surface (parity with the vault generator):
+# drift-control meta + the vendor-only pin marker.
+_PF_META = {"manifest.json", "drift-control.md", "PINNED.txt"}
 
 
 def _sha256(path: Path) -> str | None:
@@ -32,8 +47,100 @@ def check_contracts(projects: dict[str, Path]) -> list[ContractStatus]:
     """Build contract statuses for the detected projects."""
     results: list[ContractStatus] = []
     results.extend(_catalog_drift(projects))
+    results.extend(_plan_fields_drift(projects))
     results.extend(_schema_listing(projects))
     return results
+
+
+def _valid_surface(surface: object) -> bool:
+    """A manifest `surface` is a list of {path: non-empty str, sha256: str}."""
+    return isinstance(surface, list) and all(
+        isinstance(e, dict)
+        and isinstance(e.get("path"), str)
+        and bool(e.get("path"))
+        and isinstance(e.get("sha256"), str)
+        for e in surface
+    )
+
+
+def _surface_drift(root: Path, surface: list[dict]) -> str | None:
+    """First surface file under `root` whose sha256 ≠ the manifest, else None.
+
+    Assumes a validated surface (see `_valid_surface`). Returns
+    `"<path> missing"` when a file is absent, `"<path>"` when it differs — the
+    caller turns this into the drift detail.
+    """
+    for entry in surface:
+        rel = str(entry["path"])
+        actual = _sha256(root / rel)
+        if actual is None:
+            return f"{rel} missing"
+        if actual != entry["sha256"]:
+            return rel
+    return None
+
+
+def _canon_stale(canon_dir: Path, surface: list[dict]) -> str | None:
+    """Reason the manifest no longer matches the live canon surface, else None.
+
+    Compares the *whole* live surface (every file under `canon_dir` minus the
+    meta files) against the manifest — by set first, so an ADDED or REMOVED
+    canon file is caught even though it is absent from `surface`, then by hash.
+    A stale manifest must never certify (drift-control.md).
+    """
+    recorded = {e["path"]: e["sha256"] for e in surface}
+    live = {
+        p.relative_to(canon_dir).as_posix(): _sha256(p)
+        for p in canon_dir.rglob("*")
+        if p.is_file() and p.relative_to(canon_dir).as_posix() not in _PF_META
+    }
+    if set(live) != set(recorded):
+        added = sorted(set(live) - set(recorded))
+        removed = sorted(set(recorded) - set(live))
+        return f"surface set changed (added={added}, removed={removed})"
+    for rel, digest in live.items():
+        if digest != recorded[rel]:
+            return rel
+    return None
+
+
+def _plan_fields_drift(projects: dict[str, Path]) -> list[ContractStatus]:
+    """One `contract_in_sync` verdict for the plan-fields contract (PF-6).
+
+    Compares the vendored contract surface against the canonical
+    `manifest.json` fingerprint. A stale manifest (canon files changed but the
+    fingerprint was not regenerated) is an immediate error, per
+    `drift-control.md` — the guard must never certify a fingerprint it no longer
+    matches.
+    """
+    vault = projects.get(_PF_CANON_PROJECT) or (_REPO_ROOT.parent / _PF_CANON_PROJECT)
+    self_root = projects.get("dispatcher") or _REPO_ROOT
+    manifest_path = vault / _PF_MANIFEST_REL
+    vendored_dir = self_root / _PF_VENDORED_REL
+
+    def status(in_sync: bool | None, detail: str | None) -> ContractStatus:
+        return ContractStatus(
+            name=_PF_CONTRACT_NAME,
+            canonical_path=str(manifest_path),
+            vendored_path=str(vendored_dir),
+            in_sync=in_sync,
+            detail=detail,
+        )
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return [status(None, "canonical manifest not available")]
+    surface = manifest.get("surface", [])
+    if not _valid_surface(surface):
+        return [status(None, "malformed manifest surface")]
+    stale = _canon_stale(vault / _PF_CANON_DIR_REL, surface)
+    if stale is not None:
+        return [status(False, f"canonical manifest stale: {stale}")]
+    drifted = _surface_drift(vendored_dir, surface)
+    if drifted is not None:
+        return [status(False, f"vendored copy drifts at {drifted}")]
+    return [status(True, None)]
 
 
 def _catalog_drift(projects: dict[str, Path]) -> list[ContractStatus]:
