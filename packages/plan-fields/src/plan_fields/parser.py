@@ -14,12 +14,11 @@ import re
 from typing import Any
 
 from plan_fields.canonical import canonicalize
+from plan_fields.scrape import _canonical_title, scrape_items
 
 CONTRACT_VERSION = 1
 SCHEMA_VERSION = 1
 
-ITEM_RE = re.compile(r"^\s*-\s\[([ xX])\]\s+(.*)$")
-TAG_RE = re.compile(r'@([a-z][a-z_-]*):(?:"([^"]*)"|(\S+))')
 TODO_URI_RE = re.compile(r"^todo://([a-z0-9][a-z0-9-]*)/([a-z0-9][a-z0-9._-]{0,63})$")
 LEGACY_RE = re.compile(r"^([a-z0-9][a-z0-9-]*)#(\S+)$")
 ROLE_RE = re.compile(r"^[a-z][a-z0-9-]{1,31}$")
@@ -41,16 +40,6 @@ def _prov(repo: str, path: str, line: int) -> dict[str, Any]:
     }
 
 
-def _tags(rest: str) -> tuple[str, dict[str, str]]:
-    """Return (title, raw-tags) — title is the text before the first @tag."""
-    raw: dict[str, str] = {}
-    first = TAG_RE.search(rest)
-    title = (rest[: first.start()] if first else rest).strip()
-    for m in TAG_RE.finditer(rest):
-        raw[m.group(1)] = m.group(2) if m.group(2) is not None else m.group(3)
-    return title, raw
-
-
 def _freshness(raw: dict[str, str]) -> dict[str, Any] | None:
     if not any(k in raw for k in FRESHNESS):
         return None
@@ -68,16 +57,15 @@ def parse_todo(
     references: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     diagnostics: list[dict[str, Any]] = []
-    # first pass: collect nodes (need the id set before resolving references)
+    # first pass: collect nodes (need the id set before resolving references).
+    # Built on the shared operational scrape — one tokenizer for the whole fleet.
     parsed: list[tuple[dict[str, Any], dict[str, str]]] = []
-    for lineno, line in enumerate(text.splitlines(), start=1):
-        m = ITEM_RE.match(line)
-        if not m:
-            continue
-        status = "closed" if m.group(1) in ("x", "X") else "open"
-        title, raw = _tags(m.group(2))
-        item_id = raw.get("id")
-        prov = _prov(repo, path, lineno)
+    for item in scrape_items(text):
+        status = "closed" if item.checked else "open"
+        raw = dict(item.tags)
+        title = _canonical_title(item.raw_text)
+        item_id = item.item_id
+        prov = _prov(repo, path, item.line)
         if not item_id:
             # PF-ID-MISSING is for ACTIONABLE (open) items only; a closed line
             # without an @id is not actionable, so it is silently skipped.
@@ -89,7 +77,7 @@ def parse_todo(
                         None,
                         None,
                         None,
-                        f"actionable item in repo {repo} has no @id (line {lineno})",
+                        f"actionable item in repo {repo} has no @id (line {item.line})",
                         prov,
                     )
                 )
