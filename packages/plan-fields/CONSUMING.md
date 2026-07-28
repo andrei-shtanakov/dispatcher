@@ -88,6 +88,18 @@ installability is proven on every change to the package.
   `PF-BLOCKER-STALE` from the resolved graph. The `plan-fields fleet-graph
   --root <ws> --manifest <manifest.toml>` CLI is the disk-side loader (the
   sensor's entry point) that freezes inputs and calls both.
+- `plan_fields.check_legacy_fleet(inputs, manifest, exclude=...)` → the
+  **transitional** legacy blocker graph over **un-`@id`'d** sources — the graph a
+  pre-PF-2B fleet still lives on, which `parse_fleet` (source-`@id`-gated) cannot
+  see. Built on `scrape_items`, it reproduces the old `<repo>#<slug>` resolution
+  and returns `list[LegacyDiagnostic]` (a package type, **not** a canonical
+  contract `Diagnostic`): `identity_grade="legacy"`, always a warning, never a
+  canonical node/edge, never hardened to a blocking error. A source is skipped
+  once it carries an `@id` (its refs become `parse_fleet`'s), so a relation moves
+  from legacy to canonical without being counted twice; the API returns empty at
+  100% `@id` coverage and is removed then. Consumers run both passes:
+  `canonical = check_fleet(parse_fleet(inputs, manifest))` and
+  `legacy = check_legacy_fleet(inputs, manifest, exclude={(r["provenance"]["repo"], r["raw_ref"]) for r in snap["references"]})`.
 - `plan_fields.validator.run_conformance()` and the `plan-fields` CLI.
 - The pinned contract under `plan_fields/contract/` (schema, registries,
   fixtures, `manifest.json`).
