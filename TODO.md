@@ -22,6 +22,10 @@
 - Поля пункта — инлайн-теги `@owner:` / `@blocked_by:<repo>#<slug>` / `@trigger:"…"`
   (формат — §3 handoff-ноты 2026-07-26). Все три опциональны: пустое поле означает
   «неизвестно» и само измеримо — это честнее выдуманного владельца или триггера.
+- `@id:<node-id>` — канонический идентификатор пункта (ADR-ECO-005 PF-2B): строчная
+  грамматика `[a-z0-9][a-z0-9._-]{0,63}`, из него строится URI `todo://dispatcher/<id>`.
+  Переходно `@blocked_by` принимает и legacy `<repo>#<slug>`, и канонический
+  `todo://<repo>/<id>`.
 - **Теги и суть пункта — на одной строке с `- [ ]`**: парсер (`plan_state._UNCHECKED`)
   разбирает пункт строго построчно, продолжения ниже он не видит. Отступленные строки
   под пунктом — контекст для человека.
@@ -51,7 +55,7 @@
 
 ## Governance-плоскость (ADR-ECO-004)
 
-- [ ] Governance view: рендерить `declared vs observed` enforcement-зрелость правил (ADR-ECO-004 D3, Batch 2 §6) @owner:andrei @blocked_by:prograph-vault#governance-observed-derived @trigger:"в prograph-vault появился derived/governance/ с observed-зрелостью"
+- [ ] Governance view: рендерить `declared vs observed` enforcement-зрелость правил (ADR-ECO-004 D3, Batch 2 §6) @owner:andrei @blocked_by:prograph-vault#governance-observed-derived @trigger:"в prograph-vault появился derived/governance/ с observed-зрелостью" @id:governance-declared-vs-observed
       Declared-сторона готова: `../prograph-vault/authored/registry/governance.yaml`
       (v1, 2026-07-18) и сам файл называет ожидаемый путь observed —
       `derived/governance/`, который на 2026-07-26 не существует. Сравнивать не с чем,
@@ -60,44 +64,44 @@
 
 ## Кросс-репные контракты
 
-- [ ] `contracts/executor-config/v0-provisional`: довести до реального потребителя либо явно пометить контракт отложенным @owner:andrei @blocked_by:maestro#specrunnerconfig-passthrough @trigger:"Maestro начал читать contracts/executor-config"
+- [ ] `contracts/executor-config/v0-provisional`: довести до реального потребителя либо явно пометить контракт отложенным @owner:andrei @blocked_by:todo://maestro/specrunnerconfig-passthrough @trigger:"Maestro начал читать contracts/executor-config" @id:executor-config-consumer
       Статус-обзор экосистемы 07-24 назвал это watch-item: схема запинена (DESIGN-301),
       но единственная ссылка в экосистеме — план-док Maestro
       `2026-07-17-specrunnerconfig-passthrough.md`, потребителя нет. Риск — зомби-пин,
       который «застыл» без интеграции. Наша часть — решение: ждать потребителя или
       написать в README контракта, что он отложен.
-- [ ] Заморозить схемы MCP-тулзов (вендоринг пиненой копией по дисциплине ADR-ECO-003) @owner:andrei @trigger:"robin или Maestro начали вызывать dispatcher mcp"
+- [ ] Заморозить схемы MCP-тулзов (вендоринг пиненой копией по дисциплине ADR-ECO-003) @owner:andrei @trigger:"robin или Maestro начали вызывать dispatcher mcp" @id:freeze-mcp-tool-schemas
       Схемы 15 тулзов сознательно UNSTABLE: фиксировать контракт до первого потребителя
       значит заморозить угаданную форму.
-- [ ] Вендорить `contracts/actions/v1`, когда github-checker его опубликует @owner:andrei @blocked_by:github-checker#contracts-actions-v1 @trigger:"github-checker опубликовал контракт действий"
+- [ ] Вендорить `contracts/actions/v1`, когда github-checker его опубликует @owner:andrei @blocked_by:github-checker#contracts-actions-v1 @trigger:"github-checker опубликовал контракт действий" @id:vendor-contracts-actions-v1
       Принятый (не блокирующий) follow-up PR #40: сейчас контракт действий существует
       только как поведение бинаря и проверяется live-смоуком.
 
 ## Хвосты качества
 
-- [ ] Прогнать live-смоук write-path с реальным `github-checker` на PATH @owner:andrei
+- [ ] Прогнать live-смоук write-path с реальным `github-checker` на PATH @owner:andrei @id:live-smoke-write-path
       Замер 2026-07-26: `test_write_path_live_smoke_real_binary` — **skipped**, бинаря на
       PATH нет, то есть уровень 3 из DESIGN-405 на этой машине не проверяется. Именно
       stub-маскировка однажды дала ложное «ok» и стоила гейта на write-path.
-- [ ] Route-level тест сериализации `ok=True` для четырёх additive-полей `ActionOutcome` @owner:andrei
+- [ ] Route-level тест сериализации `ok=True` для четырёх additive-полей `ActionOutcome` @owner:andrei @id:action-outcome-serialization-test
       Принятый follow-up PR #40.
-- [ ] ruamel: standalone-комментарий сразу после блока `spec_runner` теряется при ре-рендере `project.yaml` @owner:andrei
+- [ ] ruamel: standalone-комментарий сразу после блока `spec_runner` теряется при ре-рендере `project.yaml` @owner:andrei @id:ruamel-standalone-comment-loss
       Деградация fail-visible (лишний PR вместо no-op), но это потеря пользовательского
       текста в чужом репо.
-- [ ] README + иконка для `vscode-ext/` @owner:andrei
+- [ ] README + иконка для `vscode-ext/` @owner:andrei @id:vscode-ext-readme
       Страница расширения показывает «No README available».
 
 ## Наблюдения (работу не начинаем, пока не сработает триггер)
 
-- [ ] Пин `fastmcp<3` и три отклонённых GHSA (OpenAPI SSRF, OAuth proxy, Gemini-CLI injection) — переоценить @owner:andrei @trigger:"бамп fastmcp до 3.x"
+- [ ] Пин `fastmcp<3` и три отклонённых GHSA (OpenAPI SSRF, OAuth proxy, Gemini-CLI injection) — переоценить @owner:andrei @trigger:"бамп fastmcp до 3.x" @id:fastmcp-pin-reeval
       Отклонены обоснованно: путь только stdio, без OpenAPI/OAuth/HTTP. Патчи есть лишь
       в 3.2.0, а пин `<3` держит мажор общим с Maestro.
-- [ ] Двойное имя Maestro: коллектор отдаёт `"Maestro"`, канон репо — `maestro` @owner:andrei @trigger:"каталог Maestro/ переименован в maestro/ на диске"
+- [ ] Двойное имя Maestro: коллектор отдаёт `"Maestro"`, канон репо — `maestro` @owner:andrei @trigger:"каталог Maestro/ переименован в maestro/ на диске" @id:maestro-double-name
       Детект коллектора content-based (`maestro/` + `pyproject.toml`), поэтому
       переименование каталога discovery не сломает — но в Sync-вкладке repo придёт под
       именем каталога, и два пространства имён разойдутся. Тот же класс, что discovery-имя
       vs service-id у proctor: слепое переименование запрещено, нужна осознанная
       нормализация.
-- [ ] Handoff в arbiter по ошибке `agent_id` в `report_benchmark` @owner:andrei
+- [ ] Handoff в arbiter по ошибке `agent_id` в `report_benchmark` @owner:andrei @id:arbiter-agent-id-handoff
       Дефект соседа, который dispatcher только показывает; наша часть — написать
       handoff/issue, править чужой репо нельзя.
