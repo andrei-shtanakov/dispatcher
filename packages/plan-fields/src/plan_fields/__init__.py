@@ -7,18 +7,22 @@ Standalone by design: no import of the dispatcher application. The v1 contract
 from __future__ import annotations
 
 from plan_fields.canonical import canonical_dumps, canonicalize
+from plan_fields.fleet_api import RepoInput, check_fleet, parse_fleet
 from plan_fields.parser import parse_todo
 from plan_fields.scrape import ScrapedItem, scrape_items
 from plan_fields.validator import load_schema, run_conformance, validate_document
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
+    "RepoInput",
     "ScrapedItem",
     "__version__",
     "canonical_dumps",
     "canonicalize",
+    "check_fleet",
     "load_schema",
+    "parse_fleet",
     "parse_todo",
     "run_conformance",
     "scrape_items",

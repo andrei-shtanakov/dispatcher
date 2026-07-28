@@ -73,7 +73,21 @@ installability is proven on every change to the package.
 - `plan_fields.parse_todo(text, repo, ...)` → canonical plan-fields JSON
   (nodes with checkbox status, `todo://` identity, `@owner`, `@blocked_by`
   references/edges, and the freshness triple `source_ref` / `observed_at` /
-  `recheck_by`), plus diagnostics.
+  `recheck_by`), plus diagnostics. **Single-repo**: cross-repo `@blocked_by`
+  stays unresolved — one file cannot know if `todo://maestro/r-03b` exists.
+- `plan_fields.parse_fleet(inputs, manifest)` → the same contract-valid envelope
+  spanning the whole fleet, with cross-repo `todo://` (and transitional legacy)
+  references **resolved into edges**. `inputs` is a list of
+  `RepoInput(repo, todo_text, commit, available)` the caller has already frozen —
+  `parse_fleet` does **no** directory/git/network discovery, and the `manifest`
+  set is the sole authority for which repos exist. The five target outcomes are
+  stable diagnostic codes: `PF-ID-DANGLING` (canonical id missing),
+  `PF-BLOCKER-REPO-UNKNOWN` (repo not in manifest — a plan defect),
+  `PF-BLOCKER-UNRESOLVABLE` / `PF-BLOCKER-NO-TODO` (environmental),
+  `PF-LEGACY-AMBIGUOUS`. `plan_fields.check_fleet(snapshot)` adds
+  `PF-BLOCKER-STALE` from the resolved graph. The `plan-fields fleet-graph
+  --root <ws> --manifest <manifest.toml>` CLI is the disk-side loader (the
+  sensor's entry point) that freezes inputs and calls both.
 - `plan_fields.validator.run_conformance()` and the `plan-fields` CLI.
 - The pinned contract under `plan_fields/contract/` (schema, registries,
   fixtures, `manifest.json`).

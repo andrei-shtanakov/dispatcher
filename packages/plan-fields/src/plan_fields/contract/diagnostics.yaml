@@ -42,6 +42,12 @@ codes:
     escalation: never
     summary: "@blocked_by names a repo that keeps no TODO.md — the claim cannot be verified from here"
 
+  PF-BLOCKER-REPO-UNKNOWN:
+    default_severity: warning
+    scope: cross_repo
+    escalation: second_independent_snapshot
+    summary: "@blocked_by names a repo absent from the frozen workspace manifest — a plan defect the author must fix, distinct from a manifest repo that is merely not checked out (PF-BLOCKER-UNRESOLVABLE, environmental)"
+
   PF-ID-DUPLICATE:
     default_severity: error
     scope: intra_repo

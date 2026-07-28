@@ -10,7 +10,8 @@ from pathlib import Path
 from jsonschema.exceptions import ValidationError
 
 from plan_fields import fleet as _fleet
-from plan_fields.canonical import canonical_dumps
+from plan_fields.canonical import canonical_dumps, canonicalize
+from plan_fields.fleet_api import RepoInput, check_fleet, parse_fleet
 from plan_fields.parser import parse_todo
 from plan_fields.validator import run_conformance, validate_document
 
@@ -96,6 +97,68 @@ def _cmd_fleet_legacy(args: argparse.Namespace) -> int:
     return 0
 
 
+def _head_commit(repo_dir: Path) -> str | None:
+    """Resolve a checkout's HEAD commit from files only (no git subprocess)."""
+    try:
+        head = (repo_dir / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not head.startswith("ref: "):
+        return head or None  # detached HEAD is a raw sha
+    ref = head[5:].strip()
+    try:
+        return (repo_dir / ".git" / ref).read_text(encoding="utf-8").strip() or None
+    except OSError:
+        pass
+    try:
+        for line in (
+            (repo_dir / ".git" / "packed-refs").read_text(encoding="utf-8").splitlines()
+        ):
+            parts = line.split(" ", 1)
+            if len(parts) == 2 and parts[1].strip() == ref:
+                return parts[0]
+    except OSError:
+        return None
+    return None
+
+
+def _fleet_inputs(root: Path, manifest: set[str]) -> list[RepoInput]:
+    """Freeze one RepoInput per manifest repo from disk — the sensor's job.
+
+    The manifest is the authority for which repos exist; a declared repo with no
+    checkout here is ``available=False``, one with a checkout but no TODO.md has
+    ``todo_text=None``. This disk read is deliberately OUTSIDE ``parse_fleet``.
+    """
+    on_disk: dict[str, Path] = {}
+    for child in sorted(root.iterdir()):
+        if child.is_dir() and (child / ".git").exists():
+            on_disk[_fleet.canonical_name(child).lower()] = child
+    inputs: list[RepoInput] = []
+    for repo in sorted(manifest):
+        d = on_disk.get(repo)
+        if d is None:
+            inputs.append(RepoInput(repo, available=False))
+            continue
+        todo = d / "TODO.md"
+        text = (
+            todo.read_text(encoding="utf-8", errors="ignore")
+            if todo.is_file()
+            else None
+        )
+        inputs.append(
+            RepoInput(repo, todo_text=text, commit=_head_commit(d), available=True)
+        )
+    return inputs
+
+
+def _cmd_fleet_graph(args: argparse.Namespace) -> int:
+    manifest = _fleet.manifest_repos(Path(args.manifest))
+    snap = parse_fleet(_fleet_inputs(Path(args.root), manifest), manifest)
+    snap["diagnostics"].extend(check_fleet(snap))
+    sys.stdout.write(canonical_dumps(canonicalize(snap)))
+    return 0
+
+
 def _cmd_fleet_snapshot(args: argparse.Namespace) -> int:
     fleet, _ = _load_fleet(args)
     print(json.dumps(_fleet.snapshot(fleet), indent=2, ensure_ascii=False))
@@ -149,6 +212,16 @@ def main(argv: list[str] | None = None) -> int:
     fn = sub.add_parser("fleet-snapshot", help="per-item zero-drift baseline (JSON)")
     _fleet_args(fn)
     fn.set_defaults(fn=_cmd_fleet_snapshot)
+
+    fg = sub.add_parser(
+        "fleet-graph",
+        help="canonical cross-repo graph (parse_fleet + check_fleet) as contract JSON",
+    )
+    fg.add_argument("--root", required=True, help="workspace root (holds the repos)")
+    fg.add_argument(
+        "--manifest", required=True, help="workspace-manifest.toml (fleet authority)"
+    )
+    fg.set_defaults(fn=_cmd_fleet_graph)
 
     fd = sub.add_parser("fleet-drift", help="compare two fleet snapshots")
     fd.add_argument("--before", required=True)
