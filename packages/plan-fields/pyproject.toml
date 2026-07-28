@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "jsonschema>=4.26.0",
-    "pyyaml>=6.0.3",
 ]
 
 # This package is deliberately standalone: it MUST NOT depend on or import the

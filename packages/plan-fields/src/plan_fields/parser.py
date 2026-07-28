@@ -79,17 +79,20 @@ def parse_todo(
         item_id = raw.get("id")
         prov = _prov(repo, path, lineno)
         if not item_id:
-            diagnostics.append(
-                _diag(
-                    "PF-ID-MISSING",
-                    "warning",
-                    None,
-                    None,
-                    None,
-                    f"actionable item in repo {repo} has no @id (line {lineno})",
-                    prov,
+            # PF-ID-MISSING is for ACTIONABLE (open) items only; a closed line
+            # without an @id is not actionable, so it is silently skipped.
+            if status == "open":
+                diagnostics.append(
+                    _diag(
+                        "PF-ID-MISSING",
+                        "warning",
+                        None,
+                        None,
+                        None,
+                        f"actionable item in repo {repo} has no @id (line {lineno})",
+                        prov,
+                    )
                 )
-            )
             continue
         node_id = f"todo://{repo}/{item_id}"
         owner = raw.get("owner")
@@ -193,7 +196,11 @@ def _resolve(node, blocked, repo, nodes, ids):
     m = TODO_URI_RE.match(blocked)
     if m:
         target_repo, target_id = m.group(1), m.group(2)
-        if target_repo == repo and target_id in ids:
+        if target_repo != repo:
+            # cross-repo canonical: v0.1 has no fleet inputs to decide existence,
+            # so leave it unresolved WITHOUT a diagnostic (cross-repo is Phase 0b).
+            return ref, None, None
+        if target_id in ids:
             ref["resolved_target"] = blocked
             return (
                 ref,
@@ -220,7 +227,10 @@ def _resolve(node, blocked, repo, nodes, ids):
     lm = LEGACY_RE.match(blocked)
     if lm:
         ref["legacy_blocker_ref"] = blocked
-        slug = lm.group(2)
+        legacy_repo, slug = lm.group(1), lm.group(2)
+        if legacy_repo != repo:
+            # cross-repo legacy: do NOT resolve against local ids (Phase 0b).
+            return ref, None, None
         matches = [n for n in nodes if slug in n["id"]]
         if len(matches) == 1:
             target = matches[0]["node_id"]
