@@ -1,0 +1,4 @@
+source: prograph-vault authored/contracts/plan-fields/v1
+commit: fc287f3c4274728f2b68a3376e8843a7d69ca096
+vendored: 2026-07-28
+note: pinned copy (repo-boundaries vendoring). Do not edit here; re-vendor from the pin. Drift-control is PF-6.

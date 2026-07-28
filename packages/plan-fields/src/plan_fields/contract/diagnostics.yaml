@@ -1,0 +1,97 @@
+# plan-fields v1 — diagnostic code registry.
+#
+# This registry describes POLICY, not per-instance outcome:
+#   * default_severity — the severity a fresh occurrence starts at.
+#   * scope            — intra_repo (provable from one repo) | cross_repo (needs >=1 other).
+#   * escalation       — when a still-present diagnostic hardens:
+#       immediate                  — already at its terminal severity on first observation.
+#       second_independent_snapshot— warning now; error once re-seen on a later independent
+#                                    snapshot (new scan_id, new observation time, >=1 completed
+#                                    fleet-scan between; a rerun of identical inputs does NOT
+#                                    count). ADR-ECO-005 D7.
+#       never                      — environmental / advisory; never becomes an error.
+#
+# A Diagnostic instance (schema.json) carries the already-COMPUTED severity. Phase 0b owns
+# the history that applies escalation; the contract only states the policy.
+
+contract_version: 1
+version: 1
+
+codes:
+  PF-BLOCKER-DANGLING:
+    default_severity: warning
+    scope: cross_repo
+    escalation: second_independent_snapshot
+    summary: "@blocked_by names an @id that is absent from the target repo's TODO"
+
+  PF-BLOCKER-STALE:
+    default_severity: warning
+    scope: cross_repo
+    escalation: second_independent_snapshot
+    summary: "@blocked_by resolves to a target item that is already closed while the source stays open"
+
+  PF-BLOCKER-UNRESOLVABLE:
+    default_severity: warning
+    scope: cross_repo
+    escalation: never
+    summary: "@blocked_by target repo is not checked out on this host — environmental, not a plan defect"
+
+  PF-BLOCKER-NO-TODO:
+    default_severity: warning
+    scope: cross_repo
+    escalation: never
+    summary: "@blocked_by names a repo that keeps no TODO.md — the claim cannot be verified from here"
+
+  PF-ID-DUPLICATE:
+    default_severity: error
+    scope: intra_repo
+    escalation: immediate
+    summary: "the same @id appears on two items in one repo"
+
+  PF-ID-REUSED:
+    default_severity: error
+    scope: intra_repo
+    escalation: immediate
+    summary: "an @id retired on a closed/tombstoned item is reused by a different item (history-dependent)"
+
+  PF-ID-MISSING:
+    default_severity: warning
+    scope: intra_repo
+    escalation: second_independent_snapshot
+    summary: "an actionable (open) item carries no @id"
+
+  PF-ID-DANGLING:
+    default_severity: warning
+    scope: cross_repo
+    escalation: second_independent_snapshot
+    summary: "a CANONICAL todo:// inbound reference points to an @id that does not exist (distinct from a legacy slug miss)"
+
+  PF-LEGACY-AMBIGUOUS:
+    default_severity: warning
+    scope: cross_repo
+    escalation: second_independent_snapshot
+    summary: "a legacy <repo>#<slug> reference matches zero or more than one item — kept as legacy_blocker_ref, never a canonical edge"
+
+  PF-OWNER-MISSING:
+    default_severity: warning
+    scope: intra_repo
+    escalation: second_independent_snapshot
+    summary: "an item carries no @owner role"
+
+  PF-OWNER-GRAMMAR:
+    default_severity: warning
+    scope: intra_repo
+    escalation: second_independent_snapshot
+    summary: "@owner is not a valid DEC-007 role-slug (^[a-z][a-z0-9-]{1,31}$, no @)"
+
+  PF-TOMBSTONE-REMOVED:
+    default_severity: warning
+    scope: cross_repo
+    escalation: second_independent_snapshot
+    summary: "a tombstoned @id with inbound references was deleted (history-dependent; warning first, error on the second independent snapshot)"
+
+  PF-RECHECK-EXPIRED:
+    default_severity: warning
+    scope: intra_repo
+    escalation: immediate
+    summary: "the item's @recheck-by date has passed"

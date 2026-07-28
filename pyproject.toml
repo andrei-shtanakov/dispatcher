@@ -27,6 +27,9 @@ packages = ["dispatcher"]
 
 [tool.ruff]
 line-length = 88
+# packages/* are standalone nested projects with their own pyproject + CI job;
+# the root tool pass must not lint/format them with the root config.
+extend-exclude = ["packages"]
 
 [tool.ruff.lint]
 extend-select = ["I"]
@@ -40,6 +43,8 @@ project-includes = [
     "**/*.py*",
     "**/*.ipynb",
 ]
+# packages/* are standalone nested projects (own pyproject + search-path + CI job).
+project-excludes = ["packages/**"]
 search-path = [".", "tests"]
 
 [tool.prograph]

@@ -1,0 +1,43 @@
+# plan-fields v1 — evidence rule registry.
+#
+# The closed governance evidence vocabulary with an evidence_grade per rule
+# (ADR-ECO-005 D2/D3). Consumers (dispatcher roadmap engine, PF-4) read this to know
+# which rule kinds exist and how strong their evidence is.
+#
+# evidence_grade:
+#   machine      — an automated check proved the fact (file present, row exists, chain holds).
+#   attestation  — an owner publicly asserted the fact (e.g. closed a plan item). Sufficient
+#                  to PROMOTE status, but the projection MUST set implementation_is_attested_only
+#                  and consumers MUST NOT render `implemented (attested)` as machine-backed
+#                  `implemented` (ADR-ECO-005 D3, hard UI/API invariant).
+#
+# kinds: which evidence roles a rule may play (implementation | verification).
+
+contract_version: 1
+version: 1
+
+rules:
+  project_detected:
+    evidence_grade: machine
+    kinds: [implementation]
+  file_exists:
+    evidence_grade: machine
+    kinds: [implementation, verification]
+  sqlite_has_row:
+    evidence_grade: machine
+    kinds: [implementation, verification]
+  work_item_chain:
+    evidence_grade: machine
+    kinds: [verification]
+  contract_in_sync:
+    evidence_grade: machine
+    kinds: [verification]
+  plan_item_declared_closed:
+    evidence_grade: attestation
+    kinds: [implementation]
+
+notes:
+  - "attestation-grade evidence promotes to `implemented` but never asserts machine
+     verification; the projection carries implementation_is_attested_only (ADR-ECO-005 D3)."
+  - "adding a new rule kind is a governance change (ADR-ECO-005 D9); dispatcher does not
+     extend this vocabulary unilaterally."

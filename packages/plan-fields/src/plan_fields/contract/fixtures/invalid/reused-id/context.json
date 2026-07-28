@@ -1,0 +1,7 @@
+{
+  "repo": "demo",
+  "generated_at": "2026-07-28T00:00:00Z",
+  "previous": { "snapshot_id": "s1", "observed_at": "2026-07-20T00:00:00Z", "file": "previous.md" },
+  "current": { "snapshot_id": "s2", "observed_at": "2026-07-28T00:00:00Z", "file": "current.md" },
+  "note": "@id benchmark-2 is tombstoned (closed) in s1 and reappears on a different open item in s2 — a reuse of a retired id, not a rename (which would keep the id on the SAME item)."
+}
