@@ -9,6 +9,7 @@ from pathlib import Path
 
 from jsonschema.exceptions import ValidationError
 
+from plan_fields import fleet as _fleet
 from plan_fields.canonical import canonical_dumps
 from plan_fields.parser import parse_todo
 from plan_fields.validator import run_conformance, validate_document
@@ -42,6 +43,78 @@ def _cmd_conformance(_: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def _load_fleet(args: argparse.Namespace):
+    fleet = _fleet.scan_workspace(Path(args.root))
+    manifest = (
+        _fleet.manifest_repos(Path(args.manifest)) if args.manifest else set(fleet)
+    )
+    return fleet, manifest
+
+
+def _cmd_fleet_suggest(args: argparse.Namespace) -> int:
+    fleet, manifest = _load_fleet(args)
+    # only UNAMBIGUOUS references contribute a reusable slug, keyed by the exact
+    # target line — so an ambiguous slug never gets assigned to several items
+    clean: dict[str, dict[int, str]] = {}
+    for r in _fleet.classify_legacy(fleet, manifest):
+        if r.resolution == "clean-open" and r.target_line is not None:
+            clean.setdefault(r.target_repo, {})[r.target_line] = r.slug
+    rows = []
+    for repo in sorted(fleet):
+        for s in _fleet.suggest_ids(repo, fleet[repo], clean.get(repo, {})):
+            rows.append(
+                {
+                    "repo": s.repo,
+                    "line": s.line,
+                    "suggested_id": s.suggested_id,
+                    "source": s.source,
+                    "text": s.text,
+                }
+            )
+    print(json.dumps({"suggestions": rows}, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_fleet_legacy(args: argparse.Namespace) -> int:
+    fleet, manifest = _load_fleet(args)
+    refs = _fleet.classify_legacy(fleet, manifest)
+    rows = [
+        {
+            "source": f"{r.source_repo}/TODO.md:{r.source_line}",
+            "raw": r.raw,
+            "target_repo": r.target_repo,
+            "slug": r.slug,
+            "resolution": r.resolution,
+            "target_line": r.target_line,
+        }
+        for r in refs
+    ]
+    counts: dict[str, int] = {}
+    for r in refs:
+        counts[r.resolution] = counts.get(r.resolution, 0) + 1
+    print(json.dumps({"counts": counts, "refs": rows}, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_fleet_snapshot(args: argparse.Namespace) -> int:
+    fleet, _ = _load_fleet(args)
+    print(json.dumps(_fleet.snapshot(fleet), indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_fleet_drift(args: argparse.Namespace) -> int:
+    before = json.loads(Path(args.before).read_text(encoding="utf-8"))
+    after = json.loads(Path(args.after).read_text(encoding="utf-8"))
+    d = _fleet.drift(before, after)
+    if d.clean:
+        print("clean: only identity/ref fields changed (status/text/count identical)")
+        return 0
+    print("DRIFT — a backfill moved more than identity:", file=sys.stderr)
+    for line in d.detail:
+        print(f"  {line}", file=sys.stderr)
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="plan-fields", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -59,6 +132,28 @@ def main(argv: list[str] | None = None) -> int:
 
     c = sub.add_parser("conformance", help="run the vendored fixture suite")
     c.set_defaults(fn=_cmd_conformance)
+
+    # PF-2B0 read-only fleet tooling
+    def _fleet_args(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--root", required=True, help="workspace root (holds the repos)")
+        p.add_argument("--manifest", default=None, help="workspace-manifest.toml")
+
+    fs = sub.add_parser("fleet-suggest", help="suggest an @id per un-@id'd open item")
+    _fleet_args(fs)
+    fs.set_defaults(fn=_cmd_fleet_suggest)
+
+    fl = sub.add_parser("fleet-legacy", help="classify every legacy @blocked_by")
+    _fleet_args(fl)
+    fl.set_defaults(fn=_cmd_fleet_legacy)
+
+    fn = sub.add_parser("fleet-snapshot", help="per-item zero-drift baseline (JSON)")
+    _fleet_args(fn)
+    fn.set_defaults(fn=_cmd_fleet_snapshot)
+
+    fd = sub.add_parser("fleet-drift", help="compare two fleet snapshots")
+    fd.add_argument("--before", required=True)
+    fd.add_argument("--after", required=True)
+    fd.set_defaults(fn=_cmd_fleet_drift)
 
     args = parser.parse_args(argv)
     return args.fn(args)
