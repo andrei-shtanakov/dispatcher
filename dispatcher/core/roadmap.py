@@ -651,7 +651,7 @@ def _rule_plan_item_declared_closed(rule: dict, ctx: _EvidenceContext) -> _RuleO
     m = _TODO_REF_RE.match(ref)
     if not m:
         return False, f"invalid ref {ref!r} (want todo://<repo>/<id>)", None
-    repo, item_id = m.group(1), m.group(2)
+    repo = m.group(1)
     root = ctx.project_path(repo)
     if root is None:
         return False, f"project {repo} not detected", None
@@ -663,9 +663,13 @@ def _rule_plan_item_declared_closed(rule: dict, ctx: _EvidenceContext) -> _RuleO
     except ImportError as err:  # pragma: no cover — dep is declared
         return False, f"plan-fields unavailable: {err}", None
     doc = parse_todo(todo.read_text(encoding="utf-8"), repo, path="TODO.md")
-    node = next((n for n in doc["nodes"] if n["id"] == item_id), None)
-    if node is None:
-        return False, f"{ref}: no such @id in {repo}/TODO.md", None
+    # Match the full canonical node_id, and require EXACTLY one — a duplicate @id
+    # (which plan-fields also flags PF-ID-DUPLICATE) is ambiguous, not attestation.
+    matches = [n for n in doc["nodes"] if n["node_id"] == ref]
+    if len(matches) != 1:
+        why = "ambiguous" if matches else "no such"
+        return False, f"{ref}: {why} @id in {repo}/TODO.md ({len(matches)} match)", None
+    node = matches[0]
     if node["declared_status"] == "closed":
         return True, f"{ref}: owner declared closed", newest_mtime([todo])
     return False, f"{ref}: declared_status={node['declared_status']}", None

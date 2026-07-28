@@ -76,6 +76,26 @@ def test_missing_project_fails(tmp_path: Path) -> None:
     assert "not detected" in item.evidence[0].detail
 
 
+def test_todo_missing_fails(tmp_path: Path) -> None:
+    proj = tmp_path / "atp-platform"
+    proj.mkdir()  # project detected, but no TODO.md
+    snap = ProjectSnapshot(name="atp-platform", path=str(proj))
+    item = _only(tmp_path, _RULE, [snap])
+    assert item.computed_status == "planned"
+    assert "TODO.md missing" in item.evidence[0].detail
+
+
+def test_duplicate_id_is_ambiguous_and_fails(tmp_path: Path) -> None:
+    dup = (
+        "# atp-platform\n\n"
+        "- [x] One @id:benchmark-2 @owner:tech-lead\n"
+        "- [x] Two @id:benchmark-2 @owner:tech-lead\n"
+    )
+    item = _only(tmp_path, _RULE, [_repo(tmp_path, "atp-platform", dup)])
+    assert item.computed_status == "planned"
+    assert "ambiguous" in item.evidence[0].detail
+
+
 _MIXED = """
 items:
   - id: RD-2
