@@ -25,6 +25,7 @@ graph-semantic diagnostic that needs the resolved graph but not the inputs
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -38,6 +39,12 @@ from plan_fields.parser import (
     _diag,
     parse_todo,
 )
+from plan_fields.scrape import ScrapedItem, scrape_items
+
+# The canonical parser's LEGACY_RE requires a lowercase repo; the transitional
+# legacy resolver must also match the historical mixed-case citations that
+# predate the canonical-name ruling (e.g. `Maestro#R-03b`), so it case-folds.
+_LEGACY_REF_RE = re.compile(r"^([a-z0-9][a-z0-9-]*)#(\S+)$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -283,3 +290,124 @@ def check_fleet(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             )
     out.sort(key=lambda d: (d["code"], d["subject_uri"] or "", d["related_uri"] or ""))
     return out
+
+
+@dataclass(frozen=True)
+class LegacyDiagnostic:
+    """A TRANSITIONAL diagnostic over an un-@id'd source item's legacy
+    ``<repo>#<slug>`` blocker — the graph a pre-PF-2B fleet still lives on.
+
+    Deliberately NOT a canonical contract ``Diagnostic``: the source has no
+    stable identity (``identity_grade="legacy"``), so this never becomes a
+    canonical node/edge, never hardens to a blocking error (Phase 0b escalation
+    needs a stable identity), and carries no durable governance fingerprint. The
+    whole API is removable once fleet @id coverage is 100% and no legacy ref
+    remains — every source it reports is exactly what PF-2B2 still has to
+    migrate. When a source gains an @id it drops out of here and reappears in
+    ``parse_fleet``'s canonical references/edges: the relation moves planes, it
+    is never counted twice.
+    """
+
+    code: str
+    severity: str  # always "warning" — transitional, never a blocking error
+    source_repo: str
+    source_line: int
+    target_repo: str  # canonical (lower) name of the resolved target
+    slug: str
+    message: str
+    identity_grade: str = "legacy"
+
+
+def check_legacy_fleet(
+    inputs: Sequence[RepoInput],
+    manifest: set[str],
+    exclude: set[tuple[str, str]] | None = None,
+) -> list[LegacyDiagnostic]:
+    """Resolve the legacy ``<repo>#<slug>`` blocker graph over un-@id'd sources.
+
+    Built on ``scrape_items`` (the operational substrate, no @id required), so it
+    sees the blockers ``parse_fleet`` cannot: those on items with no @id yet.
+    Reproduces the pre-package devtools resolution — substring match against the
+    target item's text, open/closed staleness — reporting not-in-manifest /
+    unresolvable / no-todo / missing / stale outcomes. It never touches a
+    relation the canonical pipeline owns: a source carrying an @id is skipped
+    (its refs are ``parse_fleet``'s), and ``exclude`` (a set of
+    ``(source_repo, raw_ref)`` — e.g. the canonical references) drops any
+    remainder. Every ``@blocked_by`` on an item is kept (multiple blockers
+    preserved). All findings are warnings.
+    """
+    exclude = exclude or set()
+    scraped: dict[str, list[ScrapedItem]] = {}
+    no_todo: set[str] = set()
+    for inp in inputs:
+        if not inp.available or inp.todo_text is None:
+            if inp.available and inp.todo_text is None:
+                no_todo.add(inp.repo)
+            continue
+        scraped[inp.repo] = scrape_items(inp.todo_text)
+
+    out: list[LegacyDiagnostic] = []
+    for srepo, items in scraped.items():
+        for item in items:
+            # @id'd or closed sources are the canonical pipeline's job (or not
+            # actionable); only open, un-@id'd items still carry a legacy graph.
+            if item.item_id or item.checked:
+                continue
+            for raw in item.values("blocked_by"):
+                if (srepo, raw) in exclude:
+                    continue
+                m = _LEGACY_REF_RE.match(raw)
+                if not m:
+                    continue  # todo:// (canonical) or malformed — not legacy
+                diag = _legacy_resolve(
+                    srepo, item.line, m.group(1), m.group(2), manifest, scraped, no_todo
+                )
+                if diag is not None:
+                    out.append(diag)
+    out.sort(key=lambda d: (d.source_repo, d.source_line, d.target_repo, d.slug))
+    return out
+
+
+def _legacy_resolve(srepo, line, trepo_raw, slug, manifest, scraped, no_todo):
+    """Reproduce the old devtools per-blocker outcome, or None when it resolves."""
+    tkey = trepo_raw.lower()
+    if tkey == srepo.lower():
+        return None  # self-blocker: the repo's own check covers it
+
+    def diag(code: str, msg: str) -> LegacyDiagnostic:
+        return LegacyDiagnostic(code, "warning", srepo, line, tkey, slug, msg)
+
+    where = f"{srepo}/TODO.md:{line}"
+    if tkey not in manifest:
+        return diag(
+            "PF-BLOCKER-REPO-UNKNOWN",
+            f"{where} @blocked_by:{trepo_raw}#{slug} names '{tkey}', absent from "
+            f"the frozen manifest",
+        )
+    if tkey in no_todo:
+        return diag(
+            "PF-BLOCKER-NO-TODO",
+            f"{where} blocked on '{tkey}', which keeps no TODO.md; the claim "
+            f"cannot be verified from here",
+        )
+    if tkey not in scraped:
+        return diag(
+            "PF-BLOCKER-UNRESOLVABLE",
+            f"{where} @blocked_by names '{tkey}', not checked out on this host; "
+            f"unresolvable here",
+        )
+    hits = [i for i in scraped[tkey] if slug in i.raw_text]
+    if not hits:
+        return diag(
+            "PF-BLOCKER-DANGLING",
+            f"{where} '{slug}' not found in {tkey}/TODO.md; renamed, or never "
+            f"tracked there",
+        )
+    if all(i.checked for i in hits):
+        lines = ", ".join(f":{i.line}" for i in hits)
+        return diag(
+            "PF-BLOCKER-STALE",
+            f"{where} blocked on '{tkey}#{slug}', which {tkey} has already "
+            f"completed ({lines}); the wait is over",
+        )
+    return None  # at least one open hit — a live, valid legacy blocker
