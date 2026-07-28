@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 from dispatcher.core.collectors.base import SourceReadError, newest_mtime, read_rows
 from dispatcher.core.contracts import check_contracts
@@ -25,6 +25,23 @@ from dispatcher.core.models import ContractStatus, ProjectSnapshot
 
 DONE_STATUSES = ("implemented", "verified")
 _RULE_KINDS = ("implementation", "verification")
+
+# Provenance marker appended to a status when its implementation rests only on
+# owner attestation (ADR-ECO-005 D3). One authoritative rendering, shared by
+# every surface so `implemented (attested)` is never shown as machine-backed
+# `implemented`.
+ATTESTED_MARKER = "attested"
+
+
+def display_status(status: str, attested: bool) -> str:
+    """Consumer-facing status string.
+
+    Appends the attested-provenance marker so an attestation-only
+    `implemented`/`verified` is visibly distinct from a machine-backed one
+    (ADR-ECO-005 D3). This is the single source of truth carried to the API,
+    web, TUI, VSCode, and any downstream consumer (KB export, Robin).
+    """
+    return f"{status} ({ATTESTED_MARKER})" if attested else status
 
 
 class EvidenceResult(BaseModel):
@@ -62,6 +79,16 @@ class RoadmapItemView(BaseModel):
     blockers: list[str] = Field(default_factory=list)
     last_seen: str | None = None  # newest evidence last_seen (REQ-011)
     source: str
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def status_label(self) -> str:
+        """`computed_status` with the attested marker folded in (ADR-ECO-005
+        D3). Surfaces render this instead of `computed_status` so attestation
+        provenance survives serialization to every consumer."""
+        return display_status(
+            self.computed_status, self.implementation_is_attested_only
+        )
 
 
 class RoadmapResponse(BaseModel):

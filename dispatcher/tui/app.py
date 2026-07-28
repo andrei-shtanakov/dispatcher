@@ -504,11 +504,16 @@ class DispatcherApp(App[None]):
             total = len(item.evidence)
             evidence_cell = f"{passed}/{total} rules" if total else "no rules"
             blockers_cell = ", ".join(item.blockers) if item.blockers else "—"
-            status_cell: Text | str = (
-                Text("drift", style="bold red")
-                if item.computed_status == "drift"
-                else item.computed_status
-            )
+            # Attested-only implementations are shown in amber with the
+            # `(attested)` marker so they never read as machine-backed green
+            # `implemented` (ADR-ECO-005 D3).
+            status_cell: Text | str
+            if item.computed_status == "drift":
+                status_cell = Text("drift", style="bold red")
+            elif item.implementation_is_attested_only:
+                status_cell = Text(item.status_label, style="yellow")
+            else:
+                status_cell = item.computed_status
             table.add_row(
                 item.phase or "—",
                 f"{item.id} {item.title}",

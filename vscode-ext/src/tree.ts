@@ -164,10 +164,13 @@ export class RoadmapProvider implements vscode.TreeDataProvider<RoadmapNode> {
       node.item.title,
       `phase: ${node.item.phase ?? "—"}`,
       `owner: ${node.item.owner_project ?? "—"}`,
-      `status: ${node.item.computed_status}`,
+      `status: ${node.item.status_label}`,
       `source: ${node.item.source}`,
     ].join("\n");
-    const icon = roadmapStatusIcon(node.item.computed_status);
+    const icon = roadmapStatusIcon(
+      node.item.computed_status,
+      node.item.implementation_is_attested_only,
+    );
     item.iconPath =
       icon.color === null
         ? new vscode.ThemeIcon(icon.icon)

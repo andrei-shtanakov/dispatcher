@@ -151,7 +151,17 @@ const ROADMAP_ICONS: Record<string, StatusIcon> = {
   unknown: { icon: "question", color: null },
 };
 
-export function roadmapStatusIcon(status: string): StatusIcon {
+// Attested-only implementations get an amber icon so they are visibly distinct
+// from a machine-backed (green) implemented/verified (ADR-ECO-005 D3).
+const ATTESTED_ICON: StatusIcon = {
+  icon: "circle-filled",
+  color: "list.warningForeground",
+};
+
+export function roadmapStatusIcon(status: string, attested = false): StatusIcon {
+  if (attested) {
+    return ATTESTED_ICON;
+  }
   return ROADMAP_ICONS[status] ?? ROADMAP_ICONS.unknown;
 }
 
@@ -185,7 +195,7 @@ export function roadmapItemDescription(item: RoadmapItemView): string {
   return [
     item.phase ?? "—",
     item.owner_project ?? "—",
-    item.computed_status,
+    item.status_label,
     item.blockers.length > 0 ? item.blockers.join(", ") : "—",
     evidenceSummary(item),
   ].join(" · ");

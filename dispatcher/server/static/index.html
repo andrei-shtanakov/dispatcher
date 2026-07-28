@@ -37,6 +37,8 @@
   tr:last-child td { border-bottom: none; }
   .err { color: var(--bad); }
   .ok { color: var(--ok); }
+  /* attested-only implementation: amber, not machine-green (ADR-ECO-005 D3) */
+  .attested { color: var(--warn); }
   td.msg { white-space: normal; word-break: break-word; max-width: 720px; }
   td.msg[data-full] { cursor: pointer; }
   #errors-toggle { background: none; border: 1px solid var(--line);
@@ -432,6 +434,13 @@ async function refresh() {
         const passed = i.evidence.filter(e => e.passed).length;
         const ev = i.evidence.length
           ? `${passed}/${i.evidence.length} rules` : "no rules";
+        // Attested-only impl: amber + `(attested)` label, never machine-green
+        // (ADR-ECO-005 D3). status_label carries the marker from the API.
+        const attested = i.implementation_is_attested_only;
+        const stCell = attested ? "attested" : stCls(i.computed_status);
+        const stTitle = attested
+          ? "implementation asserted by owner (attestation), not machine-verified"
+          : "";
         const tc = i.target_contract;
         const tcSync = tc ? syncByName.get(tc) : undefined;
         const tcCell = !tc ? "—"
@@ -442,7 +451,7 @@ async function refresh() {
       <tr><td>${esc(i.phase ?? "—")}</td>
       <td title="${esc(i.title)}">${esc(i.id)} ${esc(i.title)}</td>
       <td>${esc(i.owner_project ?? "—")}</td>
-      <td class="${stCls(i.computed_status)}">${esc(i.computed_status)}</td>
+      <td class="${stCell}" title="${esc(stTitle)}">${esc(i.status_label)}</td>
       <td class="${tcCls}">${esc(tcCell)}</td>
       <td>${esc((i.blockers || []).join(", ") || "—")}</td>
       <td title="${esc(i.evidence.map(e =>

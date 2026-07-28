@@ -53,6 +53,11 @@ export interface RoadmapItemView {
   depends_on: string[];
   expected_evidence: string[];
   computed_status: string;
+  // status with the `(attested)` marker folded in (ADR-ECO-005 D3); render
+  // this, not computed_status, so attestation provenance stays visible.
+  status_label: string;
+  // implementation rests only on owner attestation, never machine verification.
+  implementation_is_attested_only: boolean;
   evidence: EvidenceResult[];
   blockers: string[];
   source: string;
