@@ -32,7 +32,11 @@ from typing import Literal
 _ITEM_RE = re.compile(r"^\s*([-*])\s*\[([ xX])\]\s+(.*)$")
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.+)")
 # The one tag tokenizer: `@key:value`, value bare or quoted when it has spaces.
-_TAG_RE = re.compile(r'@([a-z][a-z_-]*):(?:"([^"]*)"|(\S+))')
+# The `@` must start the line or follow whitespace, so a tag *written about* in
+# prose — `` `@blocked_by:` `` inside backticks, an email, a decorator — is not
+# mistaken for a real tag (and neither its value nor the surrounding text is
+# corrupted). This boundary is what operational consumers already relied on.
+_TAG_RE = re.compile(r'(?:(?<=\s)|^)@([a-z][a-z_-]*):(?:"([^"]*)"|(\S+))')
 
 
 @dataclass(frozen=True)
