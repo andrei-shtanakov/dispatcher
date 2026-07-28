@@ -65,6 +65,21 @@ describe("roadmapStatusIcon", () => {
     });
     expect(attestedIcon).not.toEqual(machine);
   });
+
+  it("keeps the base icon shape for attested verified (only color amber)", () => {
+    // backend allows verified over an attested-only impl (PF-4); the verified
+    // icon shape must survive so it stays distinct from implemented.
+    const machine = roadmapStatusIcon("verified");
+    const attestedIcon = roadmapStatusIcon("verified", true);
+    expect(attestedIcon).toEqual({
+      icon: "pass-filled",
+      color: "list.warningForeground",
+    });
+    expect(attestedIcon.icon).toBe(machine.icon); // shape preserved
+    expect(attestedIcon.color).not.toBe(machine.color); // color distinct
+    // and distinct from an attested implemented (icon shape differs)
+    expect(attestedIcon.icon).not.toBe(roadmapStatusIcon("implemented", true).icon);
+  });
 });
 
 describe("roadmapItemLabel", () => {

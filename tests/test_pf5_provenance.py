@@ -58,6 +58,14 @@ def test_display_status_appends_marker_only_when_attested() -> None:
     assert display_status("planned", False) == "planned"
 
 
+def test_display_status_marker_guarded_on_done_statuses() -> None:
+    # attestation is a property of DONE statuses only; the marker must never
+    # leak onto a non-done status even if the helper is reused with attested=True
+    assert display_status("planned", True) == "planned"
+    assert display_status("blocked", True) == "blocked"
+    assert display_status("drift", True) == "drift"
+
+
 def test_status_label_folds_marker_for_attested_item(tmp_path: Path) -> None:
     item = _only(tmp_path, _RULE, _repo(tmp_path, _CLOSED))
     assert item.computed_status == "implemented"

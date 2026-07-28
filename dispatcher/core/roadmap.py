@@ -40,8 +40,14 @@ def display_status(status: str, attested: bool) -> str:
     `implemented`/`verified` is visibly distinct from a machine-backed one
     (ADR-ECO-005 D3). This is the single source of truth carried to the API,
     web, TUI, VSCode, and any downstream consumer (KB export, Robin).
+
+    Attestation is a property of a DONE status only (see `_is_attested_only`);
+    the marker is guarded on `DONE_STATUSES` so the helper stays consistent with
+    that contract even if reused — never emitting `planned (attested)`.
     """
-    return f"{status} ({ATTESTED_MARKER})" if attested else status
+    if attested and status in DONE_STATUSES:
+        return f"{status} ({ATTESTED_MARKER})"
+    return status
 
 
 class EvidenceResult(BaseModel):
