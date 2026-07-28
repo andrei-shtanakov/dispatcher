@@ -77,6 +77,11 @@ def parse_fleet(
     ``parse_todo``; this layer only resolves the cross-repo references it leaves
     open and emits the diagnostics that need manifest/availability knowledge.
     """
+    seen = [inp.repo for inp in inputs]
+    dupes = sorted({r for r in seen if seen.count(r) > 1})
+    if dupes:
+        raise ValueError(f"parse_fleet: duplicate RepoInput for repo(s) {dupes}")
+
     nodes: list[dict[str, Any]] = []
     references: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
@@ -84,14 +89,14 @@ def parse_fleet(
 
     present: dict[str, list[dict[str, Any]]] = {}  # repo -> its nodes
     no_todo: set[str] = set()
-    unavailable: set[str] = set()
 
     for inp in inputs:
-        if not inp.available:
-            unavailable.add(inp.repo)
-            continue
-        if inp.todo_text is None:
-            no_todo.add(inp.repo)
+        if not inp.available or inp.todo_text is None:
+            # declared but not usable here: no checkout (available=False) or a
+            # checkout with no TODO.md. Both are environmental; the target repo's
+            # inbound refs resolve to NO-TODO / UNRESOLVABLE below.
+            if inp.available and inp.todo_text is None:
+                no_todo.add(inp.repo)
             continue
         doc = parse_todo(inp.todo_text, inp.repo, generated_at=generated_at)
         _pin(doc, inp.commit)
@@ -108,9 +113,7 @@ def parse_fleet(
         if ref["resolved_target"] is not None:
             continue
         src_repo = ref["provenance"]["repo"]
-        edge, diag = _resolve_cross(
-            ref, src_repo, manifest, present, node_ids, no_todo, unavailable
-        )
+        edge, diag = _resolve_cross(ref, src_repo, manifest, present, node_ids, no_todo)
         if edge is not None:
             edges.append(edge)
         if diag is not None:
@@ -128,7 +131,7 @@ def parse_fleet(
     return canonicalize(doc)
 
 
-def _resolve_cross(ref, src_repo, manifest, present, node_ids, no_todo, unavailable):
+def _resolve_cross(ref, src_repo, manifest, present, node_ids, no_todo):
     """Resolve one cross-repo reference; returns (edge_or_None, diag_or_None).
 
     Mutates ``ref`` in place to set ``resolved_target`` when an edge forms. A
@@ -151,7 +154,7 @@ def _resolve_cross(ref, src_repo, manifest, present, node_ids, no_todo, unavaila
     if trepo == src_repo:
         return None, None  # intra-repo miss already diagnosed by parse_todo
 
-    reason = _repo_reason(trepo, manifest, present, no_todo, unavailable)
+    reason = _repo_reason(trepo, manifest, present, no_todo)
     if reason is not None:
         code, msg = reason
         return None, _diag(code, "warning", src, raw, None, msg(raw, trepo), prov)
@@ -203,13 +206,14 @@ def _resolve_cross(ref, src_repo, manifest, present, node_ids, no_todo, unavaila
     )
 
 
-def _repo_reason(trepo, manifest, present, no_todo, unavailable):
+def _repo_reason(trepo, manifest, present, no_todo):
     """Why the target repo cannot host a resolvable node, or None if it can.
 
     Order matters: manifest membership (plan defect) is decided before any
     environmental state, so a non-fleet repo is never excused as "not checked
-    out". A manifest repo neither parsed nor explicitly flagged is treated as
-    not-checked-out (the safe environmental default).
+    out". A manifest repo that was not parsed and has no TODO.md recorded — whether
+    the input was ``available=False`` or simply omitted — collapses to the same
+    not-checked-out environmental default (``PF-BLOCKER-UNRESOLVABLE``).
     """
     if trepo not in manifest:
         return (

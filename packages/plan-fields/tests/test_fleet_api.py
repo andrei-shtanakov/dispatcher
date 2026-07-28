@@ -151,6 +151,16 @@ def test_snapshot_is_contract_valid_and_deterministic() -> None:
     assert snap1 == snap2  # pure function of inputs -> byte-stable
 
 
+def test_parse_fleet_rejects_duplicate_repo_inputs() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="duplicate"):
+        parse_fleet(
+            [RepoInput("maestro", MAESTRO_TODO), RepoInput("maestro", MAESTRO_TODO)],
+            MANIFEST,
+        )
+
+
 def test_intra_repo_diagnostics_survive_the_merge() -> None:
     # an open item with no @id in one repo still reports PF-ID-MISSING at fleet level
     snap = _fleet("- [ ] open item without any id here\n")
