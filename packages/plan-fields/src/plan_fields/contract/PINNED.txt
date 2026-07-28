@@ -1,5 +1,5 @@
 source: prograph-vault authored/contracts/plan-fields/v1
-commit: 999c1bac1a21aee35d1e464b46e1d53044b07d32
+commit: d420ea7f5b1b64b8e76d2f619079e353e2c7803c
 vendored: 2026-07-28
 note: pinned copy (repo-boundaries vendoring). Do not edit here; re-vendor from
   the pin. manifest.json travels with this copy for offline drift-verify (PF-6);

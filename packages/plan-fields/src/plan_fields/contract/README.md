@@ -116,6 +116,12 @@ that applies escalation. The contract only states the policy.
 `PF-ID-DANGLING` is specifically a **canonical** inbound reference (`todo://…`) to an absent
 `@id` — distinct from `PF-BLOCKER-DANGLING` (a legacy `<repo>#<slug>` miss).
 
+`PF-BLOCKER-REPO-UNKNOWN` (target repo not in the frozen manifest) is a **plan defect** and
+hardens; `PF-BLOCKER-UNRESOLVABLE` (a manifest repo merely not checked out here) and
+`PF-BLOCKER-NO-TODO` (a manifest repo with no `TODO.md`) are **environmental** and never
+harden. The manifest — never folder presence — is the authority for which repos exist, so a
+plan defect is never conflated with a missing checkout.
+
 ## Rule registry
 
 `rules.yaml` is the closed evidence vocabulary with an `evidence_grade`. `machine` rules are
