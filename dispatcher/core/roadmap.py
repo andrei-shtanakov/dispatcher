@@ -10,6 +10,7 @@ cannot be expressed with these rules stays `unknown` — prose
 
 from __future__ import annotations
 
+import re
 import statistics
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,9 @@ class EvidenceResult(BaseModel):
     kind: str  # implementation | verification
     passed: bool
     detail: str
+    # machine = an automated check proved it; attestation = an owner asserted it
+    # (e.g. plan_item_declared_closed). ADR-ECO-005 D3.
+    evidence_grade: str = "machine"
     last_seen: str | None = None  # ISO mtime of the matched artifact (REQ-011)
 
 
@@ -51,6 +55,10 @@ class RoadmapItemView(BaseModel):
     expected_evidence: list[str] = Field(default_factory=list)
     computed_status: str
     evidence: list[EvidenceResult] = Field(default_factory=list)
+    # True when the item is implemented/verified ONLY via attestation-grade
+    # evidence — consumers MUST NOT render it as machine-backed `implemented`
+    # (ADR-ECO-005 D3); this provenance flag travels to every surface.
+    implementation_is_attested_only: bool = False
     blockers: list[str] = Field(default_factory=list)
     last_seen: str | None = None  # newest evidence last_seen (REQ-011)
     source: str
@@ -431,6 +439,7 @@ def _evaluate_item(raw: dict, source: str, ctx: _EvidenceContext) -> RoadmapItem
     evidence = [_run_rule(rule, ctx) for rule in rules]
     # UTC ISO stamps (newest_mtime) compare correctly as strings.
     last_seen = max((e.last_seen for e in evidence if e.last_seen), default=None)
+    status = _status_from_evidence(evidence)
     return RoadmapItemView(
         id=str(raw.get("id", "?")),
         title=str(raw.get("title", "")),
@@ -440,11 +449,28 @@ def _evaluate_item(raw: dict, source: str, ctx: _EvidenceContext) -> RoadmapItem
         target_contract=_opt_str(raw.get("target_contract")),
         depends_on=[str(d) for d in raw.get("depends_on") or []],
         expected_evidence=[str(e) for e in raw.get("expected_evidence") or []],
-        computed_status=_status_from_evidence(evidence),
+        computed_status=status,
         evidence=evidence,
+        implementation_is_attested_only=_is_attested_only(status, evidence),
         last_seen=last_seen,
         source=source,
     )
+
+
+def _is_attested_only(status: str, evidence: list[EvidenceResult]) -> bool:
+    """True iff implemented/verified and every implementation rule is attestation.
+
+    Keeps the status engine unchanged (attestation still promotes); the flag only
+    records that the implementation rests on owner attestation, never machine
+    verification (ADR-ECO-005 D3). `verified` layered over an attested
+    implementation stays attested-only, so the UI never loses that provenance.
+    """
+    if status not in DONE_STATUSES:
+        return False
+    impl = [e for e in evidence if e.kind == "implementation"]
+    if not impl:
+        return False
+    return all(e.evidence_grade == "attestation" for e in impl)
 
 
 def _status_from_evidence(evidence: list[EvidenceResult]) -> str:
@@ -504,12 +530,14 @@ def _run_rule(rule: dict, ctx: _EvidenceContext) -> EvidenceResult:
     if kind not in _RULE_KINDS:
         kind = "implementation"
     handler = _RULES.get(name)
+    grade = _RULE_GRADES.get(name, "machine")
     if handler is None:
         return EvidenceResult(
             rule=name or "(missing)",
             kind=kind,
             passed=False,
             detail=f"unknown rule: {name!r}",
+            evidence_grade=grade,
         )
     last_seen: str | None = None
     try:
@@ -521,7 +549,12 @@ def _run_rule(rule: dict, ctx: _EvidenceContext) -> EvidenceResult:
         # down /api/roadmap.
         passed, detail = False, f"rule error: {err}"
     return EvidenceResult(
-        rule=name, kind=kind, passed=passed, detail=detail, last_seen=last_seen
+        rule=name,
+        kind=kind,
+        passed=passed,
+        detail=detail,
+        evidence_grade=grade,
+        last_seen=last_seen,
     )
 
 
@@ -603,13 +636,53 @@ def _rule_work_item_chain(rule: dict, ctx: _EvidenceContext) -> _RuleOutcome:
     return False, f"chain {work_item_id}: {links} link(s), need {min_links}", None
 
 
+_TODO_REF_RE = re.compile(r"^todo://([a-z0-9][a-z0-9-]*)/([a-z0-9][a-z0-9._-]{0,63})$")
+
+
+def _rule_plan_item_declared_closed(rule: dict, ctx: _EvidenceContext) -> _RuleOutcome:
+    """Attestation-grade: an owner declared todo://<repo>/<id> closed.
+
+    Resolves the operational item through the plan-fields parser (PF-3) and
+    passes iff that @id's declared_status is `closed`. It promotes to
+    `implemented`, but the item view sets implementation_is_attested_only so
+    consumers never present it as machine-verified (ADR-ECO-005 D3).
+    """
+    ref = str(rule.get("ref", ""))
+    m = _TODO_REF_RE.match(ref)
+    if not m:
+        return False, f"invalid ref {ref!r} (want todo://<repo>/<id>)", None
+    repo, item_id = m.group(1), m.group(2)
+    root = ctx.project_path(repo)
+    if root is None:
+        return False, f"project {repo} not detected", None
+    todo = _safe_join(root, "TODO.md")
+    if todo is None or not todo.exists():
+        return False, f"{repo}/TODO.md missing", None
+    try:
+        from plan_fields import parse_todo
+    except ImportError as err:  # pragma: no cover — dep is declared
+        return False, f"plan-fields unavailable: {err}", None
+    doc = parse_todo(todo.read_text(encoding="utf-8"), repo, path="TODO.md")
+    node = next((n for n in doc["nodes"] if n["id"] == item_id), None)
+    if node is None:
+        return False, f"{ref}: no such @id in {repo}/TODO.md", None
+    if node["declared_status"] == "closed":
+        return True, f"{ref}: owner declared closed", newest_mtime([todo])
+    return False, f"{ref}: declared_status={node['declared_status']}", None
+
+
 _RULES = {
     "project_detected": _rule_project_detected,
     "file_exists": _rule_file_exists,
     "sqlite_has_row": _rule_sqlite_has_row,
     "contract_in_sync": _rule_contract_in_sync,
     "work_item_chain": _rule_work_item_chain,
+    "plan_item_declared_closed": _rule_plan_item_declared_closed,
 }
+
+# evidence_grade per rule (ADR-ECO-005 D3); default machine. Mirrors the
+# canonical registry at plan-fields/v1/rules.yaml.
+_RULE_GRADES = {"plan_item_declared_closed": "attestation"}
 
 
 def _opt_str(value: Any) -> str | None:

@@ -8,12 +8,19 @@ dependencies = [
     "fastapi>=0.139.0",
     "fastmcp>=2.14.5,<3",
     "jsonschema>=4.26.0",
+    "plan-fields",
     "pydantic>=2.13.4",
     "pyyaml>=6.0.3",
     "ruamel-yaml>=0.19.1",
     "textual>=8.2.8,<9",
     "uvicorn>=0.49.0",
 ]
+
+# The plan-fields package (PF-3) is vendored in-repo; dispatcher consumes it
+# one-way (plan-fields never imports dispatcher). PF-4 uses it to resolve
+# todo://<repo>/<id> for the plan_item_declared_closed evidence rule.
+[tool.uv.sources]
+plan-fields = { path = "packages/plan-fields", editable = true }
 
 [project.scripts]
 dispatcher = "dispatcher.cli:main"
