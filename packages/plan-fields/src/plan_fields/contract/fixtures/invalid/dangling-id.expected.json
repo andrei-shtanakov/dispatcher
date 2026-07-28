@@ -1,0 +1,42 @@
+{
+  "contract_version": 1,
+  "schema_version": 1,
+  "generated_at": "2026-07-28T00:00:00Z",
+  "nodes": [
+    {
+      "node_id": "todo://demo/needer",
+      "kind": "operational_item",
+      "id": "needer",
+      "repo": "demo",
+      "title": "Depends on a ghost",
+      "declared_status": "open",
+      "owner_role": "tech-lead",
+      "trigger": null,
+      "freshness": null,
+      "tombstone": false,
+      "provenance": { "repo": "demo", "remote_origin": null, "commit": null, "path": "TODO.md", "line": 3 }
+    }
+  ],
+  "references": [
+    {
+      "kind": "blocked_by",
+      "source_node_id": "todo://demo/needer",
+      "raw_ref": "todo://demo/ghost",
+      "resolved_target": null,
+      "legacy_blocker_ref": null,
+      "provenance": { "repo": "demo", "remote_origin": null, "commit": null, "path": "TODO.md", "line": 3 }
+    }
+  ],
+  "edges": [],
+  "diagnostics": [
+    {
+      "code": "PF-ID-DANGLING",
+      "severity": "warning",
+      "subject_uri": "todo://demo/needer",
+      "related_uri": "todo://demo/ghost",
+      "rule_id": null,
+      "message": "canonical reference todo://demo/ghost points to an @id absent from repo demo",
+      "provenance": { "repo": "demo", "remote_origin": null, "commit": null, "path": "TODO.md", "line": 3 }
+    }
+  ]
+}

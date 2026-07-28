@@ -1,0 +1,68 @@
+{
+  "contract_version": 1,
+  "schema_version": 1,
+  "generated_at": "2026-07-28T00:00:00Z",
+  "nodes": [
+    {
+      "node_id": "todo://demo/alpha-one",
+      "kind": "operational_item",
+      "id": "alpha-one",
+      "repo": "demo",
+      "title": "Alpha step",
+      "declared_status": "open",
+      "owner_role": "tech-lead",
+      "trigger": null,
+      "freshness": null,
+      "tombstone": false,
+      "provenance": { "repo": "demo", "remote_origin": null, "commit": null, "path": "TODO.md", "line": 3 }
+    },
+    {
+      "node_id": "todo://demo/alpha-two",
+      "kind": "operational_item",
+      "id": "alpha-two",
+      "repo": "demo",
+      "title": "Alpha step again",
+      "declared_status": "open",
+      "owner_role": "tech-lead",
+      "trigger": null,
+      "freshness": null,
+      "tombstone": false,
+      "provenance": { "repo": "demo", "remote_origin": null, "commit": null, "path": "TODO.md", "line": 4 }
+    },
+    {
+      "node_id": "todo://demo/needer",
+      "kind": "operational_item",
+      "id": "needer",
+      "repo": "demo",
+      "title": "Depends on alpha",
+      "declared_status": "open",
+      "owner_role": "tech-lead",
+      "trigger": null,
+      "freshness": null,
+      "tombstone": false,
+      "provenance": { "repo": "demo", "remote_origin": null, "commit": null, "path": "TODO.md", "line": 5 }
+    }
+  ],
+  "references": [
+    {
+      "kind": "blocked_by",
+      "source_node_id": "todo://demo/needer",
+      "raw_ref": "demo#alpha",
+      "resolved_target": null,
+      "legacy_blocker_ref": "demo#alpha",
+      "provenance": { "repo": "demo", "remote_origin": null, "commit": null, "path": "TODO.md", "line": 5 }
+    }
+  ],
+  "edges": [],
+  "diagnostics": [
+    {
+      "code": "PF-LEGACY-AMBIGUOUS",
+      "severity": "warning",
+      "subject_uri": "todo://demo/needer",
+      "related_uri": null,
+      "rule_id": null,
+      "message": "legacy reference demo#alpha matches more than one item in repo demo; migrate to an @id",
+      "provenance": { "repo": "demo", "remote_origin": null, "commit": null, "path": "TODO.md", "line": 5 }
+    }
+  ]
+}

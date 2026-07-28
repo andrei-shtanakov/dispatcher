@@ -1,0 +1,23 @@
+"""plan-fields — offline parser + validator for the plan-fields v1 contract.
+
+Standalone by design: no import of the dispatcher application. The v1 contract
+(schema, registries, fixtures) is vendored under ``contract/`` (pinned copy).
+"""
+
+from __future__ import annotations
+
+from plan_fields.canonical import canonical_dumps, canonicalize
+from plan_fields.parser import parse_todo
+from plan_fields.validator import load_schema, run_conformance, validate_document
+
+__version__ = "0.1.0"
+
+__all__ = [
+    "__version__",
+    "canonical_dumps",
+    "canonicalize",
+    "load_schema",
+    "parse_todo",
+    "run_conformance",
+    "validate_document",
+]
