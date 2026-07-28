@@ -60,7 +60,7 @@
 
 ## Кросс-репные контракты
 
-- [ ] `contracts/executor-config/v0-provisional`: довести до реального потребителя либо явно пометить контракт отложенным @owner:andrei @blocked_by:maestro#specrunnerconfig-passthrough @trigger:"Maestro начал читать contracts/executor-config" @id:executor-config-consumer
+- [ ] `contracts/executor-config/v0-provisional`: довести до реального потребителя либо явно пометить контракт отложенным @owner:andrei @blocked_by:todo://maestro/specrunnerconfig-passthrough @trigger:"Maestro начал читать contracts/executor-config" @id:executor-config-consumer
       Статус-обзор экосистемы 07-24 назвал это watch-item: схема запинена (DESIGN-301),
       но единственная ссылка в экосистеме — план-док Maestro
       `2026-07-17-specrunnerconfig-passthrough.md`, потребителя нет. Риск — зомби-пин,
