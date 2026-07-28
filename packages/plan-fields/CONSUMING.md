@@ -63,9 +63,9 @@ installability is proven on every change to the package.
 ## What the package exposes
 
 - `plan_fields.scrape_items(text)` → `list[ScrapedItem]`: the **operational**
-  substrate — every checklist item as written (bullet, checkbox state, section,
-  `raw_text`, tag-stripped `display_text`, `tags`, `item_id`), **pre-`@id`, no
-  diagnostics, no synthesized identity**. This is what operational consumers
+  substrate — every checklist item (bullet, checkbox state, section, `raw_text`
+  (verbatim, surrounding whitespace trimmed), tag-stripped `display_text`,
+  `tags`, `item_id`), **pre-`@id`, no diagnostics, no synthesized identity**. This is what operational consumers
   (Robin's movement tracker, devtools' fleet check) build on before the fleet
   `@id` backfill (PF-2B) — `parse_todo` would drop every un-`@id`'d item.
 - `plan_fields.parse_todo(text, repo, ...)` → canonical plan-fields JSON

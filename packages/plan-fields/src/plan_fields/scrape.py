@@ -39,10 +39,11 @@ _TAG_RE = re.compile(r'@([a-z][a-z_-]*):(?:"([^"]*)"|(\S+))')
 class ScrapedItem:
     """One checklist item as written — no identity, no validation.
 
-    `raw_text` is the text exactly as it appears (tags included); `display_text`
-    is the same with every recognized tag removed and whitespace collapsed.
-    `tags` is the last-wins map of `@key:value` on the line; `item_id` is
-    `tags.get("id")`, surfaced for convenience but never required."""
+    `raw_text` is the item text with surrounding whitespace trimmed but otherwise
+    verbatim — tags and inner spacing are kept. `display_text` is the same with
+    every recognized tag removed and whitespace collapsed. `tags` is the
+    last-wins map of `@key:value` on the line; `item_id` is `tags.get("id")`,
+    surfaced for convenience but never required."""
 
     checked: bool
     bullet: Literal["-", "*"]
@@ -62,11 +63,12 @@ def _tags(rest: str) -> dict[str, str]:
     return out
 
 
-def canonical_title(rest: str) -> str:
+def _canonical_title(rest: str) -> str:
     """Text before the first tag — the canonical parser's node title.
 
-    Distinct from `display_text`: the canonical projection stops the title at the
-    first `@tag`, whereas operational consumers strip every tag in place."""
+    Internal helper for `parser.parse_todo`, not operational API (consumers use
+    `display_text`). Distinct from it: the canonical projection stops the title
+    at the first `@tag`, whereas operational consumers strip every tag in place."""
     first = _TAG_RE.search(rest)
     return (rest[: first.start()] if first else rest).strip()
 

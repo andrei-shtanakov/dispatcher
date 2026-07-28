@@ -14,7 +14,7 @@ import re
 from typing import Any
 
 from plan_fields.canonical import canonicalize
-from plan_fields.scrape import canonical_title, scrape_items
+from plan_fields.scrape import _canonical_title, scrape_items
 
 CONTRACT_VERSION = 1
 SCHEMA_VERSION = 1
@@ -63,7 +63,7 @@ def parse_todo(
     for item in scrape_items(text):
         status = "closed" if item.checked else "open"
         raw = dict(item.tags)
-        title = canonical_title(item.raw_text)
+        title = _canonical_title(item.raw_text)
         item_id = item.item_id
         prov = _prov(repo, path, item.line)
         if not item_id:
