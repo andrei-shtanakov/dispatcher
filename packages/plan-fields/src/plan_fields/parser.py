@@ -59,7 +59,7 @@ def parse_todo(
     diagnostics: list[dict[str, Any]] = []
     # first pass: collect nodes (need the id set before resolving references).
     # Built on the shared operational scrape — one tokenizer for the whole fleet.
-    parsed: list[tuple[dict[str, Any], dict[str, str]]] = []
+    parsed: list[tuple[dict[str, Any], tuple[str, ...]]] = []
     for item in scrape_items(text):
         status = "closed" if item.checked else "open"
         raw = dict(item.tags)
@@ -99,7 +99,9 @@ def parse_todo(
             "provenance": prov,
         }
         nodes.append(node)
-        parsed.append((node, raw))
+        # every @blocked_by on the item, in source order — a key can repeat, and
+        # each blocker gets its own reference below (never collapsed to one)
+        parsed.append((node, item.values("blocked_by")))
         if owner is None:
             diagnostics.append(
                 _diag(
@@ -146,17 +148,15 @@ def parse_todo(
         else:
             seen[n["id"]] = n
 
-    # references + edges
-    for node, raw in parsed:
-        blocked = raw.get("blocked_by")
-        if not blocked:
-            continue
-        ref, edge, diag = _resolve(node, blocked, repo, nodes, ids)
-        references.append(ref)
-        if edge is not None:
-            edges.append(edge)
-        if diag is not None:
-            diagnostics.append(diag)
+    # references + edges: one reference per @blocked_by (repeats preserved)
+    for node, blockers in parsed:
+        for blocked in blockers:
+            ref, edge, diag = _resolve(node, blocked, repo, nodes, ids)
+            references.append(ref)
+            if edge is not None:
+                edges.append(edge)
+            if diag is not None:
+                diagnostics.append(diag)
 
     doc = {
         "contract_version": CONTRACT_VERSION,

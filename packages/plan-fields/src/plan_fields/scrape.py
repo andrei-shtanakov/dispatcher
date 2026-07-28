@@ -45,9 +45,13 @@ class ScrapedItem:
 
     `raw_text` is the item text with surrounding whitespace trimmed but otherwise
     verbatim — tags and inner spacing are kept. `display_text` is the same with
-    every recognized tag removed and whitespace collapsed. `tags` is the
-    last-wins map of `@key:value` on the line; `item_id` is `tags.get("id")`,
-    surfaced for convenience but never required."""
+    every recognized tag removed and whitespace collapsed. `item_id` is
+    `tags.get("id")`, surfaced for convenience but never required.
+
+    Two tag views: `tags` is the last-wins `{key: value}` map (convenient, and
+    all a single-valued key needs); `tag_list` is the lossless `(key, value)`
+    sequence in source order, keeping every occurrence — a key can legitimately
+    repeat (e.g. two `@blocked_by:` on one item), which the map cannot hold."""
 
     checked: bool
     bullet: Literal["-", "*"]
@@ -57,14 +61,21 @@ class ScrapedItem:
     display_text: str
     tags: Mapping[str, str]
     item_id: str | None
+    tag_list: tuple[tuple[str, str], ...]
+
+    def values(self, key: str) -> tuple[str, ...]:
+        """Every value for `key` in source order (empty when the key is absent)."""
+        return tuple(value for tag, value in self.tag_list if tag == key)
 
 
-def _tags(rest: str) -> dict[str, str]:
-    """Last-wins map of the recognized tags on one line (shared tokenizer)."""
-    out: dict[str, str] = {}
-    for m in _TAG_RE.finditer(rest):
-        out[m.group(1)] = m.group(2) if m.group(2) is not None else m.group(3)
-    return out
+def _tag_pairs(rest: str) -> tuple[tuple[str, str], ...]:
+    """Every `(key, value)` tag on one line, in source order (shared tokenizer).
+
+    The lossless form: repeats are kept, so a doubled `@blocked_by:` survives."""
+    return tuple(
+        (m.group(1), m.group(2) if m.group(2) is not None else m.group(3))
+        for m in _TAG_RE.finditer(rest)
+    )
 
 
 def _canonical_title(rest: str) -> str:
@@ -100,7 +111,8 @@ def scrape_items(text: str) -> list[ScrapedItem]:
         rest = m.group(3).strip()
         if not rest:
             continue  # a bare checkbox with no text is not an item
-        tags = _tags(rest)
+        pairs = _tag_pairs(rest)
+        tags = dict(pairs)  # last-wins convenience view
         bullet: Literal["-", "*"] = "-" if m.group(1) == "-" else "*"
         items.append(
             ScrapedItem(
@@ -112,6 +124,7 @@ def scrape_items(text: str) -> list[ScrapedItem]:
                 display_text=_display_text(rest),
                 tags=MappingProxyType(tags),
                 item_id=tags.get("id"),
+                tag_list=pairs,
             )
         )
     return items

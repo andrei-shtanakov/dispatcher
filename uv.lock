@@ -832,7 +832,7 @@ wheels = [
 
 [[package]]
 name = "plan-fields"
-version = "0.2.1"
+version = "0.3.0"
 source = { editable = "packages/plan-fields" }
 dependencies = [
     { name = "jsonschema" },

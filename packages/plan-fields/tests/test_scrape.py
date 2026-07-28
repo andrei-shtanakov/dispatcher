@@ -80,6 +80,43 @@ def test_line_numbers_are_one_based_document_positions() -> None:
     assert [i.line for i in items] == [3, 5]
 
 
+def test_repeated_tag_kept_in_tag_list_but_last_wins_in_tags() -> None:
+    # a key can legitimately repeat (two blockers); tag_list keeps both in order,
+    # the last-wins `tags` map keeps the convenience single value (Robin's view).
+    it = scrape_items(
+        "- [ ] c @blocked_by:maestro#a @blocked_by:arbiter#b @owner:andrei\n"
+    )[0]
+    assert it.tag_list == (
+        ("blocked_by", "maestro#a"),
+        ("blocked_by", "arbiter#b"),
+        ("owner", "andrei"),
+    )
+    assert it.tags["blocked_by"] == "arbiter#b"  # last-wins, unchanged
+    assert it.tags["owner"] == "andrei"
+
+
+def test_values_helper_returns_all_values_for_a_key_in_order() -> None:
+    it = scrape_items("- [ ] c @blocked_by:x#1 @blocked_by:y#2\n")[0]
+    assert it.values("blocked_by") == ("x#1", "y#2")
+    assert it.values("owner") == ()  # absent key -> empty
+
+
+def test_parse_todo_emits_one_reference_per_blocker() -> None:
+    # the lossy case that blocked devtools: two @blocked_by on one item must
+    # become two references (and two edges), never collapsed to the last one.
+    md = (
+        "- [ ] a @id:a\n"
+        "- [ ] b @id:b\n"
+        "- [ ] c @id:c @blocked_by:todo://demo/a @blocked_by:todo://demo/b\n"
+    )
+    doc = parse_todo(md, repo="demo")
+    refs = [r for r in doc["references"] if r["source_node_id"] == "todo://demo/c"]
+    assert len(refs) == 2
+    assert {r["resolved_target"] for r in refs} == {"todo://demo/a", "todo://demo/b"}
+    edges = [e for e in doc["edges"] if e["source_node_id"] == "todo://demo/c"]
+    assert {e["target_node_id"] for e in edges} == {"todo://demo/a", "todo://demo/b"}
+
+
 def test_scrape_is_the_substrate_parse_todo_gates_on_id() -> None:
     # scrape sees the pre-@id item; the canonical projection drops it (PF-ID-MISSING).
     # This is exactly why consumers need scrape, not parse_todo, before PF-2B.
