@@ -21,7 +21,7 @@ uv run plan-fields validate some-document.json
 from plan_fields import parse_todo, canonical_dumps, validate_document, run_conformance
 
 doc = parse_todo(open("TODO.md").read(), repo="maestro")
-validate_document(doc)            # raises on non-conformance
+validate_document(doc)  # raises on non-conformance
 print(canonical_dumps(doc))
 ```
 

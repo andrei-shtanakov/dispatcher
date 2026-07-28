@@ -22,7 +22,8 @@ def test_schema_is_valid():
 
 def test_parser_output_validates_against_schema():
     doc = parse_todo(
-        "# demo\n\n- [ ] A thing @id:x @owner:tech-lead\n", "demo",
+        "# demo\n\n- [ ] A thing @id:x @owner:tech-lead\n",
+        "demo",
         generated_at="2026-07-28T00:00:00Z",
     )
     validate_document(doc)  # raises on non-conformance

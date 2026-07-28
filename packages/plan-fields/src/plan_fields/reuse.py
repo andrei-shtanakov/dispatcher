@@ -19,11 +19,18 @@ def detect_reuse(
     out: list[dict[str, Any]] = []
     for n in current["nodes"]:
         if n["declared_status"] == "open" and n["id"] in tombstoned:
-            out.append({
-                "code": "PF-ID-REUSED", "severity": "error",
-                "subject_uri": n["node_id"], "related_uri": None, "rule_id": None,
-                "message": (f"@id '{n['id']}' was tombstoned in the previous snapshot "
-                            f"and is reused by a different open item"),
-                "provenance": n["provenance"],
-            })
+            out.append(
+                {
+                    "code": "PF-ID-REUSED",
+                    "severity": "error",
+                    "subject_uri": n["node_id"],
+                    "related_uri": None,
+                    "rule_id": None,
+                    "message": (
+                        f"@id '{n['id']}' was tombstoned in the previous snapshot "
+                        f"and is reused by a different open item"
+                    ),
+                    "provenance": n["provenance"],
+                }
+            )
     return out

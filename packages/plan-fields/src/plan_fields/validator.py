@@ -57,18 +57,24 @@ class Result:
 
 
 def _parse_fixture(md: Path) -> dict[str, Any]:
-    return parse_todo(md.read_text(encoding="utf-8"), FIXTURE_REPO,
-                      path="TODO.md", generated_at=FIXTURE_STAMP)
+    return parse_todo(
+        md.read_text(encoding="utf-8"),
+        FIXTURE_REPO,
+        path="TODO.md",
+        generated_at=FIXTURE_STAMP,
+    )
 
 
 def _bundle_doc(dir_: Path) -> dict[str, Any]:
     ctx = json.loads((dir_ / "context.json").read_text(encoding="utf-8"))
     repo = ctx.get("repo", FIXTURE_REPO)
     stamp = ctx.get("generated_at", FIXTURE_STAMP)
-    prev = parse_todo((dir_ / "previous.md").read_text(encoding="utf-8"), repo,
-                      generated_at=stamp)
-    curr = parse_todo((dir_ / "current.md").read_text(encoding="utf-8"), repo,
-                      generated_at=stamp)
+    prev = parse_todo(
+        (dir_ / "previous.md").read_text(encoding="utf-8"), repo, generated_at=stamp
+    )
+    curr = parse_todo(
+        (dir_ / "current.md").read_text(encoding="utf-8"), repo, generated_at=stamp
+    )
     curr["diagnostics"].extend(detect_reuse(curr, prev))
     return canonicalize(curr)
 
@@ -77,17 +83,24 @@ def run_conformance() -> list[Result]:
     """Parse every fixture and compare (schema-valid + equal to expected)."""
     results: list[Result] = []
     simple = sorted(
-        p for p in FIXTURES_DIR.rglob("*.md")
+        p
+        for p in FIXTURES_DIR.rglob("*.md")
         if p.parent.name != "reused-id" and p.stem != "README"
     )
     cases: list[tuple[str, dict[str, Any], Path]] = []
     for md in simple:
-        cases.append((str(md.relative_to(FIXTURES_DIR)), _parse_fixture(md),
-                      md.with_suffix(".expected.json")))
+        cases.append(
+            (
+                str(md.relative_to(FIXTURES_DIR)),
+                _parse_fixture(md),
+                md.with_suffix(".expected.json"),
+            )
+        )
     bundles = sorted(d for d in FIXTURES_DIR.rglob("reused-id") if d.is_dir())
     for d in bundles:
-        cases.append((str(d.relative_to(FIXTURES_DIR)), _bundle_doc(d),
-                      d / "expected.json"))
+        cases.append(
+            (str(d.relative_to(FIXTURES_DIR)), _bundle_doc(d), d / "expected.json")
+        )
 
     for name, got, exp_path in cases:
         try:
@@ -95,9 +108,7 @@ def run_conformance() -> list[Result]:
         except ValidationError as err:
             results.append(Result(name, False, f"schema: {err}".splitlines()[0]))
             continue
-        expected = canonicalize(
-            json.loads(exp_path.read_text(encoding="utf-8"))
-        )
+        expected = canonicalize(json.loads(exp_path.read_text(encoding="utf-8")))
         if _strip(got) == _strip(expected):
             results.append(Result(name, True))
         else:

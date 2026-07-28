@@ -35,3 +35,10 @@ extend-select = ["I"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.pyrefly]
+project-includes = ["src", "tests"]
+search-path = ["src"]
+
+[dependency-groups]
+dev = ["pyrefly", "ruff", "pytest"]
