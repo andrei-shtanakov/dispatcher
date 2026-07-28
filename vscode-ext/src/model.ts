@@ -151,8 +151,16 @@ const ROADMAP_ICONS: Record<string, StatusIcon> = {
   unknown: { icon: "question", color: null },
 };
 
-export function roadmapStatusIcon(status: string): StatusIcon {
-  return ROADMAP_ICONS[status] ?? ROADMAP_ICONS.unknown;
+// Attested-only implementations keep their base status icon *shape* but turn
+// amber, so they are visibly distinct from a machine-backed (green)
+// implemented/verified while still distinguishing implemented vs verified
+// (ADR-ECO-005 D3). verified-over-attested-impl stays verified (see PF-4
+// test_verified_over_attested_impl_stays_attested_only).
+const ATTESTED_COLOR = "list.warningForeground";
+
+export function roadmapStatusIcon(status: string, attested = false): StatusIcon {
+  const base = ROADMAP_ICONS[status] ?? ROADMAP_ICONS.unknown;
+  return attested ? { icon: base.icon, color: ATTESTED_COLOR } : base;
 }
 
 const SYNC_VERDICT_ICONS: Record<string, StatusIcon> = {
@@ -185,7 +193,7 @@ export function roadmapItemDescription(item: RoadmapItemView): string {
   return [
     item.phase ?? "—",
     item.owner_project ?? "—",
-    item.computed_status,
+    item.status_label,
     item.blockers.length > 0 ? item.blockers.join(", ") : "—",
     evidenceSummary(item),
   ].join(" · ");

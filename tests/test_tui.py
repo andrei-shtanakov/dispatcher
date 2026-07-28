@@ -487,6 +487,46 @@ async def test_roadmap_table_populates_from_yaml(tmp_path: Path) -> None:
         assert str(row4[7]) == expected
 
 
+_ATTESTED_ROADMAP_YAML = """\
+version: 1
+roadmap: tui-attested
+title: TUI attested roadmap
+items:
+  - id: TUI-ATT
+    title: Owner attested
+    phase: "5"
+    owner_project: arbiter
+    evidence_rules:
+      - rule: plan_item_declared_closed
+        kind: implementation
+        ref: todo://arbiter/tui-attest
+"""
+
+
+async def test_roadmap_attested_status_is_amber_and_marked(tmp_path: Path) -> None:
+    """PF-5: an attestation-only implementation renders `implemented
+    (attested)` in amber, never machine-green (ADR-ECO-005 D3)."""
+    from rich.text import Text
+
+    make_atp(tmp_path)
+    make_arbiter(tmp_path)
+    make_spec_runner(tmp_path)
+    db = make_maestro_home(tmp_path)
+    (tmp_path / "arbiter" / "TODO.md").write_text(
+        "# arbiter\n\n- [x] Ship it @id:tui-attest @owner:tech-lead\n"
+    )
+    vault = tmp_path / "prograph-vault" / "authored" / "roadmaps"
+    vault.mkdir(parents=True)
+    (vault / "tui-attested.yaml").write_text(_ATTESTED_ROADMAP_YAML)
+    app = DispatcherApp(DispatcherConfig(roots=(tmp_path,), maestro_db=db))
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        table = app.query_one("#roadmap-table", DataTable)
+        cell = table.get_row("TUI-ATT")[3]
+        assert str(cell) == "implemented (attested)"
+        assert isinstance(cell, Text) and cell.style == "yellow"
+
+
 def _sync_status() -> SyncStatus:
     report = SyncReport(
         current_host="mac-a",

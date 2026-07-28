@@ -10,6 +10,8 @@
       "depends_on": [],
       "expected_evidence": ["checker module exists"],
       "computed_status": "verified",
+      "status_label": "verified",
+      "implementation_is_attested_only": false,
       "evidence": [
         {
           "rule": "file_exists",
@@ -36,6 +38,8 @@
       "depends_on": [],
       "expected_evidence": [],
       "computed_status": "implemented",
+      "status_label": "implemented",
+      "implementation_is_attested_only": false,
       "evidence": [
         {
           "rule": "file_exists",
@@ -62,6 +66,8 @@
       "depends_on": [],
       "expected_evidence": [],
       "computed_status": "planned",
+      "status_label": "planned",
+      "implementation_is_attested_only": false,
       "evidence": [
         {
           "rule": "file_exists",
@@ -82,6 +88,8 @@
       "depends_on": ["RD-003", "RD-999"],
       "expected_evidence": [],
       "computed_status": "blocked",
+      "status_label": "blocked",
+      "implementation_is_attested_only": false,
       "evidence": [
         {
           "rule": "contract_in_sync",
@@ -102,9 +110,33 @@
       "depends_on": [],
       "expected_evidence": ["someone feels good about it"],
       "computed_status": "unknown",
+      "status_label": "unknown",
+      "implementation_is_attested_only": false,
       "evidence": [],
       "blockers": [],
       "source": "ideas.yaml"
+    },
+    {
+      "id": "RD-006",
+      "title": "Owner-attested capability",
+      "phase": "M4",
+      "owner_project": "atp-platform",
+      "target_contract": null,
+      "depends_on": [],
+      "expected_evidence": [],
+      "computed_status": "implemented",
+      "status_label": "implemented (attested)",
+      "implementation_is_attested_only": true,
+      "evidence": [
+        {
+          "rule": "plan_item_declared_closed",
+          "kind": "implementation",
+          "passed": true,
+          "detail": "todo://atp-platform/benchmark-2 declared closed"
+        }
+      ],
+      "blockers": [],
+      "source": "ecosystem.yaml"
     }
   ],
   "warnings": []

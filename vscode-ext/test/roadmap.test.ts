@@ -18,7 +18,8 @@ function fixture<T>(name: string): T {
 }
 
 const roadmap = fixture<RoadmapResponse>("roadmap.json");
-const [verified, implemented, planned, blocked, unknown] = roadmap.items;
+const [verified, implemented, planned, blocked, unknown, attested] =
+  roadmap.items;
 
 describe("roadmapStatusIcon", () => {
   it("distinguishes all five statuses", () => {
@@ -54,6 +55,31 @@ describe("roadmapStatusIcon", () => {
   it("falls back to the unknown icon for unexpected statuses", () => {
     expect(roadmapStatusIcon("nonsense")).toEqual(roadmapStatusIcon("unknown"));
   });
+
+  it("marks attested-only implementations amber, not machine-green", () => {
+    const machine = roadmapStatusIcon("implemented");
+    const attestedIcon = roadmapStatusIcon("implemented", true);
+    expect(attestedIcon).toEqual({
+      icon: "circle-filled",
+      color: "list.warningForeground",
+    });
+    expect(attestedIcon).not.toEqual(machine);
+  });
+
+  it("keeps the base icon shape for attested verified (only color amber)", () => {
+    // backend allows verified over an attested-only impl (PF-4); the verified
+    // icon shape must survive so it stays distinct from implemented.
+    const machine = roadmapStatusIcon("verified");
+    const attestedIcon = roadmapStatusIcon("verified", true);
+    expect(attestedIcon).toEqual({
+      icon: "pass-filled",
+      color: "list.warningForeground",
+    });
+    expect(attestedIcon.icon).toBe(machine.icon); // shape preserved
+    expect(attestedIcon.color).not.toBe(machine.color); // color distinct
+    // and distinct from an attested implemented (icon shape differs)
+    expect(attestedIcon.icon).not.toBe(roadmapStatusIcon("implemented", true).icon);
+  });
 });
 
 describe("roadmapItemLabel", () => {
@@ -79,6 +105,12 @@ describe("roadmapItemDescription", () => {
     );
     expect(roadmapItemDescription(unknown)).toBe(
       "— · — · unknown · — · no rules",
+    );
+  });
+
+  it("renders the attested marker in the status column (ADR-ECO-005 D3)", () => {
+    expect(roadmapItemDescription(attested)).toBe(
+      "M4 · atp-platform · implemented (attested) · — · 1/1 rules",
     );
   });
 });
