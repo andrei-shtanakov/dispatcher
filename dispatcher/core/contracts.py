@@ -31,6 +31,9 @@ _PF_CANON_PROJECT = "prograph-vault"
 _PF_CANON_DIR_REL = Path("authored/contracts/plan-fields/v1")
 _PF_MANIFEST_REL = _PF_CANON_DIR_REL / "manifest.json"
 _PF_VENDORED_REL = Path("packages/plan-fields/src/plan_fields/contract")
+# excluded from the fingerprinted surface (parity with the vault generator):
+# drift-control meta + the vendor-only pin marker.
+_PF_META = {"manifest.json", "drift-control.md", "PINNED.txt"}
 
 
 def _sha256(path: Path) -> str | None:
@@ -49,19 +52,54 @@ def check_contracts(projects: dict[str, Path]) -> list[ContractStatus]:
     return results
 
 
+def _valid_surface(surface: object) -> bool:
+    """A manifest `surface` is a list of {path: non-empty str, sha256: str}."""
+    return isinstance(surface, list) and all(
+        isinstance(e, dict)
+        and isinstance(e.get("path"), str)
+        and bool(e.get("path"))
+        and isinstance(e.get("sha256"), str)
+        for e in surface
+    )
+
+
 def _surface_drift(root: Path, surface: list[dict]) -> str | None:
     """First surface file under `root` whose sha256 ≠ the manifest, else None.
 
-    Returns `"<path> missing"` when a file is absent, `"<path>"` when it
-    differs — the caller turns this into the drift detail.
+    Assumes a validated surface (see `_valid_surface`). Returns
+    `"<path> missing"` when a file is absent, `"<path>"` when it differs — the
+    caller turns this into the drift detail.
     """
     for entry in surface:
-        rel = str(entry.get("path", ""))
-        recorded = entry.get("sha256")
+        rel = str(entry["path"])
         actual = _sha256(root / rel)
         if actual is None:
             return f"{rel} missing"
-        if actual != recorded:
+        if actual != entry["sha256"]:
+            return rel
+    return None
+
+
+def _canon_stale(canon_dir: Path, surface: list[dict]) -> str | None:
+    """Reason the manifest no longer matches the live canon surface, else None.
+
+    Compares the *whole* live surface (every file under `canon_dir` minus the
+    meta files) against the manifest — by set first, so an ADDED or REMOVED
+    canon file is caught even though it is absent from `surface`, then by hash.
+    A stale manifest must never certify (drift-control.md).
+    """
+    recorded = {e["path"]: e["sha256"] for e in surface}
+    live = {
+        p.relative_to(canon_dir).as_posix(): _sha256(p)
+        for p in canon_dir.rglob("*")
+        if p.is_file() and p.relative_to(canon_dir).as_posix() not in _PF_META
+    }
+    if set(live) != set(recorded):
+        added = sorted(set(live) - set(recorded))
+        removed = sorted(set(recorded) - set(live))
+        return f"surface set changed (added={added}, removed={removed})"
+    for rel, digest in live.items():
+        if digest != recorded[rel]:
             return rel
     return None
 
@@ -94,7 +132,9 @@ def _plan_fields_drift(projects: dict[str, Path]) -> list[ContractStatus]:
     except (OSError, json.JSONDecodeError):
         return [status(None, "canonical manifest not available")]
     surface = manifest.get("surface", [])
-    stale = _surface_drift(vault / _PF_CANON_DIR_REL, surface)
+    if not _valid_surface(surface):
+        return [status(None, "malformed manifest surface")]
+    stale = _canon_stale(vault / _PF_CANON_DIR_REL, surface)
     if stale is not None:
         return [status(False, f"canonical manifest stale: {stale}")]
     drifted = _surface_drift(vendored_dir, surface)

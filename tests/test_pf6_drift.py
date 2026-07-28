@@ -12,6 +12,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from dispatcher.core.contracts import check_contracts
 
 _CANON_REL = "authored/contracts/plan-fields/v1"
@@ -92,7 +94,7 @@ def test_canon_manifest_absent_is_not_comparable(tmp_path: Path) -> None:
     assert "not available" in (row.detail or "")
 
 
-def test_stale_manifest_is_an_immediate_error(tmp_path: Path) -> None:
+def test_stale_manifest_on_content_change_is_an_error(tmp_path: Path) -> None:
     # canon surface changed but the fingerprint was not regenerated: the guard
     # must never certify a fingerprint it no longer matches (drift-control.md).
     _write_contract(tmp_path / "vault", _SURFACE)
@@ -103,6 +105,27 @@ def test_stale_manifest_is_an_immediate_error(tmp_path: Path) -> None:
     assert "stale" in (row.detail or "")
 
 
+def test_stale_manifest_on_added_canon_file_is_an_error(tmp_path: Path) -> None:
+    # a NEW canon file with no manifest regen is also stale — the guard checks
+    # the whole live surface by set, not only the files listed in the manifest.
+    _write_contract(tmp_path / "vault", _SURFACE)
+    (tmp_path / "vault" / _CANON_REL / "extra.md").write_text("new surface file\n")
+    _write_vendored(tmp_path / "self", _SURFACE)
+    row = _pf(check_contracts(_projects(tmp_path)))
+    assert row.in_sync is False
+    assert "stale" in (row.detail or "") and "extra.md" in (row.detail or "")
+
+
+def test_malformed_manifest_is_not_comparable(tmp_path: Path) -> None:
+    _write_contract(tmp_path / "vault", _SURFACE)
+    mpath = tmp_path / "vault" / _CANON_REL / "manifest.json"
+    mpath.write_text(json.dumps({"surface": ["not-a-dict"]}))  # corrupt
+    _write_vendored(tmp_path / "self", _SURFACE)
+    row = _pf(check_contracts(_projects(tmp_path)))
+    assert row.in_sync is None
+    assert "malformed" in (row.detail or "")
+
+
 def test_real_vendored_copy_is_in_sync_with_canon() -> None:
     """Dogfood: dispatcher's own vendored plan-fields copy matches canon under
     the monorepo layout (fallback paths), so PF-6's guard starts green and the
@@ -110,6 +133,6 @@ def test_real_vendored_copy_is_in_sync_with_canon() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     canon_manifest = repo_root.parent / "prograph-vault" / _CANON_REL / "manifest.json"
     if not canon_manifest.exists():
-        return  # standalone layout without the vault checked out — nothing to assert
+        pytest.skip("prograph-vault not checked out (standalone layout)")
     row = _pf(check_contracts({}))  # empty → uses monorepo-layout fallbacks
     assert row.in_sync is True, row.detail
