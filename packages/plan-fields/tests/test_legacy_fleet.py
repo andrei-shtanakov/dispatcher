@@ -85,6 +85,40 @@ def test_case_insensitive_target_and_multiple_blockers_preserved() -> None:
     assert {x.target_repo for x in d} == {"maestro"}  # 'Maestro' folded to canonical
 
 
+def test_slug_only_inside_a_tag_value_does_not_resolve() -> None:
+    # the slug appears only inside the target item's tag value, never its prose:
+    # matching display_text (not raw_text) must NOT count that as a hit.
+    maestro = '- [ ] unrelated work @owner:o @trigger:"myslug shipped"\n'
+    inputs = [
+        RepoInput("maestro", maestro),
+        RepoInput("proctor", "- [ ] x @owner:o @blocked_by:maestro#myslug\n"),
+    ]
+    d = check_legacy_fleet(inputs, MANIFEST)
+    assert [x.code for x in d] == ["PF-BLOCKER-DANGLING"]  # not a false hit
+
+
+def test_slug_match_is_case_insensitive() -> None:
+    # target names it "R-07" in prose; a lowercase legacy ref still resolves
+    maestro = "- [ ] ship the R-07 feature now @owner:o\n"
+    inputs = [
+        RepoInput("maestro", maestro),
+        RepoInput("proctor", "- [ ] x @owner:o @blocked_by:maestro#r-07\n"),
+    ]
+    assert check_legacy_fleet(inputs, MANIFEST) == []  # open hit, valid blocker
+
+
+def test_exact_id_resolves_even_when_title_differs() -> None:
+    # target carries @id:done but its title is unrelated; a legacy slug 'done'
+    # resolves via the exact @id, and it is closed -> stale
+    maestro = "- [x] Mode 2 workstream routing @owner:o @id:done\n"
+    inputs = [
+        RepoInput("maestro", maestro),
+        RepoInput("proctor", "- [ ] x @owner:o @blocked_by:maestro#done\n"),
+    ]
+    d = check_legacy_fleet(inputs, MANIFEST)
+    assert [x.code for x in d] == ["PF-BLOCKER-STALE"]
+
+
 def test_self_blocker_is_ignored() -> None:
     inputs = [RepoInput("proctor", "- [ ] a @owner:o @blocked_by:proctor#b\n")]
     assert check_legacy_fleet(inputs, MANIFEST) == []

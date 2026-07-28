@@ -368,6 +368,19 @@ def check_legacy_fleet(
     return out
 
 
+def _slug_hits_item(item: ScrapedItem, slug: str) -> bool:
+    """Does ``slug`` name this target item? Exact @id (case-insensitive) when the
+    item carries one, else the slug in its tag-stripped ``display_text`` (also
+    case-insensitive) — matching ``fleet._matches``. Deliberately NOT ``raw_text``:
+    a slug must not resolve because it happens to appear inside an unrelated tag
+    value (another ``@blocked_by``), and casing must not decide a real relation.
+    """
+    low = slug.lower()
+    if item.item_id and item.item_id.lower() == low:
+        return True
+    return low in item.display_text.lower()
+
+
 def _legacy_resolve(srepo, line, trepo_raw, slug, manifest, scraped, no_todo):
     """Reproduce the old devtools per-blocker outcome, or None when it resolves."""
     tkey = trepo_raw.lower()
@@ -396,7 +409,7 @@ def _legacy_resolve(srepo, line, trepo_raw, slug, manifest, scraped, no_todo):
             f"{where} @blocked_by names '{tkey}', not checked out on this host; "
             f"unresolvable here",
         )
-    hits = [i for i in scraped[tkey] if slug in i.raw_text]
+    hits = [i for i in scraped[tkey] if _slug_hits_item(i, slug)]
     if not hits:
         return diag(
             "PF-BLOCKER-DANGLING",
