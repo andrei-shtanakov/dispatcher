@@ -110,11 +110,14 @@ installability is proven on every change to the package.
   `resolve_checkout(dir, index)` applies the same rule to a checkout on disk.
   `checkout_map` / `scan_workspace` settle two checkouts resolving to one key
   by what they supply, never by directory order: the one with a `TODO.md` wins,
-  **two** with a `TODO.md` raise `ValueError` (a plan would vanish and `sorted()`
-  would pick the loser), and neither having one is immaterial. `parse_fleet` and
-  `check_legacy_fleet` raise the same way when two `RepoInput`s normalise to one
-  repo. The CLI turns all of these into a `plan-fields: <message>` line on stderr
-  and exit code 2.
+  **two** with a `TODO.md` raise `AmbiguousIdentityError` (a plan would vanish
+  and `sorted()` would pick the loser), and neither having one leaves everything
+  this package derives unchanged — though the returned `Path` is then arbitrary,
+  so a consumer that reads files through it must not assume otherwise.
+  `parse_fleet` and `check_legacy_fleet` raise the same error when two
+  `RepoInput`s normalise to one repo. `plan_fields.AmbiguousIdentityError`
+  subclasses `ValueError`; the CLI catches only it, printing
+  `plan-fields: <message>` on stderr with exit code 2.
 - `plan_fields.validator.run_conformance()` and the `plan-fields` CLI.
 - The pinned contract under `plan_fields/contract/` (schema, registries,
   fixtures, `manifest.json`).

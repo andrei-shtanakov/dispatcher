@@ -237,11 +237,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.fn(args)
-    except ValueError as err:
-        # The workspace/manifest refusals (an ambiguous git_dir, two plan-bearing
+    except _fleet.AmbiguousIdentityError as err:
+        # Only the identity refusals (an ambiguous git_dir, two plan-bearing
         # checkouts of one repo, two spellings of one repo among the inputs) are
-        # the operator's to fix, not stack traces to read. Exit 2 keeps them
-        # distinct from a clean "invalid document" / "drift found" verdict (1).
+        # the operator's to fix, so only they are caught. Catching `ValueError`
+        # would also swallow a malformed TOML/JSON error and any genuine parser
+        # bug, dressing a defect up as operator error. Exit 2 keeps them
+        # distinct from a clean "invalid document" / "drift found" verdict (1);
+        # it is shared with argparse's usage error, which is the same category —
+        # the invocation or its environment cannot be run as given, and the
+        # message says which.
         print(f"plan-fields: {err}", file=sys.stderr)
         return 2
 

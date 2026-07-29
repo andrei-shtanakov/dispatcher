@@ -30,6 +30,18 @@ _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _LEGACY_RE = re.compile(r"^([a-z0-9][a-z0-9-]*)#(\S+)$", re.IGNORECASE)
 
 
+class AmbiguousIdentityError(ValueError):
+    """Two declarations, checkouts or inputs claim one repo identity.
+
+    A dedicated type so the CLI can turn exactly these refusals into an
+    operator-facing message. Catching plain ``ValueError`` there would also
+    swallow ``TOMLDecodeError``, ``JSONDecodeError`` and any genuine
+    ``ValueError`` bug in the parser, printing a defect as if it were the
+    operator's mistake. Subclasses ``ValueError`` so existing callers that
+    catch it keep working.
+    """
+
+
 def canonical_name(repo_dir: Path) -> str:
     """Repo name as a plain `git clone` makes it — from origin, not the folder."""
     try:
@@ -99,7 +111,7 @@ def manifest_index(manifest_path: Path) -> ManifestIndex:
     ambiguous = {d: sorted(ks) for d, ks in by_git_dir.items() if len(ks) > 1}
     if ambiguous:
         detail = "; ".join(f"{d} -> {ks}" for d, ks in sorted(ambiguous.items()))
-        raise ValueError(
+        raise AmbiguousIdentityError(
             f"workspace manifest declares an ambiguous git_dir alias: {detail}. "
             f"A checkout location must name at most one non-member repo."
         )
@@ -158,14 +170,20 @@ def checkout_map(root: Path, index: ManifestIndex | None = None) -> dict[str, Pa
     * one of them keeps a ``TODO.md`` — it wins, whichever order they are read
       in. A bare second clone beside a real checkout has no wrong answer to
       prevent, so it must not abort the command.
-    * both keep a ``TODO.md`` — raise. Here the loser's plan content vanishes
-      from the answer and which one loses depends on ``sorted()``. Identity
-      decided by directory order is exactly the failure this contract exists to
-      prevent, and it matches how ``manifest_index`` already refuses an
-      ambiguous ``git_dir``.
-    * neither keeps one — take the first. The pick is unobservable: a checkout
-      with no ``TODO.md`` contributes no node, reference or diagnostic, and its
-      commit is never emitted, so the two are interchangeable by construction.
+    * both keep a ``TODO.md`` — raise ``AmbiguousIdentityError``. Here the
+      loser's plan content vanishes from the answer and which one loses depends
+      on ``sorted()``. Identity decided by directory order is exactly the
+      failure this contract exists to prevent, and it matches how
+      ``manifest_index`` already refuses an ambiguous ``git_dir``.
+    * neither keeps one — take the first in ``sorted()`` order. **The returned
+      ``Path`` is then arbitrary**: the winner is a physically different clone
+      depending on the directory names, and a consumer that reads a commit or
+      any other file through that path gets an order-dependent answer. What is
+      unobservable is narrower — everything THIS package derives from such a
+      checkout: it contributes no node, reference or diagnostic, and
+      ``parse_fleet`` never emits its commit, so ``scan_workspace``, the four
+      ``fleet-*`` commands and the snapshot are identical either way. A
+      consumer that uses the directory itself must not assume the same.
     """
     out: dict[str, Path] = {}
     for child in sorted(root.iterdir()):
@@ -181,7 +199,7 @@ def checkout_map(root: Path, index: ManifestIndex | None = None) -> dict[str, Pa
             out[key] = child
         elif (child / "TODO.md").is_file():
             if (first / "TODO.md").is_file():
-                raise ValueError(
+                raise AmbiguousIdentityError(
                     f"workspace holds two checkouts resolving to '{key}', both "
                     f"with a TODO.md: {first.name} and {child.name}. A repo's "
                     f"plan must not depend on directory order — rename or "

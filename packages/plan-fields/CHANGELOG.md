@@ -34,20 +34,27 @@ manifest can pass `ManifestIndex(frozenset(names), {})`.
 - New `checkout_map(root, index)`; `scan_workspace` is built on it. Two
   checkouts resolving to one canonical name are settled by what they supply,
   never by directory order: the one with a `TODO.md` wins; **two** with a
-  `TODO.md` raise `ValueError` (previously the later one silently overwrote the
-  earlier); neither having one is immaterial, since such a checkout contributes
-  no node, reference or diagnostic and its commit is never emitted. So a bare
-  second clone beside a real checkout keeps working, and a second *plan-bearing*
-  clone of a manifest repo now aborts the command.
-- `parse_fleet` and `check_legacy_fleet` raise `ValueError` when two
+  `TODO.md` raise `AmbiguousIdentityError` (previously the later one silently
+  overwrote the earlier); neither having one leaves the *derived* answer
+  unchanged, since such a checkout contributes no node, reference or diagnostic
+  and its commit is never emitted — though the `Path` `checkout_map` returns for
+  it is then arbitrary, which matters to a consumer that reads files through it.
+  So a bare second clone beside a real checkout keeps working, and a second
+  *plan-bearing* clone of a manifest repo now aborts the command.
+- New `AmbiguousIdentityError` (a `ValueError` subclass, exported): raised
+  wherever two declarations, checkouts or inputs claim one repo identity.
+- `parse_fleet` and `check_legacy_fleet` raise it when two
   `RepoInput`s normalise to one repo. `check_legacy_fleet` previously had no
   such guard: normalisation could merge two spellings, the second input
   overwrote the first, and the whole losing `TODO.md` — with any diagnostic in
   it — disappeared depending on argument order.
-- The CLI turns these refusals (and `manifest_index`'s pre-existing ambiguous-
-  `git_dir` error, which used to surface as a traceback) into a
+- The CLI turns exactly those refusals (and `manifest_index`'s pre-existing
+  ambiguous-`git_dir` error, which used to surface as a traceback) into a
   `plan-fields: <message>` line on stderr with **exit code 2**, distinct from
-  the exit code 1 that means "invalid document" or "drift found".
+  the exit code 1 that means "invalid document" or "drift found". Only
+  `AmbiguousIdentityError` is caught: a malformed JSON/TOML input, or a genuine
+  bug raising `ValueError`, still reaches the caller rather than being printed
+  as if it were the operator's mistake.
 - `fleet-graph` and `fleet-legacy` resolve checkouts through the manifest, so a
   repo cloned into its declared `git_dir` is no longer reported as absent.
 

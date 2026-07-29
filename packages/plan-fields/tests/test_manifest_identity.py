@@ -251,18 +251,21 @@ def test_a_bare_second_clone_never_aborts_and_never_wins(
     assert [i.display_text for i in fleet["ecosystem-kb"]] == ["real"]
 
 
-def test_two_bare_clones_are_interchangeable_and_do_not_abort(
+def test_two_bare_clones_do_not_abort_and_reach_the_same_answer(
     tmp_path: Path,
 ) -> None:
-    """Neither supplies a plan, so the pick cannot be observed.
+    """Neither supplies a plan, so refusing would abort over nothing.
 
-    A checkout with no TODO.md contributes no node, reference or diagnostic, and
-    its commit is never emitted — so refusing here would abort a command over a
-    difference that cannot reach the answer.
+    Scoped deliberately: what is interchangeable is everything this package
+    DERIVES from such a checkout — no node, reference or diagnostic, and no
+    commit emitted. The returned `Path` itself is arbitrary (asserted below so
+    the arbitrariness is visible rather than assumed), which is why
+    `checkout_map`'s docstring warns a consumer that reads files through it.
     """
     _checkout(tmp_path, "a-clone", "prograph-vault")
     _checkout(tmp_path, "b-clone", "ecosystem-kb")
     idx = manifest_index(_manifest(tmp_path, VAULT_MANIFEST))
+    # deterministic, but arbitrary: `sorted()` picked it, not the manifest
     assert checkout_map(tmp_path, idx)["ecosystem-kb"].name == "a-clone"
     assert scan_workspace(tmp_path, idx) == {}
 
@@ -281,6 +284,26 @@ def test_cli_reports_a_collision_as_an_error_not_a_traceback(
     err = capsys.readouterr().err
     assert err.startswith("plan-fields: ")
     assert "ecosystem-kb" in err and "Traceback" not in err
+
+
+def test_cli_does_not_dress_a_parse_failure_up_as_operator_error(
+    tmp_path: Path,
+) -> None:
+    """The boundary catches the identity refusals only.
+
+    `AmbiguousIdentityError` subclasses `ValueError`, so catching the base class
+    at the CLI would have swallowed malformed JSON/TOML — and, worse, any
+    genuine `ValueError` bug in the parser, which is how a defect gets mistaken
+    for user error. A `JSONDecodeError` must still reach the caller.
+    """
+    import json
+
+    from plan_fields.cli import main
+
+    broken = tmp_path / "broken.json"
+    broken.write_text("not json at all", encoding="utf-8")
+    with pytest.raises(json.JSONDecodeError):
+        main(["validate", str(broken)])
 
 
 # --- case 4: a legacy ref written with the locator resolves, and stays legacy -

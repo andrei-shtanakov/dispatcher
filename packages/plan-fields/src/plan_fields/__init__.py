@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from plan_fields.canonical import canonical_dumps, canonicalize
 from plan_fields.fleet import (
+    AmbiguousIdentityError,
     ManifestIndex,
     checkout_map,
     manifest_index,
@@ -27,6 +28,7 @@ from plan_fields.validator import load_schema, run_conformance, validate_documen
 __version__ = "0.7.0"
 
 __all__ = [
+    "AmbiguousIdentityError",
     "LegacyDiagnostic",
     "ManifestIndex",
     "RepoInput",

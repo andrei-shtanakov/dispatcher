@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from plan_fields.canonical import canonicalize
-from plan_fields.fleet import ManifestIndex
+from plan_fields.fleet import AmbiguousIdentityError, ManifestIndex
 from plan_fields.parser import (
     CONTRACT_VERSION,
     LEGACY_RE,
@@ -83,7 +83,9 @@ def _canonical_input_repos(
     repos = [index.resolve_ref(inp.repo) for inp in inputs]
     dupes = sorted({r for r in repos if repos.count(r) > 1})
     if dupes:
-        raise ValueError(f"{caller}: duplicate RepoInput for repo(s) {dupes}")
+        raise AmbiguousIdentityError(
+            f"{caller}: duplicate RepoInput for repo(s) {dupes}"
+        )
     return repos
 
 
