@@ -235,7 +235,15 @@ def main(argv: list[str] | None = None) -> int:
     fd.set_defaults(fn=_cmd_fleet_drift)
 
     args = parser.parse_args(argv)
-    return args.fn(args)
+    try:
+        return args.fn(args)
+    except ValueError as err:
+        # The workspace/manifest refusals (an ambiguous git_dir, two plan-bearing
+        # checkouts of one repo, two spellings of one repo among the inputs) are
+        # the operator's to fix, not stack traces to read. Exit 2 keeps them
+        # distinct from a clean "invalid document" / "drift found" verdict (1).
+        print(f"plan-fields: {err}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

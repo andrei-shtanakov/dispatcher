@@ -155,12 +155,23 @@ def test_basename_equal_to_a_key_resolves_despite_a_different_git_dir(
     assert resolve_checkout(d, idx) == "ecosystem-kb"
 
 
-def test_origin_derived_name_equal_to_a_key_resolves_as_declared(
+def test_basename_key_beats_an_origin_naming_another_repos_locator(
     tmp_path: Path,
 ) -> None:
-    """Candidate 2 is subject to the same predicate as candidate 1."""
+    """Candidate order, where getting it wrong names the WRONG repo.
+
+    Folder `ecosystem-kb/` (a key whose entry declares a different `git_dir`)
+    with an origin that is `arbiter`'s declared locator. The old lookup skipped
+    the key entirely, matched the origin against the alias table, and filed the
+    checkout under `arbiter` — not merely undeclared, but attributed to another
+    repo. Under one predicate per candidate the folder's own key wins first.
+
+    (There is deliberately no test for "origin equals a key": candidate 2's
+    accepted value and the origin fallback are the same string, so no assertion
+    can tell the mechanisms apart. Only the folder-name candidate is observable.)
+    """
     idx = manifest_index(_manifest(tmp_path, VAULT_MANIFEST))
-    d = _checkout(tmp_path, "scratch-clone", "ecosystem-kb")
+    d = _checkout(tmp_path, "ecosystem-kb", "arbiter")
     assert resolve_checkout(d, idx) == "ecosystem-kb"
 
 
@@ -198,9 +209,9 @@ def test_manifest_repos_excludes_member_entries(tmp_path: Path) -> None:
     assert "atp-platform-sdk" not in repos
 
 
-# --- scan_workspace: a collision is loud, never last-one-wins ---------------
-def test_two_checkouts_resolving_to_one_key_raise(tmp_path: Path) -> None:
-    """Identity must not be decided by `sorted()` over directory names."""
+# --- checkout_map: settled by what a checkout supplies, never by order -------
+def test_two_plan_bearing_checkouts_of_one_repo_raise(tmp_path: Path) -> None:
+    """Both carry a TODO.md, so one plan would vanish and `sorted()` would pick."""
     _checkout(tmp_path, "prograph-vault", "prograph-vault", todo="- [ ] a\n")
     _checkout(tmp_path, "vault-copy", "ecosystem-kb", todo="- [ ] b\n")
     idx = manifest_index(_manifest(tmp_path, VAULT_MANIFEST))
@@ -213,10 +224,63 @@ def test_two_checkouts_resolving_to_one_key_raise(tmp_path: Path) -> None:
 
 def test_checkout_map_collides_without_an_index_too(tmp_path: Path) -> None:
     """The defect is the ambiguity, not the index: two clones of one origin."""
-    _checkout(tmp_path, "one", "same-origin")
-    _checkout(tmp_path, "two", "same-origin")
+    _checkout(tmp_path, "one", "same-origin", todo="- [ ] a\n")
+    _checkout(tmp_path, "two", "same-origin", todo="- [ ] b\n")
     with pytest.raises(ValueError):
         checkout_map(tmp_path)
+
+
+@pytest.mark.parametrize("bare_first", [True, False])
+def test_a_bare_second_clone_never_aborts_and_never_wins(
+    tmp_path: Path, bare_first: bool
+) -> None:
+    """The likelier real collision: a scratch clone beside the real checkout.
+
+    Only one of them supplies a plan, so there is no wrong answer to prevent —
+    aborting the command here would be a false positive. Parametrised over both
+    directory orders because "the plan-bearing one wins" is worth nothing if it
+    holds only when `sorted()` happens to cooperate. `a-scratch` sorts before
+    `prograph-vault`, `z-scratch` after.
+    """
+    scratch = "a-scratch" if bare_first else "z-scratch"
+    _checkout(tmp_path, scratch, "prograph-vault")  # a clone, no TODO.md
+    _checkout(tmp_path, "prograph-vault", "prograph-vault", todo="- [ ] real\n")
+    idx = manifest_index(_manifest(tmp_path, VAULT_MANIFEST))
+    assert checkout_map(tmp_path, idx)["ecosystem-kb"].name == "prograph-vault"
+    fleet = scan_workspace(tmp_path, idx)
+    assert [i.display_text for i in fleet["ecosystem-kb"]] == ["real"]
+
+
+def test_two_bare_clones_are_interchangeable_and_do_not_abort(
+    tmp_path: Path,
+) -> None:
+    """Neither supplies a plan, so the pick cannot be observed.
+
+    A checkout with no TODO.md contributes no node, reference or diagnostic, and
+    its commit is never emitted — so refusing here would abort a command over a
+    difference that cannot reach the answer.
+    """
+    _checkout(tmp_path, "a-clone", "prograph-vault")
+    _checkout(tmp_path, "b-clone", "ecosystem-kb")
+    idx = manifest_index(_manifest(tmp_path, VAULT_MANIFEST))
+    assert checkout_map(tmp_path, idx)["ecosystem-kb"].name == "a-clone"
+    assert scan_workspace(tmp_path, idx) == {}
+
+
+def test_cli_reports_a_collision_as_an_error_not_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The refusals are the operator's to fix; a stack trace does not say that."""
+    from plan_fields.cli import main
+
+    _checkout(tmp_path, "prograph-vault", "prograph-vault", todo="- [ ] a\n")
+    _checkout(tmp_path, "vault-copy", "ecosystem-kb", todo="- [ ] b\n")
+    manifest = _manifest(tmp_path, VAULT_MANIFEST)
+    code = main(["fleet-legacy", "--root", str(tmp_path), "--manifest", str(manifest)])
+    assert code == 2
+    err = capsys.readouterr().err
+    assert err.startswith("plan-fields: ")
+    assert "ecosystem-kb" in err and "Traceback" not in err
 
 
 # --- case 4: a legacy ref written with the locator resolves, and stays legacy -
@@ -424,3 +488,47 @@ def test_legacy_source_repo_is_the_key_not_the_spelling(tmp_path: Path) -> None:
     assert [(d.code, d.source_repo) for d in diags] == [
         ("PF-BLOCKER-DANGLING", "ecosystem-kb")
     ]
+
+
+def test_check_legacy_fleet_answer_does_not_depend_on_input_order(
+    tmp_path: Path,
+) -> None:
+    """Two spellings of one repo must not resolve by argument order.
+
+    Reproduced on the branch before the fix: with `prograph-vault` first, its
+    whole TODO.md was overwritten by `ecosystem-kb`'s and the diagnostic
+    vanished (`[]`); with the order swapped, the same three inputs produced one
+    `PF-BLOCKER-DANGLING`. Normalising merges the two keys, so the refusal
+    `parse_fleet` already applies belongs here too — and the assertion that
+    matters is that BOTH orders agree, not merely that one of them raises.
+    """
+    from plan_fields.fleet_api import RepoInput, check_legacy_fleet
+
+    idx = manifest_index(_manifest(tmp_path, VAULT_MANIFEST))
+    vault = RepoInput("prograph-vault", "- [ ] a @blocked_by:arbiter#gone\n")
+    kb = RepoInput("ecosystem-kb", "- [ ] b\n")
+    arbiter = RepoInput("arbiter", "- [ ] unrelated\n")
+
+    outcomes = []
+    for inputs in ([vault, kb, arbiter], [kb, vault, arbiter]):
+        with pytest.raises(ValueError) as excinfo:
+            check_legacy_fleet(inputs, idx)
+        outcomes.append(str(excinfo.value))
+    assert outcomes[0] == outcomes[1]
+    assert "ecosystem-kb" in outcomes[0]
+
+
+def test_parse_fleet_and_check_legacy_fleet_refuse_the_same_inputs(
+    tmp_path: Path,
+) -> None:
+    """One rule, both entry points — a consumer runs the two passes together."""
+    from plan_fields.fleet_api import RepoInput, check_legacy_fleet, parse_fleet
+
+    idx = manifest_index(_manifest(tmp_path, VAULT_MANIFEST))
+    inputs = [
+        RepoInput("prograph-vault", "- [ ] a @id:a\n"),
+        RepoInput("ecosystem-kb", "- [ ] b @id:b\n"),
+    ]
+    for fn in (parse_fleet, check_legacy_fleet):
+        with pytest.raises(ValueError, match="ecosystem-kb"):
+            fn(inputs, idx)

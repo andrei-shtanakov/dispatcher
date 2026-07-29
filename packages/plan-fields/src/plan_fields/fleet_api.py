@@ -63,6 +63,30 @@ class RepoInput:
     available: bool = True
 
 
+def _canonical_input_repos(
+    inputs: Sequence[RepoInput], index: ManifestIndex, caller: str
+) -> list[str]:
+    """One canonical repo name per input, in order, refusing two spellings of one.
+
+    An input's own name is normalised on the same rule as the names references
+    are written with. A caller that supplies a repo under its ``git_dir``
+    spelling would otherwise key the scan by that spelling, so an inbound
+    reference — correctly normalised to the key — would find nothing.
+
+    Normalising can MERGE two names that were distinct as written, which is why
+    the duplicate refusal lives here rather than in one caller: without it the
+    second input silently overwrites the first, the loser's whole TODO.md
+    disappears from the answer, and which one loses depends on input order. An
+    ambiguity that resolves by argument order is the same defect
+    ``checkout_map`` refuses on disk.
+    """
+    repos = [index.resolve_ref(inp.repo) for inp in inputs]
+    dupes = sorted({r for r in repos if repos.count(r) > 1})
+    if dupes:
+        raise ValueError(f"{caller}: duplicate RepoInput for repo(s) {dupes}")
+    return repos
+
+
 def _pin(doc: dict[str, Any], commit: str | None) -> None:
     """Stamp the pinned commit onto every provenance block in a parsed doc."""
     if commit is None:
@@ -90,17 +114,7 @@ def parse_fleet(
     availability is decided, so a reference spelled with a declared ``git_dir``
     locator reaches the same verdict as one spelled with the key.
     """
-    # An input's own name is normalised too, not only the names references are
-    # written with. A caller that supplies a repo under its git_dir spelling
-    # would otherwise mint `todo://prograph-vault/<id>` and key `present` by
-    # that spelling, so an inbound reference — correctly normalised to
-    # `ecosystem-kb` — would find nothing. The duplicate check runs on the
-    # normalised names, so two spellings of one repo collide loudly here rather
-    # than silently overwriting `present` later.
-    seen = [index.resolve_ref(inp.repo) for inp in inputs]
-    dupes = sorted({r for r in seen if seen.count(r) > 1})
-    if dupes:
-        raise ValueError(f"parse_fleet: duplicate RepoInput for repo(s) {dupes}")
+    repos = _canonical_input_repos(inputs, index, "parse_fleet")
 
     nodes: list[dict[str, Any]] = []
     references: list[dict[str, Any]] = []
@@ -110,8 +124,7 @@ def parse_fleet(
     present: dict[str, list[dict[str, Any]]] = {}  # repo -> its nodes
     no_todo: set[str] = set()
 
-    for inp in inputs:
-        repo = index.resolve_ref(inp.repo)
+    for inp, repo in zip(inputs, repos):
         if not inp.available or inp.todo_text is None:
             # declared but not usable here: no checkout (available=False) or a
             # checkout with no TODO.md. Both are environmental; the target repo's
@@ -381,14 +394,10 @@ def check_legacy_fleet(
     the spelling as written.
     """
     exclude = exclude or set()
+    repos = _canonical_input_repos(inputs, index, "check_legacy_fleet")
     scraped: dict[str, list[ScrapedItem]] = {}
     no_todo: set[str] = set()
-    for inp in inputs:
-        # An input's own name is normalised on the same rule as the names
-        # references are written with — a repo supplied under its git_dir
-        # spelling must key `scraped` by its manifest key, or an inbound
-        # reference resolving to that key would find nothing.
-        srepo = index.resolve_ref(inp.repo)
+    for inp, srepo in zip(inputs, repos):
         if not inp.available or inp.todo_text is None:
             if inp.available and inp.todo_text is None:
                 no_todo.add(srepo)

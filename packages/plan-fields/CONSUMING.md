@@ -107,9 +107,14 @@ installability is proven on every change to the package.
   git_dir_to_key)`: repo identity exactly as the workspace manifest declares
   it. The canonical name is the **key** of a non-`member` entry; `git_dir` is a
   declared locator alias normalised to that key, never an identity of its own.
-  `resolve_checkout(dir, index)` applies the same rule to a checkout on disk,
-  and `checkout_map` / `scan_workspace` raise rather than let two checkouts
-  that resolve to one key be decided by directory order.
+  `resolve_checkout(dir, index)` applies the same rule to a checkout on disk.
+  `checkout_map` / `scan_workspace` settle two checkouts resolving to one key
+  by what they supply, never by directory order: the one with a `TODO.md` wins,
+  **two** with a `TODO.md` raise `ValueError` (a plan would vanish and `sorted()`
+  would pick the loser), and neither having one is immaterial. `parse_fleet` and
+  `check_legacy_fleet` raise the same way when two `RepoInput`s normalise to one
+  repo. The CLI turns all of these into a `plan-fields: <message>` line on stderr
+  and exit code 2.
 - `plan_fields.validator.run_conformance()` and the `plan-fields` CLI.
 - The pinned contract under `plan_fields/contract/` (schema, registries,
   fixtures, `manifest.json`).

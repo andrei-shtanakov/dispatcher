@@ -152,11 +152,20 @@ def checkout_map(root: Path, index: ManifestIndex | None = None) -> dict[str, Pa
     Without one, the old origin-derived behaviour is kept so existing callers
     are not broken by this change alone.
 
-    Two checkouts resolving to the same name are a loud error, not a last-one-
-    wins. Which of them supplies the repo's TODO.md, commit and items would
-    otherwise depend on directory order — identity decided by ``sorted()`` is
-    exactly the failure mode this contract exists to prevent, and it matches
-    how ``manifest_index`` already refuses an ambiguous ``git_dir``.
+    Two checkouts resolving to one name are settled by what they SUPPLY, never
+    by directory order:
+
+    * one of them keeps a ``TODO.md`` — it wins, whichever order they are read
+      in. A bare second clone beside a real checkout has no wrong answer to
+      prevent, so it must not abort the command.
+    * both keep a ``TODO.md`` — raise. Here the loser's plan content vanishes
+      from the answer and which one loses depends on ``sorted()``. Identity
+      decided by directory order is exactly the failure this contract exists to
+      prevent, and it matches how ``manifest_index`` already refuses an
+      ambiguous ``git_dir``.
+    * neither keeps one — take the first. The pick is unobservable: a checkout
+      with no ``TODO.md`` contributes no node, reference or diagnostic, and its
+      commit is never emitted, so the two are interchangeable by construction.
     """
     out: dict[str, Path] = {}
     for child in sorted(root.iterdir()):
@@ -168,13 +177,17 @@ def checkout_map(root: Path, index: ManifestIndex | None = None) -> dict[str, Pa
             else canonical_name(child).lower()
         )
         first = out.get(key)
-        if first is not None:
-            raise ValueError(
-                f"workspace holds two checkouts resolving to '{key}': "
-                f"{first.name} and {child.name}. A repo's identity must not "
-                f"depend on directory order — rename or remove one."
-            )
-        out[key] = child
+        if first is None:
+            out[key] = child
+        elif (child / "TODO.md").is_file():
+            if (first / "TODO.md").is_file():
+                raise ValueError(
+                    f"workspace holds two checkouts resolving to '{key}', both "
+                    f"with a TODO.md: {first.name} and {child.name}. A repo's "
+                    f"plan must not depend on directory order — rename or "
+                    f"remove one."
+                )
+            out[key] = child  # the plan-bearing checkout wins over a bare clone
     return out
 
 
