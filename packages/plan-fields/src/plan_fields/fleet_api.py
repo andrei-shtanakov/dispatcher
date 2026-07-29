@@ -145,13 +145,22 @@ def parse_fleet(
         _pin(doc, inp.commit)
         nodes.extend(doc["nodes"])
         references.extend(doc["references"])
+        # `parse_todo` has no manifest, so it cannot tell `prograph-vault#x`
+        # inside `ecosystem-kb` from a reference to another repo: it skips the
+        # match and says nothing, while the same blocker spelled with the key
+        # gets a verdict. Every legacy verdict is re-derived below WITH the
+        # index, by one matcher, so the two spellings agree — which means
+        # parse_todo's must be dropped here or the key spelling would be
+        # reported twice. `parse_todo` used on its own is unaffected.
         edges.extend(doc["edges"])
-        diagnostics.extend(doc["diagnostics"])
+        diagnostics.extend(
+            d for d in doc["diagnostics"] if d["code"] != "PF-LEGACY-AMBIGUOUS"
+        )
         present[repo] = doc["nodes"]
 
     node_ids = {n["node_id"] for n in nodes}
 
-    # resolve every still-open cross-repo reference against the merged graph
+    # resolve every still-open reference against the merged graph
     for ref in references:
         if ref["resolved_target"] is not None:
             continue
@@ -217,7 +226,13 @@ def _resolve_cross(ref, src_repo, index, present, node_ids, no_todo):
         ref["legacy_blocker_ref"] = f"{canonical}#{key}"
 
     if canonical == src_repo:
-        return None, None  # intra-repo miss already diagnosed by parse_todo
+        if is_canonical:
+            return None, None  # same-repo todo:// is parse_todo's to resolve
+        # Same-repo LEGACY, and the fleet layer owns the verdict for both
+        # spellings — it is the only layer that can see `prograph-vault#x`
+        # inside `ecosystem-kb` is a same-repo reference at all. parse_todo's
+        # verdict was dropped in parse_fleet precisely so this one is unique.
+        return None, _legacy_miss(present[canonical], key, src, raw, canonical, prov)
 
     reason = _repo_reason(trepo, index, present, no_todo)
     if reason is not None:
@@ -248,25 +263,34 @@ def _resolve_cross(ref, src_repo, index, present, node_ids, no_todo):
             ),
         )
     # The target repo is present, so the slug CAN be looked up — but only to
-    # report on it, never to build a relation. A unique match yields nothing:
-    # the reference already carries its normalised `legacy_blocker_ref`, and
-    # the author migrates it to an @id to gain an edge.
-    matches = _legacy_matches(present[canonical], key)
+    # report on it, never to build a relation.
+    return None, _legacy_miss(present[canonical], key, src, raw, canonical, prov)
+
+
+def _legacy_miss(nodes, key, src, raw, canonical, prov):
+    """``PF-LEGACY-AMBIGUOUS`` when the slug names no unique item, else None.
+
+    The single decision point for every legacy reference in a fleet snapshot,
+    same-repo and cross-repo alike, so the answer cannot depend on which layer
+    happened to reach it. A unique match yields nothing at all: the reference
+    already carries its normalised ``legacy_blocker_ref``, and the author
+    migrates it to an ``@id`` to gain an edge. The repo is named canonically —
+    it is the one that was actually searched — while ``raw`` quotes the
+    reference as written, so the reader can find the line they typed.
+    """
+    matches = _legacy_matches(nodes, key)
     if len(matches) == 1:
-        return None, None
-    return (
+        return None
+    return _diag(
+        "PF-LEGACY-AMBIGUOUS",
+        "warning",
+        src,
         None,
-        _diag(
-            "PF-LEGACY-AMBIGUOUS",
-            "warning",
-            src,
-            None,
-            None,
-            f"legacy reference {raw} matches "
-            f"{'more than one' if matches else 'no'} item in repo {canonical}; "
-            f"migrate to an @id",
-            prov,
-        ),
+        None,
+        f"legacy reference {raw} matches "
+        f"{'more than one' if matches else 'no'} item in repo {canonical}; "
+        f"migrate to an @id",
+        prov,
     )
 
 

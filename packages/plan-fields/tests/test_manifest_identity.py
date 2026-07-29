@@ -7,6 +7,7 @@ identity — the failure mode the contract exists to prevent.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -335,21 +336,32 @@ def test_legacy_ref_by_alias_normalises_target_and_makes_no_edge(
     assert snapshot["edges"] == []
 
 
-def _legacy_pair(tmp_path: Path, slug: str, target_todo: str) -> tuple[dict, dict]:
+def _legacy_pair(
+    tmp_path: Path, slug: str, target_todo: str, same_repo: bool = False
+) -> tuple[dict, dict]:
     """The same legacy blocker written twice: with the key, and with its alias.
 
     `ecosystem-kb` is the manifest key; `prograph-vault` is the `git_dir` it
     declares. Both name one repo, so the two snapshots must agree everywhere the
     author's spelling is not being quoted back.
+
+    `same_repo` puts the blocker inside the target's own TODO.md. That direction
+    is not a variation for completeness' sake — it is where the two spellings
+    used to diverge invisibly: `parse_todo` has no manifest, so it read the
+    alias as naming another repo and said nothing, while the key spelling got a
+    verdict from it.
     """
     from plan_fields.fleet_api import RepoInput, parse_fleet
 
     idx = manifest_index(_manifest(tmp_path, VAULT_MANIFEST))
 
     def run(spelling: str) -> dict:
+        blocker = f"- [ ] a @blocked_by:{spelling}#{slug} @id:a\n"
+        if same_repo:
+            return parse_fleet([RepoInput("ecosystem-kb", target_todo + blocker)], idx)
         return parse_fleet(
             [
-                RepoInput("arbiter", f"- [ ] a @blocked_by:{spelling}#{slug} @id:a\n"),
+                RepoInput("arbiter", blocker),
                 RepoInput("ecosystem-kb", target_todo),
             ],
             idx,
@@ -363,33 +375,37 @@ def _respell(doc: dict, written: str, key: str) -> dict:
 
     Applied to the WHOLE serialised document rather than to named fields, so a
     field added later is compared too and cannot drift between the two spellings
-    unnoticed.
+    unnoticed. That breadth is also its weakness — a new field leaking the
+    written spelling would be normalised away here and pass — so callers pair it
+    with a count of how many times the spelling may legitimately appear.
     """
-    import json
-
     return json.loads(json.dumps(doc, sort_keys=True).replace(written, key))
 
 
+@pytest.mark.parametrize("same_repo", [False, True], ids=["cross-repo", "same-repo"])
 @pytest.mark.parametrize(
-    "slug, target_todo",
+    "slug, target_todo, alias_mentions",
     [
-        ("thing", "- [ ] the thing @id:thing\n"),  # resolves to exactly one item
-        ("ghost", "- [ ] the thing @id:thing\n"),  # matches nothing
-        ("dup", "- [ ] dup one @id:dup-1\n- [ ] dup two @id:dup-2\n"),  # many
+        # unique match: the node's verbatim `raw` tag map, and `raw_ref`
+        ("thing", "- [ ] the thing @id:thing\n", 2),
+        # no match / several: those two, plus the diagnostic quoting it back
+        ("ghost", "- [ ] the thing @id:thing\n", 3),
+        ("dup", "- [ ] dup one @id:dup-1\n- [ ] dup two @id:dup-2\n", 3),
     ],
 )
 def test_key_and_alias_spellings_of_a_legacy_ref_are_indistinguishable(
-    tmp_path: Path, slug: str, target_todo: str
+    tmp_path: Path, slug: str, target_todo: str, alias_mentions: int, same_repo: bool
 ) -> None:
     """Edge-eligibility follows the reference's SYNTAX, not its spelling.
 
     Parametrised over the three outcomes a legacy slug can have — unique match,
     no match, several matches — because the unique match is the case that used
-    to differ: the key spelling produced an edge and the alias spelling did not.
+    to differ at the fleet layer; and over both directions, because the
+    same-repo one is where they used to differ at the parser layer.
     """
-    keyed, aliased = _legacy_pair(tmp_path, slug, target_todo)
+    keyed, aliased = _legacy_pair(tmp_path, slug, target_todo, same_repo)
 
-    # neither spelling produces a relation, in any of the three outcomes
+    # neither spelling produces a relation, in any of the outcomes
     assert keyed["edges"] == [] and aliased["edges"] == []
     for doc, written in ((keyed, "ecosystem-kb"), (aliased, "prograph-vault")):
         ref = next(r for r in doc["references"] if r["kind"] == "blocked_by")
@@ -398,24 +414,38 @@ def test_key_and_alias_spellings_of_a_legacy_ref_are_indistinguishable(
         assert ref["resolved_target"] is None
         assert "resolved_target" in ref  # schema: required, never omitted
 
-    # ...and the two documents are otherwise identical, field for field
+    # The written spelling may survive in exactly the places that quote the
+    # author back, and nowhere else. Counted BEFORE the respell, because the
+    # respell would happily normalise away a new field that leaked it — the one
+    # leak it exists to forbid. The count is what makes a third site visible:
+    # `node.raw` keeps the tag map verbatim, which is its documented job.
+    node = next(n for n in aliased["nodes"] if n["id"] == "a")
+    assert node["raw"]["blocked_by"] == f"prograph-vault#{slug}"
+    assert json.dumps(aliased, sort_keys=True).count("prograph-vault") == alias_mentions
+
+    # ...and with those accounted for, the two documents are identical
     assert _respell(aliased, "prograph-vault", "ecosystem-kb") == keyed
 
 
+@pytest.mark.parametrize("same_repo", [False, True], ids=["cross-repo", "same-repo"])
 def test_the_written_spelling_survives_in_the_diagnostic_text(
-    tmp_path: Path,
+    tmp_path: Path, same_repo: bool
 ) -> None:
     """Why the pairing above needs a respell rather than a plain comparison.
 
     `raw_ref` is not the only place the author's own words are kept: a
     diagnostic quotes the reference as written, so a reader can find the line
-    they typed. The repo it names is reported canonically alongside it.
+    they typed. The repo it names is reported canonically alongside it — that is
+    the repo actually searched.
     """
-    keyed, aliased = _legacy_pair(tmp_path, "ghost", "- [ ] the thing @id:thing\n")
+    keyed, aliased = _legacy_pair(
+        tmp_path, "ghost", "- [ ] the thing @id:thing\n", same_repo
+    )
     for doc, written in ((keyed, "ecosystem-kb"), (aliased, "prograph-vault")):
-        diag = next(d for d in doc["diagnostics"] if d["code"] == "PF-LEGACY-AMBIGUOUS")
-        assert f"{written}#ghost" in diag["message"]  # as written
-        assert "in repo ecosystem-kb" in diag["message"]  # canonical
+        diags = [d for d in doc["diagnostics"] if d["code"] == "PF-LEGACY-AMBIGUOUS"]
+        assert len(diags) == 1  # exactly one verdict, from one layer
+        assert f"{written}#ghost" in diags[0]["message"]  # as written
+        assert "in repo ecosystem-kb" in diags[0]["message"]  # canonical
 
 
 # --- case 5: only the key is a canonical URI ---------------------------------

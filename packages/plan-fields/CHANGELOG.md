@@ -22,6 +22,25 @@ For every `<repo>#<slug>`, key- or `git_dir`-spelled:
 - no edge, and a unique match emits no diagnostic either — it is a reference,
   not a defect. `PF-LEGACY-AMBIGUOUS` still reports zero or several matches.
 
+Two consequences worth grepping for if you consume the output:
+
+- **`PF-LEGACY-AMBIGUOUS`'s message names the repo canonically.** It read
+  `…matches no item in repo {as-written}` and now reads
+  `…matches no item in repo {canonical-key}` — the repo that was actually
+  searched, which the old text could misname. The reference itself is still
+  quoted exactly as the author wrote it, so `<repo>#<slug>` still appears
+  verbatim in the message; only the trailing repo name changed.
+- **In a fleet snapshot the legacy verdict now comes from `parse_fleet`, for
+  same-repo references too.** `parse_todo` has no manifest, so it read
+  `prograph-vault#x` inside `ecosystem-kb` as naming another repo and said
+  nothing, while `ecosystem-kb#x` got a verdict from it — the two spellings
+  disagreed. `parse_fleet` drops `parse_todo`'s `PF-LEGACY-AMBIGUOUS` and
+  re-derives every legacy verdict with the index, so one matcher decides them
+  all. An alias-spelled same-repo reference is now reported where it was
+  silent; nothing else moves (verified against the live workspace, including
+  its one same-repo legacy reference). **`parse_todo` used on its own is
+  unchanged** — the conformance fixtures still pass byte-for-byte.
+
 Migrating a blocker to `@blocked_by:todo://<repo>/<id>` is now precisely what
 puts the relation into the graph. `todo://` resolution is untouched and remains
 the only path to a cross-repo edge. No effect on the current fleet snapshot: no
