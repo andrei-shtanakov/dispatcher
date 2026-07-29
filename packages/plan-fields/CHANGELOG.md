@@ -13,7 +13,11 @@ could never resolve. Build one with `manifest_index(path)`; a caller with no
 manifest can pass `ManifestIndex(frozenset(names), {})`.
 
 - Every written repo name is normalised to its canonical key before membership,
-  availability or target lookup is decided. `LegacyRef.target_repo` and
+  availability or target lookup is decided — including a `RepoInput`'s own
+  `repo`, so a caller supplying a repo under its `git_dir` spelling still mints
+  `todo://<key>/<id>`. `parse_fleet`'s duplicate check runs on the normalised
+  names, so two spellings of one repo now raise instead of overwriting each
+  other. `LegacyRef.target_repo` and
   `LegacyDiagnostic.target_repo` carry the key; `raw` / the new
   `LegacyDiagnostic.raw_ref` keep the spelling as written.
 - A legacy `<repo>#<slug>` written with a declared `git_dir` normalises its
