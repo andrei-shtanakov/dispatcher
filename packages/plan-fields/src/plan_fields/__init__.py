@@ -7,6 +7,7 @@ Standalone by design: no import of the dispatcher application. The v1 contract
 from __future__ import annotations
 
 from plan_fields.canonical import canonical_dumps, canonicalize
+from plan_fields.fleet import ManifestIndex, manifest_index, resolve_checkout
 from plan_fields.fleet_api import (
     LegacyDiagnostic,
     RepoInput,
@@ -22,6 +23,7 @@ __version__ = "0.6.0"
 
 __all__ = [
     "LegacyDiagnostic",
+    "ManifestIndex",
     "RepoInput",
     "ScrapedItem",
     "__version__",
@@ -30,8 +32,10 @@ __all__ = [
     "check_fleet",
     "check_legacy_fleet",
     "load_schema",
+    "manifest_index",
     "parse_fleet",
     "parse_todo",
+    "resolve_checkout",
     "run_conformance",
     "scrape_items",
     "validate_document",
