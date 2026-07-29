@@ -90,7 +90,14 @@ def parse_fleet(
     availability is decided, so a reference spelled with a declared ``git_dir``
     locator reaches the same verdict as one spelled with the key.
     """
-    seen = [inp.repo for inp in inputs]
+    # An input's own name is normalised too, not only the names references are
+    # written with. A caller that supplies a repo under its git_dir spelling
+    # would otherwise mint `todo://prograph-vault/<id>` and key `present` by
+    # that spelling, so an inbound reference — correctly normalised to
+    # `ecosystem-kb` — would find nothing. The duplicate check runs on the
+    # normalised names, so two spellings of one repo collide loudly here rather
+    # than silently overwriting `present` later.
+    seen = [index.resolve_ref(inp.repo) for inp in inputs]
     dupes = sorted({r for r in seen if seen.count(r) > 1})
     if dupes:
         raise ValueError(f"parse_fleet: duplicate RepoInput for repo(s) {dupes}")
@@ -104,20 +111,21 @@ def parse_fleet(
     no_todo: set[str] = set()
 
     for inp in inputs:
+        repo = index.resolve_ref(inp.repo)
         if not inp.available or inp.todo_text is None:
             # declared but not usable here: no checkout (available=False) or a
             # checkout with no TODO.md. Both are environmental; the target repo's
             # inbound refs resolve to NO-TODO / UNRESOLVABLE below.
             if inp.available and inp.todo_text is None:
-                no_todo.add(inp.repo)
+                no_todo.add(repo)
             continue
-        doc = parse_todo(inp.todo_text, inp.repo, generated_at=generated_at)
+        doc = parse_todo(inp.todo_text, repo, generated_at=generated_at)
         _pin(doc, inp.commit)
         nodes.extend(doc["nodes"])
         references.extend(doc["references"])
         edges.extend(doc["edges"])
         diagnostics.extend(doc["diagnostics"])
-        present[inp.repo] = doc["nodes"]
+        present[repo] = doc["nodes"]
 
     node_ids = {n["node_id"] for n in nodes}
 
@@ -376,11 +384,16 @@ def check_legacy_fleet(
     scraped: dict[str, list[ScrapedItem]] = {}
     no_todo: set[str] = set()
     for inp in inputs:
+        # An input's own name is normalised on the same rule as the names
+        # references are written with — a repo supplied under its git_dir
+        # spelling must key `scraped` by its manifest key, or an inbound
+        # reference resolving to that key would find nothing.
+        srepo = index.resolve_ref(inp.repo)
         if not inp.available or inp.todo_text is None:
             if inp.available and inp.todo_text is None:
-                no_todo.add(inp.repo)
+                no_todo.add(srepo)
             continue
-        scraped[inp.repo] = scrape_items(inp.todo_text)
+        scraped[srepo] = scrape_items(inp.todo_text)
 
     out: list[LegacyDiagnostic] = []
     for srepo, items in scraped.items():
@@ -424,7 +437,7 @@ def _legacy_resolve(srepo, line, trepo_raw, slug, index, scraped, no_todo):
     # reader still needs to see what was actually written.
     tkey = index.resolve_ref(trepo_raw)
     raw_ref = f"{trepo_raw}#{slug}"
-    if tkey == index.resolve_ref(srepo):
+    if tkey == srepo:  # srepo is already normalised by the caller
         return None  # self-blocker: the repo's own check covers it
 
     def diag(code: str, msg: str) -> LegacyDiagnostic:

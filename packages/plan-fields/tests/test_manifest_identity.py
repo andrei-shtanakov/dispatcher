@@ -353,3 +353,74 @@ def test_canonical_uri_spelled_with_the_locator_resolves_to_the_key(
     ref = next(r for r in snapshot["references"] if r["kind"] == "blocked_by")
     assert ref["raw_ref"] == "todo://prograph-vault/thing"
     assert ref["resolved_target"] == "todo://ecosystem-kb/thing"
+
+
+# --- an input's OWN name is normalised on the same rule ----------------------
+def test_repo_input_supplied_under_its_locator_mints_canonical_identity(
+    tmp_path: Path,
+) -> None:
+    """The other end of the same rule (Copilot review, PR #87).
+
+    Normalising only the names *references* are written with leaves a hole: a
+    caller freezing inputs from disk without the index supplies the repo under
+    its `git_dir` spelling, and then `todo://prograph-vault/<id>` is minted and
+    `present` keyed by that spelling — so an inbound reference, correctly
+    normalised to `ecosystem-kb`, resolves to nothing.
+    """
+    from plan_fields.fleet_api import RepoInput, parse_fleet
+
+    idx = manifest_index(_manifest(tmp_path, VAULT_MANIFEST))
+    snapshot = parse_fleet(
+        [
+            RepoInput("prograph-vault", "- [ ] the thing @id:thing\n"),
+            RepoInput(
+                "arbiter", "- [ ] a @blocked_by:todo://ecosystem-kb/thing @id:a\n"
+            ),
+        ],
+        idx,
+    )
+    assert sorted(n["node_id"] for n in snapshot["nodes"]) == [
+        "todo://arbiter/a",
+        "todo://ecosystem-kb/thing",
+    ]
+    assert [(e["source_node_id"], e["target_node_id"]) for e in snapshot["edges"]] == [
+        ("todo://arbiter/a", "todo://ecosystem-kb/thing")
+    ]
+    assert not [
+        d for d in snapshot["diagnostics"] if d["code"].startswith("PF-BLOCKER")
+    ]
+
+
+def test_two_repo_inputs_naming_one_repo_are_a_loud_duplicate(tmp_path: Path) -> None:
+    """Normalising input names makes the existing duplicate check see through
+    the spelling — two names for one repo collide here rather than silently
+    overwriting `present` later."""
+    from plan_fields.fleet_api import RepoInput, parse_fleet
+
+    idx = manifest_index(_manifest(tmp_path, VAULT_MANIFEST))
+    with pytest.raises(ValueError) as excinfo:
+        parse_fleet(
+            [
+                RepoInput("prograph-vault", "- [ ] a @id:a\n"),
+                RepoInput("ecosystem-kb", "- [ ] b @id:b\n"),
+            ],
+            idx,
+        )
+    assert "ecosystem-kb" in str(excinfo.value)
+
+
+def test_legacy_source_repo_is_the_key_not_the_spelling(tmp_path: Path) -> None:
+    """`check_legacy_fleet` keys its scrape by the canonical name too."""
+    from plan_fields.fleet_api import RepoInput, check_legacy_fleet
+
+    idx = manifest_index(_manifest(tmp_path, VAULT_MANIFEST))
+    diags = check_legacy_fleet(
+        [
+            RepoInput("prograph-vault", "- [ ] a @blocked_by:arbiter#gone\n"),
+            RepoInput("arbiter", "- [ ] unrelated\n"),
+        ],
+        idx,
+    )
+    assert [(d.code, d.source_repo) for d in diags] == [
+        ("PF-BLOCKER-DANGLING", "ecosystem-kb")
+    ]
