@@ -7,6 +7,7 @@ identity — the failure mode the contract exists to prevent.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -335,40 +336,222 @@ def test_legacy_ref_by_alias_normalises_target_and_makes_no_edge(
     assert snapshot["edges"] == []
 
 
-def test_alias_spelled_legacy_ref_normalises_but_never_becomes_an_edge(
-    tmp_path: Path,
-) -> None:
-    """The same rule where it costs something: the target IS present.
+def _legacy_pair(
+    tmp_path: Path, slug: str, target_todo: str, same_repo: bool = False
+) -> tuple[dict, dict]:
+    """The same legacy blocker written twice: with the key, and with its alias.
 
-    The reference names a real, scanned repo once normalised, and still earns no
-    `resolved_target` and no edge — `legacy_blocker_ref` carries the key so the
-    repo is identifiable, `raw_ref` keeps the spelling the author wrote.
+    `ecosystem-kb` is the manifest key; `prograph-vault` is the `git_dir` it
+    declares. Both name one repo, so the two snapshots must agree everywhere the
+    author's spelling is not being quoted back.
+
+    `same_repo` puts the blocker inside the target's own TODO.md. That direction
+    is not a variation for completeness' sake — it is where the two spellings
+    used to diverge invisibly: `parse_todo` has no manifest, so it read the
+    alias as naming another repo and said nothing, while the key spelling got a
+    verdict from it.
     """
     from plan_fields.fleet_api import RepoInput, parse_fleet
 
     idx = manifest_index(_manifest(tmp_path, VAULT_MANIFEST))
-    inputs = [
-        RepoInput("arbiter", "- [ ] a @blocked_by:prograph-vault#thing @id:a\n"),
-        RepoInput("ecosystem-kb", "- [ ] the thing @id:thing\n"),
-    ]
-    snapshot = parse_fleet(inputs, idx)
-    ref = next(r for r in snapshot["references"] if r["kind"] == "blocked_by")
-    assert ref["raw_ref"] == "prograph-vault#thing"
-    assert ref["legacy_blocker_ref"] == "ecosystem-kb#thing"
-    assert ref["resolved_target"] is None  # required by the schema, never omitted
-    assert snapshot["edges"] == []
 
-    # The contrast that makes the rule visible: spelled with the key, the same
-    # legacy reference still resolves transitionally. The alias spelling is the
-    # one that buys nothing in the identity plane.
-    keyed = parse_fleet(
-        [
-            RepoInput("arbiter", "- [ ] a @blocked_by:ecosystem-kb#thing @id:a\n"),
-            RepoInput("ecosystem-kb", "- [ ] the thing @id:thing\n"),
-        ],
+    def run(spelling: str) -> dict:
+        blocker = f"- [ ] a @blocked_by:{spelling}#{slug} @id:a\n"
+        if same_repo:
+            return parse_fleet([RepoInput("ecosystem-kb", target_todo + blocker)], idx)
+        return parse_fleet(
+            [
+                RepoInput("arbiter", blocker),
+                RepoInput("ecosystem-kb", target_todo),
+            ],
+            idx,
+        )
+
+    return run("ecosystem-kb"), run("prograph-vault")
+
+
+def _respell(doc: dict, written: str, key: str) -> dict:
+    """The alias snapshot with the author's spelling swapped for the key.
+
+    Applied to the WHOLE serialised document rather than to named fields, so a
+    field added later is compared too and cannot drift between the two spellings
+    unnoticed. That breadth is also its weakness — a new field leaking the
+    written spelling would be normalised away here and pass — so callers pair it
+    with a count of how many times the spelling may legitimately appear.
+    """
+    return json.loads(json.dumps(doc, sort_keys=True).replace(written, key))
+
+
+@pytest.mark.parametrize(
+    "slug, target_todo, alias_mentions",
+    [
+        # unique match: the node's verbatim `raw` tag map, and `raw_ref`
+        ("thing", "- [ ] the thing @id:thing\n", 2),
+        # no match / several: those two, plus the diagnostic quoting it back
+        ("ghost", "- [ ] the thing @id:thing\n", 3),
+        ("dup", "- [ ] dup one @id:dup-1\n- [ ] dup two @id:dup-2\n", 3),
+    ],
+)
+def test_key_and_alias_spellings_of_a_legacy_ref_are_indistinguishable(
+    tmp_path: Path, slug: str, target_todo: str, alias_mentions: int
+) -> None:
+    """Edge-eligibility follows the reference's SYNTAX, not its spelling.
+
+    Cross-repo, parametrised over the three outcomes a legacy slug can have —
+    unique match, no match, several matches — because the unique match is the
+    case that used to differ here. The same-repo direction is checked field by
+    field in `test_a_self_reference_agrees_across_both_spellings` instead: the
+    whole-document respell below is what let that gap survive a round.
+    """
+    keyed, aliased = _legacy_pair(tmp_path, slug, target_todo)
+
+    # neither spelling produces a relation, in any of the outcomes
+    assert keyed["edges"] == [] and aliased["edges"] == []
+    for doc, written in ((keyed, "ecosystem-kb"), (aliased, "prograph-vault")):
+        ref = next(r for r in doc["references"] if r["kind"] == "blocked_by")
+        assert ref["raw_ref"] == f"{written}#{slug}"  # the spelling, as written
+        assert ref["legacy_blocker_ref"] == f"ecosystem-kb#{slug}"  # normalised
+        assert ref["resolved_target"] is None
+        assert "resolved_target" in ref  # schema: required, never omitted
+
+    # The written spelling may survive in exactly the places that quote the
+    # author back, and nowhere else. Counted BEFORE the respell, because the
+    # respell would happily normalise away a new field that leaked it — the one
+    # leak it exists to forbid. The count is what makes a third site visible:
+    # `node.raw` keeps the tag map verbatim, which is its documented job.
+    node = next(n for n in aliased["nodes"] if n["id"] == "a")
+    assert node["raw"]["blocked_by"] == f"prograph-vault#{slug}"
+    assert json.dumps(aliased, sort_keys=True).count("prograph-vault") == alias_mentions
+
+    # ...and with those accounted for, the two documents are identical
+    assert _respell(aliased, "prograph-vault", "ecosystem-kb") == keyed
+
+
+def test_the_written_spelling_survives_in_the_diagnostic_text(
+    tmp_path: Path,
+) -> None:
+    """Why the pairing above needs a respell rather than a plain comparison.
+
+    `raw_ref` is not the only place the author's own words are kept: a
+    diagnostic quotes the reference as written, so a reader can find the line
+    they typed. The repo it names is reported canonically alongside it — that is
+    the repo actually searched.
+    """
+    keyed, aliased = _legacy_pair(tmp_path, "ghost", "- [ ] the thing @id:thing\n")
+    for doc, written in ((keyed, "ecosystem-kb"), (aliased, "prograph-vault")):
+        diags = [d for d in doc["diagnostics"] if d["code"] == "PF-LEGACY-AMBIGUOUS"]
+        assert len(diags) == 1  # exactly one verdict, from one layer
+        assert f"{written}#ghost" in diags[0]["message"]  # as written
+        assert "in repo ecosystem-kb" in diags[0]["message"]  # canonical
+
+
+def test_a_self_reference_agrees_across_both_spellings(tmp_path: Path) -> None:
+    """Inside one repo, the alias denotes the same self-reference as the key.
+
+    `parse_todo` has no manifest, so it read `prograph-vault#ghost` inside
+    `ecosystem-kb` as naming another repo and said nothing, while
+    `ecosystem-kb#ghost` got a `PF-LEGACY-AMBIGUOUS` from it. One spelling was
+    diagnosed, the other vanished.
+
+    Asserted field by field, deliberately — no whole-document substitution.
+    That technique is what let this gap survive a round of review: it would have
+    normalised the alias away and compared two documents that agreed only
+    because the difference had been erased first.
+    """
+    keyed, aliased = _legacy_pair(
+        tmp_path, "ghost", "- [ ] the thing @id:thing\n", same_repo=True
+    )
+
+    def only_diag(doc: dict) -> dict:
+        diags = [d for d in doc["diagnostics"] if d["code"] == "PF-LEGACY-AMBIGUOUS"]
+        assert len(diags) == 1  # one verdict, never two, never none
+        return diags[0]
+
+    k, a = only_diag(keyed), only_diag(aliased)
+
+    # identical: the existing code, the identity it is about, and its grading
+    assert k["code"] == a["code"] == "PF-LEGACY-AMBIGUOUS"
+    assert k["subject_uri"] == a["subject_uri"] == "todo://ecosystem-kb/a"
+    assert k["related_uri"] == a["related_uri"] is None
+    assert k["severity"] == a["severity"] == "warning"
+    assert k["rule_id"] == a["rule_id"] is None
+    assert k["provenance"] == a["provenance"]
+
+    # the only permitted differences: the reference as the author wrote it...
+    krefs = [r for r in keyed["references"] if r["kind"] == "blocked_by"]
+    arefs = [r for r in aliased["references"] if r["kind"] == "blocked_by"]
+    assert krefs[0]["raw_ref"] == "ecosystem-kb#ghost"
+    assert arefs[0]["raw_ref"] == "prograph-vault#ghost"
+    assert krefs[0]["legacy_blocker_ref"] == arefs[0]["legacy_blocker_ref"]
+
+    # ...and the fragment of the message that quotes it back. Substituting that
+    # ONE fragment must reproduce the other message exactly — anything else
+    # differing shows up here.
+    assert (
+        a["message"].replace("prograph-vault#ghost", "ecosystem-kb#ghost")
+        == (k["message"])
+    )
+
+    # catch-all, so a field added later cannot differ unnoticed
+    assert {kk: v for kk, v in k.items() if kk != "message"} == {
+        kk: v for kk, v in a.items() if kk != "message"
+    }
+
+
+# A slug that the two matching rules disagree about. `slug in n["id"]` (the
+# self-resolution rule) sees TWO hits — `thing` and `the-thing-b`, by substring
+# — while the cross-repo rule (exact id, else slug in title) sees only one.
+# Whichever rule the fleet layer applies to a self-reference must be the one
+# `parse_todo` applied, or the ambiguity warning silently disappears.
+_MATCHER_DIVERGENCE_TODO = (
+    "- [ ] src @owner:andrei @id:src @blocked_by:{spelling}#thing\n"
+    "- [ ] the thing @owner:andrei @id:thing\n"
+    "- [ ] Second one @owner:andrei @id:the-thing-b\n"
+)
+
+
+def test_a_self_reference_keeps_parse_todos_verdict_exactly(tmp_path: Path) -> None:
+    """`parse_fleet` must not re-decide what `parse_todo` already decided.
+
+    An earlier attempt at the alias fix dropped `parse_todo`'s
+    `PF-LEGACY-AMBIGUOUS` and re-derived every legacy verdict with the
+    cross-repo matcher. Both spellings then agreed — but on the WRONG answer for
+    a slug the two rules disagree about: the cross-repo rule finds one hit here,
+    so the warning vanished from every fleet snapshot. An author with `foo` and
+    `legacy-foo-2` would lose exactly the ambiguity that makes the reference
+    unmigratable, and lose it silently.
+
+    The fixture is chosen so the two matchers disagree; the previous parameters
+    (`thing` / `ghost` / `dup`) agree under both, which is why they caught
+    nothing.
+    """
+    from plan_fields.fleet_api import RepoInput, parse_fleet
+    from plan_fields.parser import parse_todo
+
+    idx = manifest_index(
+        _manifest(tmp_path, '[apps.demo]\ngit_dir = "demo-checkout"\n')
+    )
+    keyed_text = _MATCHER_DIVERGENCE_TODO.format(spelling="demo")
+
+    alone = parse_todo(keyed_text, "demo")
+    in_fleet = parse_fleet([RepoInput("demo", keyed_text)], idx)
+    assert [d["code"] for d in alone["diagnostics"]] == ["PF-LEGACY-AMBIGUOUS"]
+    assert "more than one" in alone["diagnostics"][0]["message"]
+    # the whole list, not just the code: nothing added, nothing swallowed
+    assert in_fleet["diagnostics"] == alone["diagnostics"]
+
+    # and the alias spelling reaches that same verdict, by that same rule
+    aliased = parse_fleet(
+        [RepoInput("demo", _MATCHER_DIVERGENCE_TODO.format(spelling="demo-checkout"))],
         idx,
     )
-    assert keyed["edges"] != []
+    assert [d["code"] for d in aliased["diagnostics"]] == ["PF-LEGACY-AMBIGUOUS"]
+    assert (
+        aliased["diagnostics"][0]["message"].replace(
+            "demo-checkout#thing", "demo#thing"
+        )
+        == alone["diagnostics"][0]["message"]
+    )
 
 
 # --- case 5: only the key is a canonical URI ---------------------------------
@@ -555,3 +738,28 @@ def test_parse_fleet_and_check_legacy_fleet_refuse_the_same_inputs(
     for fn in (parse_fleet, check_legacy_fleet):
         with pytest.raises(ValueError, match="ecosystem-kb"):
             fn(inputs, idx)
+
+
+def test_an_undeclared_repo_is_not_made_to_look_declared(tmp_path: Path) -> None:
+    """Normalising is not validating (Copilot review, PR #88).
+
+    `resolve_ref` returns an unknown name as itself, so `legacy_blocker_ref` is
+    no promise that the repo exists — it is the written ref with its repo
+    component put through the manifest, which for an undeclared repo is a no-op.
+    The repo stays visible as what the author wrote, and the plan defect is
+    reported rather than absorbed.
+    """
+    from plan_fields.fleet_api import RepoInput, parse_fleet
+
+    idx = manifest_index(_manifest(tmp_path, VAULT_MANIFEST))
+    snapshot = parse_fleet(
+        [RepoInput("arbiter", "- [ ] a @blocked_by:operator-host#y @id:a\n")], idx
+    )
+    ref = next(r for r in snapshot["references"] if r["kind"] == "blocked_by")
+    assert ref["raw_ref"] == "operator-host#y"
+    assert ref["legacy_blocker_ref"] == "operator-host#y"  # unchanged, not a key
+    assert ref["resolved_target"] is None
+    assert snapshot["edges"] == []
+    assert [
+        d["code"] for d in snapshot["diagnostics"] if d["code"].startswith("PF-B")
+    ] == ["PF-BLOCKER-REPO-UNKNOWN"]

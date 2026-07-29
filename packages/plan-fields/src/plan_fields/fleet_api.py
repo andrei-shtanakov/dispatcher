@@ -6,8 +6,15 @@ real node. The fleet API is that missing resolver: it takes the ALREADY-COLLECTE
 snapshot of each repo (its canonical name, pinned commit, and TODO.md text) and
 builds one canonical graph in which cross-repo edges resolve.
 
-Two deliberate boundaries:
+Three deliberate boundaries:
 
+* **Only ``todo://`` builds edges.** A legacy ``<repo>#<slug>`` is normalised
+  (``legacy_blocker_ref``), reported on, and left in ``references``. It gains no
+  ``resolved_target`` and never becomes an edge, however cleanly its slug matches —
+  edge-eligibility follows the reference's SYNTAX, so migrating to an ``@id`` is what
+  puts the relation into the graph. Normalising is not validating: a repo the
+  manifest does not declare stays as written and is diagnosed
+  (``PF-BLOCKER-REPO-UNKNOWN``), rather than vanishing or being made to look declared.
 * **No discovery.** ``parse_fleet`` never lists a directory, reads git, or hits the
   network. The caller freezes the inputs (a manifest-pinned scan) and passes them
   in. What repos exist is the *manifest*'s call, never folder presence.
@@ -38,6 +45,7 @@ from plan_fields.parser import (
     SCHEMA_VERSION,
     TODO_URI_RE,
     _diag,
+    legacy_self_diagnostic,
     parse_todo,
 )
 from plan_fields.scrape import ScrapedItem, scrape_items
@@ -144,7 +152,7 @@ def parse_fleet(
 
     node_ids = {n["node_id"] for n in nodes}
 
-    # resolve every still-open cross-repo reference against the merged graph
+    # resolve every still-open reference against the merged graph
     for ref in references:
         if ref["resolved_target"] is not None:
             continue
@@ -192,16 +200,39 @@ def _resolve_cross(ref, src_repo, index, present, node_ids, no_todo):
     # spelled with a declared locator names the same repo as one spelled with
     # the key. `raw_ref` keeps the spelling exactly as the author wrote it.
     canonical = index.resolve_ref(trepo)
-    if canonical == src_repo:
-        return None, None  # intra-repo miss already diagnosed by parse_todo
 
-    if not is_canonical and canonical != trepo:
-        # ADR-ECO-005: a legacy <repo>#<slug> written with a declared locator
-        # normalises for LOOKUP only. legacy_blocker_ref carries the key so the
-        # reference names a real repo, but the reference stays legacy — the
-        # contract's load-bearing split is that edges come from identity and
-        # references come from text, and a resolving alias does not cross it.
+    if not is_canonical:
+        # Every legacy <repo>#<slug> is normalised here, whichever spelling was
+        # used: `legacy_blocker_ref` carries the ref with its repo component put
+        # through the manifest, and `raw_ref` keeps what the author wrote. That
+        # is ALL it earns — no `resolved_target`, no edge, ever. Edge-eligibility
+        # follows the reference's SYNTAX, never how the repo component happens
+        # to be spelled; a key-spelled ref that resolves to exactly one item is
+        # still text, and edges come from identity.
+        #
+        # `resolve_ref` normalises, it does not validate: an undeclared repo
+        # comes back as itself (lower-cased), so this field is not a promise
+        # that the repo exists — `_repo_reason` below decides that, and says so
+        # with PF-BLOCKER-REPO-UNKNOWN. Writing the name through unchanged is
+        # the point: an unknown repo must stay visible as what was written.
         ref["legacy_blocker_ref"] = f"{canonical}#{key}"
+
+    if canonical == src_repo:
+        if is_canonical or trepo == src_repo:
+            # Already fully handled by `parse_todo`: same-repo `todo://` is its
+            # resolution, and a legacy self-reference spelled with the repo's
+            # own name got its verdict there. Re-deciding it here would
+            # double-report the case that already works.
+            return None, None
+        # The gap, and only the gap: spelled with a declared locator, so
+        # `parse_todo` — which has no manifest — read it as naming another repo
+        # and said nothing. Normalised, it denotes the same self-reference, so
+        # it runs THE SAME resolution, via the function `parse_todo` itself
+        # calls. Same rule, same code, same wording; only `raw_ref` and the
+        # reference quoted in the message differ.
+        return None, legacy_self_diagnostic(
+            present[canonical], key, raw, canonical, src, prov
+        )
 
     reason = _repo_reason(trepo, index, present, no_todo)
     if reason is not None:
@@ -231,21 +262,13 @@ def _resolve_cross(ref, src_repo, index, present, node_ids, no_todo):
                 prov,
             ),
         )
-    if canonical != trepo:
-        # An alias-spelled legacy reference: normalised above for lookup, and
-        # that is all it earns. It keeps no resolved_target and yields no edge
-        # (contract, Identity & provenance) — the author migrates it to an @id.
-        return None, None
-    # legacy transitional resolution against the target repo's canonical nodes
+    # The target repo is present, so the slug CAN be looked up — but only to
+    # report on it, never to build a relation. A unique match yields nothing:
+    # the reference already carries its normalised `legacy_blocker_ref`, and
+    # the author migrates it to an @id to gain an edge.
     matches = _legacy_matches(present[canonical], key)
     if len(matches) == 1:
-        target = matches[0]["node_id"]
-        ref["resolved_target"] = target  # legacy_blocker_ref stays set (transitional)
-        return {
-            "kind": "blocked_by",
-            "source_node_id": src,
-            "target_node_id": target,
-        }, None
+        return None, None
     return (
         None,
         _diag(
@@ -255,7 +278,8 @@ def _resolve_cross(ref, src_repo, index, present, node_ids, no_todo):
             None,
             None,
             f"legacy reference {raw} matches "
-            f"{'more than one' if matches else 'no'} item in repo {trepo}; migrate to an @id",
+            f"{'more than one' if matches else 'no'} item in repo {canonical}; "
+            f"migrate to an @id",
             prov,
         ),
     )

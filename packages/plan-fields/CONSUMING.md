@@ -76,8 +76,12 @@ installability is proven on every change to the package.
   `recheck_by`), plus diagnostics. **Single-repo**: cross-repo `@blocked_by`
   stays unresolved — one file cannot know if `todo://maestro/r-03b` exists.
 - `plan_fields.parse_fleet(inputs, index)` → the same contract-valid envelope
-  spanning the whole fleet, with cross-repo `todo://` (and transitional legacy)
-  references **resolved into edges**. `inputs` is a list of
+  spanning the whole fleet, with cross-repo `todo://` references **resolved into
+  edges**. A legacy `<repo>#<slug>` is **not**: it stays in `references` with
+  `legacy_blocker_ref` normalised to `<canonical-key>#<slug>`, `raw_ref` as
+  written and `resolved_target` `null`, however cleanly its slug matches and
+  whichever spelling names the repo. Migrating it to `todo://` is what creates
+  the edge. `inputs` is a list of
   `RepoInput(repo, todo_text, commit, available)` the caller has already frozen —
   `parse_fleet` does **no** directory/git/network discovery, and `index` (a
   `ManifestIndex` from `manifest_index(path)`) is the sole authority for which

@@ -59,23 +59,58 @@ def test_live_edge_resolves_across_repos() -> None:
     assert not [d for d in snap["diagnostics"] if d["code"].startswith("PF-BLOCKER")]
 
 
-def test_legacy_to_canonical_changes_representation_not_relation() -> None:
-    # DoD: legacy -> canonical must change representation, not the blocker meaning
+def test_migrating_legacy_to_canonical_is_what_creates_the_edge() -> None:
+    """DoD, inverted by the owner's ruling: the migration IS the change.
+
+    This case used to assert that a legacy `maestro#r-03b` and a canonical
+    `todo://maestro/r-03b` produced the SAME edge — representation changing
+    without the relation changing. Canon says otherwise, unqualified: edges are
+    only resolved `todo:// -> canonical` relations, and a legacy reference is
+    never promoted to one however cleanly it resolves. So the legacy form
+    carries the blocker as a REFERENCE and nothing else; migrating it to an @id
+    is precisely what puts the relation into the graph. Edge-eligibility is
+    decided by the reference's syntax, never by whether its slug happens to
+    match.
+    """
     before = _fleet(PROCTOR_TODO_LEGACY)
     after = _fleet(PROCTOR_TODO_CANONICAL)
-    # SAME resolved relation (edge) either way
-    assert _edges(before) == _edges(after)
     edge = ("todo://proctor/arbiter-routing-opt-in", "todo://maestro/r-03b")
-    assert edge in _edges(before)
+    assert _edges(before) == set()  # legacy: a reference, not a relation
+    assert _edges(after) == {edge}  # canonical: the relation enters the graph
     b = next(r for r in before["references"] if r["kind"] == "blocked_by")
     a = next(r for r in after["references"] if r["kind"] == "blocked_by")
-    # representation differs: legacy keeps the slug ref, canonical does not
-    assert (
-        b["raw_ref"] == "maestro#r-03b" and b["legacy_blocker_ref"] == "maestro#r-03b"
-    )
+    # the blocker is not lost in the legacy form — it is recorded as text
+    assert b["raw_ref"] == "maestro#r-03b"
+    assert b["legacy_blocker_ref"] == "maestro#r-03b"  # already canonical here
+    assert b["resolved_target"] is None  # emitted as null, never omitted
+    assert "resolved_target" in b  # schema: required, oneOf [CanonicalUri, null]
     assert a["raw_ref"] == "todo://maestro/r-03b" and a["legacy_blocker_ref"] is None
-    # both resolve to the same canonical target
-    assert b["resolved_target"] == a["resolved_target"] == "todo://maestro/r-03b"
+    assert a["resolved_target"] == "todo://maestro/r-03b"
+    # and the legacy form is not silently dropped from the document either
+    validate_document(before)
+
+
+def test_a_same_repo_legacy_ref_is_no_more_an_edge_than_a_cross_repo_one() -> None:
+    """The rule is the reference's syntax, so the layer it is resolved at cannot
+    change it. `parse_todo` used to resolve a legacy slug against its OWN repo's
+    ids and emit an edge — the same transitional shortcut, one layer down, and
+    the only place left where a `<repo>#<slug>` could still become a relation.
+    """
+    from plan_fields.parser import parse_todo
+
+    doc = parse_todo(
+        "- [ ] target work @owner:o @id:r-03b\n"
+        "- [ ] blocked @owner:o @blocked_by:demo#r-03b @id:x\n",
+        "demo",
+    )
+    validate_document(doc)
+    assert doc["edges"] == []  # a unique local match is still not a relation
+    ref = next(r for r in doc["references"] if r["kind"] == "blocked_by")
+    assert ref["raw_ref"] == "demo#r-03b"
+    assert ref["legacy_blocker_ref"] == "demo#r-03b"
+    assert ref["resolved_target"] is None
+    # and a unique match is not "ambiguous" either — it is simply not an edge
+    assert [d["code"] for d in doc["diagnostics"] if "LEGACY" in d["code"]] == []
 
 
 # --- the five distinct target outcomes, as stable diagnostic codes ------------
