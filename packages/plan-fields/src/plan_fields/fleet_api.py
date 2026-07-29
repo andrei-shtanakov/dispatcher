@@ -45,6 +45,7 @@ from plan_fields.parser import (
     SCHEMA_VERSION,
     TODO_URI_RE,
     _diag,
+    legacy_self_diagnostic,
     parse_todo,
 )
 from plan_fields.scrape import ScrapedItem, scrape_items
@@ -145,17 +146,8 @@ def parse_fleet(
         _pin(doc, inp.commit)
         nodes.extend(doc["nodes"])
         references.extend(doc["references"])
-        # `parse_todo` has no manifest, so it cannot tell `prograph-vault#x`
-        # inside `ecosystem-kb` from a reference to another repo: it skips the
-        # match and says nothing, while the same blocker spelled with the key
-        # gets a verdict. Every legacy verdict is re-derived below WITH the
-        # index, by one matcher, so the two spellings agree — which means
-        # parse_todo's must be dropped here or the key spelling would be
-        # reported twice. `parse_todo` used on its own is unaffected.
         edges.extend(doc["edges"])
-        diagnostics.extend(
-            d for d in doc["diagnostics"] if d["code"] != "PF-LEGACY-AMBIGUOUS"
-        )
+        diagnostics.extend(doc["diagnostics"])
         present[repo] = doc["nodes"]
 
     node_ids = {n["node_id"] for n in nodes}
@@ -226,13 +218,21 @@ def _resolve_cross(ref, src_repo, index, present, node_ids, no_todo):
         ref["legacy_blocker_ref"] = f"{canonical}#{key}"
 
     if canonical == src_repo:
-        if is_canonical:
-            return None, None  # same-repo todo:// is parse_todo's to resolve
-        # Same-repo LEGACY, and the fleet layer owns the verdict for both
-        # spellings — it is the only layer that can see `prograph-vault#x`
-        # inside `ecosystem-kb` is a same-repo reference at all. parse_todo's
-        # verdict was dropped in parse_fleet precisely so this one is unique.
-        return None, _legacy_miss(present[canonical], key, src, raw, canonical, prov)
+        if is_canonical or trepo == src_repo:
+            # Already fully handled by `parse_todo`: same-repo `todo://` is its
+            # resolution, and a legacy self-reference spelled with the repo's
+            # own name got its verdict there. Re-deciding it here would
+            # double-report the case that already works.
+            return None, None
+        # The gap, and only the gap: spelled with a declared locator, so
+        # `parse_todo` — which has no manifest — read it as naming another repo
+        # and said nothing. Normalised, it denotes the same self-reference, so
+        # it runs THE SAME resolution, via the function `parse_todo` itself
+        # calls. Same rule, same code, same wording; only `raw_ref` and the
+        # reference quoted in the message differ.
+        return None, legacy_self_diagnostic(
+            present[canonical], key, raw, canonical, src, prov
+        )
 
     reason = _repo_reason(trepo, index, present, no_todo)
     if reason is not None:
@@ -263,34 +263,25 @@ def _resolve_cross(ref, src_repo, index, present, node_ids, no_todo):
             ),
         )
     # The target repo is present, so the slug CAN be looked up — but only to
-    # report on it, never to build a relation.
-    return None, _legacy_miss(present[canonical], key, src, raw, canonical, prov)
-
-
-def _legacy_miss(nodes, key, src, raw, canonical, prov):
-    """``PF-LEGACY-AMBIGUOUS`` when the slug names no unique item, else None.
-
-    The single decision point for every legacy reference in a fleet snapshot,
-    same-repo and cross-repo alike, so the answer cannot depend on which layer
-    happened to reach it. A unique match yields nothing at all: the reference
-    already carries its normalised ``legacy_blocker_ref``, and the author
-    migrates it to an ``@id`` to gain an edge. The repo is named canonically —
-    it is the one that was actually searched — while ``raw`` quotes the
-    reference as written, so the reader can find the line they typed.
-    """
-    matches = _legacy_matches(nodes, key)
+    # report on it, never to build a relation. A unique match yields nothing:
+    # the reference already carries its normalised `legacy_blocker_ref`, and
+    # the author migrates it to an @id to gain an edge.
+    matches = _legacy_matches(present[canonical], key)
     if len(matches) == 1:
-        return None
-    return _diag(
-        "PF-LEGACY-AMBIGUOUS",
-        "warning",
-        src,
+        return None, None
+    return (
         None,
-        None,
-        f"legacy reference {raw} matches "
-        f"{'more than one' if matches else 'no'} item in repo {canonical}; "
-        f"migrate to an @id",
-        prov,
+        _diag(
+            "PF-LEGACY-AMBIGUOUS",
+            "warning",
+            src,
+            None,
+            None,
+            f"legacy reference {raw} matches "
+            f"{'more than one' if matches else 'no'} item in repo {canonical}; "
+            f"migrate to an @id",
+            prov,
+        ),
     )
 
 

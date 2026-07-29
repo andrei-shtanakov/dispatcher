@@ -30,16 +30,17 @@ Two consequences worth grepping for if you consume the output:
   searched, which the old text could misname. The reference itself is still
   quoted exactly as the author wrote it, so `<repo>#<slug>` still appears
   verbatim in the message; only the trailing repo name changed.
-- **In a fleet snapshot the legacy verdict now comes from `parse_fleet`, for
-  same-repo references too.** `parse_todo` has no manifest, so it read
-  `prograph-vault#x` inside `ecosystem-kb` as naming another repo and said
-  nothing, while `ecosystem-kb#x` got a verdict from it — the two spellings
-  disagreed. `parse_fleet` drops `parse_todo`'s `PF-LEGACY-AMBIGUOUS` and
-  re-derives every legacy verdict with the index, so one matcher decides them
-  all. An alias-spelled same-repo reference is now reported where it was
-  silent; nothing else moves (verified against the live workspace, including
-  its one same-repo legacy reference). **`parse_todo` used on its own is
-  unchanged** — the conformance fixtures still pass byte-for-byte.
+- **An alias-spelled SELF-reference is now diagnosed, where it used to be
+  silent.** `parse_todo` has no manifest, so it read `prograph-vault#x` inside
+  `ecosystem-kb` as naming another repo and said nothing, while `ecosystem-kb#x`
+  got a `PF-LEGACY-AMBIGUOUS` from it — the two spellings of one repo
+  disagreed. `parse_fleet` normalises the name and, when it denotes the source
+  repo, runs the *same* self-resolution `parse_todo` uses (literally the same
+  function), emitting the *same existing* code. It stays silent when
+  `parse_todo` has already spoken, so the key-spelled case is never
+  double-reported. Nothing else moves: `parse_todo` on its own is unchanged, the
+  conformance fixtures pass byte-for-byte, and the live `fleet-graph` output is
+  identical — including the workspace's one same-repo legacy reference.
 
 Migrating a blocker to `@blocked_by:todo://<repo>/<id>` is now precisely what
 puts the relation into the graph. `todo://` resolution is untouched and remains

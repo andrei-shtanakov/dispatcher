@@ -219,29 +219,39 @@ def _resolve(node, blocked, repo, nodes, ids):
         if legacy_repo != repo:
             # cross-repo legacy: do NOT resolve against local ids (Phase 0b).
             return ref, None, None
-        matches = [n for n in nodes if slug in n["id"]]
-        if len(matches) == 1:
-            # A unique match is still not a relation. Edges are only resolved
-            # todo:// -> canonical relations; a legacy reference stays in
-            # `references` however cleanly it happens to resolve, in its own
-            # repo exactly as across repos.
-            return ref, None, None
-        return (
-            ref,
-            None,
-            _diag(
-                "PF-LEGACY-AMBIGUOUS",
-                "warning",
-                src,
-                None,
-                None,
-                f"legacy reference {blocked} matches "
-                f"{'more than one' if matches else 'no'} item in repo {repo}; "
-                f"migrate to an @id",
-                prov,
-            ),
-        )
+        return ref, None, legacy_self_diagnostic(nodes, slug, blocked, repo, src, prov)
     return ref, None, None
+
+
+def legacy_self_diagnostic(nodes, slug, blocked, repo, src, prov):
+    """Resolve a SAME-REPO legacy ``<repo>#<slug>``: the diagnostic, or None.
+
+    A unique match is still not a relation — edges are only resolved
+    ``todo:// -> canonical`` ones, so a legacy reference stays in ``references``
+    however cleanly it resolves, in its own repo exactly as across repos. Zero
+    or several matches is ``PF-LEGACY-AMBIGUOUS``.
+
+    Shared with the fleet layer rather than reimplemented there. ``parse_todo``
+    has no manifest, so it cannot see that ``prograph-vault#x`` inside
+    ``ecosystem-kb`` is a self-reference; the fleet layer normalises the name
+    and calls THIS function for that case. One function means the two spellings
+    cannot drift apart in matching rule, code, severity, rule_id or wording —
+    which a second implementation alongside would eventually let happen.
+    """
+    matches = [n for n in nodes if slug in n["id"]]
+    if len(matches) == 1:
+        return None
+    return _diag(
+        "PF-LEGACY-AMBIGUOUS",
+        "warning",
+        src,
+        None,
+        None,
+        f"legacy reference {blocked} matches "
+        f"{'more than one' if matches else 'no'} item in repo {repo}; "
+        f"migrate to an @id",
+        prov,
+    )
 
 
 def _diag(code, severity, subject, related, rule, message, prov):

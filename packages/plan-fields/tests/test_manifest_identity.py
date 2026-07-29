@@ -382,7 +382,6 @@ def _respell(doc: dict, written: str, key: str) -> dict:
     return json.loads(json.dumps(doc, sort_keys=True).replace(written, key))
 
 
-@pytest.mark.parametrize("same_repo", [False, True], ids=["cross-repo", "same-repo"])
 @pytest.mark.parametrize(
     "slug, target_todo, alias_mentions",
     [
@@ -394,16 +393,17 @@ def _respell(doc: dict, written: str, key: str) -> dict:
     ],
 )
 def test_key_and_alias_spellings_of_a_legacy_ref_are_indistinguishable(
-    tmp_path: Path, slug: str, target_todo: str, alias_mentions: int, same_repo: bool
+    tmp_path: Path, slug: str, target_todo: str, alias_mentions: int
 ) -> None:
     """Edge-eligibility follows the reference's SYNTAX, not its spelling.
 
-    Parametrised over the three outcomes a legacy slug can have — unique match,
-    no match, several matches — because the unique match is the case that used
-    to differ at the fleet layer; and over both directions, because the
-    same-repo one is where they used to differ at the parser layer.
+    Cross-repo, parametrised over the three outcomes a legacy slug can have —
+    unique match, no match, several matches — because the unique match is the
+    case that used to differ here. The same-repo direction is checked field by
+    field in `test_a_self_reference_agrees_across_both_spellings` instead: the
+    whole-document respell below is what let that gap survive a round.
     """
-    keyed, aliased = _legacy_pair(tmp_path, slug, target_todo, same_repo)
+    keyed, aliased = _legacy_pair(tmp_path, slug, target_todo)
 
     # neither spelling produces a relation, in any of the outcomes
     assert keyed["edges"] == [] and aliased["edges"] == []
@@ -427,9 +427,8 @@ def test_key_and_alias_spellings_of_a_legacy_ref_are_indistinguishable(
     assert _respell(aliased, "prograph-vault", "ecosystem-kb") == keyed
 
 
-@pytest.mark.parametrize("same_repo", [False, True], ids=["cross-repo", "same-repo"])
 def test_the_written_spelling_survives_in_the_diagnostic_text(
-    tmp_path: Path, same_repo: bool
+    tmp_path: Path,
 ) -> None:
     """Why the pairing above needs a respell rather than a plain comparison.
 
@@ -438,14 +437,65 @@ def test_the_written_spelling_survives_in_the_diagnostic_text(
     they typed. The repo it names is reported canonically alongside it — that is
     the repo actually searched.
     """
-    keyed, aliased = _legacy_pair(
-        tmp_path, "ghost", "- [ ] the thing @id:thing\n", same_repo
-    )
+    keyed, aliased = _legacy_pair(tmp_path, "ghost", "- [ ] the thing @id:thing\n")
     for doc, written in ((keyed, "ecosystem-kb"), (aliased, "prograph-vault")):
         diags = [d for d in doc["diagnostics"] if d["code"] == "PF-LEGACY-AMBIGUOUS"]
         assert len(diags) == 1  # exactly one verdict, from one layer
         assert f"{written}#ghost" in diags[0]["message"]  # as written
         assert "in repo ecosystem-kb" in diags[0]["message"]  # canonical
+
+
+def test_a_self_reference_agrees_across_both_spellings(tmp_path: Path) -> None:
+    """Inside one repo, the alias denotes the same self-reference as the key.
+
+    `parse_todo` has no manifest, so it read `prograph-vault#ghost` inside
+    `ecosystem-kb` as naming another repo and said nothing, while
+    `ecosystem-kb#ghost` got a `PF-LEGACY-AMBIGUOUS` from it. One spelling was
+    diagnosed, the other vanished.
+
+    Asserted field by field, deliberately — no whole-document substitution.
+    That technique is what let this gap survive a round of review: it would have
+    normalised the alias away and compared two documents that agreed only
+    because the difference had been erased first.
+    """
+    keyed, aliased = _legacy_pair(
+        tmp_path, "ghost", "- [ ] the thing @id:thing\n", same_repo=True
+    )
+
+    def only_diag(doc: dict) -> dict:
+        diags = [d for d in doc["diagnostics"] if d["code"] == "PF-LEGACY-AMBIGUOUS"]
+        assert len(diags) == 1  # one verdict, never two, never none
+        return diags[0]
+
+    k, a = only_diag(keyed), only_diag(aliased)
+
+    # identical: the existing code, the identity it is about, and its grading
+    assert k["code"] == a["code"] == "PF-LEGACY-AMBIGUOUS"
+    assert k["subject_uri"] == a["subject_uri"] == "todo://ecosystem-kb/a"
+    assert k["related_uri"] == a["related_uri"] is None
+    assert k["severity"] == a["severity"] == "warning"
+    assert k["rule_id"] == a["rule_id"] is None
+    assert k["provenance"] == a["provenance"]
+
+    # the only permitted differences: the reference as the author wrote it...
+    krefs = [r for r in keyed["references"] if r["kind"] == "blocked_by"]
+    arefs = [r for r in aliased["references"] if r["kind"] == "blocked_by"]
+    assert krefs[0]["raw_ref"] == "ecosystem-kb#ghost"
+    assert arefs[0]["raw_ref"] == "prograph-vault#ghost"
+    assert krefs[0]["legacy_blocker_ref"] == arefs[0]["legacy_blocker_ref"]
+
+    # ...and the fragment of the message that quotes it back. Substituting that
+    # ONE fragment must reproduce the other message exactly — anything else
+    # differing shows up here.
+    assert (
+        a["message"].replace("prograph-vault#ghost", "ecosystem-kb#ghost")
+        == (k["message"])
+    )
+
+    # catch-all, so a field added later cannot differ unnoticed
+    assert {kk: v for kk, v in k.items() if kk != "message"} == {
+        kk: v for kk, v in a.items() if kk != "message"
+    }
 
 
 # --- case 5: only the key is a canonical URI ---------------------------------
