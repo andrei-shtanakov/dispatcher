@@ -61,11 +61,13 @@ class ManifestIndex:
     git_dir_to_key: Mapping[str, str]
 
     def resolve_ref(self, name: str) -> str:
-        """Normalise a written repo name to its canonical key.
+        """Normalise a written repo name to its canonical key (case-insensitive).
 
-        A name that is already a key is returned unchanged; a declared
-        locator is translated; anything else is returned as written, so an
-        unknown repo stays visible as itself rather than silently vanishing.
+        The input is lower-cased before matching, and the return value is
+        always lower-cased too. A name that already matches a key returns
+        that key; a declared locator translates to its key; anything else
+        returns as a lower-cased name, so an unknown repo stays visible as
+        itself rather than silently vanishing.
         """
         low = name.lower()
         if low in self.canonical_keys:
