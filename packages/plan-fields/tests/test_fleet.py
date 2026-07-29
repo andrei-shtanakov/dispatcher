@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from plan_fields.fleet import (
+    ManifestIndex,
     classify_legacy,
     drift,
     snapshot,
@@ -15,6 +16,11 @@ def _items(text: str):
     return scrape_items(text)
 
 
+def _index(*names: str) -> ManifestIndex:
+    """A manifest that declares these repos and no locator aliases."""
+    return ManifestIndex(frozenset(names), {})
+
+
 def test_classify_legacy_sorts_every_reference() -> None:
     fleet = {
         "arbiter": _items("- [ ] gate work @id:crossover-gate\n"),
@@ -25,7 +31,7 @@ def test_classify_legacy_sorts_every_reference() -> None:
             "- [ ] d @blocked_by:operator-host#y\n"  # not-in-manifest
         ),
     }
-    manifest = {"arbiter", "maestro", "atp-platform"}
+    manifest = ManifestIndex(frozenset({"arbiter", "maestro", "atp-platform"}), {})
     got = {(r.slug, r.resolution) for r in classify_legacy(fleet, manifest)}
     assert ("crossover-gate", "clean-open") in got
     assert ("gone", "missing") in got
@@ -38,7 +44,7 @@ def test_classify_flags_ambiguous_and_closed() -> None:
         "t": _items("- [ ] one seam thing\n- [ ] two seam thing\n"),
         "s": _items("- [ ] w @blocked_by:t#seam\n"),
     }
-    refs = {r.slug: r.resolution for r in classify_legacy(fleet, {"t", "s"})}
+    refs = {r.slug: r.resolution for r in classify_legacy(fleet, _index("t", "s"))}
     assert refs["seam"] == "ambiguous"
 
 
@@ -52,7 +58,7 @@ def test_resolution_ignores_slug_inside_a_tag_and_is_case_insensitive() -> None:
         ),
         "s": _items("- [ ] w @blocked_by:t#r-99\n"),  # lowercase ref
     }
-    refs = [r for r in classify_legacy(fleet, {"t", "s"}) if r.source_repo == "s"]
+    refs = [r for r in classify_legacy(fleet, _index("t", "s")) if r.source_repo == "s"]
     assert len(refs) == 1
     assert refs[0].resolution == "clean-open"  # case-insensitive, prose-scoped
     assert refs[0].target_line == 1  # the prose item, not the citer

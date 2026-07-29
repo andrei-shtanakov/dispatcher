@@ -75,12 +75,15 @@ installability is proven on every change to the package.
   references/edges, and the freshness triple `source_ref` / `observed_at` /
   `recheck_by`), plus diagnostics. **Single-repo**: cross-repo `@blocked_by`
   stays unresolved — one file cannot know if `todo://maestro/r-03b` exists.
-- `plan_fields.parse_fleet(inputs, manifest)` → the same contract-valid envelope
+- `plan_fields.parse_fleet(inputs, index)` → the same contract-valid envelope
   spanning the whole fleet, with cross-repo `todo://` (and transitional legacy)
   references **resolved into edges**. `inputs` is a list of
   `RepoInput(repo, todo_text, commit, available)` the caller has already frozen —
-  `parse_fleet` does **no** directory/git/network discovery, and the `manifest`
-  set is the sole authority for which repos exist. The five target outcomes are
+  `parse_fleet` does **no** directory/git/network discovery, and `index` (a
+  `ManifestIndex` from `manifest_index(path)`) is the sole authority for which
+  repos exist. Every written repo name is normalised through it first, so a
+  reference spelled with a declared `git_dir` locator reaches the same verdict
+  as one spelled with the manifest key. The five target outcomes are
   stable diagnostic codes: `PF-ID-DANGLING` (canonical id missing),
   `PF-BLOCKER-REPO-UNKNOWN` (repo not in manifest — a plan defect),
   `PF-BLOCKER-UNRESOLVABLE` / `PF-BLOCKER-NO-TODO` (environmental),
@@ -88,7 +91,7 @@ installability is proven on every change to the package.
   `PF-BLOCKER-STALE` from the resolved graph. The `plan-fields fleet-graph
   --root <ws> --manifest <manifest.toml>` CLI is the disk-side loader (the
   sensor's entry point) that freezes inputs and calls both.
-- `plan_fields.check_legacy_fleet(inputs, manifest, exclude=...)` → the
+- `plan_fields.check_legacy_fleet(inputs, index, exclude=...)` → the
   **transitional** legacy blocker graph over **un-`@id`'d** sources — the graph a
   pre-PF-2B fleet still lives on, which `parse_fleet` (source-`@id`-gated) cannot
   see. Built on `scrape_items`, it reproduces the old `<repo>#<slug>` resolution
@@ -98,8 +101,15 @@ installability is proven on every change to the package.
   once it carries an `@id` (its refs become `parse_fleet`'s), so a relation moves
   from legacy to canonical without being counted twice; the API returns empty at
   100% `@id` coverage and is removed then. Consumers run both passes:
-  `canonical = check_fleet(parse_fleet(inputs, manifest))` and
-  `legacy = check_legacy_fleet(inputs, manifest, exclude={(r["provenance"]["repo"], r["raw_ref"]) for r in snap["references"]})`.
+  `canonical = check_fleet(parse_fleet(inputs, index))` and
+  `legacy = check_legacy_fleet(inputs, index, exclude={(r["provenance"]["repo"], r["raw_ref"]) for r in snap["references"]})`.
+- `plan_fields.manifest_index(path)` → `ManifestIndex(canonical_keys,
+  git_dir_to_key)`: repo identity exactly as the workspace manifest declares
+  it. The canonical name is the **key** of a non-`member` entry; `git_dir` is a
+  declared locator alias normalised to that key, never an identity of its own.
+  `resolve_checkout(dir, index)` applies the same rule to a checkout on disk,
+  and `checkout_map` / `scan_workspace` raise rather than let two checkouts
+  that resolve to one key be decided by directory order.
 - `plan_fields.validator.run_conformance()` and the `plan-fields` CLI.
 - The pinned contract under `plan_fields/contract/` (schema, registries,
   fixtures, `manifest.json`).

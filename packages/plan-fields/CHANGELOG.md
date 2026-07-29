@@ -1,5 +1,38 @@
 # Changelog — plan-fields
 
+## 0.7.0 — 2026-07-29
+
+Manifest-declared repo identity threaded through resolution (ADR-ECO-005).
+
+**BREAKING** — the manifest parameter changes type on three public functions:
+`parse_fleet(inputs, index)`, `check_legacy_fleet(inputs, index, exclude=None)`
+and `fleet.classify_legacy(fleet, index)` now take a `ManifestIndex` where they
+took a `set[str]`. A set has nowhere to record that `prograph-vault` and
+`ecosystem-kb` name one repo, so a reference written with the checkout spelling
+could never resolve. Build one with `manifest_index(path)`; a caller with no
+manifest can pass `ManifestIndex(frozenset(names), {})`.
+
+- Every written repo name is normalised to its canonical key before membership,
+  availability or target lookup is decided. `LegacyRef.target_repo` and
+  `LegacyDiagnostic.target_repo` carry the key; `raw` / the new
+  `LegacyDiagnostic.raw_ref` keep the spelling as written.
+- A legacy `<repo>#<slug>` written with a declared `git_dir` normalises its
+  repo component into `legacy_blocker_ref` only: it gains no `resolved_target`
+  and never becomes an edge (contract, *Identity & provenance*).
+- `manifest_repos()` now also skips `member = true` entries — this **changes the
+  answer**: `atp-platform-sdk` describes a package inside `atp-platform`, is
+  never cloned on its own, and leaves the repo set and the `fleet-graph` nodes.
+- `resolve_checkout()` applies one predicate per candidate spelling (folder name,
+  then origin-derived name): normalise it, accept it only if the result is a
+  declared key. A folder named exactly like its key now resolves even when the
+  entry declares a different `git_dir`; an undeclared checkout still degrades
+  visibly to its origin-derived name and never borrows a key.
+- New `checkout_map(root, index)`; `scan_workspace` is built on it. Two
+  checkouts resolving to one canonical name now raise instead of last-one-wins —
+  identity must not be decided by directory order.
+- `fleet-graph` and `fleet-legacy` resolve checkouts through the manifest, so a
+  repo cloned into its declared `git_dir` is no longer reported as absent.
+
 ## 0.1.0 — 2026-07-28
 
 Initial offline package (PF-3, ADR-ECO-005).
