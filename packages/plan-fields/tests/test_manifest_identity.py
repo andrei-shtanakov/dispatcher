@@ -602,3 +602,28 @@ def test_parse_fleet_and_check_legacy_fleet_refuse_the_same_inputs(
     for fn in (parse_fleet, check_legacy_fleet):
         with pytest.raises(ValueError, match="ecosystem-kb"):
             fn(inputs, idx)
+
+
+def test_an_undeclared_repo_is_not_made_to_look_declared(tmp_path: Path) -> None:
+    """Normalising is not validating (Copilot review, PR #88).
+
+    `resolve_ref` returns an unknown name as itself, so `legacy_blocker_ref` is
+    no promise that the repo exists — it is the written ref with its repo
+    component put through the manifest, which for an undeclared repo is a no-op.
+    The repo stays visible as what the author wrote, and the plan defect is
+    reported rather than absorbed.
+    """
+    from plan_fields.fleet_api import RepoInput, parse_fleet
+
+    idx = manifest_index(_manifest(tmp_path, VAULT_MANIFEST))
+    snapshot = parse_fleet(
+        [RepoInput("arbiter", "- [ ] a @blocked_by:operator-host#y @id:a\n")], idx
+    )
+    ref = next(r for r in snapshot["references"] if r["kind"] == "blocked_by")
+    assert ref["raw_ref"] == "operator-host#y"
+    assert ref["legacy_blocker_ref"] == "operator-host#y"  # unchanged, not a key
+    assert ref["resolved_target"] is None
+    assert snapshot["edges"] == []
+    assert [
+        d["code"] for d in snapshot["diagnostics"] if d["code"].startswith("PF-B")
+    ] == ["PF-BLOCKER-REPO-UNKNOWN"]

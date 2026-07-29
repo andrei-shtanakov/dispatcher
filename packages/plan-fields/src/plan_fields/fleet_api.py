@@ -8,11 +8,13 @@ builds one canonical graph in which cross-repo edges resolve.
 
 Three deliberate boundaries:
 
-* **Only ``todo://`` builds edges.** A legacy ``<repo>#<slug>`` is normalised so it
-  names a real repo (``legacy_blocker_ref``), reported on, and left in
-  ``references``. It gains no ``resolved_target`` and never becomes an edge, however
-  cleanly its slug matches — edge-eligibility follows the reference's SYNTAX, so
-  migrating to an ``@id`` is what puts the relation into the graph.
+* **Only ``todo://`` builds edges.** A legacy ``<repo>#<slug>`` is normalised
+  (``legacy_blocker_ref``), reported on, and left in ``references``. It gains no
+  ``resolved_target`` and never becomes an edge, however cleanly its slug matches —
+  edge-eligibility follows the reference's SYNTAX, so migrating to an ``@id`` is what
+  puts the relation into the graph. Normalising is not validating: a repo the
+  manifest does not declare stays as written and is diagnosed
+  (``PF-BLOCKER-REPO-UNKNOWN``), rather than vanishing or being made to look declared.
 * **No discovery.** ``parse_fleet`` never lists a directory, reads git, or hits the
   network. The caller freezes the inputs (a manifest-pinned scan) and passes them
   in. What repos exist is the *manifest*'s call, never folder presence.
@@ -200,12 +202,18 @@ def _resolve_cross(ref, src_repo, index, present, node_ids, no_todo):
 
     if not is_canonical:
         # Every legacy <repo>#<slug> is normalised here, whichever spelling was
-        # used: `legacy_blocker_ref` carries the full canonical ref so the
-        # reference names a real repo, and `raw_ref` keeps what the author
-        # wrote. That is ALL it earns — no `resolved_target`, no edge, ever.
-        # Edge-eligibility follows the reference's SYNTAX, never how the repo
-        # component happens to be spelled; a key-spelled ref that resolves to
-        # exactly one item is still text, and edges come from identity.
+        # used: `legacy_blocker_ref` carries the ref with its repo component put
+        # through the manifest, and `raw_ref` keeps what the author wrote. That
+        # is ALL it earns — no `resolved_target`, no edge, ever. Edge-eligibility
+        # follows the reference's SYNTAX, never how the repo component happens
+        # to be spelled; a key-spelled ref that resolves to exactly one item is
+        # still text, and edges come from identity.
+        #
+        # `resolve_ref` normalises, it does not validate: an undeclared repo
+        # comes back as itself (lower-cased), so this field is not a promise
+        # that the repo exists — `_repo_reason` below decides that, and says so
+        # with PF-BLOCKER-REPO-UNKNOWN. Writing the name through unchanged is
+        # the point: an unknown repo must stay visible as what was written.
         ref["legacy_blocker_ref"] = f"{canonical}#{key}"
 
     if canonical == src_repo:
