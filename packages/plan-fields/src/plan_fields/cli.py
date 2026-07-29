@@ -45,19 +45,25 @@ def _cmd_conformance(_: argparse.Namespace) -> int:
 
 
 def _load_fleet(args: argparse.Namespace):
-    fleet = _fleet.scan_workspace(Path(args.root))
-    manifest = (
-        _fleet.manifest_repos(Path(args.manifest)) if args.manifest else set(fleet)
-    )
-    return fleet, manifest
+    """Scan the workspace and the identity index the manifest declares.
+
+    Without ``--manifest`` there is nothing to declare identity, so the scan
+    keys itself (origin-derived) and the index is exactly those names with no
+    aliases — the pre-index behaviour, expressed in the new type.
+    """
+    index = _fleet.manifest_index(Path(args.manifest)) if args.manifest else None
+    fleet = _fleet.scan_workspace(Path(args.root), index)
+    if index is None:
+        index = _fleet.ManifestIndex(frozenset(fleet), {})
+    return fleet, index
 
 
 def _cmd_fleet_suggest(args: argparse.Namespace) -> int:
-    fleet, manifest = _load_fleet(args)
+    fleet, index = _load_fleet(args)
     # only UNAMBIGUOUS references contribute a reusable slug, keyed by the exact
     # target line — so an ambiguous slug never gets assigned to several items
     clean: dict[str, dict[int, str]] = {}
-    for r in _fleet.classify_legacy(fleet, manifest):
+    for r in _fleet.classify_legacy(fleet, index):
         if r.resolution == "clean-open" and r.target_line is not None:
             clean.setdefault(r.target_repo, {})[r.target_line] = r.slug
     rows = []
@@ -77,8 +83,8 @@ def _cmd_fleet_suggest(args: argparse.Namespace) -> int:
 
 
 def _cmd_fleet_legacy(args: argparse.Namespace) -> int:
-    fleet, manifest = _load_fleet(args)
-    refs = _fleet.classify_legacy(fleet, manifest)
+    fleet, index = _load_fleet(args)
+    refs = _fleet.classify_legacy(fleet, index)
     rows = [
         {
             "source": f"{r.source_repo}/TODO.md:{r.source_line}",
@@ -122,19 +128,19 @@ def _head_commit(repo_dir: Path) -> str | None:
     return None
 
 
-def _fleet_inputs(root: Path, manifest: set[str]) -> list[RepoInput]:
+def _fleet_inputs(root: Path, index: _fleet.ManifestIndex) -> list[RepoInput]:
     """Freeze one RepoInput per manifest repo from disk — the sensor's job.
 
     The manifest is the authority for which repos exist; a declared repo with no
     checkout here is ``available=False``, one with a checkout but no TODO.md has
     ``todo_text=None``. This disk read is deliberately OUTSIDE ``parse_fleet``.
+
+    Checkouts resolve through the index, so a repo cloned into its declared
+    ``git_dir`` is found under its key rather than reported as not checked out.
     """
-    on_disk: dict[str, Path] = {}
-    for child in sorted(root.iterdir()):
-        if child.is_dir() and (child / ".git").exists():
-            on_disk[_fleet.canonical_name(child).lower()] = child
+    on_disk = _fleet.checkout_map(root, index)
     inputs: list[RepoInput] = []
-    for repo in sorted(manifest):
+    for repo in sorted(index.canonical_keys):
         d = on_disk.get(repo)
         if d is None:
             inputs.append(RepoInput(repo, available=False))
@@ -152,8 +158,8 @@ def _fleet_inputs(root: Path, manifest: set[str]) -> list[RepoInput]:
 
 
 def _cmd_fleet_graph(args: argparse.Namespace) -> int:
-    manifest = _fleet.manifest_repos(Path(args.manifest))
-    snap = parse_fleet(_fleet_inputs(Path(args.root), manifest), manifest)
+    index = _fleet.manifest_index(Path(args.manifest))
+    snap = parse_fleet(_fleet_inputs(Path(args.root), index), index)
     snap["diagnostics"].extend(check_fleet(snap))
     sys.stdout.write(canonical_dumps(canonicalize(snap)))
     return 0
@@ -229,7 +235,20 @@ def main(argv: list[str] | None = None) -> int:
     fd.set_defaults(fn=_cmd_fleet_drift)
 
     args = parser.parse_args(argv)
-    return args.fn(args)
+    try:
+        return args.fn(args)
+    except _fleet.AmbiguousIdentityError as err:
+        # Only the identity refusals (an ambiguous git_dir, two plan-bearing
+        # checkouts of one repo, two spellings of one repo among the inputs) are
+        # the operator's to fix, so only they are caught. Catching `ValueError`
+        # would also swallow a malformed TOML/JSON error and any genuine parser
+        # bug, dressing a defect up as operator error. Exit 2 keeps them
+        # distinct from a clean "invalid document" / "drift found" verdict (1);
+        # it is shared with argparse's usage error, which is the same category —
+        # the invocation or its environment cannot be run as given, and the
+        # message says which.
+        print(f"plan-fields: {err}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

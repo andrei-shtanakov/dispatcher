@@ -7,6 +7,7 @@ pipeline and disappears from here.
 
 from __future__ import annotations
 
+from plan_fields.fleet import ManifestIndex
 from plan_fields.fleet_api import (
     RepoInput,
     check_fleet,
@@ -14,7 +15,9 @@ from plan_fields.fleet_api import (
     parse_fleet,
 )
 
-MANIFEST = {"maestro", "proctor", "arbiter", "atp-platform"}
+MANIFEST = ManifestIndex(
+    frozenset({"maestro", "proctor", "arbiter", "atp-platform"}), {}
+)
 
 
 def test_missing_slug_is_dangling() -> None:

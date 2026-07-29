@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from plan_fields.canonical import canonicalize
+from plan_fields.fleet import AmbiguousIdentityError, ManifestIndex
 from plan_fields.parser import (
     CONTRACT_VERSION,
     LEGACY_RE,
@@ -62,6 +63,32 @@ class RepoInput:
     available: bool = True
 
 
+def _canonical_input_repos(
+    inputs: Sequence[RepoInput], index: ManifestIndex, caller: str
+) -> list[str]:
+    """One canonical repo name per input, in order, refusing two spellings of one.
+
+    An input's own name is normalised on the same rule as the names references
+    are written with. A caller that supplies a repo under its ``git_dir``
+    spelling would otherwise key the scan by that spelling, so an inbound
+    reference — correctly normalised to the key — would find nothing.
+
+    Normalising can MERGE two names that were distinct as written, which is why
+    the duplicate refusal lives here rather than in one caller: without it the
+    second input silently overwrites the first, the loser's whole TODO.md
+    disappears from the answer, and which one loses depends on input order. An
+    ambiguity that resolves by argument order is the same defect
+    ``checkout_map`` refuses on disk.
+    """
+    repos = [index.resolve_ref(inp.repo) for inp in inputs]
+    dupes = sorted({r for r in repos if repos.count(r) > 1})
+    if dupes:
+        raise AmbiguousIdentityError(
+            f"{caller}: duplicate RepoInput for repo(s) {dupes}"
+        )
+    return repos
+
+
 def _pin(doc: dict[str, Any], commit: str | None) -> None:
     """Stamp the pinned commit onto every provenance block in a parsed doc."""
     if commit is None:
@@ -75,7 +102,7 @@ def _pin(doc: dict[str, Any], commit: str | None) -> None:
 
 def parse_fleet(
     inputs: Sequence[RepoInput],
-    manifest: set[str],
+    index: ManifestIndex,
     generated_at: str = "1970-01-01T00:00:00Z",
 ) -> dict[str, Any]:
     """Build one canonical, contract-valid snapshot across the frozen inputs.
@@ -83,11 +110,13 @@ def parse_fleet(
     Intra-repo nodes/references/edges/diagnostics come straight from
     ``parse_todo``; this layer only resolves the cross-repo references it leaves
     open and emits the diagnostics that need manifest/availability knowledge.
+
+    The manifest arrives as a ``ManifestIndex``, not a bare set of names: every
+    written repo name is normalised through it before membership or
+    availability is decided, so a reference spelled with a declared ``git_dir``
+    locator reaches the same verdict as one spelled with the key.
     """
-    seen = [inp.repo for inp in inputs]
-    dupes = sorted({r for r in seen if seen.count(r) > 1})
-    if dupes:
-        raise ValueError(f"parse_fleet: duplicate RepoInput for repo(s) {dupes}")
+    repos = _canonical_input_repos(inputs, index, "parse_fleet")
 
     nodes: list[dict[str, Any]] = []
     references: list[dict[str, Any]] = []
@@ -97,21 +126,21 @@ def parse_fleet(
     present: dict[str, list[dict[str, Any]]] = {}  # repo -> its nodes
     no_todo: set[str] = set()
 
-    for inp in inputs:
+    for inp, repo in zip(inputs, repos):
         if not inp.available or inp.todo_text is None:
             # declared but not usable here: no checkout (available=False) or a
             # checkout with no TODO.md. Both are environmental; the target repo's
             # inbound refs resolve to NO-TODO / UNRESOLVABLE below.
             if inp.available and inp.todo_text is None:
-                no_todo.add(inp.repo)
+                no_todo.add(repo)
             continue
-        doc = parse_todo(inp.todo_text, inp.repo, generated_at=generated_at)
+        doc = parse_todo(inp.todo_text, repo, generated_at=generated_at)
         _pin(doc, inp.commit)
         nodes.extend(doc["nodes"])
         references.extend(doc["references"])
         edges.extend(doc["edges"])
         diagnostics.extend(doc["diagnostics"])
-        present[inp.repo] = doc["nodes"]
+        present[repo] = doc["nodes"]
 
     node_ids = {n["node_id"] for n in nodes}
 
@@ -120,7 +149,7 @@ def parse_fleet(
         if ref["resolved_target"] is not None:
             continue
         src_repo = ref["provenance"]["repo"]
-        edge, diag = _resolve_cross(ref, src_repo, manifest, present, node_ids, no_todo)
+        edge, diag = _resolve_cross(ref, src_repo, index, present, node_ids, no_todo)
         if edge is not None:
             edges.append(edge)
         if diag is not None:
@@ -138,12 +167,13 @@ def parse_fleet(
     return canonicalize(doc)
 
 
-def _resolve_cross(ref, src_repo, manifest, present, node_ids, no_todo):
+def _resolve_cross(ref, src_repo, index, present, node_ids, no_todo):
     """Resolve one cross-repo reference; returns (edge_or_None, diag_or_None).
 
-    Mutates ``ref`` in place to set ``resolved_target`` when an edge forms. A
-    same-repo reference left unresolved was already diagnosed by ``parse_todo``
-    (dangling / ambiguous), so it is skipped here.
+    Mutates ``ref`` in place to set ``resolved_target`` when an edge forms, and
+    to normalise ``legacy_blocker_ref`` when the reference was written with a
+    declared locator. A same-repo reference left unresolved was already
+    diagnosed by ``parse_todo`` (dangling / ambiguous), so it is skipped here.
     """
     raw = ref["raw_ref"]
     src = ref["source_node_id"]
@@ -158,17 +188,29 @@ def _resolve_cross(ref, src_repo, manifest, present, node_ids, no_todo):
     else:
         return None, None  # malformed — not this layer's job (parity with parser)
 
-    if trepo == src_repo:
+    # The written repo name is normalised before anything is decided: a name
+    # spelled with a declared locator names the same repo as one spelled with
+    # the key. `raw_ref` keeps the spelling exactly as the author wrote it.
+    canonical = index.resolve_ref(trepo)
+    if canonical == src_repo:
         return None, None  # intra-repo miss already diagnosed by parse_todo
 
-    reason = _repo_reason(trepo, manifest, present, no_todo)
+    if not is_canonical and canonical != trepo:
+        # ADR-ECO-005: a legacy <repo>#<slug> written with a declared locator
+        # normalises for LOOKUP only. legacy_blocker_ref carries the key so the
+        # reference names a real repo, but the reference stays legacy — the
+        # contract's load-bearing split is that edges come from identity and
+        # references come from text, and a resolving alias does not cross it.
+        ref["legacy_blocker_ref"] = f"{canonical}#{key}"
+
+    reason = _repo_reason(trepo, index, present, no_todo)
     if reason is not None:
         code, msg = reason
-        return None, _diag(code, "warning", src, raw, None, msg(raw, trepo), prov)
+        return None, _diag(code, "warning", src, raw, None, msg(raw, canonical), prov)
 
     # target repo is present and parsed — resolve within it
     if is_canonical:
-        target = f"todo://{trepo}/{key}"
+        target = f"todo://{canonical}/{key}"
         if target in node_ids:
             ref["resolved_target"] = target
             return {
@@ -184,12 +226,18 @@ def _resolve_cross(ref, src_repo, manifest, present, node_ids, no_todo):
                 src,
                 target,
                 None,
-                f"canonical reference {raw} points to an @id absent from repo {trepo}",
+                f"canonical reference {raw} points to an @id absent from repo "
+                f"{canonical}",
                 prov,
             ),
         )
+    if canonical != trepo:
+        # An alias-spelled legacy reference: normalised above for lookup, and
+        # that is all it earns. It keeps no resolved_target and yields no edge
+        # (contract, Identity & provenance) — the author migrates it to an @id.
+        return None, None
     # legacy transitional resolution against the target repo's canonical nodes
-    matches = _legacy_matches(present[trepo], key)
+    matches = _legacy_matches(present[canonical], key)
     if len(matches) == 1:
         target = matches[0]["node_id"]
         ref["resolved_target"] = target  # legacy_blocker_ref stays set (transitional)
@@ -213,16 +261,20 @@ def _resolve_cross(ref, src_repo, manifest, present, node_ids, no_todo):
     )
 
 
-def _repo_reason(trepo, manifest, present, no_todo):
+def _repo_reason(trepo, index, present, no_todo):
     """Why the target repo cannot host a resolvable node, or None if it can.
 
-    Order matters: manifest membership (plan defect) is decided before any
+    The written name is normalised through the manifest before anything is
+    decided: a reference spelled with a declared locator names the same repo as
+    one spelled with the key, so both must reach the same verdict. Order still
+    matters below — manifest membership (a plan defect) is decided before any
     environmental state, so a non-fleet repo is never excused as "not checked
     out". A manifest repo that was not parsed and has no TODO.md recorded — whether
     the input was ``available=False`` or simply omitted — collapses to the same
     not-checked-out environmental default (``PF-BLOCKER-UNRESOLVABLE``).
     """
-    if trepo not in manifest:
+    trepo = index.resolve_ref(trepo)
+    if trepo not in index.canonical_keys:
         return (
             "PF-BLOCKER-REPO-UNKNOWN",
             lambda raw, r: (
@@ -314,13 +366,14 @@ class LegacyDiagnostic:
     source_line: int
     target_repo: str  # canonical (lower) name of the resolved target
     slug: str
+    raw_ref: str  # `<repo>#<slug>` exactly as written — text, not identity
     message: str
     identity_grade: str = "legacy"
 
 
 def check_legacy_fleet(
     inputs: Sequence[RepoInput],
-    manifest: set[str],
+    index: ManifestIndex,
     exclude: set[tuple[str, str]] | None = None,
 ) -> list[LegacyDiagnostic]:
     """Resolve the legacy ``<repo>#<slug>`` blocker graph over un-@id'd sources.
@@ -335,16 +388,23 @@ def check_legacy_fleet(
     ``(source_repo, raw_ref)`` — e.g. the canonical references) drops any
     remainder. Every ``@blocked_by`` on an item is kept (multiple blockers
     preserved). All findings are warnings.
+
+    The manifest arrives as a ``ManifestIndex``: each written repo name is
+    normalised to its canonical key before membership is decided, so a
+    reference spelled with a declared locator reaches the same verdict as one
+    spelled with the key. ``target_repo`` then carries the key and ``raw_ref``
+    the spelling as written.
     """
     exclude = exclude or set()
+    repos = _canonical_input_repos(inputs, index, "check_legacy_fleet")
     scraped: dict[str, list[ScrapedItem]] = {}
     no_todo: set[str] = set()
-    for inp in inputs:
+    for inp, srepo in zip(inputs, repos):
         if not inp.available or inp.todo_text is None:
             if inp.available and inp.todo_text is None:
-                no_todo.add(inp.repo)
+                no_todo.add(srepo)
             continue
-        scraped[inp.repo] = scrape_items(inp.todo_text)
+        scraped[srepo] = scrape_items(inp.todo_text)
 
     out: list[LegacyDiagnostic] = []
     for srepo, items in scraped.items():
@@ -360,7 +420,7 @@ def check_legacy_fleet(
                 if not m:
                     continue  # todo:// (canonical) or malformed — not legacy
                 diag = _legacy_resolve(
-                    srepo, item.line, m.group(1), m.group(2), manifest, scraped, no_todo
+                    srepo, item.line, m.group(1), m.group(2), index, scraped, no_todo
                 )
                 if diag is not None:
                     out.append(diag)
@@ -381,17 +441,21 @@ def _slug_hits_item(item: ScrapedItem, slug: str) -> bool:
     return low in item.display_text.lower()
 
 
-def _legacy_resolve(srepo, line, trepo_raw, slug, manifest, scraped, no_todo):
+def _legacy_resolve(srepo, line, trepo_raw, slug, index, scraped, no_todo):
     """Reproduce the old devtools per-blocker outcome, or None when it resolves."""
-    tkey = trepo_raw.lower()
-    if tkey == srepo.lower():
+    # target_repo is identity, raw_ref is text. Never let the raw spelling
+    # reach target_repo: a legacy reference resolves *as* the key, and the
+    # reader still needs to see what was actually written.
+    tkey = index.resolve_ref(trepo_raw)
+    raw_ref = f"{trepo_raw}#{slug}"
+    if tkey == srepo:  # srepo is already normalised by the caller
         return None  # self-blocker: the repo's own check covers it
 
     def diag(code: str, msg: str) -> LegacyDiagnostic:
-        return LegacyDiagnostic(code, "warning", srepo, line, tkey, slug, msg)
+        return LegacyDiagnostic(code, "warning", srepo, line, tkey, slug, raw_ref, msg)
 
     where = f"{srepo}/TODO.md:{line}"
-    if tkey not in manifest:
+    if tkey not in index.canonical_keys:
         return diag(
             "PF-BLOCKER-REPO-UNKNOWN",
             f"{where} @blocked_by:{trepo_raw}#{slug} names '{tkey}', absent from "

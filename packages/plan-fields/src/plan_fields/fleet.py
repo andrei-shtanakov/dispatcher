@@ -30,6 +30,18 @@ _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _LEGACY_RE = re.compile(r"^([a-z0-9][a-z0-9-]*)#(\S+)$", re.IGNORECASE)
 
 
+class AmbiguousIdentityError(ValueError):
+    """Two declarations, checkouts or inputs claim one repo identity.
+
+    A dedicated type so the CLI can turn exactly these refusals into an
+    operator-facing message. Catching plain ``ValueError`` there would also
+    swallow ``TOMLDecodeError``, ``JSONDecodeError`` and any genuine
+    ``ValueError`` bug in the parser, printing a defect as if it were the
+    operator's mistake. Subclasses ``ValueError`` so existing callers that
+    catch it keep working.
+    """
+
+
 def canonical_name(repo_dir: Path) -> str:
     """Repo name as a plain `git clone` makes it — from origin, not the folder."""
     try:
@@ -99,7 +111,7 @@ def manifest_index(manifest_path: Path) -> ManifestIndex:
     ambiguous = {d: sorted(ks) for d, ks in by_git_dir.items() if len(ks) > 1}
     if ambiguous:
         detail = "; ".join(f"{d} -> {ks}" for d, ks in sorted(ambiguous.items()))
-        raise ValueError(
+        raise AmbiguousIdentityError(
             f"workspace manifest declares an ambiguous git_dir alias: {detail}. "
             f"A checkout location must name at most one non-member repo."
         )
@@ -109,30 +121,92 @@ def manifest_index(manifest_path: Path) -> ManifestIndex:
 def resolve_checkout(repo_dir: Path, index: ManifestIndex) -> str:
     """The canonical key for a checkout on disk — manifest first, origin last.
 
-    Order matters. The folder name is checked before the origin so a repo
-    renamed upstream still resolves through its declared locator; the origin
-    is consulted next so a folder named arbitrarily still resolves; and only a
-    repo the manifest does not declare at all falls back to the origin-derived
-    name, which is provenance, not identity.
+    Each candidate spelling goes through ONE predicate — normalise it, then
+    accept it only if the result is a declared key. That covers a canonical key
+    and a `git_dir` alias under the same rule, so a folder named exactly like
+    its key still resolves when the entry declares a different `git_dir`.
+
+    Order matters. The folder name is tried before the origin so a repo renamed
+    upstream still resolves through its declared locator; the origin-derived
+    name is tried next so an arbitrarily named folder still resolves; and only
+    a checkout the manifest declares under neither spelling falls back to the
+    origin-derived name, which is provenance, not identity. That fallback never
+    lands on a key, so an undeclared checkout stays visibly undeclared instead
+    of borrowing an identity it was not given.
     """
-    basename = repo_dir.name.lower()
-    if basename in index.git_dir_to_key:
-        return index.git_dir_to_key[basename]
     origin = canonical_name(repo_dir).lower()
-    if origin in index.git_dir_to_key:
-        return index.git_dir_to_key[origin]
+    for candidate in (repo_dir.name.lower(), origin):
+        canonical = index.resolve_ref(candidate)
+        if canonical in index.canonical_keys:
+            return canonical
     return origin
 
 
 def manifest_repos(manifest_path: Path) -> set[str]:
     """The canonical repo names the frozen manifest declares — its non-member keys.
 
-    Reads the section **key**, not ``package_name``. The two coincide in every
-    entry today, so this changes no current answer — but the contract names the
-    key, and a `package_name` edited without touching its key would otherwise
-    move plan identity.
+    Two things changed with the index, and only one of them is inert. It reads
+    the section **key**, not ``package_name``: those coincide in every entry
+    today, so that part changes no current answer, but the contract names the
+    key and a ``package_name`` edited without touching its key would otherwise
+    move plan identity. It also skips ``member = true`` entries, and that DOES
+    change the answer — ``atp-platform-sdk`` describes a package inside
+    ``atp-platform``, is never cloned on its own, and so leaves this set (and
+    with it the `fleet-graph` node list) as a repo that cannot exist.
     """
     return set(manifest_index(manifest_path).canonical_keys)
+
+
+def checkout_map(root: Path, index: ManifestIndex | None = None) -> dict[str, Path]:
+    """Every cloned repo under ``root``, by canonical name -> its directory.
+
+    With an index, checkouts resolve through the manifest (the contract's rule).
+    Without one, the old origin-derived behaviour is kept so existing callers
+    are not broken by this change alone.
+
+    Two checkouts resolving to one name are settled by what they SUPPLY, never
+    by directory order:
+
+    * one of them keeps a ``TODO.md`` — it wins, whichever order they are read
+      in. A bare second clone beside a real checkout has no wrong answer to
+      prevent, so it must not abort the command.
+    * both keep a ``TODO.md`` — raise ``AmbiguousIdentityError``. Here the
+      loser's plan content vanishes from the answer and which one loses depends
+      on ``sorted()``. Identity decided by directory order is exactly the
+      failure this contract exists to prevent, and it matches how
+      ``manifest_index`` already refuses an ambiguous ``git_dir``.
+    * neither keeps one — take the first in ``sorted()`` order. **The returned
+      ``Path`` is then arbitrary**: the winner is a physically different clone
+      depending on the directory names, and a consumer that reads a commit or
+      any other file through that path gets an order-dependent answer. What is
+      unobservable is narrower — everything THIS package derives from such a
+      checkout: it contributes no node, reference or diagnostic, and
+      ``parse_fleet`` never emits its commit, so ``scan_workspace``, the four
+      ``fleet-*`` commands and the snapshot are identical either way. A
+      consumer that uses the directory itself must not assume the same.
+    """
+    out: dict[str, Path] = {}
+    for child in sorted(root.iterdir()):
+        if not child.is_dir() or not (child / ".git").exists():
+            continue
+        key = (
+            resolve_checkout(child, index)
+            if index is not None
+            else canonical_name(child).lower()
+        )
+        first = out.get(key)
+        if first is None:
+            out[key] = child
+        elif (child / "TODO.md").is_file():
+            if (first / "TODO.md").is_file():
+                raise AmbiguousIdentityError(
+                    f"workspace holds two checkouts resolving to '{key}', both "
+                    f"with a TODO.md: {first.name} and {child.name}. A repo's "
+                    f"plan must not depend on directory order — rename or "
+                    f"remove one."
+                )
+            out[key] = child  # the plan-bearing checkout wins over a bare clone
+    return out
 
 
 def scan_workspace(
@@ -140,21 +214,13 @@ def scan_workspace(
 ) -> dict[str, list[ScrapedItem]]:
     """Every cloned repo with a TODO.md, by canonical name -> scraped items.
 
-    With an index, checkouts resolve through the manifest (the contract's rule).
-    Without one, the old origin-derived behaviour is kept so existing callers
-    are not broken by this change alone.
+    Resolution and the collision rule are ``checkout_map``'s; this only reads
+    the TODO.md of each resolved checkout that keeps one.
     """
     fleet: dict[str, list[ScrapedItem]] = {}
-    for child in sorted(root.iterdir()):
-        if not child.is_dir() or not (child / ".git").exists():
-            continue
+    for key, child in checkout_map(root, index).items():
         todo = child / "TODO.md"
         if todo.is_file():
-            key = (
-                resolve_checkout(child, index)
-                if index is not None
-                else canonical_name(child).lower()
-            )
             fleet[key] = scrape_items(todo.read_text(encoding="utf-8", errors="ignore"))
     return fleet
 
@@ -226,8 +292,14 @@ class LegacyRef:
 
 
 def classify_legacy(
-    fleet: dict[str, list[ScrapedItem]], manifest: set[str]
+    fleet: dict[str, list[ScrapedItem]], index: ManifestIndex
 ) -> list[LegacyRef]:
+    """Sort every legacy ``<repo>#<slug>`` blocker into its resolution class.
+
+    The manifest arrives as a ``ManifestIndex`` rather than a bare set of names:
+    a set has nowhere to record that a declared locator and its key name one
+    repo, so a reference written with the checkout spelling could never resolve.
+    """
     out: list[LegacyRef] = []
     for repo, items in sorted(fleet.items()):
         for item in items:
@@ -236,7 +308,7 @@ def classify_legacy(
                 if not m:
                     continue  # todo:// or malformed — not this report's job
                 trepo, slug = m.group(1).lower(), m.group(2)
-                out.append(_resolve(repo, item.line, raw, trepo, slug, fleet, manifest))
+                out.append(_resolve(repo, item.line, raw, trepo, slug, fleet, index))
     return out
 
 
@@ -251,11 +323,16 @@ def _matches(item: ScrapedItem, slug: str) -> bool:
     return low in item.display_text.lower()
 
 
-def _resolve(repo, line, raw, trepo, slug, fleet, manifest) -> LegacyRef:
+def _resolve(repo, line, raw, trepo, slug, fleet, index) -> LegacyRef:
+    # Normalise before deciding: a reference spelled with a declared locator
+    # names the same repo as one spelled with the key, so both must reach the
+    # same verdict. `target_repo` carries the key; `raw` keeps the spelling.
+    trepo = index.resolve_ref(trepo)
+
     def ref(res, tline=None):
         return LegacyRef(repo, line, raw, trepo, slug, res, tline)
 
-    if trepo not in manifest:
+    if trepo not in index.canonical_keys:
         return ref("not-in-manifest")  # plan defect
     if trepo not in fleet:
         return ref("absent")  # in manifest, not scanned here — environmental
