@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -46,31 +47,113 @@ def canonical_name(repo_dir: Path) -> str:
     return repo_dir.name
 
 
-def manifest_repos(manifest_path: Path) -> set[str]:
-    """The canonical repo names the frozen workspace manifest declares."""
+@dataclass(frozen=True)
+class ManifestIndex:
+    """Repo identity exactly as the workspace manifest declares it.
+
+    `canonical_keys` are the only identities: the leaf key of every entry that
+    is not a `member`. `git_dir_to_key` maps a declared checkout location to
+    its key — a locator alias, never an identity of its own, so a repo renamed
+    upstream keeps its identity while only the alias moves.
+    """
+
+    canonical_keys: frozenset[str]
+    git_dir_to_key: Mapping[str, str]
+
+    def resolve_ref(self, name: str) -> str:
+        """Normalise a written repo name to its canonical key.
+
+        A name that is already a key is returned unchanged; a declared
+        locator is translated; anything else is returned as written, so an
+        unknown repo stays visible as itself rather than silently vanishing.
+        """
+        low = name.lower()
+        if low in self.canonical_keys:
+            return low
+        return self.git_dir_to_key.get(low, low)
+
+
+def manifest_index(manifest_path: Path) -> ManifestIndex:
+    """Build the identity index from the frozen workspace manifest.
+
+    Members are skipped: an entry with ``member = true`` describes a package
+    inside another repo and is never cloned on its own, so it must not mint an
+    identity — nor make its owner's ``git_dir`` look ambiguous.
+    """
     data = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
-    names: set[str] = set()
+    keys: set[str] = set()
+    by_git_dir: dict[str, list[str]] = {}
     for section in data.values():
-        if isinstance(section, dict):
-            for entry in section.values():
-                if isinstance(entry, dict) and isinstance(
-                    entry.get("package_name"), str
-                ):
-                    names.add(entry["package_name"].lower())
-    return names
+        if not isinstance(section, dict):
+            continue
+        for key, entry in section.items():
+            if not isinstance(entry, dict) or entry.get("member") is True:
+                continue
+            k = key.lower()
+            keys.add(k)
+            git_dir = entry.get("git_dir")
+            if isinstance(git_dir, str):
+                by_git_dir.setdefault(git_dir.lower(), []).append(k)
+    ambiguous = {d: sorted(ks) for d, ks in by_git_dir.items() if len(ks) > 1}
+    if ambiguous:
+        detail = "; ".join(f"{d} -> {ks}" for d, ks in sorted(ambiguous.items()))
+        raise ValueError(
+            f"workspace manifest declares an ambiguous git_dir alias: {detail}. "
+            f"A checkout location must name at most one non-member repo."
+        )
+    return ManifestIndex(frozenset(keys), {d: ks[0] for d, ks in by_git_dir.items()})
 
 
-def scan_workspace(root: Path) -> dict[str, list[ScrapedItem]]:
-    """Every cloned repo with a TODO.md, by canonical name -> scraped items."""
+def resolve_checkout(repo_dir: Path, index: ManifestIndex) -> str:
+    """The canonical key for a checkout on disk — manifest first, origin last.
+
+    Order matters. The folder name is checked before the origin so a repo
+    renamed upstream still resolves through its declared locator; the origin
+    is consulted next so a folder named arbitrarily still resolves; and only a
+    repo the manifest does not declare at all falls back to the origin-derived
+    name, which is provenance, not identity.
+    """
+    basename = repo_dir.name.lower()
+    if basename in index.git_dir_to_key:
+        return index.git_dir_to_key[basename]
+    origin = canonical_name(repo_dir).lower()
+    if origin in index.git_dir_to_key:
+        return index.git_dir_to_key[origin]
+    return origin
+
+
+def manifest_repos(manifest_path: Path) -> set[str]:
+    """The canonical repo names the frozen manifest declares — its non-member keys.
+
+    Reads the section **key**, not ``package_name``. The two coincide in every
+    entry today, so this changes no current answer — but the contract names the
+    key, and a `package_name` edited without touching its key would otherwise
+    move plan identity.
+    """
+    return set(manifest_index(manifest_path).canonical_keys)
+
+
+def scan_workspace(
+    root: Path, index: ManifestIndex | None = None
+) -> dict[str, list[ScrapedItem]]:
+    """Every cloned repo with a TODO.md, by canonical name -> scraped items.
+
+    With an index, checkouts resolve through the manifest (the contract's rule).
+    Without one, the old origin-derived behaviour is kept so existing callers
+    are not broken by this change alone.
+    """
     fleet: dict[str, list[ScrapedItem]] = {}
     for child in sorted(root.iterdir()):
         if not child.is_dir() or not (child / ".git").exists():
             continue
         todo = child / "TODO.md"
         if todo.is_file():
-            fleet[canonical_name(child).lower()] = scrape_items(
-                todo.read_text(encoding="utf-8", errors="ignore")
+            key = (
+                resolve_checkout(child, index)
+                if index is not None
+                else canonical_name(child).lower()
             )
+            fleet[key] = scrape_items(todo.read_text(encoding="utf-8", errors="ignore"))
     return fleet
 
 
