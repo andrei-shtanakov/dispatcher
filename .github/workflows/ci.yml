@@ -65,10 +65,10 @@ jobs:
           uv pip install --python /tmp/pf-smoke dist/*.whl
           /tmp/pf-smoke/bin/plan-fields conformance
           # the fleet API must resolve a cross-repo edge from the installed wheel
-          /tmp/pf-smoke/bin/python -c "from plan_fields import parse_fleet, RepoInput; \
+          /tmp/pf-smoke/bin/python -c "from plan_fields import parse_fleet, RepoInput, ManifestIndex; \
             s = parse_fleet([RepoInput('maestro','- [ ] r @owner:o @id:r\n'), \
               RepoInput('proctor','- [ ] x @owner:o @blocked_by:todo://maestro/r @id:x\n')], \
-              {'maestro','proctor'}); \
+              ManifestIndex(frozenset({'maestro','proctor'}), {})); \
             assert s['edges'] == [{'kind':'blocked_by','source_node_id':'todo://proctor/x','target_node_id':'todo://maestro/r'}], s['edges']"
 
   vscode-ext:
