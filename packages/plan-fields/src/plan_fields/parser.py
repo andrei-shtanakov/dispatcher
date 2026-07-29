@@ -223,20 +223,29 @@ def _resolve(node, blocked, repo, nodes, ids):
     return ref, None, None
 
 
-def legacy_self_diagnostic(nodes, slug, blocked, repo, src, prov):
-    """Resolve a SAME-REPO legacy ``<repo>#<slug>``: the diagnostic, or None.
+def legacy_self_diagnostic(
+    nodes: list[dict[str, Any]],
+    slug: str,
+    blocked: str,
+    repo: str,
+    src: str,
+    prov: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Own the verdict on a SAME-REPO legacy ``<repo>#<slug>``: a diagnostic, or None.
+
+    The single owner of that verdict, called by BOTH resolvers so the answer
+    cannot depend on which one reached the reference. ``parse_todo`` calls it
+    for a reference spelled with the repo's own name; the fleet layer — which
+    has the manifest ``parse_todo`` deliberately does not — normalises a
+    declared ``git_dir`` spelling and calls it for that case. Sharing the
+    function, rather than reimplementing the rule beside it, is what keeps the
+    two spellings identical in matching rule, code, severity, ``rule_id`` and
+    wording; a second implementation would drift from this one silently.
 
     A unique match is still not a relation — edges are only resolved
     ``todo:// -> canonical`` ones, so a legacy reference stays in ``references``
     however cleanly it resolves, in its own repo exactly as across repos. Zero
     or several matches is ``PF-LEGACY-AMBIGUOUS``.
-
-    Shared with the fleet layer rather than reimplemented there. ``parse_todo``
-    has no manifest, so it cannot see that ``prograph-vault#x`` inside
-    ``ecosystem-kb`` is a self-reference; the fleet layer normalises the name
-    and calls THIS function for that case. One function means the two spellings
-    cannot drift apart in matching rule, code, severity, rule_id or wording —
-    which a second implementation alongside would eventually let happen.
     """
     matches = [n for n in nodes if slug in n["id"]]
     if len(matches) == 1:

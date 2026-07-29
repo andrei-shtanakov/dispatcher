@@ -498,15 +498,24 @@ def test_a_self_reference_agrees_across_both_spellings(tmp_path: Path) -> None:
     }
 
 
-# A slug that the two matching rules disagree about. `slug in n["id"]` (the
-# self-resolution rule) sees TWO hits — `thing` and `the-thing-b`, by substring
-# — while the cross-repo rule (exact id, else slug in title) sees only one.
-# Whichever rule the fleet layer applies to a self-reference must be the one
-# `parse_todo` applied, or the ambiguity warning silently disappears.
+# Two fixtures the matching rules disagree about, in OPPOSITE directions.
+# `slug in n["id"]` is the self-resolution rule; `_legacy_matches` (exact id,
+# else slug in title) is the cross-repo one. Whichever rule the fleet layer
+# applies to a self-reference must be the one `parse_todo` applied, and the
+# error is not symmetric — one direction loses a warning, the other invents one.
+#
+# self rule: 2 hits (`thing`, `the-thing-b` by substring) -> warn
+# cross rule: 1 hit (exact id `thing`; no title match) -> silent
 _MATCHER_DIVERGENCE_TODO = (
     "- [ ] src @owner:andrei @id:src @blocked_by:{spelling}#thing\n"
     "- [ ] the thing @owner:andrei @id:thing\n"
     "- [ ] Second one @owner:andrei @id:the-thing-b\n"
+)
+# self rule: 1 hit (`thing` inside `the-thing`) -> silent, the correct answer
+# cross rule: 0 hits (id is not `thing`; the title says nothing of it) -> warn
+_MATCHER_DIVERGENCE_REVERSED = (
+    "- [ ] src @owner:andrei @id:src @blocked_by:{spelling}#thing\n"
+    "- [ ] Alpha @owner:andrei @id:the-thing\n"
 )
 
 
@@ -552,6 +561,36 @@ def test_a_self_reference_keeps_parse_todos_verdict_exactly(tmp_path: Path) -> N
         )
         == alone["diagnostics"][0]["message"]
     )
+
+    # --- the same divergence the other way round --------------------------
+    # Here the self rule finds ONE hit, so silence is the correct answer, and a
+    # re-route to the cross-repo rule would INVENT a warning rather than lose
+    # one. Untested, this direction would let the mistake back in wearing the
+    # opposite face: a spurious "matches no item" on a reference that resolves.
+    keyed_text = _MATCHER_DIVERGENCE_REVERSED.format(spelling="demo")
+    alone = parse_todo(keyed_text, "demo")
+    in_fleet = parse_fleet([RepoInput("demo", keyed_text)], idx)
+    aliased = parse_fleet(
+        [
+            RepoInput(
+                "demo", _MATCHER_DIVERGENCE_REVERSED.format(spelling="demo-checkout")
+            )
+        ],
+        idx,
+    )
+    assert alone["diagnostics"] == []  # a unique hit is a reference, not a defect
+    assert in_fleet["diagnostics"] == alone["diagnostics"]
+    assert aliased["diagnostics"] == []  # ...and the alias must not invent one
+
+    # Same-repo UNIQUE match, both spellings: agreeing on silence is not enough
+    # to prove they agree, so pin the reference each produced. This is where the
+    # alias path would drift from the key path without anyone noticing.
+    for doc, written in ((in_fleet, "demo"), (aliased, "demo-checkout")):
+        assert doc["edges"] == []
+        ref = next(r for r in doc["references"] if r["kind"] == "blocked_by")
+        assert ref["raw_ref"] == f"{written}#thing"  # as written
+        assert ref["legacy_blocker_ref"] == "demo#thing"  # normalised, both
+        assert ref["resolved_target"] is None
 
 
 # --- case 5: only the key is a canonical URI ---------------------------------
