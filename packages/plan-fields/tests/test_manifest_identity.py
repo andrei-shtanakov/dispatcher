@@ -335,40 +335,87 @@ def test_legacy_ref_by_alias_normalises_target_and_makes_no_edge(
     assert snapshot["edges"] == []
 
 
-def test_alias_spelled_legacy_ref_normalises_but_never_becomes_an_edge(
-    tmp_path: Path,
-) -> None:
-    """The same rule where it costs something: the target IS present.
+def _legacy_pair(tmp_path: Path, slug: str, target_todo: str) -> tuple[dict, dict]:
+    """The same legacy blocker written twice: with the key, and with its alias.
 
-    The reference names a real, scanned repo once normalised, and still earns no
-    `resolved_target` and no edge — `legacy_blocker_ref` carries the key so the
-    repo is identifiable, `raw_ref` keeps the spelling the author wrote.
+    `ecosystem-kb` is the manifest key; `prograph-vault` is the `git_dir` it
+    declares. Both name one repo, so the two snapshots must agree everywhere the
+    author's spelling is not being quoted back.
     """
     from plan_fields.fleet_api import RepoInput, parse_fleet
 
     idx = manifest_index(_manifest(tmp_path, VAULT_MANIFEST))
-    inputs = [
-        RepoInput("arbiter", "- [ ] a @blocked_by:prograph-vault#thing @id:a\n"),
-        RepoInput("ecosystem-kb", "- [ ] the thing @id:thing\n"),
-    ]
-    snapshot = parse_fleet(inputs, idx)
-    ref = next(r for r in snapshot["references"] if r["kind"] == "blocked_by")
-    assert ref["raw_ref"] == "prograph-vault#thing"
-    assert ref["legacy_blocker_ref"] == "ecosystem-kb#thing"
-    assert ref["resolved_target"] is None  # required by the schema, never omitted
-    assert snapshot["edges"] == []
 
-    # The contrast that makes the rule visible: spelled with the key, the same
-    # legacy reference still resolves transitionally. The alias spelling is the
-    # one that buys nothing in the identity plane.
-    keyed = parse_fleet(
-        [
-            RepoInput("arbiter", "- [ ] a @blocked_by:ecosystem-kb#thing @id:a\n"),
-            RepoInput("ecosystem-kb", "- [ ] the thing @id:thing\n"),
-        ],
-        idx,
-    )
-    assert keyed["edges"] != []
+    def run(spelling: str) -> dict:
+        return parse_fleet(
+            [
+                RepoInput("arbiter", f"- [ ] a @blocked_by:{spelling}#{slug} @id:a\n"),
+                RepoInput("ecosystem-kb", target_todo),
+            ],
+            idx,
+        )
+
+    return run("ecosystem-kb"), run("prograph-vault")
+
+
+def _respell(doc: dict, written: str, key: str) -> dict:
+    """The alias snapshot with the author's spelling swapped for the key.
+
+    Applied to the WHOLE serialised document rather than to named fields, so a
+    field added later is compared too and cannot drift between the two spellings
+    unnoticed.
+    """
+    import json
+
+    return json.loads(json.dumps(doc, sort_keys=True).replace(written, key))
+
+
+@pytest.mark.parametrize(
+    "slug, target_todo",
+    [
+        ("thing", "- [ ] the thing @id:thing\n"),  # resolves to exactly one item
+        ("ghost", "- [ ] the thing @id:thing\n"),  # matches nothing
+        ("dup", "- [ ] dup one @id:dup-1\n- [ ] dup two @id:dup-2\n"),  # many
+    ],
+)
+def test_key_and_alias_spellings_of_a_legacy_ref_are_indistinguishable(
+    tmp_path: Path, slug: str, target_todo: str
+) -> None:
+    """Edge-eligibility follows the reference's SYNTAX, not its spelling.
+
+    Parametrised over the three outcomes a legacy slug can have — unique match,
+    no match, several matches — because the unique match is the case that used
+    to differ: the key spelling produced an edge and the alias spelling did not.
+    """
+    keyed, aliased = _legacy_pair(tmp_path, slug, target_todo)
+
+    # neither spelling produces a relation, in any of the three outcomes
+    assert keyed["edges"] == [] and aliased["edges"] == []
+    for doc, written in ((keyed, "ecosystem-kb"), (aliased, "prograph-vault")):
+        ref = next(r for r in doc["references"] if r["kind"] == "blocked_by")
+        assert ref["raw_ref"] == f"{written}#{slug}"  # the spelling, as written
+        assert ref["legacy_blocker_ref"] == f"ecosystem-kb#{slug}"  # normalised
+        assert ref["resolved_target"] is None
+        assert "resolved_target" in ref  # schema: required, never omitted
+
+    # ...and the two documents are otherwise identical, field for field
+    assert _respell(aliased, "prograph-vault", "ecosystem-kb") == keyed
+
+
+def test_the_written_spelling_survives_in_the_diagnostic_text(
+    tmp_path: Path,
+) -> None:
+    """Why the pairing above needs a respell rather than a plain comparison.
+
+    `raw_ref` is not the only place the author's own words are kept: a
+    diagnostic quotes the reference as written, so a reader can find the line
+    they typed. The repo it names is reported canonically alongside it.
+    """
+    keyed, aliased = _legacy_pair(tmp_path, "ghost", "- [ ] the thing @id:thing\n")
+    for doc, written in ((keyed, "ecosystem-kb"), (aliased, "prograph-vault")):
+        diag = next(d for d in doc["diagnostics"] if d["code"] == "PF-LEGACY-AMBIGUOUS")
+        assert f"{written}#ghost" in diag["message"]  # as written
+        assert "in repo ecosystem-kb" in diag["message"]  # canonical
 
 
 # --- case 5: only the key is a canonical URI ---------------------------------

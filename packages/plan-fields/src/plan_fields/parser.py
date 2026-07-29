@@ -221,13 +221,11 @@ def _resolve(node, blocked, repo, nodes, ids):
             return ref, None, None
         matches = [n for n in nodes if slug in n["id"]]
         if len(matches) == 1:
-            target = matches[0]["node_id"]
-            ref["resolved_target"] = target
-            return (
-                ref,
-                {"kind": "blocked_by", "source_node_id": src, "target_node_id": target},
-                None,
-            )
+            # A unique match is still not a relation. Edges are only resolved
+            # todo:// -> canonical relations; a legacy reference stays in
+            # `references` however cleanly it happens to resolve, in its own
+            # repo exactly as across repos.
+            return ref, None, None
         return (
             ref,
             None,

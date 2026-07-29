@@ -4,7 +4,31 @@
 
 Manifest-declared repo identity threaded through resolution (ADR-ECO-005).
 
-**BREAKING** — the manifest parameter changes type on three public functions:
+**BREAKING (behaviour)** — a legacy `<repo>#<slug>` reference **never becomes an
+edge**, whichever way its repo component is spelled and at whichever layer it is
+resolved. Previously a slug matching exactly one item produced an edge and a
+`resolved_target`: across repos in `parse_fleet`, and within one repo in
+`parse_todo`. Both are gone. Edge-eligibility is decided by the reference's
+*syntax*, never by whether its slug happens to match, so `edges` holds only
+resolved `todo:// → canonical` relations — the contract's load-bearing split
+between the dependency graph (identity) and references (text).
+
+For every `<repo>#<slug>`, key- or `git_dir`-spelled:
+
+- `legacy_blocker_ref` carries the full normalised ref, `<canonical-key>#<slug>`
+- `raw_ref` keeps the spelling exactly as written — the only field that does
+- `resolved_target` is emitted as `null` (the schema has it in
+  `Reference.required` with `oneOf: [CanonicalUri, null]`; it is never omitted)
+- no edge, and a unique match emits no diagnostic either — it is a reference,
+  not a defect. `PF-LEGACY-AMBIGUOUS` still reports zero or several matches.
+
+Migrating a blocker to `@blocked_by:todo://<repo>/<id>` is now precisely what
+puts the relation into the graph. `todo://` resolution is untouched and remains
+the only path to a cross-repo edge. No effect on the current fleet snapshot: no
+legacy reference in the workspace resolves uniquely today, so the live
+`fleet-graph` output is unchanged (161 nodes, 15 edges, 109 diagnostics).
+
+**BREAKING (API)** — the manifest parameter changes type on three public functions:
 `parse_fleet(inputs, index)`, `check_legacy_fleet(inputs, index, exclude=None)`
 and `fleet.classify_legacy(fleet, index)` now take a `ManifestIndex` where they
 took a `set[str]`. A set has nowhere to record that `prograph-vault` and
@@ -21,8 +45,10 @@ manifest can pass `ManifestIndex(frozenset(names), {})`.
   `LegacyDiagnostic.target_repo` carry the key; `raw` / the new
   `LegacyDiagnostic.raw_ref` keep the spelling as written.
 - A legacy `<repo>#<slug>` written with a declared `git_dir` normalises its
-  repo component into `legacy_blocker_ref` only: it gains no `resolved_target`
-  and never becomes an edge (contract, *Identity & provenance*).
+  repo component into `legacy_blocker_ref` only (contract, *Identity &
+  provenance*) — and, per the behavioural break above, so does one written with
+  the key. The two spellings are indistinguishable in every emitted field except
+  `raw_ref` and the diagnostic text that quotes it back.
 - `manifest_repos()` now also skips `member = true` entries — this **changes the
   answer**: `atp-platform-sdk` describes a package inside `atp-platform`, is
   never cloned on its own, and leaves the repo set and the `fleet-graph` nodes.
