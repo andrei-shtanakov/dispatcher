@@ -498,6 +498,62 @@ def test_a_self_reference_agrees_across_both_spellings(tmp_path: Path) -> None:
     }
 
 
+# A slug that the two matching rules disagree about. `slug in n["id"]` (the
+# self-resolution rule) sees TWO hits — `thing` and `the-thing-b`, by substring
+# — while the cross-repo rule (exact id, else slug in title) sees only one.
+# Whichever rule the fleet layer applies to a self-reference must be the one
+# `parse_todo` applied, or the ambiguity warning silently disappears.
+_MATCHER_DIVERGENCE_TODO = (
+    "- [ ] src @owner:andrei @id:src @blocked_by:{spelling}#thing\n"
+    "- [ ] the thing @owner:andrei @id:thing\n"
+    "- [ ] Second one @owner:andrei @id:the-thing-b\n"
+)
+
+
+def test_a_self_reference_keeps_parse_todos_verdict_exactly(tmp_path: Path) -> None:
+    """`parse_fleet` must not re-decide what `parse_todo` already decided.
+
+    An earlier attempt at the alias fix dropped `parse_todo`'s
+    `PF-LEGACY-AMBIGUOUS` and re-derived every legacy verdict with the
+    cross-repo matcher. Both spellings then agreed — but on the WRONG answer for
+    a slug the two rules disagree about: the cross-repo rule finds one hit here,
+    so the warning vanished from every fleet snapshot. An author with `foo` and
+    `legacy-foo-2` would lose exactly the ambiguity that makes the reference
+    unmigratable, and lose it silently.
+
+    The fixture is chosen so the two matchers disagree; the previous parameters
+    (`thing` / `ghost` / `dup`) agree under both, which is why they caught
+    nothing.
+    """
+    from plan_fields.fleet_api import RepoInput, parse_fleet
+    from plan_fields.parser import parse_todo
+
+    idx = manifest_index(
+        _manifest(tmp_path, '[apps.demo]\ngit_dir = "demo-checkout"\n')
+    )
+    keyed_text = _MATCHER_DIVERGENCE_TODO.format(spelling="demo")
+
+    alone = parse_todo(keyed_text, "demo")
+    in_fleet = parse_fleet([RepoInput("demo", keyed_text)], idx)
+    assert [d["code"] for d in alone["diagnostics"]] == ["PF-LEGACY-AMBIGUOUS"]
+    assert "more than one" in alone["diagnostics"][0]["message"]
+    # the whole list, not just the code: nothing added, nothing swallowed
+    assert in_fleet["diagnostics"] == alone["diagnostics"]
+
+    # and the alias spelling reaches that same verdict, by that same rule
+    aliased = parse_fleet(
+        [RepoInput("demo", _MATCHER_DIVERGENCE_TODO.format(spelling="demo-checkout"))],
+        idx,
+    )
+    assert [d["code"] for d in aliased["diagnostics"]] == ["PF-LEGACY-AMBIGUOUS"]
+    assert (
+        aliased["diagnostics"][0]["message"].replace(
+            "demo-checkout#thing", "demo#thing"
+        )
+        == alone["diagnostics"][0]["message"]
+    )
+
+
 # --- case 5: only the key is a canonical URI ---------------------------------
 def test_canonical_uri_uses_the_key_only(tmp_path: Path) -> None:
     from plan_fields.fleet_api import RepoInput, parse_fleet
