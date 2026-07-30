@@ -11,13 +11,14 @@ audit line for every attempt.
 
 `merge_and_sync` composes `merge` and `post-merge-sync` under a single lock
 hold — the two steps must not let another action wedge into the gap between
-merging and re-syncing the local clone. `ok` follows `merged`, not the local
-sync: a merged PR is finished work regardless of whether the clone afterwards
-refuses to update, and unlike the merge itself, a bad sync can be retried. A
-failed merge leaves `merged` at whatever `_invoke` established: `False` for a
-parsed gate refusal, `None` when we never got a readable answer at all (a
-transport failure) — collapsing that into `False` would claim a certainty we
-don't have. `pr_detail` is a read and takes no lock.
+merging and re-syncing the local clone. `ok` follows the merge step, not the
+local sync: a merged PR is finished work regardless of whether the clone
+afterwards refuses to update, and unlike the merge itself, a bad sync can be
+retried. `merged` is always whatever `_invoke` established — `True`/`False`
+when github-checker answered, `None` when we never got a readable answer at
+all (a transport failure). Neither direction is ever asserted locally:
+claiming a merge, or claiming a non-merge, states a certainty we don't have.
+`pr_detail` is a read and takes no lock.
 
 A second, independent action class — content-PR actions, where dispatcher
 itself renders a scoped diff before handing off to github-checker — lives in
@@ -37,7 +38,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from dispatcher.core.discovery import DispatcherConfig
 
@@ -180,30 +181,49 @@ class ActionRunner:
                 error=proc.stderr.strip() or "github-checker returned no JSON",
             )
         local = data.get("local") or {}
-        return ActionOutcome(
-            action=action,
-            dir=target.name,
-            ok=bool(data.get("ok")),
-            detail=data.get("detail"),
-            error=data.get("error"),
-            pr_url=data.get("pr_url"),
-            local_behind=local.get("behind"),
-            local_dirty=local.get("dirty"),
-            merged=data.get("merged"),
-            local_sync=data.get("local_sync"),
-            gate_failed=data.get("gate_failed"),
-            pr_detail=data.get("pr_detail"),
-        )
+        try:
+            return ActionOutcome(
+                action=action,
+                dir=target.name,
+                ok=bool(data.get("ok")),
+                detail=data.get("detail"),
+                error=data.get("error"),
+                pr_url=data.get("pr_url"),
+                local_behind=local.get("behind"),
+                local_dirty=local.get("dirty"),
+                merged=data.get("merged"),
+                local_sync=data.get("local_sync"),
+                gate_failed=data.get("gate_failed"),
+                pr_detail=data.get("pr_detail"),
+            )
+        except ValidationError as err:
+            # the pr_detail PAYLOAD is validated by the console; the envelope
+            # around it had no boundary at all — a wrong-typed field raised
+            # out of here, so a merge subprocess that genuinely ran left no
+            # audit line, breaking this module's stated guarantee
+            return ActionOutcome(
+                action=action,
+                dir=target.name,
+                ok=False,
+                error=(
+                    "github-checker returned an unparseable envelope: "
+                    # one audit line per attempt: pydantic's report is
+                    # multi-line, and its detail is what makes the drift
+                    # diagnosable, so flatten rather than truncate
+                    + " ".join(str(err).split())
+                ),
+            )
 
     def merge_and_sync(self, repo_dir: str, pr: int, if_head: str) -> ActionOutcome:
         """Merge one PR and re-sync the clone, holding the repo lock throughout.
 
-        `ok` follows `merged`: a merged PR is finished work even when the local
-        sync afterwards refuses, and it cannot be retried — the warning rides on
-        `local_sync` instead of flipping the operation to failed. On a failed
-        merge, `merged` is `False` only when github-checker actually answered
-        (a parsed gate refusal); a transport failure leaves it `None` — unknown,
-        not a claimed non-merge.
+        `ok` follows the merge step: a merged PR is finished work even when the
+        local sync afterwards refuses, and it cannot be retried — the warning
+        rides on `local_sync` instead of flipping the operation to failed.
+        `merged` is propagated from github-checker on both paths and never
+        synthesized here: `False` only when it actually answered (a parsed gate
+        refusal), `None` on a transport failure — unknown, not a claimed
+        non-merge, and equally not a claimed merge.
         """
         with self._hold("merge-and-sync", repo_dir) as target:
             merge = self._invoke("merge", target, str(pr), "--if-head", if_head)
@@ -224,8 +244,12 @@ class ActionRunner:
         outcome = ActionOutcome(
             action="merge-and-sync",
             dir=merge.dir,
-            ok=True,  # == merged
-            merged=True,
+            ok=merge.ok,  # the merge step's verdict, never the local sync's
+            # propagated, not asserted: github-checker stamps `merged` on every
+            # merge answer, and a producer that stopped doing so must surface
+            # as unknown — claiming a merge we were not told about is the same
+            # defect as claiming a non-merge we were not told about
+            merged=merge.merged,
             local_sync=sync.local_sync or ("ok" if sync.ok else "failed"),
             detail=merge.detail,
             error=sync.error,

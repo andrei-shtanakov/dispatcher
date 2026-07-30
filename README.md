@@ -91,7 +91,7 @@ GitHub state only as an opaque payload, with no per-repo PR listing endpoint
 (see `TODO.md`'s `merge-gate-pr-listing` item for the follow-up that would add
 one). Opening the gate reads the PR through `github-checker pr-detail`: title,
 head SHA, checks, review threads, changed files, and diff (large PRs show a
-truncation warning instead of a partial list). It also shows github-checker's
+truncation warning alongside the partial list). It also shows github-checker's
 own **nine-predicate gate** — `open`, `not-draft`, `mergeable`,
 `checks-green`, `checks-complete`, `approvals`, `threads-resolved`,
 `threads-complete`, `squash-allowed` — and greys out the Merge button when any
@@ -113,7 +113,10 @@ github-checker read the PR and refused (the gate or the SHA check failed);
 `null` means the gate call itself failed — timeout, missing binary,
 unparseable output — so whether the PR merged is genuinely unknown. The UI
 never reports an unknown outcome as "not merged"; it says "unknown — check
-the PR". The composite's `ok` follows `merged`, not the local sync: a merged
+the PR". The composite reports whatever github-checker answered and never
+synthesizes a verdict of its own — claiming a merge it was not told about is
+the same defect as claiming a non-merge it was not told about. The composite's
+`ok` follows the merge step, not the local sync: a merged
 PR is finished work even if resyncing the clone afterwards fails, so
 `merged=true, local_sync=failed` renders as a warning with a retry button,
 never as a failed merge.

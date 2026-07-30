@@ -305,6 +305,16 @@ git commit -m "refactor(actions): lock-span context manager and merge outcome fi
 and a merged PR cannot be retried. The `local_sync` field carries that warning
 instead.
 
+**AMENDED after the final review (M-2).** The five rows above are unchanged —
+they are what github-checker actually produces, and the shipped tests still
+pin every one of them. What changed is *how* the success row gets its value:
+the implementation hardcoded `ok=True, merged=True`, so a producer answering
+`{"ok": true}` with no `merged` field would have been reported as a
+**confirmed** merge. Both fields are now propagated from the merge step, so an
+unclaimed merge surfaces as `merged=None` ("unknown") — the same doctrine the
+failure path already followed in the other direction. `ok == merged` therefore
+describes github-checker's output, not an equality dispatcher enforces.
+
 `merged=False` and `merged=None` are not interchangeable on a failed merge:
 `False` means github-checker actually answered — a parsed gate refusal — while
 `None` means we never got a readable answer at all, so we don't get to claim

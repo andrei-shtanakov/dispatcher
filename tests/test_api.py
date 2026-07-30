@@ -911,6 +911,47 @@ async def test_merge_and_sync_returns_the_composite_outcome(
         assert body["local_sync"] == "ok"
 
 
+async def test_merged_tri_state_survives_fastapi_serialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Asserted on the WIRE, not on an ActionOutcome.
+
+    The tri-state is the property the whole gate rests on, and the layer that
+    can drop it silently is this one: `response_model_exclude_none=True` on
+    the endpoint removes `merged` from the response body entirely while every
+    model-level test still passes. `null` and an absent key are the same thing
+    to the screen only by accident (`index.html` checks `undefined` too) — the
+    contract is that the key is present.
+    """
+    from dispatcher.core.actions import ActionOutcome, ActionRunner
+
+    # pr 7 = transport failure (unknown), pr 8 = parsed gate refusal
+    def fake_merge_and_sync(
+        self: ActionRunner, repo_dir: str, pr: int, if_head: str
+    ) -> ActionOutcome:
+        return ActionOutcome(
+            action="merge-and-sync",
+            dir=repo_dir,
+            ok=False,
+            merged=None if pr == 7 else False,
+            local_sync="not_attempted",
+        )
+
+    monkeypatch.setattr(ActionRunner, "merge_and_sync", fake_merge_and_sync)
+    async with _client(tmp_path) as client:
+        token = await _token(client)
+        for pr, expected in ((7, None), (8, False)):
+            resp = await client.post(
+                "/api/actions/merge-and-sync",
+                json={"dir": "alpha", "pr": pr, "if_head": HEAD},
+                headers={"X-Action-Token": token},
+            )
+            assert resp.status_code == 200
+            body = json.loads(resp.text)
+            assert "merged" in body, f"PR {pr}: the key was dropped from the wire"
+            assert body["merged"] is expected
+
+
 async def test_merge_and_sync_maps_busy_to_409(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1125,6 +1166,10 @@ def test_real_pr_detail_payload_has_every_field_the_console_reads() -> None:
     # URL from the passthrough would render as a live link.
     if isinstance(detail.get("url"), str) and not detail["url"].startswith("https://"):
         missing.append("url")
+    # `head_sha` is `str && length > 0` in MG_REQUIRED — a type-only check here
+    # would let the two mirrors mean different things for an empty SHA.
+    if isinstance(detail.get("head_sha"), str) and not detail["head_sha"]:
+        missing.append("head_sha")
     # Nullable fields: the KEY must exist, and its value must be null or the
     # expected type. `.get()` would conflate "absent" with "null" — which for
     # review_decision is the difference between "cannot read" and "no review

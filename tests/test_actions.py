@@ -374,6 +374,60 @@ def test_transport_failure_leaves_merged_unknown(tmp_path: Path) -> None:
     assert outcome.local_sync == "not_attempted"
 
 
+def test_a_merge_answer_without_merged_is_not_claimed_as_merged(
+    tmp_path: Path,
+) -> None:
+    """The mirror of the transport-failure rule, on the success path.
+
+    github-checker stamps `merged` on every answer today; if it ever stops,
+    `ok: true` alone must not be reported as a *confirmed* merge — an unknown
+    is an unknown in both directions.
+    """
+    make_repo(tmp_path, "alpha")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)),
+        command=scripted_checker(
+            tmp_path,
+            {
+                "merge": {"action": "merge", "dir": "alpha", "ok": True},
+                "post-merge-sync": {
+                    "action": "post-merge-sync",
+                    "dir": "alpha",
+                    "ok": True,
+                    "local_sync": "ok",
+                },
+            },
+        ),
+    )
+    outcome = runner.merge_and_sync("alpha", 7, HEAD)
+    assert outcome.merged is None
+    assert outcome.ok is True  # the merge step's own verdict, unchanged
+    assert outcome.local_sync == "ok"
+
+
+def test_malformed_envelope_is_a_failed_outcome_with_an_audit_line(
+    tmp_path: Path, caplog
+) -> None:
+    """A wrong-typed envelope field used to raise out of `_invoke`, so a
+    subprocess that genuinely ran left no audit line at all."""
+    make_repo(tmp_path, "alpha")
+    payload = {"action": "pull", "dir": "alpha", "ok": True, "merged": {"nope": 1}}
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    with caplog.at_level("INFO", logger="dispatcher.actions"):
+        outcome = runner.run("pull", "alpha")
+    assert outcome.ok is False
+    assert outcome.error is not None
+    assert "unparseable envelope" in outcome.error
+    assert "merged" in outcome.error  # the offending field, not just "invalid"
+    assert "\n" not in outcome.error  # one audit line per attempt
+    assert any(
+        "action=pull" in r.getMessage() and "unparseable envelope" in r.getMessage()
+        for r in caplog.records
+    )
+
+
 def test_lock_is_held_across_both_steps(tmp_path: Path, monkeypatch) -> None:
     """The composite must take the repo lock exactly once, across both steps.
 
