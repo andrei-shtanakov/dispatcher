@@ -957,6 +957,12 @@ async def test_pr_detail_is_readable_without_a_token(
         assert resp.json()["pr_detail"]["number"] == 7
 
 
+async def test_pr_detail_maps_rejection_to_422(tmp_path: Path) -> None:
+    async with _client(tmp_path) as client:
+        resp = await client.get("/api/pr-detail", params={"dir": "../etc", "pr": 7})
+        assert resp.status_code == 422
+
+
 async def test_post_merge_sync_endpoint_retries_the_local_half(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
