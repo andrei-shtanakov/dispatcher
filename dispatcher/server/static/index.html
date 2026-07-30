@@ -118,7 +118,8 @@
   <div id="detail">click a project card…</div>
   <div id="merge-gate-open"><label>PR #
     <input id="mg-pr-input" type="number" min="1" inputmode="numeric"></label>
-    <button id="mg-open-gate" type="button">Open merge gate</button></div>
+    <button id="mg-open-gate" type="button">Open merge gate</button>
+    <span id="mg-open-gate-error" class="fresh"></span></div>
   <div id="spec-runner-config" hidden>
     <h3>Spec-runner config</h3>
     <form id="spec-runner-config-form"></form>
@@ -219,7 +220,7 @@ document.getElementById("projects").addEventListener("click", e => {
   renderErrorsFilter();
   document.getElementById("errors-box").open = true;
   refresh();
-  detail(card.dataset.name);
+  detail(card.dataset.name, card.dataset.dir || null);
 });
 
 document.getElementById("errors-filter").addEventListener("click", e => {
@@ -392,7 +393,13 @@ async function refresh() {
     renderSummary(summary);
     document.getElementById("projects").innerHTML = ov.projects.map(p => `
       <div class="card ${p.detected ? "" : "off"}"
-           ${p.detected ? `data-name="${esc(p.name)}"` : ""}>
+           ${p.detected
+             // data-dir is the ON-DISK clone dirname (from p.path's basename),
+             // NOT p.name — p.name is a display name that can differ from the
+             // real directory (e.g. collector "Maestro" vs clone dir "maestro"),
+             // and actions._target() resolves dir names, not display names.
+             ? `data-name="${esc(p.name)}" data-dir="${esc(mgDirBasename(p.path))}"`
+             : ""}>
         <h2>${esc(p.name)}</h2>
         ${p.detected
           ? `<div class="counts">tasks ${esc(p.counts.tasks ?? 0)} ·
@@ -557,10 +564,15 @@ function renderOnboarding(ob) {
   return desc + position + next + live + warn;
 }
 
-async function detail(name) {
+async function detail(name, dirName) {
   const section = document.getElementById("detail-section");
   section.hidden = false;
-  mgEntryRepo = name;  // wires the PR-# entry point below to this project
+  // I-6: dirName is the on-disk clone directory (from data-dir), NOT `name`
+  // (a display name) — actions._target() needs the former.
+  mgEntryRepo = dirName || null;
+  // I-5: a stale gate for the PREVIOUS project must not sit under this
+  // project's panel; openMergeGate() clears its own fields on next open.
+  document.getElementById("merge-gate").hidden = true;
   document.getElementById("detail-name").textContent = "— " + name;
   document.getElementById("detail").textContent = "loading…";
   try {
@@ -882,6 +894,10 @@ document.getElementById("spec-runner-config-suggest")
 document.getElementById("spec-runner-config-suggest-cancel")
   .addEventListener("click", cancelSuggest);
 
+// `p.path`'s basename, i.e. the actual clone directory — see the data-dir
+// comment at the project-card template for why this must not be p.name.
+const mgDirBasename = path => (path ?? "").split("/").filter(Boolean).pop() ?? "";
+
 let mgEntryRepo = null, mgRepo = null, mgPr = null, mgHead = null;
 
 // Mirrors github-checker's evaluate_gate — NINE predicates, same names, same
@@ -920,7 +936,10 @@ const MG_PREDICATES = [
 const MG_REQUIRED = [
   ['number',       v => Number.isInteger(v)],
   ['title',        v => typeof v === 'string'],
-  ['url',          v => typeof v === 'string'],
+  // M-1: esc() blocks attribute breakout, not the URL SCHEME — a
+  // `javascript:` URL from the passthrough would otherwise render as a live
+  // link in mg-head. Same trust boundary as the array-item security round.
+  ['url',          v => typeof v === 'string' && v.startsWith('https://')],
   ['state',        v => typeof v === 'string'],
   ['is_draft',     v => typeof v === 'boolean'],
   ['mergeable',    v => typeof v === 'string'],
@@ -970,6 +989,16 @@ const MG_THREAD_ITEM_REQUIRED = [
   ['excerpt',     v => v === null || typeof v === 'string'],
 ];
 
+// I-4: `checks` items were the one array this validation swept past —
+// MG_PREDICATES' `checks-green` reads `c.state` on every item with no guard,
+// so `checks: [null]` passed mgPayloadProblems and then threw mid-render in
+// renderMergeGate (after the header was already drawn): a half-drawn screen
+// that never reached "cannot read PR". Same root cause as the security
+// round, just missed there.
+const MG_CHECK_ITEM_REQUIRED = [
+  ['state', v => typeof v === 'string'],
+];
+
 function mgArrayItemProblems(arr, itemRequired, label) {
   const problems = [];
   arr.forEach((item, i) => {
@@ -996,23 +1025,48 @@ function mgPayloadProblems(d) {
     problems.push(...mgArrayItemProblems(d.files, MG_FILE_ITEM_REQUIRED, 'files'));
   }
   if (Array.isArray(d.review_threads)) {
-    problems.push(
-      ...mgArrayItemProblems(d.review_threads, MG_THREAD_ITEM_REQUIRED, 'review_threads'));
+    problems.push(...mgArrayItemProblems(
+      d.review_threads, MG_THREAD_ITEM_REQUIRED, 'review_threads'));
+  }
+  if (Array.isArray(d.checks)) {
+    problems.push(...mgArrayItemProblems(d.checks, MG_CHECK_ITEM_REQUIRED, 'checks'));
   }
   return problems;
 }
 
+// I-5: clears every field a previous PR could have left behind — without
+// this, "cannot read PR" for #8 would leave #7's title/head/threads/files/
+// diff/truncation banner on screen underneath the failure message.
+function mgResetFields() {
+  document.getElementById('mg-title').textContent = '';
+  document.getElementById('mg-head').innerHTML = '';
+  document.getElementById('mg-gate').innerHTML = '';
+  document.getElementById('mg-threads').innerHTML = '';
+  document.getElementById('mg-files').innerHTML = '';
+  const diff = document.getElementById('mg-diff');
+  diff.hidden = true;
+  diff.textContent = '';
+  const trunc = document.getElementById('mg-truncation');
+  trunc.hidden = true;
+  trunc.textContent = '';
+  document.getElementById('mg-retry-sync').hidden = true;
+}
+
 function mgCannotRead(reason) {
+  mgResetFields();
   document.getElementById('mg-result').textContent = `cannot read PR: ${reason}`;
   document.getElementById('mg-merge').disabled = true;
   document.getElementById('mg-gate').innerHTML =
     '<span class="badge">unknown</span> payload not understood';
 }
 
-async function openMergeGate(repoDir, pr) {
+// `sticky`, when given, is a verdict that must survive the re-read below —
+// see the I-1 comment in the mg-merge handler for why this parameter exists.
+async function openMergeGate(repoDir, pr, sticky) {
   mgRepo = repoDir; mgPr = pr; mgHead = null;
   document.getElementById('merge-gate').hidden = false;
-  document.getElementById('mg-result').textContent = 'loading…';
+  mgResetFields();
+  document.getElementById('mg-result').textContent = sticky ?? 'loading…';
   document.getElementById('mg-merge').disabled = true;
   const res = await fetch(
     `/api/pr-detail?dir=${encodeURIComponent(repoDir)}&pr=${pr}`);
@@ -1027,6 +1081,9 @@ async function openMergeGate(repoDir, pr) {
     return;
   }
   renderMergeGate(outcome.pr_detail);
+  // renderMergeGate always clears mg-result on success; restore the sticky
+  // verdict so it isn't wiped the moment the re-read settles (I-1).
+  if (sticky) document.getElementById('mg-result').textContent = sticky;
 }
 
 function renderMergeGate(d) {
@@ -1077,11 +1134,22 @@ function renderMergeGate(d) {
 }
 
 document.getElementById('mg-open-gate').addEventListener('click', () => {
-  const pr = Number(document.getElementById('mg-pr-input').value);
   // No project-card PR listing exists yet to make individual PRs clickable
   // (no endpoint surfaces PR numbers per repo — see task-4-report.md); this
   // number entry is the minimal wiring into the already-selected project.
-  if (!mgEntryRepo || !Number.isInteger(pr) || pr <= 0) return;
+  const errorSpan = document.getElementById('mg-open-gate-error');
+  if (!mgEntryRepo) {
+    // M-4: a silent no-op looks like a dead button — say why.
+    errorSpan.textContent =
+      'no repo directory known — select a detected project card first';
+    return;
+  }
+  const pr = Number(document.getElementById('mg-pr-input').value);
+  if (!Number.isInteger(pr) || pr <= 0) {
+    errorSpan.textContent = 'enter a positive PR number';
+    return;
+  }
+  errorSpan.textContent = '';
   openMergeGate(mgEntryRepo, pr);
 });
 
@@ -1090,59 +1158,92 @@ document.getElementById('mg-merge').addEventListener('click', async () => {
   const result = document.getElementById('mg-result');
   button.disabled = true;
   result.textContent = 'merging…';
-  const token = await ensureActionToken();
-  const res = await fetch('/api/actions/merge-and-sync', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json', 'X-Action-Token': token},
-    body: JSON.stringify({dir: mgRepo, pr: mgPr, if_head: mgHead}),
-  });
-  const outcome = await res.json();
-  if (res.status === 409) { result.textContent =
-    'another action is in flight for this repo'; button.disabled = false; return; }
-  // `merged` is three-valued (Task 2's ActionOutcome): true / false / null.
-  // null means the gate call transport-failed (timeout, missing binary,
-  // unparseable output) — we never learned whether it merged, so it must
-  // never be shown as "not merged". Check null explicitly; do not fold it
-  // into the falsy branch below.
-  if (outcome.merged === null || outcome.merged === undefined) {
-    result.textContent = `unknown — check the PR: ${outcome.error || 'no answer from the gate'}`;
+  // I-3: wrap the whole request — a dead server or a plain-text 500 rejects
+  // res.json() and must not leave Merge disabled forever with the screen
+  // stuck on "merging…" until reload. Same convention as the sync-hosts
+  // action handler above: an error re-enables the button.
+  try {
+    const token = await ensureActionToken();
+    const res = await fetch('/api/actions/merge-and-sync', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-Action-Token': token},
+      body: JSON.stringify({dir: mgRepo, pr: mgPr, if_head: mgHead}),
+    });
+    if (res.status === 409) {
+      result.textContent = 'another action is in flight for this repo';
+      button.disabled = false;
+      return;
+    }
+    const outcome = await res.json();
+    // I-2: an HTTP-level rejection (403 stale action token, 422 rejected
+    // dir, ...) never reached github-checker — the request itself was
+    // refused, not the gate. Folding that into the merged tri-state would
+    // report "unknown — check the PR" for something that never ran. Nothing
+    // changed, so this does not re-fetch the gate either.
+    if (!res.ok) {
+      result.textContent =
+        `request rejected: ${outcome.detail ?? `HTTP ${res.status}`}`;
+      button.disabled = false;
+      return;
+    }
+    // `merged` is three-valued (Task 2's ActionOutcome): true / false / null.
+    // null means the gate call transport-failed (timeout, missing binary,
+    // unparseable output) — we never learned whether it merged, so it must
+    // never be shown as "not merged". Check null explicitly; do not fold it
+    // into the falsy branch below.
+    if (outcome.merged === null || outcome.merged === undefined) {
+      // I-1: pass the verdict through openMergeGate as a STICKY message —
+      // renderMergeGate always clears mg-result on success, which used to
+      // wipe this exact signal the moment the re-read settled.
+      const sticky =
+        `unknown — check the PR: ${outcome.error || 'no answer from the gate'}`;
+      button.disabled = false;
+      await openMergeGate(mgRepo, mgPr, sticky);
+      return;
+    }
+    if (!outcome.merged) {
+      // ворота могли закрыться между чтением экрана и кликом — это норма
+      const sticky = `not merged: ${
+        (outcome.gate_failed || []).join(', ') || outcome.error || 'refused'}`;
+      button.disabled = false;
+      await openMergeGate(mgRepo, mgPr, sticky);
+      return;
+    }
+    if (outcome.local_sync === 'failed') {
+      result.textContent =
+        `PR merged; local sync needs attention: ${outcome.error || 'unknown'}`;
+      document.getElementById('mg-retry-sync').hidden = false;
+      return;
+    }
+    result.textContent = outcome.local_sync === 'not_applicable'
+      ? 'PR merged (no local clone to sync)'
+      : 'PR merged and local clone synced';
+  } catch (err) {
+    result.textContent = `merge request failed: ${err} — unknown, check the PR`;
     button.disabled = false;
-    await openMergeGate(mgRepo, mgPr);
-    return;
   }
-  if (!outcome.merged) {
-    // ворота могли закрыться между чтением экрана и кликом — это норма
-    result.textContent = `not merged: ${
-      (outcome.gate_failed || []).join(', ') || outcome.error || 'refused'}`;
-    button.disabled = false;
-    await openMergeGate(mgRepo, mgPr);
-    return;
-  }
-  if (outcome.local_sync === 'failed') {
-    result.textContent =
-      `PR merged; local sync needs attention: ${outcome.error || 'unknown'}`;
-    document.getElementById('mg-retry-sync').hidden = false;
-    return;
-  }
-  result.textContent = outcome.local_sync === 'not_applicable'
-    ? 'PR merged (no local clone to sync)'
-    : 'PR merged and local clone synced';
 });
 
 document.getElementById('mg-retry-sync').addEventListener('click', async () => {
   const result = document.getElementById('mg-result');
   result.textContent = 'syncing…';
-  const token = await ensureActionToken();
-  const res = await fetch('/api/actions/post-merge-sync', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json', 'X-Action-Token': token},
-    body: JSON.stringify({dir: mgRepo}),
-  });
-  const outcome = await res.json();
-  result.textContent = outcome.ok
-    ? 'local clone synced'
-    : `local sync still failing: ${outcome.error || 'unknown'}`;
-  document.getElementById('mg-retry-sync').hidden = outcome.ok;
+  // I-3: same wrap as mg-merge — a rejected fetch/json() must not leave the
+  // screen stuck on "syncing…" with no way to tell what happened.
+  try {
+    const token = await ensureActionToken();
+    const res = await fetch('/api/actions/post-merge-sync', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-Action-Token': token},
+      body: JSON.stringify({dir: mgRepo}),
+    });
+    const outcome = await res.json();
+    result.textContent = outcome.ok
+      ? 'local clone synced'
+      : `local sync still failing: ${outcome.error ?? outcome.detail ?? 'unknown'}`;
+    document.getElementById('mg-retry-sync').hidden = outcome.ok;
+  } catch (err) {
+    result.textContent = `local sync request failed: ${err}`;
+  }
 });
 
 refresh();

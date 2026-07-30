@@ -984,6 +984,22 @@ async def test_post_merge_sync_endpoint_retries_the_local_half(
         assert resp.json()["local_sync"] == "ok"
 
 
+def _isinstance_strict(value: object, expected: type | tuple[type, ...]) -> bool:
+    """Like `isinstance`, but a `bool` never satisfies a plain `int` check.
+
+    Python's `bool` is an `int` subclass, so plain `isinstance(True, int)` is
+    True — but JS's `Number.isInteger(true)` is False. Without this, the two
+    mirrors (this file's dicts and `MG_REQUIRED`/`MG_FILE_ITEM_REQUIRED` in
+    index.html) would silently mean different things for every int-typed
+    field (M-2), and a real `additions: true` would pass here but fail there.
+    """
+    if isinstance(value, bool):
+        expected_types = expected if isinstance(expected, tuple) else (expected,)
+        if bool not in expected_types:
+            return False
+    return isinstance(value, expected)
+
+
 # Mirrors MG_REQUIRED in index.html at BOTH levels: top-level fields here,
 # plus PR_DETAIL_FILE_ITEM_REQUIRED / PR_DETAIL_THREAD_ITEM_REQUIRED further
 # down mirror MG_FILE_ITEM_REQUIRED / MG_THREAD_ITEM_REQUIRED for what's
@@ -1039,6 +1055,14 @@ PR_DETAIL_THREAD_ITEM_NULLABLE: dict[str, type | tuple[type, ...]] = {
     "excerpt": str,
 }
 
+# Mirrors MG_CHECK_ITEM_REQUIRED in index.html (I-4): `checks` was the one
+# array the item-level sweep missed — MG_PREDICATES reads `c.state` on every
+# entry with no guard, so `checks: [null]` passed validation and then threw
+# mid-render in the JS, past the "cannot read PR" branch entirely.
+PR_DETAIL_CHECK_ITEM_REQUIRED: dict[str, type | tuple[type, ...]] = {
+    "state": str,
+}
+
 
 def _item_shape_problems(
     items: list[Any],
@@ -1058,13 +1082,13 @@ def _item_shape_problems(
         problems += [
             f"{label}[{i}].{key} missing or wrong type"
             for key, expected in required.items()
-            if not isinstance(item.get(key), expected)
+            if not _isinstance_strict(item.get(key), expected)
         ]
         problems += [
             f"{label}[{i}].{key} missing or wrong type"
             for key, expected in nullable.items()
             if key not in item
-            or not (item[key] is None or isinstance(item[key], expected))
+            or not (item[key] is None or _isinstance_strict(item[key], expected))
         ]
     return problems
 
@@ -1094,8 +1118,13 @@ def test_real_pr_detail_payload_has_every_field_the_console_reads() -> None:
     missing = [
         key
         for key, expected in PR_DETAIL_REQUIRED.items()
-        if not isinstance(detail.get(key), expected)
+        if not _isinstance_strict(detail.get(key), expected)
     ]
+    # M-1: mirrors the URL-scheme guard on MG_REQUIRED's `url` predicate —
+    # esc() blocks attribute breakout, not the scheme, so a `javascript:`
+    # URL from the passthrough would render as a live link.
+    if isinstance(detail.get("url"), str) and not detail["url"].startswith("https://"):
+        missing.append("url")
     # Nullable fields: the KEY must exist, and its value must be null or the
     # expected type. `.get()` would conflate "absent" with "null" — which for
     # review_decision is the difference between "cannot read" and "no review
@@ -1104,7 +1133,7 @@ def test_real_pr_detail_payload_has_every_field_the_console_reads() -> None:
         key
         for key, expected in PR_DETAIL_NULLABLE.items()
         if key not in detail
-        or not (detail[key] is None or isinstance(detail[key], expected))
+        or not (detail[key] is None or _isinstance_strict(detail[key], expected))
     ]
     # Item-level checks only make sense once the container is confirmed a
     # real list — the PR_DETAIL_REQUIRED check above already gates that, but
@@ -1119,6 +1148,10 @@ def test_real_pr_detail_payload_has_every_field_the_console_reads() -> None:
             "review_threads",
             PR_DETAIL_THREAD_ITEM_REQUIRED,
             PR_DETAIL_THREAD_ITEM_NULLABLE,
+        )
+    if isinstance(detail.get("checks"), list):
+        missing += _item_shape_problems(
+            detail["checks"], "checks", PR_DETAIL_CHECK_ITEM_REQUIRED
         )
     assert missing == [], f"github-checker payload no longer provides: {missing}"
 
