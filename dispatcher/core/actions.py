@@ -1,10 +1,17 @@
-"""Sync whitelist actions: pull / open-pr, delegated to github-checker (DESIGN-204).
+"""Sync + merge-gate actions, delegated to github-checker (DESIGN-204).
 
 This module never writes file content itself — it shells out to the shipped
 github-checker headless commands (`pull` is ff-only by construction, `open-pr`
 never pushes; github-checker#8). Guards here implement the design's word:
 explicit human action only, one in-flight action per repo, an audit line for
 every attempt.
+
+`merge_and_sync` composes `merge` and `post-merge-sync` under a single lock
+hold — the two steps must not let another action wedge into the gap between
+merging and re-syncing the local clone. `ok` follows `merged`, not the local
+sync: a merged PR is finished work regardless of whether the clone afterwards
+refuses to update, and unlike the merge itself, a bad sync can be retried.
+`pr_detail` is a read and takes no lock.
 
 A second, independent action class — content-PR actions, where dispatcher
 itself renders a scoped diff before handing off to github-checker — lives in
@@ -132,13 +139,17 @@ class ActionRunner:
     def _audit_outcome(
         self, action: str, repo_dir: str, outcome: ActionOutcome
     ) -> None:
+        # merged/local_sync only carry meaning for the merge-gate composite;
+        # a plain pull/open-pr line stays exactly as terse as before it existed
+        merge_fields = ""
+        if outcome.merged is not None or outcome.local_sync is not None:
+            merge_fields = f" merged={outcome.merged} local_sync={outcome.local_sync}"
         _audit.info(
-            "action=%s repo=%s ok=%s merged=%s local_sync=%s detail=%s error=%s",
+            "action=%s repo=%s ok=%s%s detail=%s error=%s",
             action,
             repo_dir,
             outcome.ok,
-            outcome.merged,
-            outcome.local_sync,
+            merge_fields,
             outcome.detail,
             outcome.error,
         )
@@ -177,3 +188,54 @@ class ActionRunner:
             gate_failed=data.get("gate_failed"),
             pr_detail=data.get("pr_detail"),
         )
+
+    def merge_and_sync(self, repo_dir: str, pr: int, if_head: str) -> ActionOutcome:
+        """Merge one PR and re-sync the clone, holding the repo lock throughout.
+
+        `ok` follows `merged`: a merged PR is finished work even when the local
+        sync afterwards refuses, and it cannot be retried — the warning rides on
+        `local_sync` instead of flipping the operation to failed.
+        """
+        with self._hold("merge-and-sync", repo_dir) as target:
+            merge = self._invoke("merge", target, str(pr), "--if-head", if_head)
+            self._audit_outcome("merge", repo_dir, merge)
+            if not merge.ok:
+                merge.action = "merge-and-sync"
+                merge.merged = False
+                merge.local_sync = "not_attempted"
+                self._audit_outcome("merge-and-sync", repo_dir, merge)
+                return merge
+            sync = self._invoke("post-merge-sync", target)
+            self._audit_outcome("post-merge-sync", repo_dir, sync)
+
+        outcome = ActionOutcome(
+            action="merge-and-sync",
+            dir=merge.dir,
+            ok=True,  # == merged
+            merged=True,
+            local_sync=sync.local_sync or ("ok" if sync.ok else "failed"),
+            detail=merge.detail,
+            error=sync.error,
+            pr_url=merge.pr_url,
+            branch=sync.branch,
+            local_behind=sync.local_behind,
+            local_dirty=sync.local_dirty,
+        )
+        self._audit_outcome("merge-and-sync", repo_dir, outcome)
+        return outcome
+
+    def pr_detail(self, repo_dir: str, pr: int) -> ActionOutcome:
+        """Read one PR through github-checker. A read takes no lock."""
+        try:
+            target = self._target(repo_dir)
+        except ActionRejectedError as err:
+            _audit.info(
+                "action=pr-detail repo=%s pr=%s ok=False rejected=%s",
+                repo_dir,
+                pr,
+                err,
+            )
+            raise
+        outcome = self._invoke("pr-detail", target, str(pr))
+        _audit.info("action=pr-detail repo=%s pr=%s ok=%s", repo_dir, pr, outcome.ok)
+        return outcome
