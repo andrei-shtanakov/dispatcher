@@ -2,16 +2,22 @@
 
 This module never writes file content itself — it shells out to the shipped
 github-checker headless commands (`pull` is ff-only by construction, `open-pr`
-never pushes; github-checker#8). Guards here implement the design's word:
-explicit human action only, one in-flight action per repo, an audit line for
-every attempt.
+never pushes; github-checker#8). `merge` is constrained the same way but by a
+different mechanism: github-checker's own fail-closed gate refuses anything
+not clean, and `merge` is absent from `_WHITELIST`, so it is reachable only
+through `merge_and_sync`, never through `run()`. Guards here implement the
+design's word: explicit human action only, one in-flight action per repo, an
+audit line for every attempt.
 
 `merge_and_sync` composes `merge` and `post-merge-sync` under a single lock
 hold — the two steps must not let another action wedge into the gap between
 merging and re-syncing the local clone. `ok` follows `merged`, not the local
 sync: a merged PR is finished work regardless of whether the clone afterwards
-refuses to update, and unlike the merge itself, a bad sync can be retried.
-`pr_detail` is a read and takes no lock.
+refuses to update, and unlike the merge itself, a bad sync can be retried. A
+failed merge leaves `merged` at whatever `_invoke` established: `False` for a
+parsed gate refusal, `None` when we never got a readable answer at all (a
+transport failure) — collapsing that into `False` would claim a certainty we
+don't have. `pr_detail` is a read and takes no lock.
 
 A second, independent action class — content-PR actions, where dispatcher
 itself renders a scoped diff before handing off to github-checker — lives in
@@ -194,14 +200,21 @@ class ActionRunner:
 
         `ok` follows `merged`: a merged PR is finished work even when the local
         sync afterwards refuses, and it cannot be retried — the warning rides on
-        `local_sync` instead of flipping the operation to failed.
+        `local_sync` instead of flipping the operation to failed. On a failed
+        merge, `merged` is `False` only when github-checker actually answered
+        (a parsed gate refusal); a transport failure leaves it `None` — unknown,
+        not a claimed non-merge.
         """
         with self._hold("merge-and-sync", repo_dir) as target:
             merge = self._invoke("merge", target, str(pr), "--if-head", if_head)
             self._audit_outcome("merge", repo_dir, merge)
             if not merge.ok:
                 merge.action = "merge-and-sync"
-                merge.merged = False
+                # merge.merged is left as _invoke set it: False for a parsed
+                # gate refusal (github-checker read the PR and said no), None
+                # for a transport failure (timeout/missing binary/unparseable
+                # output) — we never learned whether it merged, so it stays
+                # unknown rather than a claimed False
                 merge.local_sync = "not_attempted"
                 self._audit_outcome("merge-and-sync", repo_dir, merge)
                 return merge

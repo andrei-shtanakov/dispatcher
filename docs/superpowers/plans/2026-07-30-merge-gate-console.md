@@ -295,6 +295,7 @@ git commit -m "refactor(actions): lock-span context manager and merge outcome fi
 | `merged` | `local_sync` | `ok` | Meaning |
 |----------|--------------|------|---------|
 | `False` | `not_attempted` | `False` | gate refused or remote rejected; nothing mutated |
+| `None` | `not_attempted` | `False` | transport failure (timeout/missing binary/unparseable output); whether it merged is genuinely unknown |
 | `True` | `ok` | `True` | green path |
 | `True` | `failed` | **`True`** | PR is merged; the local clone needs attention |
 | `True` | `not_applicable` | `True` | no local clone; nothing to sync |
@@ -303,6 +304,12 @@ git commit -m "refactor(actions): lock-span context manager and merge outcome fi
 `False`: callers and the audit log would then read a merged PR as unfinished work,
 and a merged PR cannot be retried. The `local_sync` field carries that warning
 instead.
+
+`merged=False` and `merged=None` are not interchangeable on a failed merge:
+`False` means github-checker actually answered — a parsed gate refusal — while
+`None` means we never got a readable answer at all, so we don't get to claim
+the PR didn't land. Consumers (Tasks 3-4) must render `merged=None` as
+"unknown — check the PR", never as "not merged".
 
 `pr_detail` takes **no lock** — it is a read, and a read must not queue behind an
 in-flight action or block one.

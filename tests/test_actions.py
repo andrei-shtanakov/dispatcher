@@ -2,6 +2,8 @@
 
 import subprocess
 import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,16 @@ from dispatcher.core.actions import (
     ActionRunner,
 )
 from dispatcher.core.discovery import DispatcherConfig
+
+
+def _wait_for(flag: Path, message: str, timeout: float = 10.0) -> None:
+    """Poll for a flag file; fail with a legible message instead of hanging
+    forever when the thing we're waiting on never shows up."""
+    deadline = time.monotonic() + timeout
+    while not flag.exists():
+        if time.monotonic() > deadline:
+            pytest.fail(message)
+        time.sleep(0.01)
 
 
 def _git(path: Path, *args: str) -> None:
@@ -317,24 +329,97 @@ def test_merged_but_sync_failed_is_not_reported_as_failure(tmp_path: Path) -> No
     assert "dirty" in (outcome.error or "")
 
 
-def test_lock_is_held_across_both_steps(tmp_path: Path) -> None:
-    """Nothing may wedge between merge and post-merge-sync."""
+def test_no_local_clone_reports_not_applicable(tmp_path: Path) -> None:
+    """Outcome-table row 4: no local clone to sync is still a green merge."""
     make_repo(tmp_path, "alpha")
-    started = threading.Event()
-    release = threading.Event()
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)),
+        command=scripted_checker(
+            tmp_path,
+            {
+                "merge": {
+                    "action": "merge",
+                    "dir": "alpha",
+                    "ok": True,
+                    "merged": True,
+                },
+                "post-merge-sync": {
+                    "action": "post-merge-sync",
+                    "dir": "alpha",
+                    "ok": True,
+                    "local_sync": "not_applicable",
+                },
+            },
+        ),
+    )
+    outcome = runner.merge_and_sync("alpha", 7, HEAD)
+    assert outcome.merged is True
+    assert outcome.local_sync == "not_applicable"
+    assert outcome.ok is True
+
+
+def test_transport_failure_leaves_merged_unknown(tmp_path: Path) -> None:
+    """A missing binary means we never learned whether the merge landed.
+
+    `merged` must stay `None` (unknown), never `False` — `False` claims a
+    confirmed non-merge, which is exactly the fact we don't have.
+    """
+    make_repo(tmp_path, "alpha")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("no-such-binary-xyz",)
+    )
+    outcome = runner.merge_and_sync("alpha", 7, HEAD)
+    assert outcome.ok is False
+    assert outcome.merged is None
+    assert outcome.local_sync == "not_attempted"
+
+
+def test_lock_is_held_across_both_steps(tmp_path: Path, monkeypatch) -> None:
+    """The composite must take the repo lock exactly once, across both steps.
+
+    Proven two ways:
+    * structurally — `_hold` is wrapped to count entries; a two-`_hold`
+      implementation (release between merge and sync) shows up as 2, not 1.
+    * behaviourally — the fake blocks inside BOTH the merge and the
+      post-merge-sync subprocess calls, and a concurrent `pull` must still
+      get `ActionBusyError` while blocked in either one.
+    """
+    make_repo(tmp_path, "alpha")
+    hold_entries: list[str] = []
+    original_hold = ActionRunner._hold
+
+    @contextmanager
+    def counting_hold(self, action, repo_dir):
+        # only append on a SUCCESSFUL acquisition — a busy-rejected `pull`
+        # must not count towards the composite's own hold tally
+        with original_hold(self, action, repo_dir) as target:
+            hold_entries.append(action)
+            yield target
+
+    monkeypatch.setattr(ActionRunner, "_hold", counting_hold)
+
+    in_merge = tmp_path / "in_merge"
+    in_sync = tmp_path / "in_sync"
+    go_merge = tmp_path / "go_merge"
+    go_sync = tmp_path / "go_sync"
     script = tmp_path / "blocking_checker.py"
     script.write_text(
         "import sys, json, pathlib, time\n"
-        f"flag = pathlib.Path({str(tmp_path / 'in_merge')!r})\n"
-        f"gate = pathlib.Path({str(tmp_path / 'go')!r})\n"
+        f"in_merge = pathlib.Path({str(in_merge)!r})\n"
+        f"in_sync = pathlib.Path({str(in_sync)!r})\n"
+        f"go_merge = pathlib.Path({str(go_merge)!r})\n"
+        f"go_sync = pathlib.Path({str(go_sync)!r})\n"
         "action = sys.argv[1]\n"
         "if action == 'merge':\n"
-        "    flag.touch()\n"
-        "    while not gate.exists():\n"
+        "    in_merge.touch()\n"
+        "    while not go_merge.exists():\n"
         "        time.sleep(0.01)\n"
         "    json.dump({'action':'merge','dir':'alpha','ok':True,'merged':True},"
         " sys.stdout)\n"
         "else:\n"
+        "    in_sync.touch()\n"
+        "    while not go_sync.exists():\n"
+        "        time.sleep(0.01)\n"
         "    json.dump({'action':'post-merge-sync','dir':'alpha','ok':True,"
         "'local_sync':'ok'}, sys.stdout)\n"
     )
@@ -346,14 +431,21 @@ def test_lock_is_held_across_both_steps(tmp_path: Path) -> None:
         target=lambda: result.append(runner.merge_and_sync("alpha", 7, HEAD))
     )
     worker.start()
-    while not (tmp_path / "in_merge").exists():
-        started.wait(0.01)
+
+    _wait_for(in_merge, "worker never entered the merge step")
     with pytest.raises(ActionBusyError):
         runner.run("pull", "alpha")
-    (tmp_path / "go").touch()
+    go_merge.touch()
+
+    _wait_for(in_sync, "worker never entered the post-merge-sync step")
+    with pytest.raises(ActionBusyError):
+        runner.run("pull", "alpha")
+    go_sync.touch()
+
     worker.join(timeout=10)
-    release.set()
+    assert not worker.is_alive(), "merge_and_sync worker did not finish in time"
     assert result[0].ok is True
+    assert hold_entries == ["merge-and-sync"]  # exactly one hold, not two
     runner.run("pull", "alpha")  # lock released once the composite finished
 
 
@@ -373,6 +465,51 @@ def test_pr_detail_passes_through_without_taking_the_lock(tmp_path: Path) -> Non
     assert outcome.pr_detail is not None
     assert outcome.pr_detail["number"] == 7
     assert runner._busy == set()
+
+
+def test_pr_detail_succeeds_while_a_composite_is_in_flight(tmp_path: Path) -> None:
+    """`pr_detail` must not queue behind an in-flight merge_and_sync.
+
+    Proven by actually calling it while one is genuinely blocked mid-merge —
+    checking `_busy` only after the composite finishes would pass even if
+    `pr_detail` silently waited its turn first.
+    """
+    make_repo(tmp_path, "alpha")
+    in_merge = tmp_path / "in_merge"
+    go = tmp_path / "go"
+    script = tmp_path / "blocking_merge.py"
+    script.write_text(
+        "import sys, json, pathlib, time\n"
+        f"flag = pathlib.Path({str(in_merge)!r})\n"
+        f"gate = pathlib.Path({str(go)!r})\n"
+        "action = sys.argv[1]\n"
+        "if action == 'merge':\n"
+        "    flag.touch()\n"
+        "    while not gate.exists():\n"
+        "        time.sleep(0.01)\n"
+        "    json.dump({'action':'merge','dir':'alpha','ok':True,'merged':True},"
+        " sys.stdout)\n"
+        "elif action == 'pr-detail':\n"
+        "    json.dump({'action':'pr-detail','dir':'alpha','ok':True,"
+        "'pr_detail':{'number':7}}, sys.stdout)\n"
+        "else:\n"
+        "    json.dump({'action':'post-merge-sync','dir':'alpha','ok':True,"
+        "'local_sync':'ok'}, sys.stdout)\n"
+    )
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
+    )
+    worker = threading.Thread(target=runner.merge_and_sync, args=("alpha", 7, HEAD))
+    worker.start()
+    _wait_for(in_merge, "worker never entered the merge step")
+
+    assert runner._busy == {"alpha"}  # the repo really is held right now
+    outcome = runner.pr_detail("alpha", 7)  # must succeed anyway, no queueing
+    assert outcome.ok is True
+
+    go.touch()
+    worker.join(timeout=10)
+    assert not worker.is_alive(), "merge_and_sync worker did not finish in time"
 
 
 def test_pr_detail_still_validates_the_repo_dir(tmp_path: Path) -> None:
