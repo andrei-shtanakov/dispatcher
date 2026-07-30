@@ -4,9 +4,10 @@ Read-heavy dashboard and guarded action surface for the AI-orchestrators
 ecosystem (atp-platform, Maestro, arbiter, spec-runner, proctor). It reads
 on-disk artifacts directly — monitored projects don't need to be running or
 even installed; missing ones simply don't show up. Mutations are limited to a
-narrow, human-click-gated, PR-only whitelist (sync `pull`/`create-pr` +
-spec-runner config editor, all delegated to `github-checker`; dispatcher
-itself never pushes or merges).
+narrow, human-click-gated, PR-only whitelist (sync `pull`/`create-pr`, the
+merge gate, and the spec-runner config editor, all delegated to
+`github-checker`; dispatcher itself never talks to the GitHub API, and never
+merges without an explicit human click).
 
 ## Run
 
@@ -81,6 +82,44 @@ rejects non-object values (arrays, scalars, null); schema validation runs
 server-side when you click "Confirm & open PR", returning a 422 error list
 if the overlay violates the executor-config contract. The Terminal UI and
 VSCode extension keep `extra_executor_config` read-only.
+
+## Merge gate
+
+From a project's detail panel, enter a PR number and open its merge gate —
+there is no PR list to click through; the collector's read model carries
+GitHub state only as an opaque payload, with no per-repo PR listing endpoint
+(see `TODO.md`'s `merge-gate-pr-listing` item for the follow-up that would add
+one). Opening the gate reads the PR through `github-checker pr-detail`: title,
+head SHA, checks, review threads, changed files, and diff (large PRs show a
+truncation warning alongside the partial list). It also shows github-checker's
+own **nine-predicate gate** — `open`, `not-draft`, `mergeable`,
+`checks-green`, `checks-complete`, `approvals`, `threads-resolved`,
+`threads-complete`, `squash-allowed` — and greys out the Merge button when any
+predicate fails.
+
+That greyed-out button is a convenience, not the authority: `github-checker`
+is what actually decides. Clicking Merge sends the PR's head SHA back as
+`--if-head`, and `merge` re-reads the PR and re-evaluates all nine predicates
+itself before touching anything — a push, a new red check, or a fresh review
+thread between opening the gate and clicking refuses the merge instead of
+racing it. A payload the screen cannot fully validate renders as "cannot read
+PR" with Merge disabled, never as a half-drawn or falsely-green screen.
+
+A successful click runs `github-checker merge --if-head <sha>` followed by
+`post-merge-sync`, holding the repo's action lock across both steps so no
+other action can wedge into the gap. The outcome's `merged` field is
+**three-valued**, not a boolean: `true` means it merged; `false` means
+github-checker read the PR and refused (the gate or the SHA check failed);
+`null` means the gate call itself failed — timeout, missing binary,
+unparseable output — so whether the PR merged is genuinely unknown. The UI
+never reports an unknown outcome as "not merged"; it says "unknown — check
+the PR". The composite reports whatever github-checker answered and never
+synthesizes a verdict of its own — claiming a merge it was not told about is
+the same defect as claiming a non-merge it was not told about. The composite's
+`ok` follows the merge step, not the local sync: a merged
+PR is finished work even if resyncing the clone afterwards fails, so
+`merged=true, local_sync=failed` renders as a warning with a retry button,
+never as a failed merge.
 
 ## Configure (optional `dispatcher.toml`)
 

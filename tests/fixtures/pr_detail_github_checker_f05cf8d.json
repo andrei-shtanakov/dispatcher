@@ -1,0 +1,108 @@
+{
+  "action": "pr-detail",
+  "dir": "../github-checker",
+  "ok": true,
+  "error": null,
+  "detail": null,
+  "pr_url": null,
+  "pr_state": null,
+  "local": null,
+  "branch": null,
+  "base_branch": null,
+  "commit_sha": null,
+  "changed_paths": null,
+  "merged": null,
+  "local_sync": null,
+  "gate_failed": null,
+  "pr_detail": {
+    "number": 14,
+    "title": "feat: merge-gate verbs (pr-detail, merge, post-merge-sync)",
+    "url": "https://github.com/andrei-shtanakov/github-checker/pull/14",
+    "state": "MERGED",
+    "is_draft": false,
+    "mergeable": "UNKNOWN",
+    "merge_state_status": "UNKNOWN",
+    "head_branch": "feat/merge-gate-verbs",
+    "head_sha": "d7571187c2f7348d66202dba60d517204e15da7b",
+    "base_branch": "master",
+    "review_decision": "REVIEW_REQUIRED",
+    "checks": [
+      {
+        "name": "governance / gate",
+        "state": "SUCCESS"
+      },
+      {
+        "name": "GitGuardian Security Checks",
+        "state": "SUCCESS"
+      }
+    ],
+    "checks_truncated": false,
+    "files": [
+      {
+        "path": "README.md",
+        "additions": 62,
+        "deletions": 0
+      },
+      {
+        "path": "TODO.md",
+        "additions": 10,
+        "deletions": 0
+      },
+      {
+        "path": "docs/superpowers/plans/2026-07-30-merge-gate-verbs.md",
+        "additions": 1996,
+        "deletions": 0
+      },
+      {
+        "path": "github_checker/actions.py",
+        "additions": 107,
+        "deletions": 20
+      },
+      {
+        "path": "github_checker/ghcli.py",
+        "additions": 42,
+        "deletions": 0
+      }
+    ],
+    "files_total": 19,
+    "files_truncated": true,
+    "review_threads": [
+      {
+        "id": "PRRT_kwDOTOAEAM6VGB6o",
+        "is_resolved": false,
+        "is_outdated": true,
+        "path": "github_checker/main.py",
+        "author": "copilot-pull-request-reviewer",
+        "excerpt": "`merge` refusal when `--if-head` is missing omits `local_sync`, even though other merge results consistently set `local_sync=\"not_attempted\"`. This creates an avoidable null/optional shape for a very common failure path; consumers then need extra branching for a case where the va"
+      },
+      {
+        "id": "PRRT_kwDOTOAEAM6VGB62",
+        "is_resolved": false,
+        "is_outdated": false,
+        "path": "github_checker/main.py",
+        "author": "copilot-pull-request-reviewer",
+        "excerpt": "`--file-limit` / `--diff-lines` accept negative values; those flow into slicing/limits in `prgate.pr_detail()` and produce surprising behavior (e.g. negative slices) rather than an explicit refusal. Since this is a headless JSON contract, it’s better to validate and return a fail"
+      },
+      {
+        "id": "PRRT_kwDOTOAEAM6VGB7O",
+        "is_resolved": false,
+        "is_outdated": true,
+        "path": "TODO.md",
+        "author": "copilot-pull-request-reviewer",
+        "excerpt": "В описании gate в TODO указано «за восемью предикатами» и перечисление не включает `checks-complete`, хотя в реализации/README предикатов девять (включая `checks-complete`). Это создаёт расхождение в документации прямо рядом с завершённым пунктом."
+      },
+      {
+        "id": "PRRT_kwDOTOAEAM6VGK9R",
+        "is_resolved": false,
+        "is_outdated": false,
+        "path": "github_checker/prgate.py",
+        "author": "copilot-pull-request-reviewer",
+        "excerpt": "`is_draft` is derived from `bool(data.get(\"isDraft\"))`. If the `isDraft` key is missing from the JSON (malformed/partial payload), this evaluates to `False` and can incorrectly pass the `not-draft` predicate, which is a fail-open outcome for a field the gate relies on. To keep th"
+      }
+    ],
+    "threads_truncated": false,
+    "diff": "diff --git a/README.md b/README.md\nindex 27ec091..8e47339 100644\n--- a/README.md\n+++ b/README.md\n@@ -52,6 +52,68 @@ side-effect. Выход — JSON `ActionResult`, exit 1 при неуспехе.\n",
+    "diff_truncated": true,
+    "allows_squash": true
+  }
+}

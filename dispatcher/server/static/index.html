@@ -116,6 +116,10 @@
 <section id="detail-section" hidden>
   <h2>Project detail <span id="detail-name"></span></h2>
   <div id="detail">click a project card…</div>
+  <div id="merge-gate-open"><label>PR #
+    <input id="mg-pr-input" type="number" min="1" inputmode="numeric"></label>
+    <button id="mg-open-gate" type="button">Open merge gate</button>
+    <span id="mg-open-gate-error" class="fresh"></span></div>
   <div id="spec-runner-config" hidden>
     <h3>Spec-runner config</h3>
     <form id="spec-runner-config-form"></form>
@@ -136,6 +140,19 @@
     <span id="spec-runner-config-result"></span>
     <div id="suggest-dropped" class="fresh"></div>
   </div>
+</section>
+
+<section id="merge-gate" hidden>
+  <h2>Merge gate <span id="mg-title" class="sub"></span></h2>
+  <div id="mg-head" class="fresh"></div>
+  <div id="mg-gate" class="fresh"></div>
+  <div id="mg-threads" class="fresh"></div>
+  <div id="mg-files" class="fresh"></div>
+  <pre id="mg-diff" hidden></pre>
+  <div id="mg-truncation" class="fresh" hidden></div>
+  <button id="mg-merge" type="button" disabled>Merge</button>
+  <button id="mg-retry-sync" type="button" hidden>Retry local sync</button>
+  <span id="mg-result"></span>
 </section>
 
 <section><details id="errors-box">
@@ -203,7 +220,7 @@ document.getElementById("projects").addEventListener("click", e => {
   renderErrorsFilter();
   document.getElementById("errors-box").open = true;
   refresh();
-  detail(card.dataset.name);
+  detail(card.dataset.name, card.dataset.dir || null);
 });
 
 document.getElementById("errors-filter").addEventListener("click", e => {
@@ -376,7 +393,13 @@ async function refresh() {
     renderSummary(summary);
     document.getElementById("projects").innerHTML = ov.projects.map(p => `
       <div class="card ${p.detected ? "" : "off"}"
-           ${p.detected ? `data-name="${esc(p.name)}"` : ""}>
+           ${p.detected
+             // data-dir is the ON-DISK clone dirname (from p.path's basename),
+             // NOT p.name — p.name is a display name that can differ from the
+             // real directory (e.g. collector "Maestro" vs clone dir "maestro"),
+             // and actions._target() resolves dir names, not display names.
+             ? `data-name="${esc(p.name)}" data-dir="${esc(mgDirBasename(p.path))}"`
+             : ""}>
         <h2>${esc(p.name)}</h2>
         ${p.detected
           ? `<div class="counts">tasks ${esc(p.counts.tasks ?? 0)} ·
@@ -541,9 +564,15 @@ function renderOnboarding(ob) {
   return desc + position + next + live + warn;
 }
 
-async function detail(name) {
+async function detail(name, dirName) {
   const section = document.getElementById("detail-section");
   section.hidden = false;
+  // I-6: dirName is the on-disk clone directory (from data-dir), NOT `name`
+  // (a display name) — actions._target() needs the former.
+  mgEntryRepo = dirName || null;
+  // I-5: a stale gate for the PREVIOUS project must not sit under this
+  // project's panel; openMergeGate() clears its own fields on next open.
+  document.getElementById("merge-gate").hidden = true;
   document.getElementById("detail-name").textContent = "— " + name;
   document.getElementById("detail").textContent = "loading…";
   try {
@@ -864,6 +893,375 @@ document.getElementById("spec-runner-config-suggest")
   .addEventListener("click", suggestValues);
 document.getElementById("spec-runner-config-suggest-cancel")
   .addEventListener("click", cancelSuggest);
+
+// `p.path`'s basename, i.e. the actual clone directory — see the data-dir
+// comment at the project-card template for why this must not be p.name.
+const mgDirBasename = path => (path ?? "").split("/").filter(Boolean).pop() ?? "";
+
+let mgEntryRepo = null, mgRepo = null, mgPr = null, mgHead = null;
+
+// Mirrors github-checker's evaluate_gate — NINE predicates, same names, same
+// order. Kept in sync by hand; see the drift warning under this block.
+const MG_PREDICATES = [
+  ['open',             d => d.state === 'OPEN'],
+  ['not-draft',        d => d.is_draft === false],
+  ['mergeable',        d => d.mergeable === 'MERGEABLE'],
+  ['checks-green',     d => (d.checks || []).every(
+                            c => ['SUCCESS','NEUTRAL','SKIPPED'].includes(c.state))],
+  ['checks-complete',  d => d.checks_truncated !== true],
+  ['approvals',        d => d.review_decision == null
+                            || d.review_decision === 'APPROVED'],
+  ['threads-resolved', d => (d.review_threads || []).every(t => t.is_resolved)],
+  ['threads-complete', d => d.threads_truncated !== true],
+  ['squash-allowed',   d => d.allows_squash === true],
+];
+
+// `pr_detail` is an unvalidated passthrough from github-checker (see the
+// provisional-adapter constraints in File Structure). Check presence AND type
+// of everything the screen reads, before reading it. A payload we cannot fully
+// understand renders as "cannot read PR" with Merge disabled — never as a
+// half-drawn screen, and never as a green gate: what cannot be read is not
+// clean. Note `checks_truncated`/`threads_truncated` are NOT required here —
+// their absence means "not truncated", which is the safe reading, and the
+// predicates already treat only `=== true` as blocking.
+//
+// MUST MOVE TOGETHER with tests/test_api.py at BOTH levels — same field
+// names, same nullable split. Top-level fields here mirror
+// PR_DETAIL_REQUIRED / PR_DETAIL_NULLABLE; array-ITEM shape
+// (MG_FILE_ITEM_REQUIRED / MG_THREAD_ITEM_REQUIRED further down) mirrors
+// PR_DETAIL_FILE_ITEM_REQUIRED / PR_DETAIL_THREAD_ITEM_REQUIRED /
+// PR_DETAIL_THREAD_ITEM_NULLABLE. That file is checked against a real
+// captured github-checker payload; this one is not, so a divergence here
+// would only be caught by eye.
+const MG_REQUIRED = [
+  ['number',       v => Number.isInteger(v)],
+  ['title',        v => typeof v === 'string'],
+  // M-1: esc() blocks attribute breakout, not the URL SCHEME — a
+  // `javascript:` URL from the passthrough would otherwise render as a live
+  // link in mg-head. Same trust boundary as the array-item security round.
+  ['url',          v => typeof v === 'string' && v.startsWith('https://')],
+  ['state',        v => typeof v === 'string'],
+  ['is_draft',     v => typeof v === 'boolean'],
+  ['mergeable',    v => typeof v === 'string'],
+  ['head_branch',  v => typeof v === 'string'],
+  ['head_sha',     v => typeof v === 'string' && v.length > 0],
+  ['base_branch',  v => typeof v === 'string'],
+  ['checks',       v => Array.isArray(v)],
+  ['files',        v => Array.isArray(v)],
+  ['review_threads', v => Array.isArray(v)],
+  // These two are legitimately null — null carries meaning, so require the key
+  // to be PRESENT and of a known type rather than requiring a value.
+  //
+  // `review_decision` is the dangerous one and the reason this pair is listed
+  // separately: its predicate passes on null (null = "this repo requires no
+  // review"), and in JS `undefined == null` is true — so a payload that simply
+  // lost the field would pass `approvals` as though no review were required.
+  // Requiring presence here turns that into "cannot read PR".
+  //
+  // `allows_squash` is already safe by construction (its predicate demands
+  // `=== true`, so a missing field blocks) — it is listed anyway so a missing
+  // field reports the real reason instead of a confusing `squash-allowed`
+  // refusal on a repo where squash is in fact allowed.
+  ['review_decision', v => v === null || typeof v === 'string'],
+  ['allows_squash',   v => v === null || typeof v === 'boolean'],
+];
+
+// Array CONTAINERS are validated by MG_REQUIRED above (`files`/`review_threads`
+// must be arrays); these validate what's INSIDE them. `files[].additions` /
+// `files[].deletions` are also esc()'d at render time now (see the comment by
+// `mg-files` below), but that's belt-and-braces, not a substitute for this: a
+// wrong-typed value there is a real HTML-injection shape (this was a caught
+// security finding), so a bad item must fail closed at validation time too —
+// exactly like a bad top-level field: "cannot read PR", Merge disabled.
+const MG_FILE_ITEM_REQUIRED = [
+  ['path',      v => typeof v === 'string'],
+  ['additions', v => Number.isInteger(v)],
+  ['deletions', v => Number.isInteger(v)],
+];
+
+// `is_resolved` feeds `threads-resolved` (gate-blocking); `author`/`excerpt`
+// are rendered via esc(), so a wrong type there can't inject — but an ABSENT
+// field is still an unreadable payload (same `undefined == null` reasoning
+// as `review_decision` above), so presence is required, not just type.
+const MG_THREAD_ITEM_REQUIRED = [
+  ['is_resolved', v => typeof v === 'boolean'],
+  ['author',      v => v === null || typeof v === 'string'],
+  ['excerpt',     v => v === null || typeof v === 'string'],
+];
+
+// I-4: `checks` items were the one array this validation swept past —
+// MG_PREDICATES' `checks-green` reads `c.state` on every item with no guard,
+// so `checks: [null]` passed mgPayloadProblems and then threw mid-render in
+// renderMergeGate (after the header was already drawn): a half-drawn screen
+// that never reached "cannot read PR". Same root cause as the security
+// round, just missed there.
+const MG_CHECK_ITEM_REQUIRED = [
+  ['state', v => typeof v === 'string'],
+];
+
+function mgArrayItemProblems(arr, itemRequired, label) {
+  const problems = [];
+  arr.forEach((item, i) => {
+    if (item === null || typeof item !== 'object') {
+      problems.push(`${label}[${i}] is not an object`);
+      return;
+    }
+    itemRequired.forEach(([k, ok]) => {
+      if (!ok(item[k])) problems.push(`${label}[${i}].${k} missing or wrong type`);
+    });
+  });
+  return problems;
+}
+
+function mgPayloadProblems(d) {
+  if (d === null || typeof d !== 'object') return ['pr_detail is not an object'];
+  const problems = MG_REQUIRED
+    .filter(([k, ok]) => !ok(d[k]))
+    .map(([k]) => `${k} missing or wrong type`);
+  // Item checks only make sense once the container is confirmed a real
+  // array — MG_REQUIRED above already gates that, so re-check defensively
+  // rather than assume filter-order.
+  if (Array.isArray(d.files)) {
+    problems.push(...mgArrayItemProblems(d.files, MG_FILE_ITEM_REQUIRED, 'files'));
+  }
+  if (Array.isArray(d.review_threads)) {
+    problems.push(...mgArrayItemProblems(
+      d.review_threads, MG_THREAD_ITEM_REQUIRED, 'review_threads'));
+  }
+  if (Array.isArray(d.checks)) {
+    problems.push(...mgArrayItemProblems(d.checks, MG_CHECK_ITEM_REQUIRED, 'checks'));
+  }
+  return problems;
+}
+
+// I-5: clears every field a previous PR could have left behind — without
+// this, "cannot read PR" for #8 would leave #7's title/head/threads/files/
+// diff/truncation banner on screen underneath the failure message.
+function mgResetFields() {
+  document.getElementById('mg-title').textContent = '';
+  document.getElementById('mg-head').innerHTML = '';
+  document.getElementById('mg-gate').innerHTML = '';
+  document.getElementById('mg-threads').innerHTML = '';
+  document.getElementById('mg-files').innerHTML = '';
+  const diff = document.getElementById('mg-diff');
+  diff.hidden = true;
+  diff.textContent = '';
+  const trunc = document.getElementById('mg-truncation');
+  trunc.hidden = true;
+  trunc.textContent = '';
+  document.getElementById('mg-retry-sync').hidden = true;
+}
+
+function mgCannotRead(reason) {
+  mgResetFields();
+  document.getElementById('mg-result').textContent = `cannot read PR: ${reason}`;
+  document.getElementById('mg-merge').disabled = true;
+  document.getElementById('mg-gate').innerHTML =
+    '<span class="badge">unknown</span> payload not understood';
+}
+
+// `sticky`, when given, is a verdict that must survive the re-read below —
+// see the I-1 comment in the mg-merge handler for why this parameter exists.
+async function openMergeGate(repoDir, pr, sticky) {
+  mgRepo = repoDir; mgPr = pr; mgHead = null;
+  document.getElementById('merge-gate').hidden = false;
+  mgResetFields();
+  document.getElementById('mg-result').textContent = sticky ?? 'loading…';
+  document.getElementById('mg-merge').disabled = true;
+  // I-3's convention, applied to the READ half: a dead server or a
+  // non-JSON body (starlette's plain-text 500) rejects here, and without
+  // this the screen sits on "loading…" forever while the throw escapes as
+  // an unhandled rejection. mgCannotRead keeps Merge disabled, so the read
+  // failing can never leave the button clickable.
+  let res;
+  let outcome;
+  try {
+    res = await fetch(
+      `/api/pr-detail?dir=${encodeURIComponent(repoDir)}&pr=${pr}`);
+    outcome = await res.json();
+  } catch (err) {
+    // `res` exists only if the fetch itself resolved — for a body we could
+    // not parse, the status says more than the parse error does
+    mgCannotRead(res ? `HTTP ${res.status}` : err);
+    return;
+  }
+  if (!outcome.ok || !outcome.pr_detail) {
+    mgCannotRead(outcome.error || res.status);
+    return;
+  }
+  const problems = mgPayloadProblems(outcome.pr_detail);
+  if (problems.length) {
+    mgCannotRead(problems.join('; '));
+    return;
+  }
+  renderMergeGate(outcome.pr_detail);
+  // renderMergeGate always clears mg-result on success; restore the sticky
+  // verdict so it isn't wiped the moment the re-read settles (I-1).
+  if (sticky) document.getElementById('mg-result').textContent = sticky;
+}
+
+function renderMergeGate(d) {
+  mgHead = d.head_sha;
+  document.getElementById('mg-title').textContent = `#${d.number} ${d.title}`;
+  document.getElementById('mg-head').innerHTML =
+    `<a href="${esc(d.url)}" target="_blank">${esc(d.url)}</a> · ` +
+    `${esc(d.head_branch)} → ${esc(d.base_branch)} · ${esc(d.head_sha.slice(0, 8))}`;
+
+  const failed = MG_PREDICATES.filter(([, ok]) => !ok(d)).map(([name]) => name);
+  document.getElementById('mg-gate').innerHTML = failed.length
+    ? `<span class="badge">blocked</span> ${failed.map(esc).join(', ')}`
+    : '<span class="badge">gate green</span>';
+
+  const open = (d.review_threads || []).filter(t => !t.is_resolved);
+  document.getElementById('mg-threads').innerHTML = open.length
+    ? `${open.length} unresolved thread(s): ` + open.map(
+        t => `${esc(t.author || '?')} — ${esc(t.excerpt || '')}`).join('<br>')
+    : 'no unresolved threads';
+
+  // Belt-and-braces: mgPayloadProblems already requires additions/deletions
+  // to be integers before we get here, but this line still goes through
+  // esc() rather than trusting that — esc() coerces via String() first, so
+  // it's the same guard as f.path gets, not a special case for numbers.
+  document.getElementById('mg-files').innerHTML = (d.files || []).map(
+    f => `<div>${esc(f.path)} <span class="sub">+${esc(f.additions)} ` +
+         `−${esc(f.deletions)}</span></div>`).join('');
+  const diff = document.getElementById('mg-diff');
+  diff.hidden = !d.diff;
+  diff.textContent = d.diff || '';
+
+  // threads/checks truncation also BLOCKS the merge (threads-complete /
+  // checks-complete); files/diff truncation is display-only.
+  const cuts = [];
+  if (d.files_truncated) cuts.push('file list');
+  if (d.diff_truncated) cuts.push('diff');
+  if (d.threads_truncated) cuts.push('threads (blocks merge)');
+  if (d.checks_truncated) cuts.push('checks (blocks merge)');
+  const trunc = document.getElementById('mg-truncation');
+  trunc.hidden = cuts.length === 0;
+  trunc.textContent = cuts.length
+    ? `⚠ truncated: ${cuts.join(', ')} — open the PR on GitHub for the full view`
+    : '';
+
+  document.getElementById('mg-merge').disabled = failed.length > 0;
+  document.getElementById('mg-retry-sync').hidden = true;
+  document.getElementById('mg-result').textContent = '';
+}
+
+document.getElementById('mg-open-gate').addEventListener('click', () => {
+  // No project-card PR listing exists yet to make individual PRs clickable
+  // (no endpoint surfaces PR numbers per repo — see task-4-report.md); this
+  // number entry is the minimal wiring into the already-selected project.
+  const errorSpan = document.getElementById('mg-open-gate-error');
+  if (!mgEntryRepo) {
+    // M-4: a silent no-op looks like a dead button — say why.
+    errorSpan.textContent =
+      'no repo directory known — select a detected project card first';
+    return;
+  }
+  const pr = Number(document.getElementById('mg-pr-input').value);
+  if (!Number.isInteger(pr) || pr <= 0) {
+    errorSpan.textContent = 'enter a positive PR number';
+    return;
+  }
+  errorSpan.textContent = '';
+  // fire-and-forget would turn any throw past the fetch guard (a render bug,
+  // say) into an unhandled rejection with a half-updated screen; awaiting it
+  // inside an async handler would do the same, since nobody awaits a handler
+  openMergeGate(mgEntryRepo, pr).catch(err => mgCannotRead(err));
+});
+
+document.getElementById('mg-merge').addEventListener('click', async () => {
+  const button = document.getElementById('mg-merge');
+  const result = document.getElementById('mg-result');
+  button.disabled = true;
+  result.textContent = 'merging…';
+  // I-3: wrap the whole request — a dead server or a plain-text 500 rejects
+  // res.json() and must not leave Merge disabled forever with the screen
+  // stuck on "merging…" until reload. Same convention as the sync-hosts
+  // action handler above: an error re-enables the button.
+  try {
+    const token = await ensureActionToken();
+    const res = await fetch('/api/actions/merge-and-sync', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-Action-Token': token},
+      body: JSON.stringify({dir: mgRepo, pr: mgPr, if_head: mgHead}),
+    });
+    if (res.status === 409) {
+      result.textContent = 'another action is in flight for this repo';
+      button.disabled = false;
+      return;
+    }
+    const outcome = await res.json();
+    // I-2: an HTTP-level rejection (403 stale action token, 422 rejected
+    // dir, ...) never reached github-checker — the request itself was
+    // refused, not the gate. Folding that into the merged tri-state would
+    // report "unknown — check the PR" for something that never ran. Nothing
+    // changed, so this does not re-fetch the gate either.
+    if (!res.ok) {
+      result.textContent =
+        `request rejected: ${outcome.detail ?? `HTTP ${res.status}`}`;
+      button.disabled = false;
+      return;
+    }
+    // `merged` is three-valued (Task 2's ActionOutcome): true / false / null.
+    // null means the gate call transport-failed (timeout, missing binary,
+    // unparseable output) — we never learned whether it merged, so it must
+    // never be shown as "not merged". Check null explicitly; do not fold it
+    // into the falsy branch below.
+    if (outcome.merged === null || outcome.merged === undefined) {
+      // I-1: pass the verdict through openMergeGate as a STICKY message —
+      // renderMergeGate always clears mg-result on success, which used to
+      // wipe this exact signal the moment the re-read settled.
+      const sticky =
+        `unknown — check the PR: ${outcome.error || 'no answer from the gate'}`;
+      button.disabled = false;
+      await openMergeGate(mgRepo, mgPr, sticky);
+      return;
+    }
+    if (!outcome.merged) {
+      // ворота могли закрыться между чтением экрана и кликом — это норма
+      const sticky = `not merged: ${
+        (outcome.gate_failed || []).join(', ') || outcome.error || 'refused'}`;
+      button.disabled = false;
+      await openMergeGate(mgRepo, mgPr, sticky);
+      return;
+    }
+    if (outcome.local_sync === 'failed') {
+      result.textContent =
+        `PR merged; local sync needs attention: ${outcome.error || 'unknown'}`;
+      document.getElementById('mg-retry-sync').hidden = false;
+      return;
+    }
+    result.textContent = outcome.local_sync === 'not_applicable'
+      ? 'PR merged (no local clone to sync)'
+      : 'PR merged and local clone synced';
+  } catch (err) {
+    result.textContent = `merge request failed: ${err} — unknown, check the PR`;
+    button.disabled = false;
+  }
+});
+
+document.getElementById('mg-retry-sync').addEventListener('click', async () => {
+  const result = document.getElementById('mg-result');
+  result.textContent = 'syncing…';
+  // I-3: same wrap as mg-merge — a rejected fetch/json() must not leave the
+  // screen stuck on "syncing…" with no way to tell what happened.
+  try {
+    const token = await ensureActionToken();
+    const res = await fetch('/api/actions/post-merge-sync', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-Action-Token': token},
+      body: JSON.stringify({dir: mgRepo}),
+    });
+    const outcome = await res.json();
+    result.textContent = outcome.ok
+      ? 'local clone synced'
+      : `local sync still failing: ${outcome.error ?? outcome.detail ?? 'unknown'}`;
+    document.getElementById('mg-retry-sync').hidden = outcome.ok;
+  } catch (err) {
+    result.textContent = `local sync request failed: ${err}`;
+  }
+});
 
 refresh();
 setInterval(refresh, 10000);

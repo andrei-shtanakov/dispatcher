@@ -98,6 +98,14 @@ class ActionRequest(BaseModel):
     dir: str
 
 
+class MergeRequest(BaseModel):
+    """POST /api/actions/merge-and-sync body."""
+
+    dir: str
+    pr: int
+    if_head: str
+
+
 class ActionSession(BaseModel):
     """GET /api/actions/session: per-process CSRF token for action POSTs."""
 
@@ -297,6 +305,42 @@ def create_app(
     ) -> ActionOutcome:
         """Явный клик человека: gh pr create через github-checker (идемпотентно)."""
         return _run_action("open-pr", request, x_action_token)
+
+    @app.get("/api/pr-detail", response_model=ActionOutcome)
+    def pr_detail(dir: str, pr: int) -> ActionOutcome:
+        """Read-through to github-checker; no mutation, so no token."""
+        try:
+            return actions.pr_detail(dir.strip(), pr)
+        except ActionRejectedError as err:
+            raise HTTPException(status_code=422, detail=str(err)) from err
+
+    @app.post("/api/actions/merge-and-sync", response_model=ActionOutcome)
+    def action_merge_and_sync(
+        request: MergeRequest,
+        x_action_token: str | None = Header(default=None),
+    ) -> ActionOutcome:
+        """Явный клик человека: squash-merge + локальная синхронизация одним локом."""
+        if x_action_token != action_token:
+            raise HTTPException(status_code=403, detail="bad or missing action token")
+        try:
+            outcome = actions.merge_and_sync(
+                request.dir.strip(), request.pr, request.if_head.strip()
+            )
+        except ActionRejectedError as err:
+            raise HTTPException(status_code=422, detail=str(err)) from err
+        except ActionBusyError as err:
+            raise HTTPException(status_code=409, detail=str(err)) from err
+        if outcome.ok:
+            sync_cache.invalidate()
+        return outcome
+
+    @app.post("/api/actions/post-merge-sync", response_model=ActionOutcome)
+    def action_post_merge_sync(
+        request: ActionRequest,
+        x_action_token: str | None = Header(default=None),
+    ) -> ActionOutcome:
+        """Добор локальной половины, когда merge прошёл, а sync — нет."""
+        return _run_action("post-merge-sync", request, x_action_token)
 
     @app.get("/api/spec-runner-configs", response_model=list[ProjectSpecRunnerConfig])
     def spec_runner_configs_list() -> list[ProjectSpecRunnerConfig]:

@@ -3,6 +3,7 @@
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -865,3 +866,349 @@ def test_static_index_pins_suggest_availability_endpoint() -> None:
         Path(__file__).parent.parent / "dispatcher" / "server" / "static" / "index.html"
     )
     assert "suggest-availability" in static_path.read_text()
+
+
+HEAD = "a" * 40
+
+
+async def test_merge_and_sync_requires_the_action_token(tmp_path: Path) -> None:
+    async with _client(tmp_path) as client:
+        resp = await client.post(
+            "/api/actions/merge-and-sync",
+            json={"dir": "alpha", "pr": 7, "if_head": HEAD},
+        )
+        assert resp.status_code == 403
+
+
+async def test_merge_and_sync_returns_the_composite_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dispatcher.core.actions import ActionOutcome, ActionRunner
+
+    def fake_merge_and_sync(
+        self: ActionRunner, repo_dir: str, pr: int, if_head: str
+    ) -> ActionOutcome:
+        return ActionOutcome(
+            action="merge-and-sync",
+            dir=repo_dir,
+            ok=True,
+            merged=True,
+            local_sync="ok",
+        )
+
+    monkeypatch.setattr(ActionRunner, "merge_and_sync", fake_merge_and_sync)
+    async with _client(tmp_path) as client:
+        token = await _token(client)
+        resp = await client.post(
+            "/api/actions/merge-and-sync",
+            json={"dir": "alpha", "pr": 7, "if_head": HEAD},
+            headers={"X-Action-Token": token},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["action"] == "merge-and-sync"
+        assert body["merged"] is True
+        assert body["local_sync"] == "ok"
+
+
+async def test_merged_tri_state_survives_fastapi_serialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Asserted on the WIRE, not on an ActionOutcome.
+
+    The tri-state is the property the whole gate rests on, and the layer that
+    can drop it silently is this one: `response_model_exclude_none=True` on
+    the endpoint removes `merged` from the response body entirely while every
+    model-level test still passes. `null` and an absent key are the same thing
+    to the screen only by accident (`index.html` checks `undefined` too) — the
+    contract is that the key is present.
+    """
+    from dispatcher.core.actions import ActionOutcome, ActionRunner
+
+    # pr 7 = transport failure (unknown), pr 8 = parsed gate refusal
+    def fake_merge_and_sync(
+        self: ActionRunner, repo_dir: str, pr: int, if_head: str
+    ) -> ActionOutcome:
+        return ActionOutcome(
+            action="merge-and-sync",
+            dir=repo_dir,
+            ok=False,
+            merged=None if pr == 7 else False,
+            local_sync="not_attempted",
+        )
+
+    monkeypatch.setattr(ActionRunner, "merge_and_sync", fake_merge_and_sync)
+    async with _client(tmp_path) as client:
+        token = await _token(client)
+        for pr, expected in ((7, None), (8, False)):
+            resp = await client.post(
+                "/api/actions/merge-and-sync",
+                json={"dir": "alpha", "pr": pr, "if_head": HEAD},
+                headers={"X-Action-Token": token},
+            )
+            assert resp.status_code == 200
+            body = json.loads(resp.text)
+            assert "merged" in body, f"PR {pr}: the key was dropped from the wire"
+            assert body["merged"] is expected
+
+
+async def test_merge_and_sync_maps_busy_to_409(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dispatcher.core.actions import ActionBusyError, ActionOutcome, ActionRunner
+
+    def busy(self: ActionRunner, repo_dir: str, pr: int, if_head: str) -> ActionOutcome:
+        raise ActionBusyError("alpha: action already in flight")
+
+    monkeypatch.setattr(ActionRunner, "merge_and_sync", busy)
+    async with _client(tmp_path) as client:
+        token = await _token(client)
+        resp = await client.post(
+            "/api/actions/merge-and-sync",
+            json={"dir": "alpha", "pr": 7, "if_head": HEAD},
+            headers={"X-Action-Token": token},
+        )
+        assert resp.status_code == 409
+
+
+async def test_merge_and_sync_maps_rejection_to_422(tmp_path: Path) -> None:
+    async with _client(tmp_path) as client:
+        token = await _token(client)
+        resp = await client.post(
+            "/api/actions/merge-and-sync",
+            json={"dir": "../etc", "pr": 7, "if_head": HEAD},
+            headers={"X-Action-Token": token},
+        )
+        assert resp.status_code == 422
+
+
+async def test_pr_detail_is_readable_without_a_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dispatcher.core.actions import ActionOutcome, ActionRunner
+
+    def fake_pr_detail(self: ActionRunner, repo_dir: str, pr: int) -> ActionOutcome:
+        return ActionOutcome(
+            action="pr-detail", dir=repo_dir, ok=True, pr_detail={"number": pr}
+        )
+
+    monkeypatch.setattr(ActionRunner, "pr_detail", fake_pr_detail)
+    async with _client(tmp_path) as client:
+        resp = await client.get("/api/pr-detail", params={"dir": "alpha", "pr": 7})
+        assert resp.status_code == 200
+        assert resp.json()["pr_detail"]["number"] == 7
+
+
+async def test_pr_detail_maps_rejection_to_422(tmp_path: Path) -> None:
+    async with _client(tmp_path) as client:
+        resp = await client.get("/api/pr-detail", params={"dir": "../etc", "pr": 7})
+        assert resp.status_code == 422
+
+
+async def test_post_merge_sync_endpoint_retries_the_local_half(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dispatcher.core.actions import ActionOutcome, ActionRunner
+
+    def fake_run(self: ActionRunner, action: str, repo_dir: str) -> ActionOutcome:
+        return ActionOutcome(action=action, dir=repo_dir, ok=True, local_sync="ok")
+
+    monkeypatch.setattr(ActionRunner, "run", fake_run)
+    async with _client(tmp_path) as client:
+        token = await _token(client)
+        resp = await client.post(
+            "/api/actions/post-merge-sync",
+            json={"dir": "alpha"},
+            headers={"X-Action-Token": token},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["local_sync"] == "ok"
+
+
+def _isinstance_strict(value: object, expected: type | tuple[type, ...]) -> bool:
+    """Like `isinstance`, but a `bool` never satisfies a plain `int` check.
+
+    Python's `bool` is an `int` subclass, so plain `isinstance(True, int)` is
+    True — but JS's `Number.isInteger(true)` is False. Without this, the two
+    mirrors (this file's dicts and `MG_REQUIRED`/`MG_FILE_ITEM_REQUIRED` in
+    index.html) would silently mean different things for every int-typed
+    field (M-2), and a real `additions: true` would pass here but fail there.
+    """
+    if isinstance(value, bool):
+        expected_types = expected if isinstance(expected, tuple) else (expected,)
+        if bool not in expected_types:
+            return False
+    return isinstance(value, expected)
+
+
+# Mirrors MG_REQUIRED in index.html at BOTH levels: top-level fields here,
+# plus PR_DETAIL_FILE_ITEM_REQUIRED / PR_DETAIL_THREAD_ITEM_REQUIRED further
+# down mirror MG_FILE_ITEM_REQUIRED / MG_THREAD_ITEM_REQUIRED for what's
+# inside `files` / `review_threads`. If github-checker's payload changes
+# shape at either level, this fails here — loudly, in CI, with the offending
+# index and field named — instead of silently blanking the merge-gate screen
+# at runtime.
+PR_DETAIL_REQUIRED: dict[str, type | tuple[type, ...]] = {
+    "number": int,
+    "title": str,
+    "url": str,
+    "state": str,
+    "is_draft": bool,
+    "mergeable": str,
+    "head_branch": str,
+    "head_sha": str,
+    "base_branch": str,
+    "checks": list,
+    "files": list,
+    "review_threads": list,
+}
+
+# Legitimately nullable, so checked for PRESENCE plus type — see the matching
+# comment in index.html. `review_decision` especially: its predicate passes on
+# null, so a field that vanished would read as "no review required".
+PR_DETAIL_NULLABLE: dict[str, type | tuple[type, ...]] = {
+    "review_decision": str,
+    "allows_squash": bool,
+}
+
+# Mirrors MG_FILE_ITEM_REQUIRED in index.html: `files` is validated as a
+# container above (PR_DETAIL_REQUIRED["files"] == list), this validates what's
+# inside it. `additions`/`deletions` reach the DOM unescaped-then-esc()'d at
+# render time — a wrong type there was a real XSS-shaped finding, not just
+# display corruption, so item shape matters as much as container shape.
+PR_DETAIL_FILE_ITEM_REQUIRED: dict[str, type | tuple[type, ...]] = {
+    "path": str,
+    "additions": int,
+    "deletions": int,
+}
+
+# Mirrors MG_THREAD_ITEM_REQUIRED in index.html. `is_resolved` feeds the
+# `threads-resolved` gate predicate; it is required and non-nullable.
+PR_DETAIL_THREAD_ITEM_REQUIRED: dict[str, type | tuple[type, ...]] = {
+    "is_resolved": bool,
+}
+
+# `author`/`excerpt` are rendered but nullable — same PRESENCE-plus-type
+# reasoning as PR_DETAIL_NULLABLE above: an absent key must not be conflated
+# with a genuinely-null value.
+PR_DETAIL_THREAD_ITEM_NULLABLE: dict[str, type | tuple[type, ...]] = {
+    "author": str,
+    "excerpt": str,
+}
+
+# Mirrors MG_CHECK_ITEM_REQUIRED in index.html (I-4): `checks` was the one
+# array the item-level sweep missed — MG_PREDICATES reads `c.state` on every
+# entry with no guard, so `checks: [null]` passed validation and then threw
+# mid-render in the JS, past the "cannot read PR" branch entirely.
+PR_DETAIL_CHECK_ITEM_REQUIRED: dict[str, type | tuple[type, ...]] = {
+    "state": str,
+}
+
+
+def _item_shape_problems(
+    items: list[Any],
+    label: str,
+    required: dict[str, type | tuple[type, ...]],
+    nullable: dict[str, type | tuple[type, ...]] | None = None,
+) -> list[str]:
+    """Per-item diagnostics, same index+field shape as mgArrayItemProblems in
+    index.html — a drifted item is diagnosable from the failure message, not
+    just "files is wrong somehow"."""
+    nullable = nullable or {}
+    problems: list[str] = []
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            problems.append(f"{label}[{i}] is not an object")
+            continue
+        problems += [
+            f"{label}[{i}].{key} missing or wrong type"
+            for key, expected in required.items()
+            if not _isinstance_strict(item.get(key), expected)
+        ]
+        problems += [
+            f"{label}[{i}].{key} missing or wrong type"
+            for key, expected in nullable.items()
+            if key not in item
+            or not (item[key] is None or _isinstance_strict(item[key], expected))
+        ]
+    return problems
+
+
+# Captured 2026-07-30 via:
+#   uv run --project ../github-checker github-checker pr-detail \
+#     ../github-checker 14 --diff-lines 5 --file-limit 5
+# The limiting flags matter: without them this fixture is ~85KB (a full diff
+# with a ~2000-line plan doc embedded) instead of ~4KB. Content is not part
+# of the shape this test pins, so keep recapturing it small.
+# `github-checker --version` doesn't exist; the pin is the producer commit,
+# confirmed via `git -C ../github-checker rev-parse HEAD` == f05cf8d (HEAD at
+# capture time, PR #14's merge commit).
+FIXTURE = Path(__file__).parent / "fixtures" / "pr_detail_github_checker_f05cf8d.json"
+
+
+def test_real_pr_detail_payload_has_every_field_the_console_reads() -> None:
+    """Consumer check against github-checker's ACTUAL output, not a fake.
+
+    Provisional-adapter guard: `pr_detail` is an opaque passthrough until
+    `contracts/actions/v1` is published and vendored
+    (TODO @id:vendor-contracts-actions-v1).
+    """
+    envelope = json.loads(FIXTURE.read_text())
+    assert envelope["ok"] is True
+    detail = envelope["pr_detail"]
+    missing = [
+        key
+        for key, expected in PR_DETAIL_REQUIRED.items()
+        if not _isinstance_strict(detail.get(key), expected)
+    ]
+    # M-1: mirrors the URL-scheme guard on MG_REQUIRED's `url` predicate —
+    # esc() blocks attribute breakout, not the scheme, so a `javascript:`
+    # URL from the passthrough would render as a live link.
+    if isinstance(detail.get("url"), str) and not detail["url"].startswith("https://"):
+        missing.append("url")
+    # `head_sha` is `str && length > 0` in MG_REQUIRED — a type-only check here
+    # would let the two mirrors mean different things for an empty SHA.
+    if isinstance(detail.get("head_sha"), str) and not detail["head_sha"]:
+        missing.append("head_sha")
+    # Nullable fields: the KEY must exist, and its value must be null or the
+    # expected type. `.get()` would conflate "absent" with "null" — which for
+    # review_decision is the difference between "cannot read" and "no review
+    # required".
+    missing += [
+        key
+        for key, expected in PR_DETAIL_NULLABLE.items()
+        if key not in detail
+        or not (detail[key] is None or _isinstance_strict(detail[key], expected))
+    ]
+    # Item-level checks only make sense once the container is confirmed a
+    # real list — the PR_DETAIL_REQUIRED check above already gates that, but
+    # re-check defensively rather than assume dict-comprehension order.
+    if isinstance(detail.get("files"), list):
+        missing += _item_shape_problems(
+            detail["files"], "files", PR_DETAIL_FILE_ITEM_REQUIRED
+        )
+    if isinstance(detail.get("review_threads"), list):
+        missing += _item_shape_problems(
+            detail["review_threads"],
+            "review_threads",
+            PR_DETAIL_THREAD_ITEM_REQUIRED,
+            PR_DETAIL_THREAD_ITEM_NULLABLE,
+        )
+    if isinstance(detail.get("checks"), list):
+        missing += _item_shape_problems(
+            detail["checks"], "checks", PR_DETAIL_CHECK_ITEM_REQUIRED
+        )
+    assert missing == [], f"github-checker payload no longer provides: {missing}"
+
+
+async def test_merge_gate_markup_is_served(tmp_path: Path) -> None:
+    """The brief's sample used a sync `client` fixture that doesn't exist here
+    (Task 3's plan-defect pattern, `progress.md`); this file is anyio-async
+    throughout, so it uses `_client()` like every other endpoint test."""
+    async with _client(tmp_path) as client:
+        resp = await client.get("/")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'id="merge-gate"' in body
+    assert "openMergeGate" in body
+    assert "/api/actions/merge-and-sync" in body
