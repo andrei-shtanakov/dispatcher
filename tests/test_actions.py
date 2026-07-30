@@ -193,6 +193,7 @@ def test_invoke_passes_extra_argv_through(tmp_path: Path) -> None:
     )
     outcome = runner._invoke("merge", tmp_path / "alpha", "7", "--if-head", "abc")
     assert "--if-head abc" in (outcome.detail or "")
+    assert outcome.detail is not None
     assert outcome.detail.startswith("merge ")
 
 
@@ -369,6 +370,7 @@ def test_pr_detail_passes_through_without_taking_the_lock(tmp_path: Path) -> Non
     )
     outcome = runner.pr_detail("alpha", 7)
     assert outcome.ok is True
+    assert outcome.pr_detail is not None
     assert outcome.pr_detail["number"] == 7
     assert runner._busy == set()
 

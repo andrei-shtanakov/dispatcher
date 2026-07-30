@@ -17,6 +17,9 @@
 - Package management: **uv only**. `uv run pytest`, `uv run ruff`. Never `pip`.
 - Line length **88**. `uv run ruff format .` then `uv run ruff check . --fix` before each commit.
 - Type hints on all functions; docstrings on public ones.
+- `uv run pyrefly check` must report **0 errors** before each commit. CI runs it
+  in two jobs (`typecheck` and `test`), and `master` is clean, so any new error
+  is ours — narrow `Optional` access in new code and tests instead of shipping it.
 - **dispatcher never calls the GitHub API itself.** Every GitHub read or mutation goes through the `github-checker` binary. This boundary is the reason the whole design stays inside ADR-ECO-004's D1 constraint.
 - **Human-click-only.** Every mutating endpoint requires the `X-Action-Token` header, mirroring `dispatcher/server/app.py:270-283`. No auto-merge, no background triggering.
 - **Every attempt leaves an audit line**, including rejected (422) and busy (409) ones — the invariant stated in `dispatcher/core/actions.py:84-85`.
