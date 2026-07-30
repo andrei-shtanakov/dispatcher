@@ -865,3 +865,176 @@ def test_static_index_pins_suggest_availability_endpoint() -> None:
         Path(__file__).parent.parent / "dispatcher" / "server" / "static" / "index.html"
     )
     assert "suggest-availability" in static_path.read_text()
+
+
+HEAD = "a" * 40
+
+
+async def test_merge_and_sync_requires_the_action_token(tmp_path: Path) -> None:
+    async with _client(tmp_path) as client:
+        resp = await client.post(
+            "/api/actions/merge-and-sync",
+            json={"dir": "alpha", "pr": 7, "if_head": HEAD},
+        )
+        assert resp.status_code == 403
+
+
+async def test_merge_and_sync_returns_the_composite_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dispatcher.core.actions import ActionOutcome, ActionRunner
+
+    def fake_merge_and_sync(
+        self: ActionRunner, repo_dir: str, pr: int, if_head: str
+    ) -> ActionOutcome:
+        return ActionOutcome(
+            action="merge-and-sync",
+            dir=repo_dir,
+            ok=True,
+            merged=True,
+            local_sync="ok",
+        )
+
+    monkeypatch.setattr(ActionRunner, "merge_and_sync", fake_merge_and_sync)
+    async with _client(tmp_path) as client:
+        token = await _token(client)
+        resp = await client.post(
+            "/api/actions/merge-and-sync",
+            json={"dir": "alpha", "pr": 7, "if_head": HEAD},
+            headers={"X-Action-Token": token},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["action"] == "merge-and-sync"
+        assert body["merged"] is True
+        assert body["local_sync"] == "ok"
+
+
+async def test_merge_and_sync_maps_busy_to_409(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dispatcher.core.actions import ActionBusyError, ActionOutcome, ActionRunner
+
+    def busy(self: ActionRunner, repo_dir: str, pr: int, if_head: str) -> ActionOutcome:
+        raise ActionBusyError("alpha: action already in flight")
+
+    monkeypatch.setattr(ActionRunner, "merge_and_sync", busy)
+    async with _client(tmp_path) as client:
+        token = await _token(client)
+        resp = await client.post(
+            "/api/actions/merge-and-sync",
+            json={"dir": "alpha", "pr": 7, "if_head": HEAD},
+            headers={"X-Action-Token": token},
+        )
+        assert resp.status_code == 409
+
+
+async def test_merge_and_sync_maps_rejection_to_422(tmp_path: Path) -> None:
+    async with _client(tmp_path) as client:
+        token = await _token(client)
+        resp = await client.post(
+            "/api/actions/merge-and-sync",
+            json={"dir": "../etc", "pr": 7, "if_head": HEAD},
+            headers={"X-Action-Token": token},
+        )
+        assert resp.status_code == 422
+
+
+async def test_pr_detail_is_readable_without_a_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dispatcher.core.actions import ActionOutcome, ActionRunner
+
+    def fake_pr_detail(self: ActionRunner, repo_dir: str, pr: int) -> ActionOutcome:
+        return ActionOutcome(
+            action="pr-detail", dir=repo_dir, ok=True, pr_detail={"number": pr}
+        )
+
+    monkeypatch.setattr(ActionRunner, "pr_detail", fake_pr_detail)
+    async with _client(tmp_path) as client:
+        resp = await client.get("/api/pr-detail", params={"dir": "alpha", "pr": 7})
+        assert resp.status_code == 200
+        assert resp.json()["pr_detail"]["number"] == 7
+
+
+async def test_post_merge_sync_endpoint_retries_the_local_half(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dispatcher.core.actions import ActionOutcome, ActionRunner
+
+    def fake_run(self: ActionRunner, action: str, repo_dir: str) -> ActionOutcome:
+        return ActionOutcome(action=action, dir=repo_dir, ok=True, local_sync="ok")
+
+    monkeypatch.setattr(ActionRunner, "run", fake_run)
+    async with _client(tmp_path) as client:
+        token = await _token(client)
+        resp = await client.post(
+            "/api/actions/post-merge-sync",
+            json={"dir": "alpha"},
+            headers={"X-Action-Token": token},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["local_sync"] == "ok"
+
+
+# Mirrors MG_REQUIRED in index.html. If github-checker's payload changes shape,
+# this fails here — loudly, in CI — instead of silently blanking the merge-gate
+# screen at runtime.
+PR_DETAIL_REQUIRED: dict[str, type | tuple[type, ...]] = {
+    "number": int,
+    "title": str,
+    "url": str,
+    "state": str,
+    "is_draft": bool,
+    "mergeable": str,
+    "head_branch": str,
+    "head_sha": str,
+    "base_branch": str,
+    "checks": list,
+    "files": list,
+    "review_threads": list,
+}
+
+# Legitimately nullable, so checked for PRESENCE plus type — see the matching
+# comment in index.html. `review_decision` especially: its predicate passes on
+# null, so a field that vanished would read as "no review required".
+PR_DETAIL_NULLABLE: dict[str, type | tuple[type, ...]] = {
+    "review_decision": str,
+    "allows_squash": bool,
+}
+
+# Captured 2026-07-30 via:
+#   uv run --project ../github-checker github-checker pr-detail \
+#     ../github-checker 14
+# `github-checker --version` doesn't exist; the pin is the producer commit,
+# confirmed via `git -C ../github-checker rev-parse HEAD` == f05cf8d (HEAD at
+# capture time, PR #14's merge commit).
+FIXTURE = Path(__file__).parent / "fixtures" / "pr_detail_github_checker_f05cf8d.json"
+
+
+def test_real_pr_detail_payload_has_every_field_the_console_reads() -> None:
+    """Consumer check against github-checker's ACTUAL output, not a fake.
+
+    Provisional-adapter guard: `pr_detail` is an opaque passthrough until
+    `contracts/actions/v1` is published and vendored
+    (TODO @id:vendor-contracts-actions-v1).
+    """
+    envelope = json.loads(FIXTURE.read_text())
+    assert envelope["ok"] is True
+    detail = envelope["pr_detail"]
+    missing = [
+        key
+        for key, expected in PR_DETAIL_REQUIRED.items()
+        if not isinstance(detail.get(key), expected)
+    ]
+    # Nullable fields: the KEY must exist, and its value must be null or the
+    # expected type. `.get()` would conflate "absent" with "null" — which for
+    # review_decision is the difference between "cannot read" and "no review
+    # required".
+    missing += [
+        key
+        for key, expected in PR_DETAIL_NULLABLE.items()
+        if key not in detail
+        or not (detail[key] is None or isinstance(detail[key], expected))
+    ]
+    assert missing == [], f"github-checker payload no longer provides: {missing}"
