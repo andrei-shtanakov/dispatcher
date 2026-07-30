@@ -1068,9 +1068,23 @@ async function openMergeGate(repoDir, pr, sticky) {
   mgResetFields();
   document.getElementById('mg-result').textContent = sticky ?? 'loading…';
   document.getElementById('mg-merge').disabled = true;
-  const res = await fetch(
-    `/api/pr-detail?dir=${encodeURIComponent(repoDir)}&pr=${pr}`);
-  const outcome = await res.json();
+  // I-3's convention, applied to the READ half: a dead server or a
+  // non-JSON body (starlette's plain-text 500) rejects here, and without
+  // this the screen sits on "loading…" forever while the throw escapes as
+  // an unhandled rejection. mgCannotRead keeps Merge disabled, so the read
+  // failing can never leave the button clickable.
+  let res;
+  let outcome;
+  try {
+    res = await fetch(
+      `/api/pr-detail?dir=${encodeURIComponent(repoDir)}&pr=${pr}`);
+    outcome = await res.json();
+  } catch (err) {
+    // `res` exists only if the fetch itself resolved — for a body we could
+    // not parse, the status says more than the parse error does
+    mgCannotRead(res ? `HTTP ${res.status}` : err);
+    return;
+  }
   if (!outcome.ok || !outcome.pr_detail) {
     mgCannotRead(outcome.error || res.status);
     return;
@@ -1150,7 +1164,10 @@ document.getElementById('mg-open-gate').addEventListener('click', () => {
     return;
   }
   errorSpan.textContent = '';
-  openMergeGate(mgEntryRepo, pr);
+  // fire-and-forget would turn any throw past the fetch guard (a render bug,
+  // say) into an unhandled rejection with a half-updated screen; awaiting it
+  // inside an async handler would do the same, since nobody awaits a handler
+  openMergeGate(mgEntryRepo, pr).catch(err => mgCannotRead(err));
 });
 
 document.getElementById('mg-merge').addEventListener('click', async () => {
