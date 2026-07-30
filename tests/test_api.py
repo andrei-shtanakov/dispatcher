@@ -1011,7 +1011,10 @@ PR_DETAIL_NULLABLE: dict[str, type | tuple[type, ...]] = {
 
 # Captured 2026-07-30 via:
 #   uv run --project ../github-checker github-checker pr-detail \
-#     ../github-checker 14
+#     ../github-checker 14 --diff-lines 5 --file-limit 5
+# The limiting flags matter: without them this fixture is ~85KB (a full diff
+# with a ~2000-line plan doc embedded) instead of ~4KB. Content is not part
+# of the shape this test pins, so keep recapturing it small.
 # `github-checker --version` doesn't exist; the pin is the producer commit,
 # confirmed via `git -C ../github-checker rev-parse HEAD` == f05cf8d (HEAD at
 # capture time, PR #14's merge commit).
@@ -1044,3 +1047,16 @@ def test_real_pr_detail_payload_has_every_field_the_console_reads() -> None:
         or not (detail[key] is None or isinstance(detail[key], expected))
     ]
     assert missing == [], f"github-checker payload no longer provides: {missing}"
+
+
+async def test_merge_gate_markup_is_served(tmp_path: Path) -> None:
+    """The brief's sample used a sync `client` fixture that doesn't exist here
+    (Task 3's plan-defect pattern, `progress.md`); this file is anyio-async
+    throughout, so it uses `_client()` like every other endpoint test."""
+    async with _client(tmp_path) as client:
+        resp = await client.get("/")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'id="merge-gate"' in body
+    assert "openMergeGate" in body
+    assert "/api/actions/merge-and-sync" in body
