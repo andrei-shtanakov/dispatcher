@@ -30,6 +30,14 @@
   section > h2 { font-size: 16px; margin-bottom: 10px; }
   .tablewrap { overflow-x: auto; background: var(--card);
     border: 1px solid var(--line); border-radius: 10px; }
+  /* The diff is the one payload field with no upper bound: 2000 lines rendered
+     unconstrained pushed the Merge button 53 viewport-heights down the page,
+     and one 400-char line dragged the whole dashboard 2152px sideways. Bound
+     both axes here so the button the operator came for stays reachable.
+     `max-height` (not `height`) keeps a short diff from gaining empty space. */
+  #mg-diff { max-height: 420px; overflow: auto; margin: 0;
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px 12px; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
   th, td { text-align: left; padding: 8px 12px;
     border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -1109,8 +1117,8 @@ function renderMergeGate(d) {
 
   const failed = MG_PREDICATES.filter(([, ok]) => !ok(d)).map(([name]) => name);
   document.getElementById('mg-gate').innerHTML = failed.length
-    ? `<span class="badge">blocked</span> ${failed.map(esc).join(', ')}`
-    : '<span class="badge">gate green</span>';
+    ? `<span class="badge err">blocked</span> ${failed.map(esc).join(', ')}`
+    : '<span class="badge ok">gate green</span>';
 
   const open = (d.review_threads || []).filter(t => !t.is_resolved);
   document.getElementById('mg-threads').innerHTML = open.length
