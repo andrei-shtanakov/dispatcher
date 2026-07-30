@@ -3,6 +3,7 @@
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -983,9 +984,13 @@ async def test_post_merge_sync_endpoint_retries_the_local_half(
         assert resp.json()["local_sync"] == "ok"
 
 
-# Mirrors MG_REQUIRED in index.html. If github-checker's payload changes shape,
-# this fails here — loudly, in CI — instead of silently blanking the merge-gate
-# screen at runtime.
+# Mirrors MG_REQUIRED in index.html at BOTH levels: top-level fields here,
+# plus PR_DETAIL_FILE_ITEM_REQUIRED / PR_DETAIL_THREAD_ITEM_REQUIRED further
+# down mirror MG_FILE_ITEM_REQUIRED / MG_THREAD_ITEM_REQUIRED for what's
+# inside `files` / `review_threads`. If github-checker's payload changes
+# shape at either level, this fails here — loudly, in CI, with the offending
+# index and field named — instead of silently blanking the merge-gate screen
+# at runtime.
 PR_DETAIL_REQUIRED: dict[str, type | tuple[type, ...]] = {
     "number": int,
     "title": str,
@@ -1008,6 +1013,61 @@ PR_DETAIL_NULLABLE: dict[str, type | tuple[type, ...]] = {
     "review_decision": str,
     "allows_squash": bool,
 }
+
+# Mirrors MG_FILE_ITEM_REQUIRED in index.html: `files` is validated as a
+# container above (PR_DETAIL_REQUIRED["files"] == list), this validates what's
+# inside it. `additions`/`deletions` reach the DOM unescaped-then-esc()'d at
+# render time — a wrong type there was a real XSS-shaped finding, not just
+# display corruption, so item shape matters as much as container shape.
+PR_DETAIL_FILE_ITEM_REQUIRED: dict[str, type | tuple[type, ...]] = {
+    "path": str,
+    "additions": int,
+    "deletions": int,
+}
+
+# Mirrors MG_THREAD_ITEM_REQUIRED in index.html. `is_resolved` feeds the
+# `threads-resolved` gate predicate; it is required and non-nullable.
+PR_DETAIL_THREAD_ITEM_REQUIRED: dict[str, type | tuple[type, ...]] = {
+    "is_resolved": bool,
+}
+
+# `author`/`excerpt` are rendered but nullable — same PRESENCE-plus-type
+# reasoning as PR_DETAIL_NULLABLE above: an absent key must not be conflated
+# with a genuinely-null value.
+PR_DETAIL_THREAD_ITEM_NULLABLE: dict[str, type | tuple[type, ...]] = {
+    "author": str,
+    "excerpt": str,
+}
+
+
+def _item_shape_problems(
+    items: list[Any],
+    label: str,
+    required: dict[str, type | tuple[type, ...]],
+    nullable: dict[str, type | tuple[type, ...]] | None = None,
+) -> list[str]:
+    """Per-item diagnostics, same index+field shape as mgArrayItemProblems in
+    index.html — a drifted item is diagnosable from the failure message, not
+    just "files is wrong somehow"."""
+    nullable = nullable or {}
+    problems: list[str] = []
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            problems.append(f"{label}[{i}] is not an object")
+            continue
+        problems += [
+            f"{label}[{i}].{key} missing or wrong type"
+            for key, expected in required.items()
+            if not isinstance(item.get(key), expected)
+        ]
+        problems += [
+            f"{label}[{i}].{key} missing or wrong type"
+            for key, expected in nullable.items()
+            if key not in item
+            or not (item[key] is None or isinstance(item[key], expected))
+        ]
+    return problems
+
 
 # Captured 2026-07-30 via:
 #   uv run --project ../github-checker github-checker pr-detail \
@@ -1046,6 +1106,20 @@ def test_real_pr_detail_payload_has_every_field_the_console_reads() -> None:
         if key not in detail
         or not (detail[key] is None or isinstance(detail[key], expected))
     ]
+    # Item-level checks only make sense once the container is confirmed a
+    # real list — the PR_DETAIL_REQUIRED check above already gates that, but
+    # re-check defensively rather than assume dict-comprehension order.
+    if isinstance(detail.get("files"), list):
+        missing += _item_shape_problems(
+            detail["files"], "files", PR_DETAIL_FILE_ITEM_REQUIRED
+        )
+    if isinstance(detail.get("review_threads"), list):
+        missing += _item_shape_problems(
+            detail["review_threads"],
+            "review_threads",
+            PR_DETAIL_THREAD_ITEM_REQUIRED,
+            PR_DETAIL_THREAD_ITEM_NULLABLE,
+        )
     assert missing == [], f"github-checker payload no longer provides: {missing}"
 
 

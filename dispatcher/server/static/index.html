@@ -909,19 +909,14 @@ const MG_PREDICATES = [
 // their absence means "not truncated", which is the safe reading, and the
 // predicates already treat only `=== true` as blocking.
 //
-// MUST MOVE TOGETHER with PR_DETAIL_REQUIRED / PR_DETAIL_NULLABLE in
-// tests/test_api.py for the TOP-LEVEL fields below — same field names, same
-// nullable split. That file is checked against a real captured
-// github-checker payload; this one is not, so a divergence here would only
-// be caught by eye.
-//
-// This file ALSO validates array-ITEM shape (MG_FILE_ITEM_REQUIRED /
-// MG_THREAD_ITEM_REQUIRED further down) — the Python side today only checks
-// that `files` / `review_threads` are arrays, not what's inside them. That
-// asymmetry is real; see task-4-report.md for why it's flagged rather than
-// closed here silently (the real fixture already satisfies the stricter
-// item-level rule, so extending the Python side is low-risk, but it's a
-// scope decision, not mine to make unasked).
+// MUST MOVE TOGETHER with tests/test_api.py at BOTH levels — same field
+// names, same nullable split. Top-level fields here mirror
+// PR_DETAIL_REQUIRED / PR_DETAIL_NULLABLE; array-ITEM shape
+// (MG_FILE_ITEM_REQUIRED / MG_THREAD_ITEM_REQUIRED further down) mirrors
+// PR_DETAIL_FILE_ITEM_REQUIRED / PR_DETAIL_THREAD_ITEM_REQUIRED /
+// PR_DETAIL_THREAD_ITEM_NULLABLE. That file is checked against a real
+// captured github-checker payload; this one is not, so a divergence here
+// would only be caught by eye.
 const MG_REQUIRED = [
   ['number',       v => Number.isInteger(v)],
   ['title',        v => typeof v === 'string'],
@@ -954,10 +949,11 @@ const MG_REQUIRED = [
 
 // Array CONTAINERS are validated by MG_REQUIRED above (`files`/`review_threads`
 // must be arrays); these validate what's INSIDE them. `files[].additions` /
-// `files[].deletions` reach the DOM unescaped at render time (see the comment
-// by `mg-files` below) — a wrong-typed value there is a raw HTML-injection
-// path, not just display corruption, so a bad item must fail closed exactly
-// like a bad top-level field: "cannot read PR", Merge disabled.
+// `files[].deletions` are also esc()'d at render time now (see the comment by
+// `mg-files` below), but that's belt-and-braces, not a substitute for this: a
+// wrong-typed value there is a real HTML-injection shape (this was a caught
+// security finding), so a bad item must fail closed at validation time too —
+// exactly like a bad top-level field: "cannot read PR", Merge disabled.
 const MG_FILE_ITEM_REQUIRED = [
   ['path',      v => typeof v === 'string'],
   ['additions', v => Number.isInteger(v)],
