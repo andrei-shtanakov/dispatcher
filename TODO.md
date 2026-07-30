@@ -90,6 +90,14 @@
       текста в чужом репо.
 - [ ] README + иконка для `vscode-ext/` @owner:andrei @id:vscode-ext-readme
       Страница расширения показывает «No README available».
+- [ ] Merge-gate: список открытых PR по репо (номер + заголовок), чтобы `#merge-gate` открывался кликом, а не ручным вводом номера @owner:andrei @id:merge-gate-pr-listing
+      Task 4 (2026-07-30) исходно планировала клик по существующему PR-рендерингу
+      в карточке проекта — такого рендеринга нет: read-модель несёт GitHub-состояние
+      только как непрозрачный `github: dict[str, Any]` (`core/snapshot_contract.py`),
+      номер PR нигде не всплывает, и ни один таск плана его не заводит. S1 вместо
+      этого — ручной ввод номера PR рядом с панелью project-detail (аддитивно, без
+      нового backend). Реальный список требует поля read-модели + endpoint + UI;
+      см. `docs/superpowers/plans/2026-07-30-merge-gate-console.md` Task 4 Step 3.
 
 ## Наблюдения (работу не начинаем, пока не сработает триггер)
 

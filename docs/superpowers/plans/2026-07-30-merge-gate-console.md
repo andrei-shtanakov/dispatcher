@@ -1065,9 +1065,27 @@ document.getElementById('mg-retry-sync').addEventListener('click', async () => {
 
 - [ ] **Step 3: Wire the entry point**
 
-In the existing project-card / PR rendering, make each open PR clickable so it calls
-`openMergeGate(repoDir, prNumber)`. Follow whatever click pattern the surrounding
-card code already uses — do not invent a second navigation style.
+**PLAN DEFECT (mine) — corrected after implementation, S1 shipped a substitute.**
+This step originally read: "In the existing project-card / PR rendering, make
+each open PR clickable so it calls `openMergeGate(repoDir, prNumber)`. Follow
+whatever click pattern the surrounding card code already uses — do not invent
+a second navigation style." That rendering does not exist. Dispatcher's read
+model carries GitHub state only as an opaque `github: dict[str, Any]`
+(`core/snapshot_contract.py`); no field anywhere surfaces a PR number, no
+endpoint enumerates open PRs per repo, and no task in this plan (1 through 5)
+produces one. A real PR list is a read-model field, an endpoint, and UI — none
+of which belongs to a task whose Files line is `index.html`-only.
+
+**What S1 actually ships instead:** a manual entry point — a PR-number input
+next to the existing project-detail panel (`#detail-section`), reusing the
+already-existing card-click → `detail(name)` flow to know which repo it's
+for, then calling `openMergeGate(repoDir, prNumber)` directly. This is
+additive, adds no backend, and is trivially deleted once a real PR-listing
+surface exists (see the `TODO.md` item this defect produced).
+
+A future reader: this was **not** an oversight and Step 3 was **not**
+implemented as originally written — the premise was wrong, this is the
+corrected record.
 
 - [ ] **Step 4: Add a smoke test that the assets are wired**
 
@@ -1090,6 +1108,9 @@ Check, and **write down what you actually saw** for each:
 
 Do not merge anything real to test the click; the composite is covered by Task 2's
 tests against the fake checker.
+
+**Not performed.** No browser was available in the S1 implementation environment;
+the three checks above were not visually verified against a running server.
 
 - [ ] **Step 6: Commit**
 
