@@ -910,9 +910,18 @@ const MG_PREDICATES = [
 // predicates already treat only `=== true` as blocking.
 //
 // MUST MOVE TOGETHER with PR_DETAIL_REQUIRED / PR_DETAIL_NULLABLE in
-// tests/test_api.py — same field names, same nullable split. That file is
-// checked against a real captured github-checker payload; this one is not,
-// so a divergence here would only be caught by eye.
+// tests/test_api.py for the TOP-LEVEL fields below — same field names, same
+// nullable split. That file is checked against a real captured
+// github-checker payload; this one is not, so a divergence here would only
+// be caught by eye.
+//
+// This file ALSO validates array-ITEM shape (MG_FILE_ITEM_REQUIRED /
+// MG_THREAD_ITEM_REQUIRED further down) — the Python side today only checks
+// that `files` / `review_threads` are arrays, not what's inside them. That
+// asymmetry is real; see task-4-report.md for why it's flagged rather than
+// closed here silently (the real fixture already satisfies the stricter
+// item-level rule, so extending the Python side is low-risk, but it's a
+// scope decision, not mine to make unasked).
 const MG_REQUIRED = [
   ['number',       v => Number.isInteger(v)],
   ['title',        v => typeof v === 'string'],
@@ -943,11 +952,58 @@ const MG_REQUIRED = [
   ['allows_squash',   v => v === null || typeof v === 'boolean'],
 ];
 
+// Array CONTAINERS are validated by MG_REQUIRED above (`files`/`review_threads`
+// must be arrays); these validate what's INSIDE them. `files[].additions` /
+// `files[].deletions` reach the DOM unescaped at render time (see the comment
+// by `mg-files` below) — a wrong-typed value there is a raw HTML-injection
+// path, not just display corruption, so a bad item must fail closed exactly
+// like a bad top-level field: "cannot read PR", Merge disabled.
+const MG_FILE_ITEM_REQUIRED = [
+  ['path',      v => typeof v === 'string'],
+  ['additions', v => Number.isInteger(v)],
+  ['deletions', v => Number.isInteger(v)],
+];
+
+// `is_resolved` feeds `threads-resolved` (gate-blocking); `author`/`excerpt`
+// are rendered via esc(), so a wrong type there can't inject — but an ABSENT
+// field is still an unreadable payload (same `undefined == null` reasoning
+// as `review_decision` above), so presence is required, not just type.
+const MG_THREAD_ITEM_REQUIRED = [
+  ['is_resolved', v => typeof v === 'boolean'],
+  ['author',      v => v === null || typeof v === 'string'],
+  ['excerpt',     v => v === null || typeof v === 'string'],
+];
+
+function mgArrayItemProblems(arr, itemRequired, label) {
+  const problems = [];
+  arr.forEach((item, i) => {
+    if (item === null || typeof item !== 'object') {
+      problems.push(`${label}[${i}] is not an object`);
+      return;
+    }
+    itemRequired.forEach(([k, ok]) => {
+      if (!ok(item[k])) problems.push(`${label}[${i}].${k} missing or wrong type`);
+    });
+  });
+  return problems;
+}
+
 function mgPayloadProblems(d) {
   if (d === null || typeof d !== 'object') return ['pr_detail is not an object'];
-  return MG_REQUIRED
+  const problems = MG_REQUIRED
     .filter(([k, ok]) => !ok(d[k]))
     .map(([k]) => `${k} missing or wrong type`);
+  // Item checks only make sense once the container is confirmed a real
+  // array — MG_REQUIRED above already gates that, so re-check defensively
+  // rather than assume filter-order.
+  if (Array.isArray(d.files)) {
+    problems.push(...mgArrayItemProblems(d.files, MG_FILE_ITEM_REQUIRED, 'files'));
+  }
+  if (Array.isArray(d.review_threads)) {
+    problems.push(
+      ...mgArrayItemProblems(d.review_threads, MG_THREAD_ITEM_REQUIRED, 'review_threads'));
+  }
+  return problems;
 }
 
 function mgCannotRead(reason) {
@@ -995,9 +1051,13 @@ function renderMergeGate(d) {
         t => `${esc(t.author || '?')} — ${esc(t.excerpt || '')}`).join('<br>')
     : 'no unresolved threads';
 
+  // Belt-and-braces: mgPayloadProblems already requires additions/deletions
+  // to be integers before we get here, but this line still goes through
+  // esc() rather than trusting that — esc() coerces via String() first, so
+  // it's the same guard as f.path gets, not a special case for numbers.
   document.getElementById('mg-files').innerHTML = (d.files || []).map(
-    f => `<div>${esc(f.path)} <span class="sub">+${f.additions} −${f.deletions}` +
-         `</span></div>`).join('');
+    f => `<div>${esc(f.path)} <span class="sub">+${esc(f.additions)} ` +
+         `−${esc(f.deletions)}</span></div>`).join('');
   const diff = document.getElementById('mg-diff');
   diff.hidden = !d.diff;
   diff.textContent = d.diff || '';
