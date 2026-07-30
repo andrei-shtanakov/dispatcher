@@ -19,8 +19,10 @@ import logging
 import re
 import subprocess
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -29,7 +31,8 @@ from dispatcher.core.discovery import DispatcherConfig
 _ACTION_TIMEOUT = 120
 _SAFE_DIR_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")
 
-Action = Literal["pull", "open-pr"]
+Action = Literal["pull", "open-pr", "post-merge-sync"]
+_WHITELIST = frozenset({"pull", "open-pr", "post-merge-sync"})
 _audit = logging.getLogger("dispatcher.actions")
 
 
@@ -48,6 +51,10 @@ class ActionOutcome(BaseModel):
     base_branch: str | None = None
     commit_sha: str | None = None
     changed_paths: list[str] | None = None
+    merged: bool | None = None
+    local_sync: str | None = None  # ok | failed | not_attempted | not_applicable
+    gate_failed: list[str] | None = None
+    pr_detail: dict[str, Any] | None = None
 
 
 class ActionBusyError(Exception):
@@ -83,13 +90,14 @@ class ActionRunner:
             raise ActionRejectedError(f"not a git repo in workspace: {repo_dir}")
         return target
 
-    def run(self, action: Action, repo_dir: str) -> ActionOutcome:
-        """Execute one action; EVERY attempt leaves an audit line —
-        including rejected (422) and busy (409) ones."""
+    @contextmanager
+    def _hold(self, action: str, repo_dir: str) -> Iterator[Path]:
+        """Own the repo for a whole operation — composite actions included.
+
+        The lock must span every step: releasing between merge and sync
+        would let another action wedge into the gap.
+        """
         try:
-            # runtime-гарантия белого списка, независимая от тайпинга
-            if action not in ("pull", "open-pr"):
-                raise ActionRejectedError(f"action not whitelisted: {action!r}")
             target = self._target(repo_dir)
             with self._lock:
                 if repo_dir in self._busy:
@@ -99,22 +107,44 @@ class ActionRunner:
             _audit.info("action=%s repo=%s ok=False rejected=%s", action, repo_dir, err)
             raise
         try:
-            outcome = self._invoke(action, target)
+            yield target
         finally:
             with self._lock:
                 self._busy.discard(repo_dir)
+
+    def run(self, action: Action, repo_dir: str) -> ActionOutcome:
+        """Execute one whitelist action; EVERY attempt leaves an audit line —
+        including rejected (422) and busy (409) ones."""
+        # runtime-гарантия белого списка, независимая от тайпинга; проверяется
+        # до захвата лока, чтобы неразрешённое действие не могло занять репо
+        if action not in _WHITELIST:
+            _audit.info(
+                "action=%s repo=%s ok=False rejected=not whitelisted",
+                action,
+                repo_dir,
+            )
+            raise ActionRejectedError(f"action not whitelisted: {action!r}")
+        with self._hold(action, repo_dir) as target:
+            outcome = self._invoke(action, target)
+        self._audit_outcome(action, repo_dir, outcome)
+        return outcome
+
+    def _audit_outcome(
+        self, action: str, repo_dir: str, outcome: ActionOutcome
+    ) -> None:
         _audit.info(
-            "action=%s repo=%s ok=%s detail=%s error=%s",
+            "action=%s repo=%s ok=%s merged=%s local_sync=%s detail=%s error=%s",
             action,
             repo_dir,
             outcome.ok,
+            outcome.merged,
+            outcome.local_sync,
             outcome.detail,
             outcome.error,
         )
-        return outcome
 
-    def _invoke(self, action: Action, target: Path) -> ActionOutcome:
-        argv = [*self._command, action, str(target)]
+    def _invoke(self, action: str, target: Path, *extra: str) -> ActionOutcome:
+        argv = [*self._command, action, str(target), *extra]
         try:
             proc = subprocess.run(
                 argv, capture_output=True, text=True, timeout=_ACTION_TIMEOUT
@@ -142,4 +172,8 @@ class ActionRunner:
             pr_url=data.get("pr_url"),
             local_behind=local.get("behind"),
             local_dirty=local.get("dirty"),
+            merged=data.get("merged"),
+            local_sync=data.get("local_sync"),
+            gate_failed=data.get("gate_failed"),
+            pr_detail=data.get("pr_detail"),
         )

@@ -134,3 +134,62 @@ def test_non_whitelisted_action_rejected_at_runtime(tmp_path: Path) -> None:
     runner = ActionRunner(DispatcherConfig(roots=(tmp_path,)))
     with pytest.raises(ActionRejectedError, match="not whitelisted"):
         runner.run("push --force", "alpha")  # type: ignore[arg-type]
+
+
+def test_outcome_carries_merge_and_sync_fields(tmp_path: Path) -> None:
+    make_repo(tmp_path, "alpha")
+    payload = {
+        "action": "post-merge-sync",
+        "dir": "alpha",
+        "ok": True,
+        "local_sync": "ok",
+        "detail": "synced master",
+    }
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    outcome = runner.run("post-merge-sync", "alpha")
+    assert outcome.ok is True
+    assert outcome.local_sync == "ok"
+
+
+def test_post_merge_sync_is_whitelisted_but_junk_is_not(tmp_path: Path) -> None:
+    make_repo(tmp_path, "alpha")
+    runner = ActionRunner(DispatcherConfig(roots=(tmp_path,)))
+    with pytest.raises(ActionRejectedError, match="not whitelisted"):
+        runner.run("rm-rf", "alpha")  # type: ignore[arg-type]
+
+
+def test_gate_failure_fields_survive_the_round_trip(tmp_path: Path) -> None:
+    make_repo(tmp_path, "alpha")
+    payload = {
+        "action": "merge",
+        "dir": "alpha",
+        "ok": False,
+        "merged": False,
+        "local_sync": "not_attempted",
+        "gate_failed": ["not-draft", "threads-resolved"],
+        "error": "merge gate refused: not-draft, threads-resolved",
+    }
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    outcome = runner._invoke("merge", tmp_path / "alpha", "7", "--if-head", "a" * 40)
+    assert outcome.merged is False
+    assert outcome.gate_failed == ["not-draft", "threads-resolved"]
+
+
+def test_invoke_passes_extra_argv_through(tmp_path: Path) -> None:
+    make_repo(tmp_path, "alpha")
+    script = tmp_path / "echo_argv.py"
+    script.write_text(
+        "import sys, json;"
+        "json.dump({'action':'merge','dir':'alpha','ok':True,"
+        "'detail':' '.join(sys.argv[1:])}, sys.stdout)"
+    )
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
+    )
+    outcome = runner._invoke("merge", tmp_path / "alpha", "7", "--if-head", "abc")
+    assert "--if-head abc" in (outcome.detail or "")
+    assert outcome.detail.startswith("merge ")
