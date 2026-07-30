@@ -113,6 +113,21 @@
       этого — ручной ввод номера PR рядом с панелью project-detail (аддитивно, без
       нового backend). Реальный список требует поля read-модели + endpoint + UI;
       см. `docs/superpowers/plans/2026-07-30-merge-gate-console.md` Task 4 Step 3.
+- [ ] `ActionRunner._invoke` ловит вокруг `subprocess.run` только `FileNotFoundError`/`TimeoutExpired`/`JSONDecodeError`/`ValidationError` — гарантия «аудит-строка на каждую попытку» пробивается ещё двумя исключениями @owner:andrei @id:actions-envelope-catch-too-narrow
+      Найдено same-class-свипом финального ревью merge-gate-console (2026-07-30,
+      S-1, pre-existing, Minor). `subprocess.run(..., text=True)` декодирует строго,
+      поэтому продюсер, который **реально отработал** и написал в stdout не-UTF-8
+      байт, роняет `UnicodeDecodeError` внутри `_invoke` — мимо `_audit_outcome`,
+      то есть ровно тот сценарий, ради которого заведён guard на `ValidationError`,
+      но через другое исключение. Тем же путём уходит не-`FileNotFoundError`
+      `OSError` на exec (безобидно: ничего не запускалось). Наружу поведение
+      остаётся безопасным — экран показывает «unknown, check the PR», — поэтому
+      Minor, а не блокер.
+      Рядом уже лежит более сильный образец: `core/spec_runner_config_actions.py`
+      (~212-244) заворачивает свой `_invoke` в сплошной `except Exception` →
+      failed outcome → аудит-строка. Два класса действий охраняют конверт на разную
+      глубину, и это расхождение — из тех, что тихо становятся постоянными.
+      Фикс — расширить catch вокруг `subprocess.run` до той же глубины.
 
 ## Наблюдения (работу не начинаем, пока не сработает триггер)
 
