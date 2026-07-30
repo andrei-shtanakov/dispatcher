@@ -48,6 +48,11 @@
   (PR #44, #47), DESIGN-307 AI-подсказки через локальный claude-CLI (PR #61)
 - ✅ Governance-гейт экосистемы принят (ADR-ECO-004 D5): `governance / gate` как
   обязательный чек + least-privilege permissions в caller (PR #66, #67)
+- ✅ Merge gate (2026-07-30): чтение PR (`github-checker pr-detail`, девять
+  предикатов гейта) + gated squash-merge (`merge --if-head`) + `post-merge-sync`
+  одним локом на репо; `merged` трёхзначный (`true`/`false`/`null` — транспортный
+  сбой остаётся неизвестностью, не заявленным «не смержено»); вход — ручной ввод
+  номера PR, не список (PR #TBD-merge-gate-console — заполнить при мерже)
 - 🔜 Открытого продуктового scope из discovery-брифа (FR-01..06) не осталось; ниже —
   кросс-проектные точки и хвосты качества.
 
@@ -90,6 +95,16 @@
       текста в чужом репо.
 - [ ] README + иконка для `vscode-ext/` @owner:andrei @id:vscode-ext-readme
       Страница расширения показывает «No README available».
+- [ ] `loadSpecRunnerConfig` (`dispatcher/server/static/index.html`) берёт `repoDir` из display-имени коллектора и кормит им три directory-keyed эндпоинта — работает только на case-insensitive FS @owner:andrei @id:spec-runner-config-dir-name-mismatch
+      Найдено при зачистке merge-gate-console (2026-07-30): та же природа, что и
+      только что закрытый хэзард на входе в merge gate, но здесь не тронуто —
+      pre-existing и вне скоупа этой ветки. Три эндпоинта хотят каталог
+      (`GET /api/projects/{name}/spec-runner-config`, `POST .../suggest`, `dir`
+      у `POST /api/actions/update-spec-runner-config`, который резолвит
+      `root / repo_dir / "project.yaml"`), а остальные чтения панели —
+      имя; коллектор отдаёт `Maestro`, канон каталога — `maestro`
+      (см. `maestro-double-name` ниже). Фикс — не переименование поля: этим
+      трём нужен каталог, остальным — имя, они расходятся сознательно.
 - [ ] Merge-gate: список открытых PR по репо (номер + заголовок), чтобы `#merge-gate` открывался кликом, а не ручным вводом номера @owner:andrei @id:merge-gate-pr-listing
       Task 4 (2026-07-30) исходно планировала клик по существующему PR-рендерингу
       в карточке проекта — такого рендеринга нет: read-модель несёт GitHub-состояние
