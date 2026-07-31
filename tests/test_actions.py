@@ -2,6 +2,7 @@
 
 import logging
 import subprocess
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -941,10 +942,97 @@ def test_request_task_holds_the_repo_lock(tmp_path: Path) -> None:
         if time.monotonic() > deadline:
             pytest.fail("worker never entered issue-create")
         time.sleep(0.01)
-    with pytest.raises(ActionBusyError):
-        runner.run("pull", "alpha")
+
+    # The concurrent call runs in its own thread with a *bounded* join. If
+    # `_hold` queued instead of rejecting, `runner.run` here would block
+    # until the worker releases the lock — waiting that out inline (as a
+    # bare `with pytest.raises(...): runner.run(...)`) would deadlock the
+    # whole test, since the `go` touch that unblocks the worker sits below.
+    # Bounding the wait turns "the guard queues" into a prompt, readable
+    # assertion failure instead of a hung job. `go` is touched afterward
+    # unconditionally, so both threads are released no matter what happened.
+    second_outcome: list[ActionBusyError] = []
+
+    def attempt_pull() -> None:
+        try:
+            runner.run("pull", "alpha")
+        except ActionBusyError as err:
+            second_outcome.append(err)
+
+    second = threading.Thread(target=attempt_pull)
+    second.start()
+    second.join(timeout=2)
+    rejected_immediately = not second.is_alive() and len(second_outcome) == 1
+
     (tmp_path / "go").touch()
     worker.join(timeout=10)
+    second.join(timeout=10)
     assert not worker.is_alive(), "worker wedged"
+    assert not second.is_alive(), "concurrent pull thread wedged (queued, not rejected)"
+    assert rejected_immediately, (
+        "a concurrent action must get an immediate ActionBusyError, not queue "
+        "behind the in-flight request_task"
+    )
     assert result[0].ok is True
     runner.run("pull", "alpha")  # lock released
+
+
+def test_request_task_handles_an_unencodable_prose_without_leaking_or_hanging(
+    tmp_path: Path, caplog, monkeypatch
+) -> None:
+    """A lone UTF-16 surrogate survives `json.loads` (JSON permits unpaired
+    `\\uXXXX` escapes) but cannot be encoded to UTF-8 when writing the temp
+    file — reachable straight from an HTTP request body. This is a real
+    write failure, not a mocked `_invoke` failure: nothing was attempted, so
+    it must surface as `created=False` (not raise, not `created=None`), the
+    temp file must not leak, and the attempt must still be audited."""
+    make_repo(tmp_path, "alpha")
+    created_paths: list[str] = []
+    original_ntf = tempfile.NamedTemporaryFile
+
+    def recording_ntf(*args, **kwargs):
+        handle = original_ntf(*args, **kwargs)
+        created_paths.append(handle.name)
+        return handle
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", recording_ntf)
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", "-c", "pass")
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        outcome = runner.request_task(
+            "alpha",
+            slug="wanted",
+            sender="dispatcher",
+            title="t",
+            prose="\ud83d",  # lone surrogate: valid JSON, invalid UTF-8
+        )
+    assert outcome.ok is False
+    assert outcome.created is False
+    assert len(created_paths) == 1
+    assert not Path(created_paths[0]).exists()  # the temp file did not leak
+    assert "action=request-task" in caplog.text  # the attempt was audited
+
+
+def test_request_task_handles_a_temp_file_creation_failure(
+    tmp_path: Path, caplog, monkeypatch
+) -> None:
+    """A failure while creating the temp file itself (e.g. a full disk)
+    happens before any name is ever recorded — there is nothing to unlink,
+    but the attempt must still leave an audit line, not vanish silently."""
+    make_repo(tmp_path, "alpha")
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full (simulated)")
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", boom)
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", "-c", "pass")
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        outcome = runner.request_task(
+            "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+        )
+    assert outcome.ok is False
+    assert outcome.created is False
+    assert "action=request-task" in caplog.text

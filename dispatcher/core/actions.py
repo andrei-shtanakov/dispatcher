@@ -337,15 +337,31 @@ class ActionRunner:
         mean created / not created / unknown, and flattening `None` into
         `false` would tell the operator a request does not exist when it
         may well do.
+
+        Writing *prose* can itself fail before any subprocess ever runs: a
+        lone UTF-16 surrogate survives `json.loads` (JSON permits unpaired
+        `\\uXXXX` escapes) but cannot be encoded to UTF-8, and a full disk
+        raises the same shape of error. Since nothing was attempted, that is
+        a pre-mutation refusal exactly like a failed pre-create lookup —
+        reported as `created=False`, not an escaping exception and not
+        `created=None` (`None` would claim we don't know whether something
+        was attempted, when we know nothing was).
         """
         with self._hold("request-task", repo_dir) as target:
-            # prose is multi-line; argv is where newlines and quoting die
-            with tempfile.NamedTemporaryFile(
-                "w", suffix=".md", delete=False, encoding="utf-8"
-            ) as handle:
-                handle.write(prose)
-                body_file = handle.name
+            # the name must be recorded before anything can fail with the
+            # file already open, so every exit below — success, a broken
+            # create call, or a failure while creating/writing the file
+            # itself — can still find it, unlink it, and still produce an
+            # outcome to audit (a leaked file *and* a silent, unaudited
+            # attempt is the failure mode this guards against)
+            body_file: str | None = None
             try:
+                # prose is multi-line; argv is where newlines and quoting die
+                with tempfile.NamedTemporaryFile(
+                    "w", suffix=".md", delete=False, encoding="utf-8"
+                ) as handle:
+                    body_file = handle.name
+                    handle.write(prose)
                 outcome = self._invoke(
                     "issue-create",
                     target,
@@ -358,8 +374,17 @@ class ActionRunner:
                     "--body-file",
                     body_file,
                 )
+            except (OSError, UnicodeEncodeError) as err:
+                outcome = ActionOutcome(
+                    action="issue-create",
+                    dir=target.name,
+                    ok=False,
+                    created=False,
+                    error=f"could not write the request body: {err}",
+                )
             finally:
-                Path(body_file).unlink(missing_ok=True)
+                if body_file is not None:
+                    Path(body_file).unlink(missing_ok=True)
         outcome.action = "request-task"
         self._audit_outcome("request-task", repo_dir, outcome)
         return outcome
