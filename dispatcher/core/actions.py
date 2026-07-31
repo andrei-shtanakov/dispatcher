@@ -171,11 +171,44 @@ class ActionRunner:
             outcome.error,
         )
 
-    def _invoke(self, action: str, target: Path, *extra: str) -> ActionOutcome:
+    def _invoke(
+        self,
+        action: str,
+        target: Path,
+        *extra: str,
+        refusal_created: bool | None = None,
+    ) -> ActionOutcome:
+        """Run one github-checker verb and parse its answer.
+
+        *refusal_created* is the `created` value to stamp when the launch is
+        refused BEFORE anything runs (see the `ValueError` branch); callers
+        that mutate pass `False`, read-only callers leave it unknown.
+        """
         argv = [*self._command, action, str(target), *extra]
         try:
             proc = subprocess.run(
                 argv, capture_output=True, text=True, timeout=_ACTION_TIMEOUT
+            )
+        except ValueError as err:
+            # subprocess validates argv BEFORE it forks and raises ValueError
+            # for anything it cannot pass to exec — reachably, an embedded NUL,
+            # which JSON permits in a string (as the escape `\u0000`) and which therefore
+            # arrives straight off the wire. Uncaught it escaped as a 500 and,
+            # worse, left NO audit line at all, breaking this module's stated
+            # per-attempt guarantee and ADR-ECO-004a D1a-4 with it.
+            #
+            # Classified as a pre-mutation REFUSAL, not an unknown: the check
+            # happens before process creation, so no verb ran, nothing was
+            # mutated, and there is nothing to be uncertain about. That is the
+            # same reasoning as the body-write failure in request_task below —
+            # `created=None` would claim we cannot tell whether an issue was
+            # filed, when we know for certain none was.
+            return ActionOutcome(
+                action=action,
+                dir=target.name,
+                ok=False,
+                created=refusal_created,
+                error=f"refused before launch: {err}",
             )
         except (FileNotFoundError, subprocess.TimeoutExpired) as err:
             return ActionOutcome(
@@ -313,6 +346,11 @@ class ActionRunner:
             )
             raise
         outcome = self._invoke("issue-lookup", target, "--slug", slug)
+        # `len(matches or [])` printed the one value that means "could not
+        # read the inbox" as `matches=0`, i.e. as "read it, confirmed empty" —
+        # the exact unknown-vs-empty collapse the rest of this feature exists
+        # to prevent, reproduced in the audit trail where nobody would see it.
+        matches = outcome.matches
         # not _audit_outcome: that helper's format has no room for the slug,
         # and the slug is the whole point of this line
         _audit.info(
@@ -320,7 +358,7 @@ class ActionRunner:
             repo_dir,
             slug,
             outcome.ok,
-            len(outcome.matches or []),
+            len(matches) if isinstance(matches, list) else "unknown",
         )
         return outcome
 
@@ -373,6 +411,7 @@ class ActionRunner:
                     title,
                     "--body-file",
                     body_file,
+                    refusal_created=False,
                 )
             except (OSError, UnicodeEncodeError) as err:
                 outcome = ActionOutcome(

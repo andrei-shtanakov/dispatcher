@@ -150,8 +150,17 @@ case — the slug already had one, and the screen re-runs the lookup to
 show it); `null` means the create call itself broke (timeout, missing
 binary, unparseable output) and whether an issue exists is genuinely
 unknown. The screen never renders `null` as "not created", and the only
-follow-up it offers after an unknown outcome is Re-check — never Create
-again, which is how a duplicate would be born. The same unknown-vs-empty
+follow-up it offers on an unknown outcome is Re-check: creating again
+straight off that screen is how a duplicate would be born. Re-check re-runs
+the lookup and clears the unknown-outcome warning together with it — and if
+that fresh lookup answers with an explicit `[]`, Create becomes available
+again. That is deliberate: `issue-lookup` runs `gh issue list`, which asks
+the API directly rather than the lagging search index, so an explicit empty
+answer is the best evidence obtainable, and refusing Create forever would
+strand the operator with no way forward. What the screen must never show is
+the contradiction — a stale "state unknown" warning sitting beside a live
+Create button, as though both described the same moment. The same
+unknown-vs-empty
 distinction applies to the lookup's `matches`: `null` (or an absent or
 wrong-typed field) means the inbox could not be read exhaustively, `[]`
 means it was read and is confirmed empty, and only the latter with

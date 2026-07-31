@@ -1036,3 +1036,93 @@ def test_request_task_handles_a_temp_file_creation_failure(
     assert outcome.ok is False
     assert outcome.created is False
     assert "action=request-task" in caplog.text
+
+
+def test_issue_lookup_refuses_a_nul_byte_instead_of_raising(
+    tmp_path: Path, caplog
+) -> None:
+    """`subprocess.run` raises `ValueError("embedded null byte")` while
+    validating argv — before it forks, so nothing runs. JSON permits `\\u0000`
+    in a string, so this arrives straight off an HTTP body. Uncaught it
+    escaped as a 500 and left NO audit line, breaking this module's stated
+    per-attempt guarantee (ADR-ECO-004a D1a-4)."""
+    make_repo(tmp_path, "alpha")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", "-c", "pass")
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        outcome = runner.issue_lookup("alpha", "want\x00ed")
+    assert outcome.ok is False
+    assert "refused before launch" in (outcome.error or "")
+    assert "action=issue-lookup" in caplog.text
+
+
+def test_request_task_refuses_a_nul_byte_as_a_pre_mutation_refusal(
+    tmp_path: Path, caplog
+) -> None:
+    """Same argv refusal on the mutating path. It is a refusal, not an
+    unknown: the check happens before process creation, so no verb ran and
+    no issue was filed — `created=None` would claim we cannot tell, when we
+    can. Both the outcome and the audit line must say `created=False`."""
+    make_repo(tmp_path, "alpha")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", "-c", "pass")
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        outcome = runner.request_task(
+            "alpha",
+            slug="wan\x00ted",
+            sender="dispatcher",
+            title="t",
+            prose="p",
+        )
+    assert outcome.ok is False
+    assert outcome.created is False
+    assert "refused before launch" in (outcome.error or "")
+    assert "action=request-task" in caplog.text
+    assert "created=False" in caplog.text
+
+
+def test_request_task_releases_the_lock_after_an_argv_refusal(
+    tmp_path: Path,
+) -> None:
+    """The refusal must not wedge the repo: the lock and the temp file are
+    released on this path exactly as on every other."""
+    make_repo(tmp_path, "alpha")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", "-c", "pass")
+    )
+    runner.request_task(
+        "alpha", slug="a\x00b", sender="dispatcher", title="t", prose="p"
+    )
+    again = runner.request_task(
+        "alpha", slug="c\x00d", sender="dispatcher", title="t", prose="p"
+    )
+    assert again.created is False  # not a 409: the repo was free again
+
+
+def test_issue_lookup_audit_distinguishes_unreadable_from_confirmed_empty(
+    tmp_path: Path, caplog
+) -> None:
+    """`len(matches or [])` logged `matches: null` as `matches=0` — the audit
+    trail then read "read the inbox, found nothing" for the one value that
+    means "could not read the inbox", reproducing the exact collapse the rest
+    of this feature exists to prevent."""
+    make_repo(tmp_path, "alpha")
+    payload = {"action": "issue-lookup", "dir": "alpha", "ok": False}
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        runner.issue_lookup("alpha", "wanted")
+    assert "matches=unknown" in caplog.text
+    assert "matches=0" not in caplog.text
+
+    caplog.clear()
+    empty = {"action": "issue-lookup", "dir": "alpha", "ok": True, "matches": []}
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, empty)
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        runner.issue_lookup("alpha", "wanted")
+    assert "matches=0" in caplog.text

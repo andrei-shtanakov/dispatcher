@@ -753,6 +753,84 @@ const CASES = [
       'Create disabled': true,
     },
   },
+  {
+    name: '32. [F-2] Re-check clears the very warning it answers — an "issue '
+      + 'may have been created" notice must never sit beside a live Create',
+    async run(env) {
+      await openPanel(env);
+      await freeSlugThen(env, e =>
+        create(e, 200, {ok: true, created: null, error: 'no answer'}));
+      const warned = env.text('ta-result');
+      env.route(u => u.startsWith('/api/issue-lookup'),
+        () => resp(200, {ok: true, matches: [], malformed: []}));
+      await env.fire('ta-recheck', 'click');
+      return {
+        'warning shown before Re-check': warned,
+        'result after Re-check': env.text('ta-result'),
+        'Re-check hidden after': env.el('ta-recheck').hidden,
+        'slug state': env.text('ta-slug-state'),
+        // the ruling: an explicit [] from `gh issue list` is the best
+        // evidence obtainable, so Create MAY come back — the contradiction
+        // above is what must not
+        'Create disabled': env.el('ta-create').disabled,
+        'lookups issued': env.urls('/api/issue-lookup').length,
+      };
+    },
+    expect: {
+      'warning shown before Re-check':
+        'issue may have been created; state unknown: no answer',
+      'result after Re-check': '',
+      'Re-check hidden after': true,
+      'slug state': 'free',
+      'Create disabled': false,
+      'lookups issued': 2,
+    },
+  },
+  {
+    name: '33. [F-2] Re-check that FINDS the issue shows it and keeps Create '
+      + 'off, with no stale warning left over',
+    async run(env) {
+      await openPanel(env);
+      await freeSlugThen(env, e =>
+        create(e, 200, {ok: true, created: null, error: 'no answer'}));
+      env.route(u => u.startsWith('/api/issue-lookup'),
+        () => resp(200, {ok: true, matches: [GOOD_REF], malformed: []}));
+      await env.fire('ta-recheck', 'click');
+      return {
+        'result after Re-check': env.text('ta-result'),
+        'Re-check hidden after': env.el('ta-recheck').hidden,
+        'slug state': env.text('ta-slug-state'),
+        'Create disabled': env.el('ta-create').disabled,
+        'Open-existing hidden': env.el('ta-open').hidden,
+        'rendered link': env.links('ta-existing'),
+      };
+    },
+    expect: {
+      'result after Re-check': '',
+      'Re-check hidden after': true,
+      'slug state': 'already requested',
+      'Create disabled': true,
+      'Open-existing hidden': false,
+      'rendered link': 'https://github.com/acme/widget/issues/12 → '
+        + 'https://github.com/acme/widget/issues/12',
+    },
+  },
+  {
+    name: '34. a lookup answering 200 with a `null` body fails closed on '
+      + 'purpose, not as a raw TypeError',
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, 'add-x', 200, null);
+      return {
+        'slug state': env.text('ta-slug-state'),
+        'Create disabled': env.el('ta-create').disabled,
+      };
+    },
+    expect: {
+      'slug state': 'cannot check: unreadable response',
+      'Create disabled': true,
+    },
+  },
 ];
 
 // ---- deliberate failures, for testing the runner itself --------------------
