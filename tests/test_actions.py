@@ -1,5 +1,6 @@
 """TASK-210: live whitelist actions — guards, delegation, audit."""
 
+import logging
 import subprocess
 import threading
 import time
@@ -714,3 +715,236 @@ def test_missing_matches_and_malformed_stay_none_not_empty(tmp_path: Path) -> No
     outcome = runner.issue_lookup("alpha", "wanted")
     assert outcome.matches is None
     assert outcome.malformed is None
+
+
+def test_request_task_creates_and_confirms(tmp_path: Path) -> None:
+    make_repo(tmp_path, "alpha")
+    payload = {
+        "action": "issue-create",
+        "dir": "alpha",
+        "ok": True,
+        "created": True,
+        "issue": {"number": 9, "url": "https://x/9"},
+    }
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    outcome = runner.request_task(
+        "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+    )
+    assert outcome.ok is True
+    assert outcome.created is True
+    assert outcome.issue is not None
+    assert outcome.issue["number"] == 9
+
+
+def test_request_task_reports_a_taken_slug_as_success(tmp_path: Path) -> None:
+    make_repo(tmp_path, "alpha")
+    payload = {
+        "action": "issue-create",
+        "dir": "alpha",
+        "ok": True,
+        "created": False,
+        "issue": {"number": 5, "url": "https://x/5"},
+        "detail": "an inbox issue for this slug already exists",
+    }
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    outcome = runner.request_task(
+        "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+    )
+    assert outcome.ok is True
+    assert outcome.created is False
+    assert outcome.issue is not None
+    assert outcome.issue["number"] == 5
+
+
+def test_request_task_preserves_created_none_on_a_broken_create(
+    tmp_path: Path,
+) -> None:
+    """The call broke: whether it landed is unknown, not known-negative."""
+    make_repo(tmp_path, "alpha")
+    payload = {
+        "action": "issue-create",
+        "dir": "alpha",
+        "ok": False,
+        "created": None,
+        "error": "gh issue create failed",
+    }
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    outcome = runner.request_task(
+        "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+    )
+    assert outcome.ok is False
+    assert outcome.created is None
+
+
+def test_request_task_keeps_created_true_when_read_back_failed(
+    tmp_path: Path,
+) -> None:
+    make_repo(tmp_path, "alpha")
+    payload = {
+        "action": "issue-create",
+        "dir": "alpha",
+        "ok": True,
+        "created": True,
+        "issue": None,
+        "detail": "created, but reading it back failed",
+    }
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    outcome = runner.request_task(
+        "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+    )
+    assert outcome.ok is True
+    assert outcome.created is True
+    assert outcome.issue is None
+
+
+def test_request_task_passes_a_duplicate_conflict_through(tmp_path: Path) -> None:
+    """Several issues claim the slug: a human decides, dispatcher does not."""
+    make_repo(tmp_path, "alpha")
+    payload = {
+        "action": "issue-create",
+        "dir": "alpha",
+        "ok": False,
+        "created": False,
+        "error": "several inbox issues claim this slug",
+    }
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    outcome = runner.request_task(
+        "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+    )
+    assert outcome.ok is False
+    assert outcome.created is False  # definitively not created: no mutation ran
+    assert outcome.issue is None
+
+
+def test_request_task_reports_an_unavailable_lookup_as_not_created(
+    tmp_path: Path,
+) -> None:
+    """The pre-create check failed, so nothing was attempted — created is False,
+    not None: `None` would claim we might have mutated something."""
+    make_repo(tmp_path, "alpha")
+    payload = {
+        "action": "issue-create",
+        "dir": "alpha",
+        "ok": False,
+        "created": False,
+        "error": "slug lookup failed before create",
+    }
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    outcome = runner.request_task(
+        "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+    )
+    assert outcome.ok is False
+    assert outcome.created is False
+    assert outcome.issue is None
+
+
+def test_request_task_audits_whether_it_created(tmp_path: Path, caplog) -> None:
+    """D1a-4: the audit must distinguish created from already-existed —
+    an idempotency rule whose log cannot show idempotency is not auditable."""
+    make_repo(tmp_path, "alpha")
+    payload = {
+        "action": "issue-create",
+        "dir": "alpha",
+        "ok": True,
+        "created": False,
+        "issue": {"number": 5},
+    }
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        runner.request_task(
+            "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+        )
+    assert "created=False" in caplog.text
+
+
+def test_pull_audit_line_is_unchanged_by_the_created_field(
+    tmp_path: Path, caplog
+) -> None:
+    """The new field must not leak into unrelated actions' audit lines."""
+    make_repo(tmp_path, "alpha")
+    payload = {"action": "pull", "dir": "alpha", "ok": True}
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        runner.run("pull", "alpha")
+    assert "created=" not in caplog.text
+
+
+def test_request_task_passes_prose_through_a_file_not_argv(
+    tmp_path: Path,
+) -> None:
+    """Multi-line prose must survive; argv would mangle it."""
+    make_repo(tmp_path, "alpha")
+    script = tmp_path / "echo_body.py"
+    script.write_text(
+        "import sys, json, pathlib\n"
+        "i = sys.argv.index('--body-file')\n"
+        "body = pathlib.Path(sys.argv[i + 1]).read_text()\n"
+        "json.dump({'action':'issue-create','dir':'alpha','ok':True,"
+        "'created':True,'detail':body}, sys.stdout)\n"
+    )
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
+    )
+    outcome = runner.request_task(
+        "alpha",
+        slug="wanted",
+        sender="dispatcher",
+        title="t",
+        prose="line one\nline two\n",
+    )
+    assert outcome.detail == "line one\nline two\n"
+
+
+def test_request_task_holds_the_repo_lock(tmp_path: Path) -> None:
+    make_repo(tmp_path, "alpha")
+    script = tmp_path / "blocking.py"
+    script.write_text(
+        "import sys, json, pathlib, time\n"
+        f"flag = pathlib.Path({str(tmp_path / 'in_create')!r})\n"
+        f"gate = pathlib.Path({str(tmp_path / 'go')!r})\n"
+        "flag.touch()\n"
+        "while not gate.exists():\n"
+        "    time.sleep(0.01)\n"
+        "json.dump({'action':'issue-create','dir':'alpha','ok':True,"
+        "'created':True}, sys.stdout)\n"
+    )
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
+    )
+    result: list[ActionOutcome] = []
+    worker = threading.Thread(
+        target=lambda: result.append(
+            runner.request_task(
+                "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+            )
+        )
+    )
+    worker.start()
+    deadline = time.monotonic() + 10
+    while not (tmp_path / "in_create").exists():
+        if time.monotonic() > deadline:
+            pytest.fail("worker never entered issue-create")
+        time.sleep(0.01)
+    with pytest.raises(ActionBusyError):
+        runner.run("pull", "alpha")
+    (tmp_path / "go").touch()
+    worker.join(timeout=10)
+    assert not worker.is_alive(), "worker wedged"
+    assert result[0].ok is True
+    runner.run("pull", "alpha")  # lock released

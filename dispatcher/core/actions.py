@@ -32,6 +32,7 @@ import json
 import logging
 import re
 import subprocess
+import tempfile
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -155,6 +156,11 @@ class ActionRunner:
         merge_fields = ""
         if outcome.merged is not None or outcome.local_sync is not None:
             merge_fields = f" merged={outcome.merged} local_sync={outcome.local_sync}"
+        if outcome.created is not None:
+            # `is not None`, not truthiness: created=False is the idempotent
+            # case (slug already existed) — precisely the one D1a-4 needs
+            # visible in the audit line, and truthiness would drop it
+            merge_fields += f" created={outcome.created}"
         _audit.info(
             "action=%s repo=%s ok=%s%s detail=%s error=%s",
             action,
@@ -316,4 +322,44 @@ class ActionRunner:
             outcome.ok,
             len(outcome.matches or []),
         )
+        return outcome
+
+    def request_task(
+        self, repo_dir: str, *, slug: str, sender: str, title: str, prose: str
+    ) -> ActionOutcome:
+        """File an inbox issue in *repo_dir*, holding the repo's lock.
+
+        github-checker's `issue-create` re-checks for an existing slug and
+        reads the result back inside one verb, so a single guarded call
+        covers the whole lookup → create → read-back sequence.
+
+        `created` is passed through untouched: `true` / `false` / `None`
+        mean created / not created / unknown, and flattening `None` into
+        `false` would tell the operator a request does not exist when it
+        may well do.
+        """
+        with self._hold("request-task", repo_dir) as target:
+            # prose is multi-line; argv is where newlines and quoting die
+            with tempfile.NamedTemporaryFile(
+                "w", suffix=".md", delete=False, encoding="utf-8"
+            ) as handle:
+                handle.write(prose)
+                body_file = handle.name
+            try:
+                outcome = self._invoke(
+                    "issue-create",
+                    target,
+                    "--slug",
+                    slug,
+                    "--from",
+                    sender,
+                    "--title",
+                    title,
+                    "--body-file",
+                    body_file,
+                )
+            finally:
+                Path(body_file).unlink(missing_ok=True)
+        outcome.action = "request-task"
+        self._audit_outcome("request-task", repo_dir, outcome)
         return outcome
