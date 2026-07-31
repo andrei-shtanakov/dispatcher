@@ -32,6 +32,7 @@ import json
 import logging
 import re
 import subprocess
+import tempfile
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -44,6 +45,17 @@ from dispatcher.core.discovery import DispatcherConfig
 
 _ACTION_TIMEOUT = 120
 _SAFE_DIR_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")
+# C0 controls plus DEL. None of them belong in a value that becomes its own
+# argv element: NUL is the sharp case (`subprocess.run` refuses argv containing
+# one, and JSON permits it in a string, so it arrives straight off the wire),
+# but a newline or an ESC in a slug or an issue title is equally meaningless
+# and equally capable of confusing whatever reads the audit log afterwards.
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+# The three phases an outcome can be decided in. They are a property of WHERE
+# in _invoke the decision was made, not of which exception was raised.
+PHASE_PRE_LAUNCH = "pre_launch"
+PHASE_LAUNCHED_UNREADABLE = "launched_unreadable"
+PHASE_READABLE = "readable_result"
 
 Action = Literal["pull", "open-pr", "post-merge-sync"]
 _WHITELIST = frozenset({"pull", "open-pr", "post-merge-sync"})
@@ -69,6 +81,15 @@ class ActionOutcome(BaseModel):
     local_sync: str | None = None  # ok | failed | not_attempted | not_applicable
     gate_failed: list[str] | None = None
     pr_detail: dict[str, Any] | None = None
+    matches: list[dict[str, Any]] | None = None
+    malformed: list[dict[str, Any]] | None = None
+    created: bool | None = None
+    issue: dict[str, Any] | None = None
+    # Which side of the fork this outcome was decided on. Not cosmetic: it is
+    # what stops "nothing ran" and "it ran and we could not read the answer"
+    # from being told apart by Python's exception hierarchy, which is the
+    # inference that produced the created=False-on-a-completed-run bug.
+    phase: str | None = None  # pre_launch | launched_unreadable | readable_result
 
 
 class ActionBusyError(Exception):
@@ -77,6 +98,50 @@ class ActionBusyError(Exception):
 
 class ActionRejectedError(Exception):
     """Bad target: unsafe name or not a git repo in the workspace (→ 422)."""
+
+
+def _argv_refusal(argv: list[str]) -> str | None:
+    """Name the first argv element the OS cannot be handed, or None.
+
+    Runs BEFORE `subprocess.run`, so a hit is unambiguously pre-fork: nothing
+    was executed and nothing was mutated. An embedded NUL is the reachable
+    case — JSON permits it in a string, so it arrives straight off the wire —
+    and `subprocess` itself raises `ValueError` for it, an exception type it
+    shares with the post-run decode failure. Checking here is what makes the
+    two distinguishable at all.
+    """
+    for index, arg in enumerate(argv):
+        if "\x00" in arg:
+            return f"argv[{index}] contains an embedded null byte"
+    return None
+
+
+def reject_control_chars(**fields: str) -> None:
+    """Layer 1 of the argv defence: refuse control characters by name.
+
+    Every value here becomes a structural argv element (`--slug <slug>`,
+    `--title <title>`, …). A NUL makes `subprocess.run` raise before it even
+    forks, which used to escape as a 500 with no audit line at all; the rest
+    of the C0 range is simply not meaningful in a slug or a one-line title.
+
+    This is the INTENDED refusal, and it is deliberately not the only one:
+    `_invoke` still catches `ValueError` around `subprocess.run` regardless
+    of whether this ran (layer 2). A validator only covers the fields someone
+    remembered to list, and the next field added to an argv is exactly the
+    one that will be forgotten — so the boundary keeps its own guard rather
+    than trusting that this one was called.
+    """
+    for name, value in fields.items():
+        found = _CONTROL_RE.search(value)
+        if found is not None:
+            raise ActionRejectedError(
+                # one line: this string is both a 422 detail and an audit
+                # line, and a newline would split the latter in the log
+                f"{name} contains a control character "
+                f"(U+{ord(found.group()):04X}); this value becomes an argument "
+                f"to the github-checker binary, where a control character "
+                f"would truncate it — remove the character and try again"
+            )
 
 
 class ActionRunner:
@@ -151,6 +216,16 @@ class ActionRunner:
         merge_fields = ""
         if outcome.merged is not None or outcome.local_sync is not None:
             merge_fields = f" merged={outcome.merged} local_sync={outcome.local_sync}"
+        if outcome.created is not None:
+            # `is not None`, not truthiness: created=False is the idempotent
+            # case (slug already existed) — precisely the one D1a-4 needs
+            # visible in the audit line, and truthiness would drop it
+            merge_fields += f" created={outcome.created}"
+        if outcome.phase is not None:
+            # Which side of the fork decided this. `launched_unreadable` beside
+            # an absent `created=` is the shape a reader must be able to spot:
+            # the verb RAN and we cannot say what it did.
+            merge_fields += f" phase={outcome.phase}"
         _audit.info(
             "action=%s repo=%s ok=%s%s detail=%s error=%s",
             action,
@@ -161,26 +236,114 @@ class ActionRunner:
             outcome.error,
         )
 
-    def _invoke(self, action: str, target: Path, *extra: str) -> ActionOutcome:
+    def _invoke(
+        self,
+        action: str,
+        target: Path,
+        *extra: str,
+        refusal_created: bool | None = None,
+    ) -> ActionOutcome:
+        """Run one github-checker verb and parse its answer.
+
+        *refusal_created* is the `created` value to stamp when the launch is
+        refused BEFORE anything runs — a pre-mutation refusal; callers that
+        mutate pass `False`, read-only callers leave it unknown. It is
+        deliberately NOT applied to anything that happens after the fork: a
+        child that ran and then failed to be read leaves `created` unknown.
+        """
         argv = [*self._command, action, str(target), *extra]
-        try:
-            proc = subprocess.run(
-                argv, capture_output=True, text=True, timeout=_ACTION_TIMEOUT
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired) as err:
+
+        def refused(reason: str) -> ActionOutcome:
+            """PHASE 1 — nothing was executed. Safe to say nothing changed."""
             return ActionOutcome(
-                action=action, dir=target.name, ok=False, error=str(err)
+                action=action,
+                dir=target.name,
+                ok=False,
+                created=refusal_created,
+                phase=PHASE_PRE_LAUNCH,
+                error=f"refused before launch: {reason}",
             )
+
+        def unreadable() -> ActionOutcome:
+            """PHASE 2 — the child RAN; its answer could not be read.
+
+            `created` is left None on purpose and `refusal_created` is NOT
+            consulted: for `issue-create` the issue may exist. Claiming
+            `created=False` here sends the screen down the ordinary-refusal
+            arm, which re-enables Create — the duplicate this feature exists
+            to prevent.
+            """
+            return ActionOutcome(
+                action=action,
+                dir=target.name,
+                ok=False,
+                created=None,
+                phase=PHASE_LAUNCHED_UNREADABLE,
+                error=(
+                    "process completed, but its response was unreadable; "
+                    "mutation outcome unknown"
+                ),
+            )
+
+        # PHASE 1. Explicit, before the call: a hit here is unambiguously
+        # pre-fork because no process has been created yet. Inferring the same
+        # thing from the exception subprocess happens to raise is what broke.
+        refusal = _argv_refusal(argv)
+        if refusal is not None:
+            return refused(refusal)
         try:
-            data = json.loads(proc.stdout)
+            # Bytes, NOT text=True. Decoding inside this call would put a
+            # post-execution failure inside a pre-launch except clause, and no
+            # ordering of handlers can undo that: the phase boundary has to be
+            # a boundary in the CODE.
+            proc = subprocess.run(argv, capture_output=True, timeout=_ACTION_TIMEOUT)
+        except UnicodeDecodeError:
+            # ORDER IS LOAD-BEARING: UnicodeDecodeError IS a ValueError, so it
+            # must precede the clause below or it would be caught as a
+            # pre-launch refusal. Unreachable while output is captured as
+            # bytes — kept so that re-adding text=True degrades to the correct
+            # phase instead of silently to the wrong one.
+            return unreadable()
+        except ValueError as err:
+            return refused(str(err))
+        except subprocess.TimeoutExpired:
+            # The child started and was killed: it may have done its work.
+            return unreadable()
+        except OSError as err:
+            # N-3: exec itself failed (E2BIG from an oversized client-supplied
+            # `--if-head`, EACCES, ENOMEM). Nothing ran. Previously only
+            # FileNotFoundError was caught and the rest raised out — a 500
+            # with ZERO audit lines, the same guarantee break as F-1.
+            return refused(str(err))
+        # PHASE 2 boundary: everything below happens with a completed child.
+        try:
+            stdout = proc.stdout.decode("utf-8")
+            stderr = proc.stderr.decode("utf-8")
+        except UnicodeDecodeError:
+            return unreadable()
+        # PHASE 3 — we hold a readable answer; every outcome below is a
+        # statement about what github-checker actually said.
+        try:
+            data = json.loads(stdout)
         except json.JSONDecodeError:
             return ActionOutcome(
                 action=action,
                 dir=target.name,
                 ok=False,
-                error=proc.stderr.strip() or "github-checker returned no JSON",
+                phase=PHASE_READABLE,
+                error=stderr.strip() or "github-checker returned no JSON",
             )
-        local = data.get("local") or {}
+        if not isinstance(data, dict):
+            return ActionOutcome(
+                action=action,
+                dir=target.name,
+                ok=False,
+                phase=PHASE_READABLE,
+                error="github-checker returned JSON that is not an object",
+            )
+        local = data.get("local")
+        if not isinstance(local, dict):
+            local = {}
         try:
             return ActionOutcome(
                 action=action,
@@ -195,6 +358,11 @@ class ActionRunner:
                 local_sync=data.get("local_sync"),
                 gate_failed=data.get("gate_failed"),
                 pr_detail=data.get("pr_detail"),
+                matches=data.get("matches"),
+                malformed=data.get("malformed"),
+                created=data.get("created"),
+                issue=data.get("issue"),
+                phase=PHASE_READABLE,
             )
         except ValidationError as err:
             # the pr_detail PAYLOAD is validated by the console; the envelope
@@ -205,6 +373,7 @@ class ActionRunner:
                 action=action,
                 dir=target.name,
                 ok=False,
+                phase=PHASE_READABLE,
                 error=(
                     "github-checker returned an unparseable envelope: "
                     # one audit line per attempt: pydantic's report is
@@ -251,6 +420,12 @@ class ActionRunner:
             # defect as claiming a non-merge we were not told about
             merged=merge.merged,
             local_sync=sync.local_sync or ("ok" if sync.ok else "failed"),
+            # The composite is only as readable as its LEAST readable step:
+            # claiming `readable_result` because the merge parsed, while the
+            # sync's answer could not be read, would assert knowledge of a
+            # step nobody read. Both component lines already carry their own
+            # phase; this is the one that was missing.
+            phase=(merge.phase if merge.phase != PHASE_READABLE else sync.phase),
             detail=merge.detail,
             error=sync.error,
             pr_url=merge.pr_url,
@@ -274,5 +449,140 @@ class ActionRunner:
             )
             raise
         outcome = self._invoke("pr-detail", target, str(pr))
-        _audit.info("action=pr-detail repo=%s pr=%s ok=%s", repo_dir, pr, outcome.ok)
+        _audit.info(
+            "action=pr-detail repo=%s pr=%s ok=%s phase=%s",
+            repo_dir,
+            pr,
+            outcome.ok,
+            outcome.phase,
+        )
+        return outcome
+
+    def issue_lookup(self, repo_dir: str, slug: str) -> ActionOutcome:
+        """Ask whether a slug already has an inbox issue. A read takes no lock."""
+        try:
+            target = self._target(repo_dir)
+            reject_control_chars(slug=slug)
+        except ActionRejectedError as err:
+            # slug is %r, not %s: a rejected slug can contain the very control
+            # characters that made it a rejection, and writing them raw into
+            # the audit trail is how a log line stops being readable
+            _audit.info(
+                "action=issue-lookup repo=%s slug=%r ok=False rejected=%s",
+                repo_dir,
+                slug,
+                err,
+            )
+            raise
+        outcome = self._invoke("issue-lookup", target, "--slug", slug)
+        # `len(matches or [])` printed the one value that means "could not
+        # read the inbox" as `matches=0`, i.e. as "read it, confirmed empty" —
+        # the exact unknown-vs-empty collapse the rest of this feature exists
+        # to prevent, reproduced in the audit trail where nobody would see it.
+        matches = outcome.matches
+        # not _audit_outcome: that helper's format has no room for the slug,
+        # and the slug is the whole point of this line
+        _audit.info(
+            # %r on the slug here too: the success path logs whatever the
+            # client sent, and a slug that merely LOOKS ordinary can still
+            # carry characters that break a log line
+            "action=issue-lookup repo=%s slug=%r ok=%s phase=%s matches=%s",
+            repo_dir,
+            slug,
+            outcome.ok,
+            outcome.phase,
+            len(matches) if isinstance(matches, list) else "unknown",
+        )
+        return outcome
+
+    def request_task(
+        self, repo_dir: str, *, slug: str, sender: str, title: str, prose: str
+    ) -> ActionOutcome:
+        """File an inbox issue in *repo_dir*, holding the repo's lock.
+
+        github-checker's `issue-create` re-checks for an existing slug and
+        reads the result back inside one verb, so a single guarded call
+        covers the whole lookup → create → read-back sequence.
+
+        `created` is passed through untouched: `true` / `false` / `None`
+        mean created / not created / unknown, and flattening `None` into
+        `false` would tell the operator a request does not exist when it
+        may well do.
+
+        Writing *prose* can itself fail before any subprocess ever runs: a
+        lone UTF-16 surrogate survives `json.loads` (JSON permits unpaired
+        `\\uXXXX` escapes) but cannot be encoded to UTF-8, and a full disk
+        raises the same shape of error. Since nothing was attempted, that is
+        a pre-mutation refusal exactly like a failed pre-create lookup —
+        reported as `created=False`, not an escaping exception and not
+        `created=None` (`None` would claim we don't know whether something
+        was attempted, when we know nothing was).
+        """
+        # Layer 1, before the lock: a request this malformed must not occupy
+        # the repo, and — the point of F-1 — must not vanish from the log.
+        try:
+            reject_control_chars(slug=slug, sender=sender, title=title)
+        except ActionRejectedError as err:
+            _audit.info(
+                "action=request-task repo=%s ok=False created=False rejected=%s",
+                repo_dir,
+                err,
+            )
+            raise
+        with self._hold("request-task", repo_dir) as target:
+            # the name must be recorded before anything can fail with the
+            # file already open, so every exit below — success, a broken
+            # create call, or a failure while creating/writing the file
+            # itself — can still find it, unlink it, and still produce an
+            # outcome to audit (a leaked file *and* a silent, unaudited
+            # attempt is the failure mode this guards against)
+            body_file: str | None = None
+            try:
+                # prose is multi-line; argv is where newlines and quoting die
+                with tempfile.NamedTemporaryFile(
+                    "w", suffix=".md", delete=False, encoding="utf-8"
+                ) as handle:
+                    body_file = handle.name
+                    handle.write(prose)
+                outcome = self._invoke(
+                    "issue-create",
+                    target,
+                    "--slug",
+                    slug,
+                    "--from",
+                    sender,
+                    "--title",
+                    title,
+                    "--body-file",
+                    body_file,
+                    refusal_created=False,
+                )
+            except (OSError, UnicodeEncodeError) as err:
+                outcome = ActionOutcome(
+                    action="issue-create",
+                    dir=target.name,
+                    ok=False,
+                    created=False,
+                    phase=PHASE_PRE_LAUNCH,
+                    error=f"could not write the request body: {err}",
+                )
+            finally:
+                if body_file is not None:
+                    try:
+                        Path(body_file).unlink(missing_ok=True)
+                    except OSError as err:
+                        # The one exit of the eight that could still leave no
+                        # audit line: a cleanup failure (EACCES, EIO, a
+                        # read-only /tmp) raised out of `finally`, discarding
+                        # the outcome that was already decided and taking the
+                        # audit call below with it. A leaked temp file is a
+                        # nuisance; an unlogged mutation attempt is the thing
+                        # this module promises cannot happen.
+                        _audit.info(
+                            "action=request-task repo=%s cleanup_failed=%s",
+                            repo_dir,
+                            err,
+                        )
+        outcome.action = "request-task"
+        self._audit_outcome("request-task", repo_dir, outcome)
         return outcome

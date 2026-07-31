@@ -37,6 +37,14 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - uses: astral-sh/setup-uv@v8.1.0
+      # Node is a hard prerequisite of test_task_authoring_js.py (the
+      # task-authoring screen's client-JS harness) — pinned explicitly
+      # rather than relying on whatever ubuntu-latest happens to preinstall,
+      # so that test's assert-not-skip guarantee has a fixed version behind
+      # it, matching the vscode-ext job's convention below.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - run: uv sync
       - run: uv run pytest tests/ -v
 

@@ -1,6 +1,8 @@
 """TASK-210: live whitelist actions — guards, delegation, audit."""
 
+import logging
 import subprocess
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -8,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from dispatcher.core import actions as actions_module
 from dispatcher.core.actions import (
     ActionBusyError,
     ActionOutcome,
@@ -570,3 +573,775 @@ def test_pr_detail_still_validates_the_repo_dir(tmp_path: Path) -> None:
     runner = ActionRunner(DispatcherConfig(roots=(tmp_path,)))
     with pytest.raises(ActionRejectedError, match="unsafe"):
         runner.pr_detail("../etc", 7)
+
+
+def test_outcome_carries_the_issue_fields(tmp_path: Path) -> None:
+    make_repo(tmp_path, "alpha")
+    payload = {
+        "action": "issue-lookup",
+        "dir": "alpha",
+        "ok": True,
+        "matches": [{"number": 7, "state": "open"}],
+        "malformed": [],
+    }
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    outcome = runner.issue_lookup("alpha", "wanted")
+    assert outcome.ok is True
+    assert outcome.matches is not None  # narrow for pyrefly, mirrors pr_detail tests
+    assert outcome.matches[0]["number"] == 7
+    assert outcome.malformed == []
+
+
+def test_issue_lookup_succeeds_while_a_composite_is_in_flight(tmp_path: Path) -> None:
+    """`issue_lookup` must not queue behind an in-flight merge_and_sync.
+
+    Proven by actually calling it while one is genuinely blocked mid-merge —
+    asserting `_busy == set()` only after the call returns would pass even if
+    `issue_lookup` took the lock and silently waited its turn first, since
+    `_hold`'s `finally` always clears `_busy` before returning.
+    """
+    make_repo(tmp_path, "alpha")
+    in_merge = tmp_path / "in_merge"
+    go = tmp_path / "go"
+    script = tmp_path / "blocking_merge_for_lookup.py"
+    script.write_text(
+        "import sys, json, pathlib, time\n"
+        f"flag = pathlib.Path({str(in_merge)!r})\n"
+        f"gate = pathlib.Path({str(go)!r})\n"
+        "action = sys.argv[1]\n"
+        "if action == 'merge':\n"
+        "    flag.touch()\n"
+        "    while not gate.exists():\n"
+        "        time.sleep(0.01)\n"
+        "    json.dump({'action':'merge','dir':'alpha','ok':True,'merged':True},"
+        " sys.stdout)\n"
+        "elif action == 'issue-lookup':\n"
+        "    json.dump({'action':'issue-lookup','dir':'alpha','ok':True,"
+        "'matches':[],'malformed':[]}, sys.stdout)\n"
+        "else:\n"
+        "    json.dump({'action':'post-merge-sync','dir':'alpha','ok':True,"
+        "'local_sync':'ok'}, sys.stdout)\n"
+    )
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
+    )
+    worker = threading.Thread(target=runner.merge_and_sync, args=("alpha", 7, HEAD))
+    worker.start()
+    _wait_for(in_merge, "worker never entered the merge step")
+
+    assert runner._busy == {"alpha"}  # the repo really is held right now
+    outcome = runner.issue_lookup("alpha", "wanted")  # must succeed, no queueing
+    assert outcome.ok is True
+
+    go.touch()
+    worker.join(timeout=10)
+    assert not worker.is_alive(), "merge_and_sync worker did not finish in time"
+
+
+@pytest.mark.parametrize("payload", ["[1, 2]", "5", '"a string"', "null"])
+def test_non_object_json_is_a_failed_outcome_not_an_exception(
+    tmp_path: Path, payload: str
+) -> None:
+    """Pre-existing hole: `data.get` sat outside the try, so a non-object
+    top-level payload raised AttributeError out of the runner."""
+    make_repo(tmp_path, "alpha")
+    script = tmp_path / "bad_json.py"
+    script.write_text(f"import sys; sys.stdout.write({payload!r})")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
+    )
+    outcome = runner.run("pull", "alpha")
+    assert outcome.ok is False
+    assert "not an object" in (outcome.error or "")
+
+
+def test_issue_lookup_still_validates_the_repo_dir(tmp_path: Path) -> None:
+    runner = ActionRunner(DispatcherConfig(roots=(tmp_path,)))
+    with pytest.raises(ActionRejectedError, match="unsafe"):
+        runner.issue_lookup("../etc", "wanted")
+
+
+def test_issue_lookup_passes_the_slug_through(tmp_path: Path) -> None:
+    make_repo(tmp_path, "alpha")
+    script = tmp_path / "echo_argv.py"
+    script.write_text(
+        "import sys, json;"
+        "json.dump({'action':'issue-lookup','dir':'alpha','ok':True,"
+        "'detail':' '.join(sys.argv[1:])}, sys.stdout)"
+    )
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
+    )
+    outcome = runner.issue_lookup("alpha", "wanted")
+    assert "--slug wanted" in (outcome.detail or "")
+
+
+@pytest.mark.parametrize("bad_local", [5, "x", [1, 2]])
+def test_non_dict_local_degrades_instead_of_crashing(
+    tmp_path: Path, bad_local: object
+) -> None:
+    """Pre-existing hole one line below the envelope guard: `data.get("local")
+    or {}` only rescues a *falsy* `local` (missing, `None`, `{}`); a truthy
+    non-dict scalar, string, or list still reached `local.get(...)` and
+    raised AttributeError out of the runner."""
+    make_repo(tmp_path, "alpha")
+    payload = {"action": "pull", "dir": "alpha", "ok": True, "local": bad_local}
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    outcome = runner.run("pull", "alpha")
+    assert outcome.local_behind is None
+    assert outcome.local_dirty is None
+
+
+def test_missing_matches_and_malformed_stay_none_not_empty(tmp_path: Path) -> None:
+    """`matches`/`malformed` unset (`null`) means github-checker hit its
+    internal cap or could not read a candidate — it could NOT confirm the
+    inbox is empty. `[]` means it looked and found nothing. Collapsing the
+    two (e.g. `data.get("matches") or []`) would silently turn "unknown"
+    into "confirmed empty" — the exact failure the producer's truncation
+    guard exists to prevent."""
+    make_repo(tmp_path, "alpha")
+    payload = {
+        "action": "issue-lookup",
+        "dir": "alpha",
+        "ok": False,
+        "matches": None,
+        "malformed": None,
+    }
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    outcome = runner.issue_lookup("alpha", "wanted")
+    assert outcome.matches is None
+    assert outcome.malformed is None
+
+
+def test_request_task_creates_and_confirms(tmp_path: Path) -> None:
+    make_repo(tmp_path, "alpha")
+    payload = {
+        "action": "issue-create",
+        "dir": "alpha",
+        "ok": True,
+        "created": True,
+        "issue": {"number": 9, "url": "https://x/9"},
+    }
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    outcome = runner.request_task(
+        "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+    )
+    assert outcome.ok is True
+    assert outcome.created is True
+    assert outcome.issue is not None
+    assert outcome.issue["number"] == 9
+
+
+def test_request_task_reports_a_taken_slug_as_success(tmp_path: Path) -> None:
+    make_repo(tmp_path, "alpha")
+    payload = {
+        "action": "issue-create",
+        "dir": "alpha",
+        "ok": True,
+        "created": False,
+        "issue": {"number": 5, "url": "https://x/5"},
+        "detail": "an inbox issue for this slug already exists",
+    }
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    outcome = runner.request_task(
+        "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+    )
+    assert outcome.ok is True
+    assert outcome.created is False
+    assert outcome.issue is not None
+    assert outcome.issue["number"] == 5
+
+
+def test_request_task_preserves_created_none_on_a_broken_create(
+    tmp_path: Path,
+) -> None:
+    """The call broke: whether it landed is unknown, not known-negative."""
+    make_repo(tmp_path, "alpha")
+    payload = {
+        "action": "issue-create",
+        "dir": "alpha",
+        "ok": False,
+        "created": None,
+        "error": "gh issue create failed",
+    }
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    outcome = runner.request_task(
+        "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+    )
+    assert outcome.ok is False
+    assert outcome.created is None
+
+
+def test_request_task_keeps_created_true_when_read_back_failed(
+    tmp_path: Path,
+) -> None:
+    make_repo(tmp_path, "alpha")
+    payload = {
+        "action": "issue-create",
+        "dir": "alpha",
+        "ok": True,
+        "created": True,
+        "issue": None,
+        "detail": "created, but reading it back failed",
+    }
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    outcome = runner.request_task(
+        "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+    )
+    assert outcome.ok is True
+    assert outcome.created is True
+    assert outcome.issue is None
+
+
+def test_request_task_passes_a_duplicate_conflict_through(tmp_path: Path) -> None:
+    """Several issues claim the slug: a human decides, dispatcher does not."""
+    make_repo(tmp_path, "alpha")
+    payload = {
+        "action": "issue-create",
+        "dir": "alpha",
+        "ok": False,
+        "created": False,
+        "error": "several inbox issues claim this slug",
+    }
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    outcome = runner.request_task(
+        "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+    )
+    assert outcome.ok is False
+    assert outcome.created is False  # definitively not created: no mutation ran
+    assert outcome.issue is None
+
+
+def test_request_task_reports_an_unavailable_lookup_as_not_created(
+    tmp_path: Path,
+) -> None:
+    """The pre-create check failed, so nothing was attempted — created is False,
+    not None: `None` would claim we might have mutated something."""
+    make_repo(tmp_path, "alpha")
+    payload = {
+        "action": "issue-create",
+        "dir": "alpha",
+        "ok": False,
+        "created": False,
+        "error": "slug lookup failed before create",
+    }
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    outcome = runner.request_task(
+        "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+    )
+    assert outcome.ok is False
+    assert outcome.created is False
+    assert outcome.issue is None
+
+
+def test_request_task_audits_whether_it_created(tmp_path: Path, caplog) -> None:
+    """D1a-4: the audit must distinguish created from already-existed —
+    an idempotency rule whose log cannot show idempotency is not auditable."""
+    make_repo(tmp_path, "alpha")
+    payload = {
+        "action": "issue-create",
+        "dir": "alpha",
+        "ok": True,
+        "created": False,
+        "issue": {"number": 5},
+    }
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        runner.request_task(
+            "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+        )
+    assert "created=False" in caplog.text
+
+
+def test_pull_audit_line_is_unchanged_by_the_created_field(
+    tmp_path: Path, caplog
+) -> None:
+    """The new field must not leak into unrelated actions' audit lines."""
+    make_repo(tmp_path, "alpha")
+    payload = {"action": "pull", "dir": "alpha", "ok": True}
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        runner.run("pull", "alpha")
+    assert "created=" not in caplog.text
+
+
+def test_request_task_passes_prose_through_a_file_not_argv(
+    tmp_path: Path,
+) -> None:
+    """Multi-line prose must survive; argv would mangle it."""
+    make_repo(tmp_path, "alpha")
+    script = tmp_path / "echo_body.py"
+    script.write_text(
+        "import sys, json, pathlib\n"
+        "i = sys.argv.index('--body-file')\n"
+        "body = pathlib.Path(sys.argv[i + 1]).read_text()\n"
+        "json.dump({'action':'issue-create','dir':'alpha','ok':True,"
+        "'created':True,'detail':body}, sys.stdout)\n"
+    )
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
+    )
+    outcome = runner.request_task(
+        "alpha",
+        slug="wanted",
+        sender="dispatcher",
+        title="t",
+        prose="line one\nline two\n",
+    )
+    assert outcome.detail == "line one\nline two\n"
+
+
+def test_request_task_holds_the_repo_lock(tmp_path: Path) -> None:
+    make_repo(tmp_path, "alpha")
+    script = tmp_path / "blocking.py"
+    script.write_text(
+        "import sys, json, pathlib, time\n"
+        f"flag = pathlib.Path({str(tmp_path / 'in_create')!r})\n"
+        f"gate = pathlib.Path({str(tmp_path / 'go')!r})\n"
+        "flag.touch()\n"
+        "while not gate.exists():\n"
+        "    time.sleep(0.01)\n"
+        "json.dump({'action':'issue-create','dir':'alpha','ok':True,"
+        "'created':True}, sys.stdout)\n"
+    )
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
+    )
+    result: list[ActionOutcome] = []
+    worker = threading.Thread(
+        target=lambda: result.append(
+            runner.request_task(
+                "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+            )
+        )
+    )
+    worker.start()
+    deadline = time.monotonic() + 10
+    while not (tmp_path / "in_create").exists():
+        if time.monotonic() > deadline:
+            pytest.fail("worker never entered issue-create")
+        time.sleep(0.01)
+
+    # The concurrent call runs in its own thread with a *bounded* join. If
+    # `_hold` queued instead of rejecting, `runner.run` here would block
+    # until the worker releases the lock — waiting that out inline (as a
+    # bare `with pytest.raises(...): runner.run(...)`) would deadlock the
+    # whole test, since the `go` touch that unblocks the worker sits below.
+    # Bounding the wait turns "the guard queues" into a prompt, readable
+    # assertion failure instead of a hung job. `go` is touched afterward
+    # unconditionally, so both threads are released no matter what happened.
+    second_outcome: list[ActionBusyError] = []
+
+    def attempt_pull() -> None:
+        try:
+            runner.run("pull", "alpha")
+        except ActionBusyError as err:
+            second_outcome.append(err)
+
+    second = threading.Thread(target=attempt_pull)
+    second.start()
+    second.join(timeout=2)
+    rejected_immediately = not second.is_alive() and len(second_outcome) == 1
+
+    (tmp_path / "go").touch()
+    worker.join(timeout=10)
+    second.join(timeout=10)
+    assert not worker.is_alive(), "worker wedged"
+    assert not second.is_alive(), "concurrent pull thread wedged (queued, not rejected)"
+    assert rejected_immediately, (
+        "a concurrent action must get an immediate ActionBusyError, not queue "
+        "behind the in-flight request_task"
+    )
+    assert result[0].ok is True
+    runner.run("pull", "alpha")  # lock released
+
+
+def test_request_task_handles_an_unencodable_prose_without_leaking_or_hanging(
+    tmp_path: Path, caplog, monkeypatch
+) -> None:
+    """A lone UTF-16 surrogate survives `json.loads` (JSON permits unpaired
+    `\\uXXXX` escapes) but cannot be encoded to UTF-8 when writing the temp
+    file — reachable straight from an HTTP request body. This is a real
+    write failure, not a mocked `_invoke` failure: nothing was attempted, so
+    it must surface as `created=False` (not raise, not `created=None`), the
+    temp file must not leak, and the attempt must still be audited."""
+    make_repo(tmp_path, "alpha")
+    created_paths: list[str] = []
+    original_ntf = tempfile.NamedTemporaryFile
+
+    def recording_ntf(*args, **kwargs):
+        handle = original_ntf(*args, **kwargs)
+        created_paths.append(handle.name)
+        return handle
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", recording_ntf)
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", "-c", "pass")
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        outcome = runner.request_task(
+            "alpha",
+            slug="wanted",
+            sender="dispatcher",
+            title="t",
+            prose="\ud83d",  # lone surrogate: valid JSON, invalid UTF-8
+        )
+    assert outcome.ok is False
+    assert outcome.created is False
+    assert len(created_paths) == 1
+    assert not Path(created_paths[0]).exists()  # the temp file did not leak
+    assert "action=request-task" in caplog.text  # the attempt was audited
+
+
+def test_request_task_handles_a_temp_file_creation_failure(
+    tmp_path: Path, caplog, monkeypatch
+) -> None:
+    """A failure while creating the temp file itself (e.g. a full disk)
+    happens before any name is ever recorded — there is nothing to unlink,
+    but the attempt must still leave an audit line, not vanish silently."""
+    make_repo(tmp_path, "alpha")
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full (simulated)")
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", boom)
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", "-c", "pass")
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        outcome = runner.request_task(
+            "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+        )
+    assert outcome.ok is False
+    assert outcome.created is False
+    assert "action=request-task" in caplog.text
+
+
+# --- F-1: two layers of argv defence ---------------------------------------
+#
+# Layer 1 (`reject_control_chars`) is the intended, named refusal. Layer 2
+# (`_invoke`'s `except ValueError`) is boundary defence that must hold even
+# when layer 1 is bypassed or a future argv field is added without being
+# listed in it. Both are tested, and layer 2 is tested WITH layer 1 disabled
+# — testing it through layer 1 would only prove layer 1 works.
+
+NUL = "\x00"
+
+
+def test_issue_lookup_rejects_a_control_character_by_name(
+    tmp_path: Path, caplog
+) -> None:
+    """Layer 1 on the read path: a named 422-shaped refusal, plus an audit
+    line. Before this, `subprocess.run` raised `ValueError("embedded null
+    byte")` while validating argv — the request became a 500 and the attempt
+    left NO audit line, breaking this module's per-attempt guarantee and
+    ADR-ECO-004a D1a-4 with it."""
+    make_repo(tmp_path, "alpha")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", "-c", "pass")
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        with pytest.raises(ActionRejectedError, match="control character"):
+            runner.issue_lookup("alpha", f"want{NUL}ed")
+    assert "action=issue-lookup" in caplog.text
+    assert "rejected=" in caplog.text
+    assert NUL not in caplog.text  # the slug is repr'd, not pasted in raw
+
+
+@pytest.mark.parametrize("field", ["slug", "title"])
+def test_request_task_rejects_a_control_character_before_taking_the_lock(
+    tmp_path: Path, caplog, field: str
+) -> None:
+    """Layer 1 on the write path, for every value that becomes its own argv
+    element. It runs before `_hold`, so a request this malformed cannot
+    occupy the repo — and the audit line says `created=False`, because
+    nothing was attempted and `created=None` would claim we cannot tell."""
+    make_repo(tmp_path, "alpha")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", "-c", "pass")
+    )
+    kwargs = {"slug": "wanted", "sender": "dispatcher", "title": "t", "prose": "p"}
+    kwargs[field] = f"bad{NUL}value"
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        with pytest.raises(ActionRejectedError, match="control character"):
+            runner.request_task("alpha", **kwargs)  # type: ignore[arg-type]
+    assert "action=request-task" in caplog.text
+    assert "created=False" in caplog.text
+    # the repo was never held: the next request must not meet a 409
+    outcome = runner.request_task(
+        "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+    )
+    assert outcome.action == "request-task"
+
+
+def test_invoke_catches_a_nul_even_with_layer_one_disabled(
+    tmp_path: Path, caplog, monkeypatch
+) -> None:
+    """Layer 2 alone. `reject_control_chars` is stubbed to a no-op, standing
+    in for the field nobody remembered to list — the boundary must still turn
+    `subprocess.run`'s pre-fork `ValueError` into a controlled failure with an
+    audit line, not an exception out of the runner."""
+    make_repo(tmp_path, "alpha")
+    monkeypatch.setattr(actions_module, "reject_control_chars", lambda **kw: None)
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", "-c", "pass")
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        outcome = runner.issue_lookup("alpha", f"want{NUL}ed")
+    assert outcome.ok is False
+    # `_argv_refusal` names WHICH argument; `subprocess`'s own "embedded null
+    # byte" does not. That name is the point of checking before the call
+    # rather than leaning on subprocess to raise — and it is what makes the
+    # pre-fork step observable instead of decorative.
+    assert "refused before launch: argv[" in (outcome.error or "")
+    assert "embedded null byte" in (outcome.error or "")
+    assert outcome.phase == "pre_launch"
+    assert "action=issue-lookup" in caplog.text
+
+
+def test_request_task_layer_two_classifies_the_refusal_as_not_created(
+    tmp_path: Path, caplog, monkeypatch
+) -> None:
+    """Layer 2 on the write path. It is a pre-mutation refusal, not an
+    unknown: `subprocess.run` validates argv before it forks, so no verb ran
+    and no issue was filed. `created=None` would claim we cannot tell whether
+    one exists, when we know for certain none does."""
+    make_repo(tmp_path, "alpha")
+    monkeypatch.setattr(actions_module, "reject_control_chars", lambda **kw: None)
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", "-c", "pass")
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        outcome = runner.request_task(
+            "alpha", slug=f"wan{NUL}ted", sender="dispatcher", title="t", prose="p"
+        )
+    assert outcome.ok is False
+    assert outcome.created is False
+    assert outcome.phase == "pre_launch"
+    assert "refused before launch: argv[" in (outcome.error or "")
+    assert "created=False" in caplog.text
+    assert "phase=pre_launch" in caplog.text
+    # and the lock came back: the refusal must not wedge the repo
+    again = runner.request_task(
+        "alpha", slug="ok", sender="dispatcher", title="t", prose="p"
+    )
+    assert again.action == "request-task"
+
+
+def test_issue_lookup_audit_distinguishes_unreadable_from_confirmed_empty(
+    tmp_path: Path, caplog
+) -> None:
+    """`len(matches or [])` logged `matches: null` as `matches=0` — the audit
+    trail then read "read the inbox, found nothing" for the one value that
+    means "could not read the inbox", reproducing the exact collapse the rest
+    of this feature exists to prevent."""
+    make_repo(tmp_path, "alpha")
+    payload = {"action": "issue-lookup", "dir": "alpha", "ok": False}
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        runner.issue_lookup("alpha", "wanted")
+    assert "matches=unknown" in caplog.text
+    assert "matches=0" not in caplog.text
+
+    caplog.clear()
+    empty = {"action": "issue-lookup", "dir": "alpha", "ok": True, "matches": []}
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, empty)
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        runner.issue_lookup("alpha", "wanted")
+    assert "matches=0" in caplog.text
+
+
+def test_invoke_survives_an_oversized_argument(tmp_path: Path, caplog) -> None:
+    """N-3: `_invoke` caught only `FileNotFoundError`/`TimeoutExpired`, so any
+    OTHER `OSError` on exec raised straight out — a 500 with zero audit lines,
+    the same guarantee break as the NUL byte. `--if-head` is client-supplied
+    and wire-reachable, so an oversized one is enough to trigger a real
+    `[Errno 7] Argument list too long` here — not a mocked failure.
+
+    The producer side of this contract had already widened its equivalent
+    catch to `(OSError, TimeoutExpired)`; this is the matching end.
+    """
+    make_repo(tmp_path, "alpha")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", "-c", "pass")
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        outcome = runner.merge_and_sync("alpha", 1, "d" * 2_000_000)
+    assert outcome.ok is False
+    assert outcome.phase == "pre_launch"  # exec failed: nothing ran
+    assert "Argument list too long" in (outcome.error or "")
+    # merged stays UNKNOWN: exec never happened, but this path must not claim
+    # a non-merge it was never told about
+    assert outcome.merged is None
+    assert "action=merge-and-sync" in caplog.text
+    assert "local_sync=not_attempted" in caplog.text
+
+
+def test_issue_lookup_success_audit_quotes_the_slug(tmp_path: Path, caplog) -> None:
+    """The success path logged the slug with `%s` while its own rejection
+    sibling used `%r`. Layer 1 now refuses control characters, so nothing
+    hostile should reach here — but that is exactly the assumption that makes
+    a raw `%s` survive a later widening of the validator unnoticed. Pinned as
+    the quoted form, so the two lines cannot drift apart again."""
+    make_repo(tmp_path, "alpha")
+    payload = {"action": "issue-lookup", "dir": "alpha", "ok": True, "matches": []}
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        runner.issue_lookup("alpha", "wanted")
+    assert "slug='wanted'" in caplog.text
+    assert "slug=wanted " not in caplog.text
+
+
+def _undecodable_checker(tmp_path: Path) -> tuple[str, ...]:
+    """A github-checker stand-in that RUNS to completion and writes bytes that
+    are not valid UTF-8 — the post-fork half of the NEW-1 distinction."""
+    script = tmp_path / "bad_bytes.py"
+    script.write_text(
+        "import sys;"
+        'sys.stdout.buffer.write(b\'{"ok": true, "created": true, \\xff}\');'
+        "sys.exit(0)"
+    )
+    return ("python3", str(script))
+
+
+def test_a_post_run_decode_failure_is_not_labelled_a_pre_launch_refusal(
+    tmp_path: Path, caplog
+) -> None:
+    """NEW-1: `UnicodeDecodeError` IS a `ValueError`, and `text=True` raises it
+    AFTER the child has run. The single `except ValueError` written for
+    `subprocess.run`'s pre-fork argv validation therefore swallowed a
+    post-execution failure and called it "refused before launch"."""
+    make_repo(tmp_path, "alpha")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=_undecodable_checker(tmp_path)
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        outcome = runner.issue_lookup("alpha", "wanted")
+    assert outcome.ok is False
+    assert outcome.error == (
+        "process completed, but its response was unreadable; mutation outcome unknown"
+    )
+    assert outcome.phase == "launched_unreadable"
+    assert "refused before launch" not in (outcome.error or "")
+    assert "action=issue-lookup" in caplog.text
+    assert "phase=launched_unreadable" in caplog.text
+
+
+def test_request_task_leaves_created_unknown_when_output_cannot_be_decoded(
+    tmp_path: Path, caplog
+) -> None:
+    """The classification ruling, pinned. The verb RAN: `issue-create` may
+    well have filed the issue and only its answer failed to decode, so
+    `created` is None (unknown), never False. `created=False` would send the
+    screen down the ordinary-refusal arm, which RE-ENABLES Create — the
+    duplicate this whole feature exists to prevent."""
+    make_repo(tmp_path, "alpha")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=_undecodable_checker(tmp_path)
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        outcome = runner.request_task(
+            "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+        )
+    assert outcome.ok is False
+    assert outcome.created is None
+    assert outcome.phase == "launched_unreadable"
+    assert outcome.error == (
+        "process completed, but its response was unreadable; mutation outcome unknown"
+    )
+    assert "refused before launch" not in (outcome.error or "")
+    assert "action=request-task" in caplog.text
+    assert "phase=launched_unreadable" in caplog.text
+    # `created=` is omitted entirely when unknown — never printed as False
+    assert "created=False" not in caplog.text
+
+
+def test_request_task_audits_even_when_the_temp_file_cannot_be_removed(
+    tmp_path: Path, caplog, monkeypatch
+) -> None:
+    """The one exit of the eight that could still vanish: an OSError from the
+    cleanup `unlink` in `finally` discarded the already-decided outcome and
+    took the audit call with it — a 500 with zero audit lines."""
+    make_repo(tmp_path, "alpha")
+
+    def boom(self, missing_ok: bool = False) -> None:
+        raise OSError("read-only filesystem (simulated)")
+
+    payload = {"action": "issue-create", "dir": "alpha", "ok": True, "created": True}
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    monkeypatch.setattr(Path, "unlink", boom)
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        outcome = runner.request_task(
+            "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+        )
+    assert outcome.created is True  # the decided outcome survives the cleanup
+    assert "action=request-task" in caplog.text
+    assert "cleanup_failed=" in caplog.text
+
+
+def test_merge_and_sync_composite_carries_a_phase(tmp_path: Path, caplog) -> None:
+    """The composite success outcome had no `phase` though both component
+    lines did — a reader could not tell how much of it was actually read. It
+    is the LEAST readable of the two: claiming `readable_result` because the
+    merge parsed, while the sync's answer could not be read, asserts
+    knowledge of a step nobody read."""
+    make_repo(tmp_path, "alpha")
+    payload = {"action": "merge", "dir": "alpha", "ok": True, "merged": True}
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        outcome = runner.merge_and_sync("alpha", 1, "deadbeef")
+    assert outcome.phase == "readable_result"
+    assert caplog.text.count("phase=readable_result") >= 3  # merge, sync, composite
+
+    caplog.clear()
+    unreadable = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)),
+        command=_undecodable_checker(tmp_path),
+    )
+    outcome = unreadable.merge_and_sync("alpha", 1, "deadbeef")
+    assert outcome.phase == "launched_unreadable"
+
+
+def test_control_char_refusal_is_one_readable_line(tmp_path: Path) -> None:
+    """The message is both a 422 detail and an audit line: a newline would
+    split the log entry, and a truncated sentence leaves the operator with
+    nothing to act on."""
+    from dispatcher.core.actions import reject_control_chars
+
+    with pytest.raises(ActionRejectedError) as excinfo:
+        reject_control_chars(slug="a\x00b")
+    message = str(excinfo.value)
+    assert "\n" not in message
+    assert message.rstrip().endswith("try again"), message

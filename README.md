@@ -121,6 +121,103 @@ PR is finished work even if resyncing the clone afterwards fails, so
 `merged=true, local_sync=failed` renders as a warning with a retry button,
 never as a failed merge.
 
+## Task authoring
+
+From a project's detail panel, "Create task request" opens a form for a
+`slug`, a `title` and free-text `prose` describing what is needed and by
+what observable condition it is done. Leaving the slug field re-checks it
+against the target repo's inbox (`github-checker issue-lookup`); a taken
+slug offers a link to the existing issue instead of letting you file a
+second one, and several issues claiming the same slug render as a conflict
+for a human to resolve rather than picked between automatically.
+
+**This files an `inbox` issue and nothing else.** Per the ratified
+[ADR-ECO-004a](https://github.com/andrei-shtanakov/prograph-vault/blob/master/authored/decisions/2026-07-30-adr-eco-004a-dispatcher-task-authoring.md),
+the screen does **not** edit `TODO.md` in any repo, does **not** accept the
+request on the owner's behalf, does **not** open an implementation PR, does
+**not** run an executor, and stores no task state of its own — a later
+slice wanting any of those needs its own amendment. `from:` in the filed
+issue is written by the server, never by the form: a client-settable sender
+would let a caller forge who the request is "from".
+
+The lookup is a lock-free read and may run while another action is in
+flight; the mutating `POST /api/actions/request-task` shares the same
+per-repo lock as every other action, so a request that meets an in-flight
+one gets an immediate 409 rather than a silent wait. `created` on the
+result is **three-valued**, mirroring `merged` above: `true` means the
+issue was filed; `false` means it was not (most commonly the idempotent
+case — the slug already had one, and the screen re-runs the lookup to
+show it); `null` means the verb **ran and its answer could not be read**,
+so whether an issue exists is genuinely unknown.
+
+Which failures land in which value is decided by `phase`, an additional
+field on every outcome, and it is not a matter of taste — it is which side
+of the `fork` the failure happened on:
+
+| `phase` | meaning | `created` |
+|---|---|---|
+| `pre_launch` | nothing was executed: argv refused (an embedded NUL), a missing binary, `E2BIG`, a body-write failure | `false` — nothing was filed |
+| `launched_unreadable` | the verb RAN; its output could not be decoded, or it timed out | `null` — an issue may exist |
+| `readable_result` | github-checker answered and we parsed it | whatever it said |
+
+A **missing binary is `pre_launch`/`created=false`**, not `null`: exec never
+happened. Only a failure on the far side of the fork may claim ignorance,
+and only that side may leave `created` unknown — inferring the phase from
+the exception type instead of the code path is exactly how a completed run
+once got labelled "refused before launch" and re-enabled Create. The screen never renders `null` as "not created", and the only
+follow-up it offers on an unknown outcome is Re-check.
+
+If a create POST completes **after the operator has navigated away**, its
+outcome is not written into the authoring panel — navigation hides that
+panel, so reporting there is reporting into a void. It goes to a persistent
+**Unresolved task requests** banner outside the panel, naming the target
+repo and the submitted slug with an honest status (created / not created /
+outcome unknown). The banner survives further navigation by construction —
+nothing on the navigation path touches it. Within a page session an entry
+clears only when the operator resolves it (a Re-check that gets a definite
+answer **about that entry's own repo and slug** — it reopens that repo's
+authoring screen on **the submitted slug**, not whatever is typed now; a
+definite answer to any other lookup, including a second entry's Re-check or
+a slug retyped mid-flight, resolves nothing) or dismisses it. A **page
+reload does discard** unresolved entries: the banner is in-memory only, so
+"persistent" means across navigation within the session, not across a
+reload — the server-side `action=` audit line is what survives that.
+Navigation is deliberately **not** blocked while
+a POST is in flight: the network can hang long after the mutation has gone
+out, so blocking would buy nothing and strand the operator.
+
+Create is forbidden **while the state is unknown, and until a Re-check
+succeeds** — not forever. Creating again straight off an unknown outcome is
+how a duplicate is born; refusing permanently would strand the operator with
+no way forward. So Re-check re-runs the lookup, and what happens next depends
+on the answer it gets. A **definite** answer supersedes the unknown state:
+the warning is cleared, Re-check is withdrawn, and the fresh verdict stands
+on its own — an explicit `matches: []` means Create is available again
+(`issue-lookup` runs `gh issue list`, which asks the API directly rather than
+the lagging search index, so an explicit empty answer is the best evidence
+obtainable), while a match found means the issue is shown and Create stays
+disabled. An **indefinite** answer — transport failure, non-`ok` status,
+unreadable envelope, a malformed item — changes nothing: the "state unknown"
+warning stays up, Re-check stays offered, and Create stays disabled, because
+clearing the warning there would delete the very fact the operator clicked
+Re-check to resolve. What the screen must never show is the contradiction —
+a stale "state unknown" warning sitting beside a live Create button, as
+though both described the same moment. The same unknown-vs-empty
+distinction applies to the lookup's `matches`: `null` (or an absent or
+wrong-typed field) means the inbox could not be read exhaustively, `[]`
+means it was read and is confirmed empty, and only the latter with
+`ok: true` enables Create.
+
+The screen's client-side rules — the null-vs-`[]` handling above, per-item
+validation of the opaque issue payload, the three-valued `created` logic,
+and the 4xx-vs-5xx distinction on a failed create (a 5xx must not
+re-enable Create, since the request may already have reached
+github-checker) — are exercised by a Node harness (`tests/web/`) that
+loads the real `index.html` and runs its actual script, invoked as part of
+the Python suite (`tests/test_task_authoring_js.py`). Node is a hard
+prerequisite of that gate: if `node` is not on PATH, the test **fails**, it
+does not skip — CI pins Node 22.
+
 ## Configure (optional `dispatcher.toml`)
 
     roots = ["/Users/you/labs/all_ai_orchestrators"]

@@ -1,6 +1,7 @@
 """Integration tests for the HTTP API over a fixtures root."""
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -1025,6 +1026,180 @@ async def test_post_merge_sync_endpoint_retries_the_local_half(
         assert resp.json()["local_sync"] == "ok"
 
 
+async def test_request_task_requires_the_action_token(tmp_path: Path) -> None:
+    async with _client(tmp_path) as client:
+        response = await client.post(
+            "/api/actions/request-task",
+            json={"dir": "alpha", "slug": "wanted", "title": "t", "prose": "p"},
+        )
+    assert response.status_code == 403
+
+
+async def test_request_task_returns_the_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dispatcher.core.actions import ActionOutcome, ActionRunner
+
+    monkeypatch.setattr(
+        ActionRunner,
+        "request_task",
+        lambda self, repo_dir, **kw: ActionOutcome(
+            action="request-task",
+            dir=repo_dir,
+            ok=True,
+            created=True,
+            issue={"number": 9, "url": "https://x/9"},
+        ),
+    )
+    async with _client(tmp_path) as client:
+        token = await _token(client)
+        response = await client.post(
+            "/api/actions/request-task",
+            json={"dir": "alpha", "slug": "wanted", "title": "t", "prose": "p"},
+            headers={"X-Action-Token": token},
+        )
+    assert response.status_code == 200
+    assert response.json()["created"] is True
+
+
+async def test_request_task_never_takes_from_from_the_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`from` lands in the issue's structural block; the client cannot set it."""
+    seen: dict[str, Any] = {}
+
+    from dispatcher.core.actions import ActionOutcome, ActionRunner
+
+    def capture(self: ActionRunner, repo_dir: str, **kw: Any) -> ActionOutcome:
+        seen.update(kw)
+        return ActionOutcome(action="request-task", dir=repo_dir, ok=True, created=True)
+
+    monkeypatch.setattr(ActionRunner, "request_task", capture)
+    async with _client(tmp_path) as client:
+        token = await _token(client)
+        await client.post(
+            "/api/actions/request-task",
+            json={
+                "dir": "alpha",
+                "slug": "wanted",
+                "title": "t",
+                "prose": "p",
+                "sender": "spoofed",
+                "from": "spoofed",
+            },
+            headers={"X-Action-Token": token},
+        )
+    assert seen["sender"] == "dispatcher"
+
+
+async def test_request_task_maps_busy_to_409(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dispatcher.core.actions import ActionBusyError, ActionRunner
+
+    def busy(self: ActionRunner, repo_dir: str, **kw: Any) -> None:
+        raise ActionBusyError("alpha: action already in flight")
+
+    monkeypatch.setattr(ActionRunner, "request_task", busy)
+    async with _client(tmp_path) as client:
+        token = await _token(client)
+        response = await client.post(
+            "/api/actions/request-task",
+            json={"dir": "alpha", "slug": "wanted", "title": "t", "prose": "p"},
+            headers={"X-Action-Token": token},
+        )
+    assert response.status_code == 409
+
+
+async def test_request_task_maps_rejection_to_422(tmp_path: Path) -> None:
+    async with _client(tmp_path) as client:
+        token = await _token(client)
+        response = await client.post(
+            "/api/actions/request-task",
+            json={"dir": "../etc", "slug": "wanted", "title": "t", "prose": "p"},
+            headers={"X-Action-Token": token},
+        )
+    assert response.status_code == 422
+
+
+async def test_issue_lookup_preserves_null_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`matches=None` means github-checker could not read the inbox
+    exhaustively (200-issue cap hit, or a candidate didn't map) — a real
+    `[]` means it positively confirmed nothing is there. Collapsing null
+    into [] on the wire is exactly how a taken slug ends up looking free
+    and a duplicate issue gets filed."""
+    from dispatcher.core.actions import ActionOutcome, ActionRunner
+
+    monkeypatch.setattr(
+        ActionRunner,
+        "issue_lookup",
+        lambda self, repo_dir, slug: ActionOutcome(
+            action="issue-lookup", dir=repo_dir, ok=True, matches=None, malformed=[]
+        ),
+    )
+    async with _client(tmp_path) as client:
+        response = await client.get(
+            "/api/issue-lookup", params={"dir": "alpha", "slug": "wanted"}
+        )
+    body = response.json()
+    assert "matches" in body
+    assert body["matches"] is None
+
+
+async def test_issue_lookup_preserves_null_malformed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same null-vs-`[]` distinction as `matches`, mirrored for `malformed`:
+    None means the read was not exhaustive, [] means it positively found
+    no malformed candidates."""
+    from dispatcher.core.actions import ActionOutcome, ActionRunner
+
+    monkeypatch.setattr(
+        ActionRunner,
+        "issue_lookup",
+        lambda self, repo_dir, slug: ActionOutcome(
+            action="issue-lookup", dir=repo_dir, ok=True, matches=[], malformed=None
+        ),
+    )
+    async with _client(tmp_path) as client:
+        response = await client.get(
+            "/api/issue-lookup", params={"dir": "alpha", "slug": "wanted"}
+        )
+    body = response.json()
+    assert "malformed" in body
+    assert body["malformed"] is None
+
+
+async def test_issue_lookup_is_readable_without_a_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dispatcher.core.actions import ActionOutcome, ActionRunner
+
+    monkeypatch.setattr(
+        ActionRunner,
+        "issue_lookup",
+        lambda self, repo_dir, slug: ActionOutcome(
+            action="issue-lookup", dir=repo_dir, ok=True, matches=[], malformed=[]
+        ),
+    )
+    async with _client(tmp_path) as client:
+        response = await client.get(
+            "/api/issue-lookup", params={"dir": "alpha", "slug": "wanted"}
+        )
+    assert response.status_code == 200
+    assert response.json()["matches"] == []
+
+
+async def test_issue_lookup_maps_rejection_to_422(tmp_path: Path) -> None:
+    async with _client(tmp_path) as client:
+        response = await client.get(
+            "/api/issue-lookup", params={"dir": "../etc", "slug": "wanted"}
+        )
+    assert response.status_code == 422
+
+
 def _isinstance_strict(value: object, expected: type | tuple[type, ...]) -> bool:
     """Like `isinstance`, but a `bool` never satisfies a plain `int` check.
 
@@ -1201,6 +1376,51 @@ def test_real_pr_detail_payload_has_every_field_the_console_reads() -> None:
     assert missing == [], f"github-checker payload no longer provides: {missing}"
 
 
+ISSUE_REF_REQUIRED: dict[str, type | tuple[type, ...]] = {
+    "number": int,
+    "title": str,
+    "state": str,
+    "url": str,
+    "author": str,
+    "labels": list,
+}
+
+# Captured 2026-07-31 via:
+#   uv run --project ../github-checker github-checker issue-lookup \
+#     ../prograph-vault --slug amend-adr-eco-004-d1-task-authoring
+# Pinned to the producer commit: `git -C ../github-checker rev-parse HEAD` ==
+# 4532a8a (master, both inbox-issue verbs merged). The slug has a real,
+# closed inbox issue (prograph-vault#54) — a state the console must also
+# render correctly, not just the open case.
+ISSUE_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "issue_lookup_github_checker_4532a8a.json"
+)
+
+
+def test_real_issue_lookup_payload_has_every_field_the_console_reads() -> None:
+    """Consumer check against github-checker's ACTUAL output, not a fake.
+
+    Provisional-adapter guard: the issue payload is an opaque passthrough
+    until contracts/actions/v1 is published and vendored
+    (TODO @id:vendor-contracts-actions-v1).
+    """
+    envelope = json.loads(ISSUE_FIXTURE.read_text())
+    assert envelope["ok"] is True
+    assert envelope["matches"], "fixture must pin a slug that actually exists"
+    for ref in envelope["matches"]:
+        missing = [
+            key
+            for key, expected in ISSUE_REF_REQUIRED.items()
+            if not isinstance(ref.get(key), expected)
+        ]
+        assert missing == [], f"github-checker payload no longer provides: {missing}"
+    # The producer normalises `state` to lowercase (`gh issue list` itself
+    # emits OPEN/CLOSED); assert the lowercase form rather than adapting to
+    # whatever the fixture happens to contain — an uppercase value here would
+    # be a producer regression to report, not a shape to accept.
+    assert all(ref["state"] == ref["state"].lower() for ref in envelope["matches"])
+
+
 async def test_merge_gate_markup_is_served(tmp_path: Path) -> None:
     """The brief's sample used a sync `client` fixture that doesn't exist here
     (Task 3's plan-defect pattern, `progress.md`); this file is anyio-async
@@ -1212,3 +1432,113 @@ async def test_merge_gate_markup_is_served(tmp_path: Path) -> None:
     assert 'id="merge-gate"' in body
     assert "openMergeGate" in body
     assert "/api/actions/merge-and-sync" in body
+
+
+async def test_task_authoring_markup_is_served(tmp_path: Path) -> None:
+    """Same convention as test_merge_gate_markup_is_served above: the
+    module-level `pytestmark = pytest.mark.anyio` already covers this test,
+    so no per-test decorator is needed (the brief's sample used both a
+    decorator and a sync `client` fixture that doesn't exist here)."""
+    async with _client(tmp_path) as client:
+        resp = await client.get("/")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'id="task-authoring"' in body
+    assert "taCheckSlug" in body
+    assert "/api/actions/request-task" in body
+
+
+# --- F-1 at the HTTP boundary ----------------------------------------------
+#
+# A status code alone would not settle this: the whole reason F-1 mattered is
+# that the attempt vanished from the audit log, so each test asserts the line
+# as well. Driven through the endpoints on purpose — the defect was reachable
+# from a request body, and a runner-level test would not have shown the 500.
+
+_NUL = "\x00"
+
+
+def _make_git_repo(tmp_path: Path, name: str = "nultest") -> str:
+    """A real workspace repo, so `_target` passes and the control-character
+    refusal is what the request actually meets."""
+    (tmp_path / name / ".git").mkdir(parents=True, exist_ok=True)
+    return name
+
+
+async def test_issue_lookup_with_a_nul_byte_is_refused_and_audited(
+    tmp_path: Path, caplog
+) -> None:
+    """A NUL in the query is a 422 refusal with an audit line, never a 500.
+
+    `subprocess.run` raises `ValueError("embedded null byte")` while
+    validating argv — before it forks. Uncaught, that surfaced as a 500 AND
+    left no audit line at all, which is the part that breaks ADR-ECO-004a
+    D1a-4 ("every attempt leaves a line").
+    """
+    repo = _make_git_repo(tmp_path)
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        async with _client(tmp_path) as client:
+            resp = await client.get(
+                "/api/issue-lookup", params={"dir": repo, "slug": f"a{_NUL}b"}
+            )
+    assert resp.status_code != 500
+    assert resp.status_code == 422
+    assert "control character" in resp.json()["detail"]
+    assert "action=issue-lookup" in caplog.text
+    assert "rejected=" in caplog.text
+
+
+async def test_request_task_with_a_nul_byte_is_refused_and_audited(
+    tmp_path: Path, caplog
+) -> None:
+    """Same at the mutating endpoint, with a real NUL in the POST body.
+
+    JSON permits `\\u0000` in a string, so this is what an HTTP client can
+    actually send. The audit line must say `created=False`: nothing ran, so
+    "unknown" would overstate our ignorance.
+    """
+    repo = _make_git_repo(tmp_path)
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        async with _client(tmp_path) as client:
+            token = (await client.get("/api/actions/session")).json()["token"]
+            resp = await client.post(
+                "/api/actions/request-task",
+                json={
+                    "dir": repo,
+                    "slug": f"wan{_NUL}ted",
+                    "title": "t",
+                    "prose": "because Y, done when Z",
+                },
+                headers={"X-Action-Token": token},
+            )
+    assert resp.status_code != 500
+    assert resp.status_code == 422
+    assert "control character" in resp.json()["detail"]
+    assert "action=request-task" in caplog.text
+    assert "created=False" in caplog.text
+
+
+async def test_request_task_with_a_nul_title_is_refused_and_audited(
+    tmp_path: Path, caplog
+) -> None:
+    """`title` is a structural argv element too (`--title <title>`), and a
+    validator that covered only `slug` would leave the same 500 reachable
+    one field over."""
+    repo = _make_git_repo(tmp_path)
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        async with _client(tmp_path) as client:
+            token = (await client.get("/api/actions/session")).json()["token"]
+            resp = await client.post(
+                "/api/actions/request-task",
+                json={
+                    "dir": repo,
+                    "slug": "wanted",
+                    "title": f"ti{_NUL}tle",
+                    "prose": "because Y, done when Z",
+                },
+                headers={"X-Action-Token": token},
+            )
+    assert resp.status_code != 500
+    assert resp.status_code == 422
+    assert "action=request-task" in caplog.text
+    assert "created=False" in caplog.text

@@ -38,6 +38,21 @@
   #mg-diff { max-height: 420px; overflow: auto; margin: 0;
     background: var(--card); border: 1px solid var(--line);
     border-radius: 10px; padding: 10px 12px; }
+  /* Форма авторинга. Без этих правил `label` остаётся inline, и поля текут
+     одной строкой: порядок на экране (slug → проза → title → кнопка) перестаёт
+     совпадать с порядком чтения, а span состояния распирает строку на 900px и
+     выталкивает title под textarea. Логика при этом верна — сломана только
+     раскладка, и увидеть это можно лишь в браузере. */
+  #task-authoring label { display: block; margin-bottom: 4px; color: var(--dim);
+    font-size: 13px; }
+  #task-authoring input, #ta-prose { display: block; width: 100%;
+    max-width: 640px; box-sizing: border-box; }
+  #ta-prose { margin: 10px 0; font: inherit; padding: 8px 10px;
+    background: var(--card); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 8px; resize: vertical; }
+  #ta-slug-state, #ta-result { display: block; margin-top: 4px; }
+  #ta-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    margin-top: 12px; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
   th, td { text-align: left; padding: 8px 12px;
     border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -103,12 +118,25 @@
   #overlay-editor { width: 100%; font-family: ui-monospace, monospace;
     font-size: 12px; margin-top: 6px; }
   #overlay-warning { color: var(--bad); margin-top: 6px; }
+  #ta-outcomes { border: 1px solid var(--warn); border-radius: 10px;
+    background: var(--card); padding: 10px 14px; margin-bottom: 12px; }
+  .ta-outcome { display: flex; gap: 8px; align-items: baseline;
+    flex-wrap: wrap; padding: 4px 0; }
+  .ta-outcome .what { font-weight: 600; }
 </style>
 </head>
 <body>
 <h1>Dispatcher</h1>
 <div class="sub">Ecosystem overview · auto-refresh 10s ·
   <span id="updated"></span></div>
+
+<!-- I-A: outcomes of MUTATIONS outlive the panel that started them. This
+     region is deliberately outside #task-authoring and #detail-section, so
+     nothing on the navigation path (detail(), ta-open-panel) can reach it:
+     a request that was actually sent stays on screen until the operator
+     resolves or dismisses it. -->
+<section id="ta-outcomes" hidden><h2>Unresolved task requests</h2>
+  <div id="ta-outcomes-list"></div></section>
 
 <section id="sync-section" style="margin-top:0"><h2>Sync
   <span id="sync-topline" class="badge dim">…</span>
@@ -128,6 +156,9 @@
     <input id="mg-pr-input" type="number" min="1" inputmode="numeric"></label>
     <button id="mg-open-gate" type="button">Open merge gate</button>
     <span id="mg-open-gate-error" class="fresh"></span></div>
+  <div id="task-authoring-open">
+    <button id="ta-open-panel" type="button">Create task request</button>
+    <span id="ta-open-panel-error" class="fresh"></span></div>
   <div id="spec-runner-config" hidden>
     <h3>Spec-runner config</h3>
     <form id="spec-runner-config-form"></form>
@@ -161,6 +192,25 @@
   <button id="mg-merge" type="button" disabled>Merge</button>
   <button id="mg-retry-sync" type="button" hidden>Retry local sync</button>
   <span id="mg-result"></span>
+</section>
+
+<section id="task-authoring" hidden>
+  <h2>Task request <span id="ta-repo" class="sub"></span></h2>
+  <label for="ta-slug">slug</label>
+  <input id="ta-slug" type="text" spellcheck="false">
+  <span id="ta-slug-state" class="fresh"></span>
+  <div id="ta-existing" class="fresh" hidden></div>
+  <label for="ta-title">title</label>
+  <input id="ta-title" type="text">
+  <label for="ta-prose">what is needed, and by what observable condition it is done</label>
+  <textarea id="ta-prose" rows="8" spellcheck="false"
+    placeholder="Maestro's scheduler drops the retry budget on a requeue; done when a requeued task keeps its remaining attempts."></textarea>
+  <div id="ta-actions">
+    <button id="ta-create" type="button" disabled>Create request</button>
+    <button id="ta-open" type="button" hidden>Open existing issue</button>
+    <button id="ta-recheck" type="button" hidden>Re-check</button>
+    <span id="ta-result"></span>
+  </div>
 </section>
 
 <section><details id="errors-box">
@@ -198,6 +248,48 @@
 const esc = s => String(s ?? "").replace(/[&<>"']/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const get = async p => (await fetch(p)).json();
+
+// Shared by every sink that renders or opens a URL from an opaque
+// passthrough payload (merge-gate's MG_REQUIRED, task-authoring's
+// TA_REF_REQUIRED). A `startsWith('https://')` check is a string
+// comparison pretending to be a parser — it passes malformed values that
+// merely happen to share the prefix. Parse with the platform's own URL
+// parser and allow only the 'https:' scheme; anything that fails to parse,
+// or parses to a different scheme, is unreadable, not merely "not
+// clickable" — fails closed on the CONSUMER side, independent of whatever
+// the producer is assumed to send.
+function parseHttpsUrl(v) {
+  if (typeof v !== 'string') return null;
+  try {
+    const parsed = new URL(v);
+    return parsed.protocol === 'https:' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// THE ONLY way a URL from an opaque passthrough payload reaches the DOM.
+// Interpolating one into an href through innerHTML — even after esc() — puts
+// a hostile string one deleted call away from attribute breakout, and
+// validation does not save it: `new URL()` reports 'https:' for
+// `https://gh.com/a"><img src=x onerror=alert(1)>`, quote intact, so the
+// sink would render the original string. Setting .href on a real element
+// cannot break out of an attribute whatever the string contains, so the
+// class of bug is removed rather than guarded. Returns null when the URL is
+// not a parseable https: one — every caller fails closed.
+function safeLink(rawUrl, label) {
+  const parsed = parseHttpsUrl(rawUrl);
+  if (parsed === null) return null;
+  const link = document.createElement('a');
+  link.href = parsed.href;   // the canonical, percent-encoded form
+  link.target = '_blank';
+  // noopener: the opened page must not reach back through window.opener.
+  // noreferrer: the URL carries the target repo and slug, and there is no
+  // reason to hand that to whatever the producer pointed us at.
+  link.rel = 'noopener noreferrer';
+  link.textContent = label;  // the user string appears only as text
+  return link;
+}
 
 const ERRORS_DAYS_DEFAULT = 14;
 const MSG_LIMIT = 160;
@@ -581,6 +673,13 @@ async function detail(name, dirName) {
   // I-5: a stale gate for the PREVIOUS project must not sit under this
   // project's panel; openMergeGate() clears its own fields on next open.
   document.getElementById("merge-gate").hidden = true;
+  // Same I-5 reasoning for the task-authoring panel: a stale form for the
+  // previous project must not sit under this project's detail panel.
+  document.getElementById("task-authoring").hidden = true;
+  // NEW-2: whatever is in flight for the PREVIOUS project must not write
+  // into this project's panel when it lands
+  taGen += 1;
+  taRepo = null;
   document.getElementById("detail-name").textContent = "— " + name;
   document.getElementById("detail").textContent = "loading…";
   try {
@@ -947,7 +1046,9 @@ const MG_REQUIRED = [
   // M-1: esc() blocks attribute breakout, not the URL SCHEME — a
   // `javascript:` URL from the passthrough would otherwise render as a live
   // link in mg-head. Same trust boundary as the array-item security round.
-  ['url',          v => typeof v === 'string' && v.startsWith('https://')],
+  // Uses parseHttpsUrl (the one real parser + scheme allowlist), not a prefix
+  // check — a string comparison passes malformed values sharing the prefix.
+  ['url',          v => parseHttpsUrl(v) !== null],
   ['state',        v => typeof v === 'string'],
   ['is_draft',     v => typeof v === 'boolean'],
   ['mergeable',    v => typeof v === 'string'],
@@ -1111,9 +1212,15 @@ async function openMergeGate(repoDir, pr, sticky) {
 function renderMergeGate(d) {
   mgHead = d.head_sha;
   document.getElementById('mg-title').textContent = `#${d.number} ${d.title}`;
-  document.getElementById('mg-head').innerHTML =
-    `<a href="${esc(d.url)}" target="_blank">${esc(d.url)}</a> · ` +
-    `${esc(d.head_branch)} → ${esc(d.base_branch)} · ${esc(d.head_sha.slice(0, 8))}`;
+  // Same rule as the task-authoring sinks: the URL is BUILT into an element,
+  // never interpolated. mgPayloadProblems already parsed it, so a null here
+  // would mean the two disagreed — fail closed rather than render a string.
+  const prLink = safeLink(d.url, d.url);
+  const head = document.getElementById('mg-head');
+  if (prLink === null) { mgCannotRead('url missing or wrong type'); return; }
+  head.replaceChildren(
+    prLink,
+    ` · ${d.head_branch} → ${d.base_branch} · ${d.head_sha.slice(0, 8)}`);
 
   const failed = MG_PREDICATES.filter(([, ok]) => !ok(d)).map(([name]) => name);
   document.getElementById('mg-gate').innerHTML = failed.length
@@ -1269,6 +1376,612 @@ document.getElementById('mg-retry-sync').addEventListener('click', async () => {
   } catch (err) {
     result.textContent = `local sync request failed: ${err}`;
   }
+});
+
+let taRepo = null;
+// NEW-2: #ta-result and #ta-create are shared by taCheckSlug and the create
+// handler, and neither used to re-assert its assumptions after an `await`.
+// Two ways that bit: two lookups racing could finish out of order and leave
+// a TAKEN slug reading "free" with Create live; and editing the slug while a
+// create POST was in flight wiped "filing…", enabled Create, and then let
+// the POST print "state unknown" beside it — the exact contradiction F-2 was
+// about. Every async entry takes a generation, and after every await work
+// whose generation is stale returns WITHOUT touching shared state.
+let taGen = 0;
+// A create POST is in flight. Distinct from the generation: a lookup started
+// mid-flight must not merely lose a race, it must not run at all — the
+// mutation is already on the wire and this screen cannot describe its result
+// yet.
+let taCreating = false;
+
+// While a mutation is on the wire the form is not a form: every field that
+// feeds it is locked, so the screen cannot be describing one slug while a
+// POST for another is in flight.
+function taLockFields(locked) {
+  for (const id of ['ta-slug', 'ta-title', 'ta-prose']) {
+    document.getElementById(id).disabled = locked;
+  }
+}
+
+// A lookup answer may be applied only if BOTH still hold: the generation is
+// current (nothing newer started) and the slug it was issued for is still the
+// slug on screen. The generation alone is not enough — the slug is the
+// subject of the answer, and applying an answer about a different subject is
+// how "free" ends up next to a taken slug.
+function taStillCurrent(gen, issuedFor) {
+  return gen === taGen
+    && issuedFor === document.getElementById('ta-slug').value.trim();
+}
+
+// Mirrors ISSUE_REF_REQUIRED in tests/test_api.py — the two must move
+// together. The payload is an opaque passthrough from another repo's
+// binary, so presence AND type are checked before anything is rendered.
+const TA_REF_REQUIRED = [
+  ['number', v => Number.isInteger(v)],
+  ['title',  v => typeof v === 'string'],
+  ['state',  v => typeof v === 'string'],
+  // Uses parseHttpsUrl (the one real parser + 'https:' allowlist), not a
+  // prefix check — same trust boundary as MG_REQUIRED's `url` above.
+  ['url',    v => parseHttpsUrl(v) !== null],
+  ['author', v => typeof v === 'string'],
+  ['labels', v => Array.isArray(v)],
+];
+
+function taRefProblems(ref) {
+  if (ref === null || typeof ref !== 'object') return ['issue is not an object'];
+  return TA_REF_REQUIRED.filter(([k, ok]) => !ok(ref[k]))
+    .map(([k]) => `${k} missing or wrong type`);
+}
+
+function taShow(id, on) { document.getElementById(id).hidden = !on; }
+
+
+// F-2: a lookup that DEFINITELY read the inbox supersedes any earlier
+// "issue may have been created; state unknown" warning — leaving it up
+// beside the fresh answer (and, on `free`, beside a live Create button)
+// tells the operator two contradictory things about the same moment.
+//
+// Called only from the three branches that got a real answer, never at the
+// top of taCheckSlug: on an indefinite answer (transport failure, non-ok
+// status, unreadable envelope, a malformed item) the unknown state is still
+// the truth, and clearing it there would DELETE the warning the operator
+// clicked Re-check to resolve, replacing "an issue may exist" with a bare
+// "cannot check" — losing information rather than refreshing it.
+function taAnswered() {
+  document.getElementById('ta-result').textContent = '';
+  taShow('ta-recheck', false);
+}
+
+// True when the authoring panel is still the operator's context for this
+// generation. Both halves matter: a newer generation means the screen moved
+// on, and a hidden panel means they cannot read it even if it did not.
+function taPanelIsCurrent(gen) {
+  return gen === taGen && !document.getElementById('task-authoring').hidden;
+}
+
+// I-A: a mutating request that was SENT has an outcome the operator must be
+// able to read, and #task-authoring is not a safe place to put it — detail()
+// hides that panel on any project click and ta-open-panel wipes its fields.
+// Writing there after navigation is reporting into a void: the code believes
+// it told someone, and nobody can read it.
+//
+// So an outcome that lands while the panel is not the operator's current
+// context is recorded HERE instead: a persistent region outside the panel,
+// naming the target repo and the SUBMITTED slug, stating honestly what is
+// known, and offering a Re-check that reopens that repo's authoring screen
+// on that slug. It survives navigation by construction — nothing on the
+// navigation path touches it — and clears only when the operator resolves
+// it (a definite re-check) or dismisses it.
+//
+// Navigation is deliberately NOT blocked while a POST is in flight: the
+// network can hang long after the mutation has gone out, so blocking buys
+// nothing and strands the operator in front of a dead screen.
+const taOutcomes = [];
+
+function taOutcomeStatus(outcome) {
+  if (!outcome || typeof outcome !== 'object') {
+    return 'outcome unknown — needs checking';
+  }
+  if (outcome.created === true) {
+    const ref = outcome.issue;
+    const number = ref && Number.isInteger(ref.number) ? ` (#${ref.number})` : '';
+    return `created${number}`;
+  }
+  if (outcome.created === false && outcome.ok) {
+    return 'not created — a request for this slug already existed';
+  }
+  if (outcome.created === false) {
+    return `refused, nothing created: ${outcome.error || 'no reason given'}`;
+  }
+  return `outcome unknown — needs checking: ${outcome.error || 'no answer'}`;
+}
+
+function taRenderOutcomes() {
+  const box = document.getElementById('ta-outcomes');
+  const list = document.getElementById('ta-outcomes-list');
+  list.replaceChildren();
+  taOutcomes.forEach(entry => {
+    const row = document.createElement('div');
+    row.className = 'ta-outcome';
+    const what = document.createElement('span');
+    what.className = 'what';
+    // textContent, not markup: repo and slug are operator input
+    what.textContent = `${entry.repo} · ${entry.slug}`;
+    const status = document.createElement('span');
+    status.textContent = entry.status;
+    const recheck = document.createElement('button');
+    recheck.type = 'button';
+    recheck.setAttribute('data-ta-recheck', entry.id);
+    recheck.textContent = 'Re-check';
+    recheck.onclick = () => {
+      taResumeOutcome(entry).catch(err => {
+        status.textContent = `re-check failed: ${err}`;
+      });
+    };
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.setAttribute('data-ta-dismiss', entry.id);
+    dismiss.textContent = 'Dismiss';
+    dismiss.onclick = () => taDropOutcome(entry.id);
+    row.append(what, status, recheck, dismiss);
+    list.append(row);
+  });
+  box.hidden = taOutcomes.length === 0;
+}
+
+let taOutcomeSeq = 0;
+function taRecordOutcome(repo, slug, status) {
+  taOutcomes.push({id: `o${++taOutcomeSeq}`, repo, slug, status});
+  taRenderOutcomes();
+}
+
+function taDropOutcome(id) {
+  const at = taOutcomes.findIndex(e => e.id === id);
+  if (at >= 0) taOutcomes.splice(at, 1);
+  taRenderOutcomes();
+}
+
+// Re-check from the banner opens the authoring screen for the entry's OWN
+// repo and slug — never whatever happens to be typed in the form now, which
+// after navigation belongs to a different project entirely.
+async function taResumeOutcome(entry) {
+  taGen += 1;
+  taRepo = entry.repo;
+  document.getElementById('ta-repo').textContent = '— ' + taRepo;
+  document.getElementById('ta-slug').value = entry.slug;
+  document.getElementById('ta-title').value = '';
+  document.getElementById('ta-prose').value = '';
+  document.getElementById('ta-result').textContent = '';
+  taShow('ta-existing', false);
+  taShow('ta-open', false);
+  taShow('ta-recheck', false);
+  document.getElementById('ta-create').disabled = true;
+  const section = document.getElementById('task-authoring');
+  section.hidden = false;
+  section.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+  const verdict = await taCheckSlug();
+  // I-B: this read happens AFTER an await, so it must consult only THIS
+  // operation's own answer. `verdict` is that answer and nothing else: the
+  // question it was issued for (repo + slug), and whether it was definitely
+  // answered while still current. An overlapping lookup — a second Re-check,
+  // or a slug the operator retyped into the panel this very call opened —
+  // produces its own verdict and cannot reach into this one.
+  //
+  // `definite` is the behavioural clause: an indefinite answer — including a
+  // stale one, which read nothing — leaves the entry exactly where it was.
+  // `issuedFor` and `repo` are defence in depth, and honestly so: this call
+  // sets taRepo and the slug field immediately above with no await in
+  // between, so today they cannot differ from the entry. They are here for
+  // the edit that adds one — the same shape as taPanelIsCurrent's `!hidden`
+  // half. Do not read their un-falsifiability as a missing test.
+  if (verdict.definite
+      && verdict.issuedFor === entry.slug
+      && verdict.repo === entry.repo) {
+    taDropOutcome(entry.id);
+  }
+}
+
+// The answer to ONE lookup, bound to the question that lookup asked. Returned
+// by value — deliberately NOT a shared flag: a flag read after an await says
+// "some lookup got a definite answer" and can never say WHICH question was
+// answered, so any concurrent lookup's answer would be credited to whoever
+// awaited next. Frozen, so a continuation cannot be handed a verdict that
+// changes underneath it.
+function taVerdict(gen, issuedFor, repo, definite) {
+  return Object.freeze({gen, issuedFor, repo, definite});
+}
+
+// *inherited* lets the create handler re-check under ITS generation instead
+// of opening a new one, so its own post-await checks stay meaningful.
+//
+// Returns the verdict for THIS call — `{gen, issuedFor, repo, definite}` — so
+// a caller resuming after the await can tell whether ITS OWN question was
+// answered. See taVerdict.
+async function taCheckSlug(inherited) {
+  const slug = document.getElementById('ta-slug').value.trim();
+  const state = document.getElementById('ta-slug-state');
+  // the question this call is about, captured before any await: a later read
+  // of taRepo / the slug field describes some other moment, not this one
+  const askedRepo = taRepo;
+  const issuedFor = slug;
+  if (inherited === undefined && taCreating) {
+    // Refuse rather than race: clearing "filing…" or enabling Create while a
+    // create is on the wire is one click away from the duplicate.
+    state.textContent = 'filing in progress — wait for the result';
+    return taVerdict(taGen, issuedFor, askedRepo, false);
+  }
+  const gen = inherited === undefined ? ++taGen : inherited;
+  const indefinite = () => taVerdict(gen, issuedFor, askedRepo, false);
+  const definite = () => taVerdict(gen, issuedFor, askedRepo, true);
+  // hidden is not enough: a hidden #ta-existing keeps the PREVIOUS slug's
+  // issue links in the DOM, and #ta-open keeps an onclick closed over the
+  // previous ref's URL — anything that re-shows either without rewriting it
+  // would open a stale issue while the label described a new one
+  const existing = document.getElementById('ta-existing');
+  existing.innerHTML = '';
+  taShow('ta-existing', false);
+  const openBtn = document.getElementById('ta-open');
+  openBtn.onclick = null;
+  taShow('ta-open', false);
+  document.getElementById('ta-create').disabled = true;
+  if (!slug) { state.textContent = ''; return indefinite(); }
+  // Minor fix: taRepo is only null before an entry point has set it.
+  // encodeURIComponent(null) silently becomes the string "null" in the
+  // query — refuse rather than ask the server to look up a repo "null".
+  if (!taRepo) { state.textContent = 'no repo selected'; return indefinite(); }
+  let outcome;
+  try {
+    const res = await fetch(
+      `/api/issue-lookup?dir=${encodeURIComponent(taRepo)}` +
+      `&slug=${encodeURIComponent(slug)}`);
+    outcome = await res.json();
+    // re-check the preconditions after EVERY await, before touching the DOM
+    if (!taStillCurrent(gen, issuedFor)) return indefinite();
+    if (!res.ok) { state.textContent = `cannot check: ${res.status}`; return indefinite(); }
+  } catch (err) {
+    if (!taStillCurrent(gen, issuedFor)) return indefinite();
+    state.textContent = `cannot check: ${err}`;
+    return indefinite();
+  }
+  // Same guard the create handler already carries: a 200 whose body is
+  // `null` (or a bare number/string) parses without throwing, and every
+  // branch below reads properties off it. It did fail closed — as a raw
+  // TypeError caught by the `change` listener's .catch, rendering
+  // "cannot check: TypeError: ..." — but by accident rather than on
+  // purpose, and only on the paths that happen to have a .catch.
+  if (outcome === null || typeof outcome !== 'object') {
+    state.textContent = 'cannot check: unreadable response';
+    return indefinite();
+  }
+  if (!outcome.ok) {
+    // malformed candidates land here — a human has to look, and creating
+    // on top of an unreadable inbox would compound it
+    state.textContent = `cannot check: ${outcome.error || 'unreadable'}`;
+    return indefinite();
+  }
+  // C-2 (Critical): `matches === null` (and `malformed === null`) means the
+  // producer could NOT read the inbox exhaustively (200-issue cap, or a
+  // candidate it couldn't map) — that is not the same thing as a confirmed-
+  // empty `[]`. `outcome.matches || []` folded both into "free" and enabled
+  // Create on the one wire state that means "I could not tell you whether
+  // this slug is taken" — precisely the failure this feature exists to
+  // prevent (pinned on the wire by
+  // test_issue_lookup_preserves_null_matches / _malformed in test_api.py).
+  // Checked here via `Array.isArray`, not just `=== null`, so the SAME
+  // branch also catches the field being absent entirely (`undefined`) and
+  // a wrong-type value (an object/string where an array is expected) — all
+  // three are "cannot verify", not just the one literal `null` shape.
+  // This runs BEFORE any business-state read (free/taken/conflict below):
+  // envelope/type checks first, business state second — reading `.length`
+  // or calling `.some()` on an unvalidated value first is exactly how a
+  // wrong-type payload (e.g. a string) would throw past this handler
+  // instead of failing closed with a message. Checked here explicitly,
+  // without leaning on the producer's own truncated⇒ok=False invariant —
+  // that invariant lives in github-checker, is not vendored into this
+  // repo, and this screen must not depend on it silently holding.
+  if (!Array.isArray(outcome.matches) || !Array.isArray(outcome.malformed)) {
+    state.textContent = 'cannot check: inbox could not be read exhaustively';
+    return indefinite();
+  }
+  // Minor: `malformed` was type-checked and then never read. A non-empty
+  // one means the producer FOUND inbox issues it could not map — the inbox
+  // was not read exhaustively after all, so `matches: []` does not mean
+  // "free". Leaning on the producer's "malformed non-empty implies ok=False"
+  // invariant is exactly what the comment above refuses to do.
+  if (outcome.malformed.length > 0) {
+    state.textContent =
+      `cannot check: ${outcome.malformed.length} unreadable candidate(s) in the inbox`;
+    return indefinite();
+  }
+  const matches = outcome.matches;
+  if (matches.length === 0) {
+    taAnswered();
+    state.textContent = 'free';
+    document.getElementById('ta-create').disabled = false;
+    return definite();
+  }
+  if (matches.length > 1) {
+    // C-1 (Critical): every item must pass the same validation the single-
+    // match path below already applies via taRefProblems — including the
+    // 'https://' scheme gate on `url` (esc() blocks attribute breakout, not
+    // a `javascript:` scheme; same trust boundary as the merge-gate's M-1).
+    // A bad item here must fail closed, never render a partial/garbled
+    // conflict list.
+    if (matches.some(m => taRefProblems(m).length > 0)) {
+      state.textContent = 'cannot read the result';
+      return indefinite();
+    }
+    taAnswered();
+    const links = matches.map(m => safeLink(m.url, `#${m.number}`));
+    if (links.some(link => link === null)) {
+      // taRefProblems already passed them; this is the same fail-closed rule
+      // applied at the sink, where the URL is actually used
+      state.textContent = 'cannot read the result';
+      return indefinite();
+    }
+    state.textContent = `${matches.length} issues claim this slug — conflict`;
+    const box = document.getElementById('ta-existing');
+    box.replaceChildren();
+    links.forEach((link, i) => {
+      if (i > 0) box.append(' · ');
+      box.append(link);
+    });
+    taShow('ta-existing', true);
+    return definite();
+  }
+  const ref = matches[0];
+  const problems = taRefProblems(ref);
+  if (problems.length) { state.textContent = `cannot read: ${problems.join('; ')}`; return indefinite(); }
+  const link = safeLink(ref.url, ref.url);
+  if (link === null) {
+    state.textContent = 'cannot read: url missing or wrong type';
+    return indefinite();
+  }
+  taAnswered();
+  state.textContent = 'already requested';
+  const box = document.getElementById('ta-existing');
+  box.replaceChildren(`#${ref.number} · ${ref.state} · `, link);
+  taShow('ta-existing', true);
+  const open = document.getElementById('ta-open');
+  open.hidden = false;
+  // the canonical parsed form, not the raw string the producer sent
+  open.onclick = () => window.open(link.href, '_blank', 'noopener,noreferrer');
+  return definite();
+}
+
+document.getElementById('ta-slug').addEventListener('change', () => {
+  // A different slug is a different subject: the previous slug's result, its
+  // issue list and its Re-check offer all describe something the operator is
+  // no longer looking at. (Distinct from Re-check on the SAME slug, which
+  // must preserve an unknown outcome — see taAnswered.)
+  if (!taCreating) {
+    document.getElementById('ta-result').textContent = '';
+    taShow('ta-recheck', false);
+  }
+  taCheckSlug().catch(err => {
+    document.getElementById('ta-slug-state').textContent = `cannot check: ${err}`;
+  });
+});
+
+document.getElementById('ta-create').addEventListener('click', async () => {
+  const btn = document.getElementById('ta-create');
+  const result = document.getElementById('ta-result');
+  // Minor fix: same taRepo-null guard as taCheckSlug — refuse rather than
+  // silently POST {dir: null}.
+  if (!taRepo) { result.textContent = 'no repo selected'; return; }
+  const gen = ++taGen;
+  const submitted = document.getElementById('ta-slug').value.trim();
+  const taRepoAtSubmit = taRepo;
+  taCreating = true;
+  taLockFields(true);
+  btn.disabled = true;
+  result.textContent = 'filing…';
+  taShow('ta-recheck', false);
+  let outcome, res;
+  let sent = false;
+  try {
+    const token = await ensureActionToken();
+    if (gen !== taGen) {
+      // nothing has gone out yet — say so rather than leaving "filing…" up
+      result.textContent =
+        `request for "${submitted}" abandoned before it was sent`;
+      return;
+    }
+    sent = true;
+    res = await fetch('/api/actions/request-task', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-Action-Token': token},
+      body: JSON.stringify({
+        dir: taRepo,
+        slug: document.getElementById('ta-slug').value.trim(),
+        title: document.getElementById('ta-title').value.trim(),
+        prose: document.getElementById('ta-prose').value,
+      }),
+    });
+    outcome = await res.json();
+  } catch (err) {
+    // the request itself broke: whether it landed is unknown. If it was SENT
+    // and the screen has moved on, this must not go into a hidden panel.
+    if (sent && !taPanelIsCurrent(gen)) {
+      taRecordOutcome(taRepoAtSubmit, submitted,
+        `outcome unknown — needs checking: ${err}`);
+      return;
+    }
+    result.textContent = sent
+      ? `issue may have been created for "${submitted}"; state unknown (${err})`
+      : `issue may have been created; state unknown (${err})`;
+    taShow('ta-recheck', true);
+    return;
+  } finally {
+    // the POST is off the wire either way, superseded or not
+    taCreating = false;
+    taLockFields(false);
+  }
+  // A POST answer is never silently dropped for being stale: the request was
+  // SENT, so an issue may exist. Returning quietly here would hide a real
+  // mutation behind a screen that has moved on — the worst version of the
+  // duplicate this feature exists to prevent.
+  if (!taPanelIsCurrent(gen)) {
+    // The request WAS sent, so an issue may exist. The panel is no longer the
+    // operator's context — record it where navigation cannot reach.
+    taRecordOutcome(taRepoAtSubmit, submitted, taOutcomeStatus(outcome));
+    return;
+  }
+  // Minor fix: a 200 (or any status) with a non-object JSON body (`null`,
+  // a bare number/string) parses without throwing here, but every branch
+  // below reads properties off `outcome` — that would throw past this
+  // handler's own try/catch as an unhandled rejection, stranding the
+  // screen on "filing…" forever with Create still disabled and no action
+  // offered. An unreadable body is the same "state unknown" case as a
+  // broken request.
+  if (outcome === null || typeof outcome !== 'object') {
+    result.textContent =
+      'issue may have been created; state unknown: unreadable response';
+    taShow('ta-recheck', true);
+    return;
+  }
+  // dead-condition fix: `!res.ok` already excludes 200 (200 is always ok
+  // per the fetch spec's 200-299 range), so `&& res.status !== 200` never
+  // changed the branch taken — removed rather than left as a red herring.
+  if (!res.ok) {
+    if (res.status === 409) {
+      result.textContent = 'another action is in flight';
+      btn.disabled = false;
+      return;
+    }
+    // I-1 (Important): a 4xx here is a REFUSAL — the whitelist gate
+    // rejected the request (bad action token, rejected dir) before it ever
+    // reached github-checker, so nothing was attempted and retrying is
+    // safe. A 5xx is different: the request passed the gate and may have
+    // reached the runner before the failure, so whether it landed is
+    // unknown — same as the transport-error catch block above, this must
+    // offer only Re-check, never re-enable Create.
+    if (res.status >= 500) {
+      result.textContent = `issue may have been created; state unknown: ${
+        outcome.detail || `HTTP ${res.status}`}`;
+      taShow('ta-recheck', true);
+      return;
+    }
+    result.textContent = `request rejected: ${outcome.detail || res.status}`;
+    btn.disabled = false;
+    return;
+  }
+  // N-1 (Important): a 200 whose ENVELOPE says `ok: false` is a refusal, and
+  // it was being read as business state. Every refusal arrives as
+  // `{ok: false, created: false}` — prose over the size bound, an invalid
+  // slug, an invalid `from`, "ambiguous — not creating", and dispatcher's own
+  // two pre-mutation refusals (the argv control-character catch and the body
+  // write failure) — so it fell into the `created === false` arm below and
+  // rendered "a request for this slug already exists". That is false for all
+  // of them: nothing exists, the operator's request was rejected, and
+  // `outcome.error` (which says WHY) was discarded. Envelope first, business
+  // state second — the same ordering taCheckSlug already applies.
+  if (!outcome.ok) {
+    const why = outcome.error || outcome.detail || 'refused, no reason given';
+    if (outcome.created === null || outcome.created === undefined) {
+      // refused AND unsure whether anything landed: unknown wins
+      result.textContent = `issue may have been created; state unknown: ${why}`;
+      taShow('ta-recheck', true);
+      return;
+    }
+    if (outcome.created === true) {
+      // a contradictory envelope — it reports failure and a creation at
+      // once. Not renderable as success, and not safe to retry blind.
+      result.textContent = `cannot read the result: reported both a failure `
+        + `and a created issue: ${why}`;
+      taShow('ta-recheck', true);
+      return;
+    }
+    // the ordinary refusal: nothing ran, nothing exists, fixing the input
+    // and retrying is safe — same reasoning as the 4xx branch above
+    result.textContent = `request rejected: ${why}`;
+    btn.disabled = false;
+    return;
+  }
+  // `!created` would fold null into false — check unknown FIRST
+  if (outcome.created === null || outcome.created === undefined) {
+    result.textContent =
+      `issue may have been created; state unknown: ${outcome.error || 'no answer'}`;
+    taShow('ta-recheck', true);
+    return;
+  }
+  if (outcome.created === false) {
+    // the re-check runs FIRST: taCheckSlug clears ta-result (see F-2 there),
+    // so writing the explanation before it would wipe the explanation
+    await taCheckSlug(gen);
+    if (gen !== taGen) return;
+    if (!btn.disabled) {
+      // The producer says a request for this slug already exists; the lookup
+      // run immediately afterwards says the slug is free. One of them is
+      // wrong and this screen cannot tell which — offering Create under a
+      // line reading "already exists" is how the duplicate this feature
+      // exists to prevent gets filed anyway. Fail closed and say so.
+      btn.disabled = true;
+      result.textContent = 'a request for this slug already exists, but the '
+        + 're-check could not find it — look before filing again';
+      taShow('ta-recheck', true);
+      return;
+    }
+    result.textContent = 'a request for this slug already exists';
+    return;
+  }
+  if (!outcome.issue) {
+    result.textContent = 'issue created, but reading it back failed';
+    taShow('ta-recheck', true);
+    return;
+  }
+  const problems = taRefProblems(outcome.issue);
+  if (problems.length) {
+    result.textContent = `created, but cannot read the result: ${problems.join('; ')}`;
+    taShow('ta-recheck', true);
+    return;
+  }
+  const link = safeLink(outcome.issue.url, `#${outcome.issue.number}`);
+  if (link === null) {
+    result.textContent = 'created, but cannot read the result: url missing or wrong type';
+    taShow('ta-recheck', true);
+    return;
+  }
+  result.replaceChildren('created · ', link);
+});
+
+// Re-check never re-creates: after an unknown outcome, creating again is
+// how a duplicate is born.
+document.getElementById('ta-recheck').addEventListener('click', () => {
+  taCheckSlug().catch(err => {
+    document.getElementById('ta-result').textContent = `re-check failed: ${err}`;
+  });
+});
+
+document.getElementById('ta-open-panel').addEventListener('click', () => {
+  // No project-card PR listing exists yet to make individual PRs clickable
+  // (same absence noted by mg-open-gate above); this button is the minimal
+  // wiring into the already-selected project.
+  const errorSpan = document.getElementById('ta-open-panel-error');
+  if (!mgEntryRepo) {
+    // M-4 parity: a silent no-op looks like a dead button — say why.
+    errorSpan.textContent =
+      'no repo directory known — select a detected project card first';
+    return;
+  }
+  errorSpan.textContent = '';
+  // I-6 parity: taRepo is the on-disk clone dirname (mgEntryRepo, itself
+  // sourced from data-dir), NOT the project's display name.
+  taGen += 1;  // NEW-2: same reset reasoning as detail()
+  taRepo = mgEntryRepo;
+  document.getElementById('ta-repo').textContent = '— ' + taRepo;
+  document.getElementById('ta-slug').value = '';
+  document.getElementById('ta-slug-state').textContent = '';
+  document.getElementById('ta-title').value = '';
+  document.getElementById('ta-prose').value = '';
+  document.getElementById('ta-result').textContent = '';
+  taShow('ta-existing', false);
+  taShow('ta-open', false);
+  taShow('ta-recheck', false);
+  document.getElementById('ta-create').disabled = true;
+  const section = document.getElementById('task-authoring');
+  section.hidden = false;
+  section.scrollIntoView({behavior: 'smooth', block: 'nearest'});
 });
 
 refresh();
