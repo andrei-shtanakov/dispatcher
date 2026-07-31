@@ -121,6 +121,52 @@ PR is finished work even if resyncing the clone afterwards fails, so
 `merged=true, local_sync=failed` renders as a warning with a retry button,
 never as a failed merge.
 
+## Task authoring
+
+From a project's detail panel, "Create task request" opens a form for a
+`slug`, a `title` and free-text `prose` describing what is needed and by
+what observable condition it is done. Leaving the slug field re-checks it
+against the target repo's inbox (`github-checker issue-lookup`); a taken
+slug offers a link to the existing issue instead of letting you file a
+second one, and several issues claiming the same slug render as a conflict
+for a human to resolve rather than picked between automatically.
+
+**This files an `inbox` issue and nothing else.** Per the ratified
+[ADR-ECO-004a](https://github.com/andrei-shtanakov/prograph-vault/blob/master/authored/decisions/2026-07-30-adr-eco-004a-dispatcher-task-authoring.md),
+the screen does **not** edit `TODO.md` in any repo, does **not** accept the
+request on the owner's behalf, does **not** open an implementation PR, does
+**not** run an executor, and stores no task state of its own — a later
+slice wanting any of those needs its own amendment. `from:` in the filed
+issue is written by the server, never by the form: a client-settable sender
+would let a caller forge who the request is "from".
+
+The lookup is a lock-free read and may run while another action is in
+flight; the mutating `POST /api/actions/request-task` shares the same
+per-repo lock as every other action, so a request that meets an in-flight
+one gets an immediate 409 rather than a silent wait. `created` on the
+result is **three-valued**, mirroring `merged` above: `true` means the
+issue was filed; `false` means it was not (most commonly the idempotent
+case — the slug already had one, and the screen re-runs the lookup to
+show it); `null` means the create call itself broke (timeout, missing
+binary, unparseable output) and whether an issue exists is genuinely
+unknown. The screen never renders `null` as "not created", and the only
+follow-up it offers after an unknown outcome is Re-check — never Create
+again, which is how a duplicate would be born. The same unknown-vs-empty
+distinction applies to the lookup's `matches`: `null` (or an absent or
+wrong-typed field) means the inbox could not be read exhaustively, `[]`
+means it was read and is confirmed empty, and only the latter with
+`ok: true` enables Create.
+
+The screen's client-side rules — the null-vs-`[]` handling above, per-item
+validation of the opaque issue payload, the three-valued `created` logic,
+and the 4xx-vs-5xx distinction on a failed create (a 5xx must not
+re-enable Create, since the request may already have reached
+github-checker) — are exercised by a Node harness (`tests/web/`) that
+loads the real `index.html` and runs its actual script, invoked as part of
+the Python suite (`tests/test_task_authoring_js.py`). Node is a hard
+prerequisite of that gate: if `node` is not on PATH, the test **fails**, it
+does not skip — CI pins Node 22.
+
 ## Configure (optional `dispatcher.toml`)
 
     roots = ["/Users/you/labs/all_ai_orchestrators"]
