@@ -1307,3 +1307,28 @@ def test_request_task_audits_even_when_the_temp_file_cannot_be_removed(
     assert outcome.created is True  # the decided outcome survives the cleanup
     assert "action=request-task" in caplog.text
     assert "cleanup_failed=" in caplog.text
+
+
+def test_merge_and_sync_composite_carries_a_phase(tmp_path: Path, caplog) -> None:
+    """The composite success outcome had no `phase` though both component
+    lines did — a reader could not tell how much of it was actually read. It
+    is the LEAST readable of the two: claiming `readable_result` because the
+    merge parsed, while the sync's answer could not be read, asserts
+    knowledge of a step nobody read."""
+    make_repo(tmp_path, "alpha")
+    payload = {"action": "merge", "dir": "alpha", "ok": True, "merged": True}
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        outcome = runner.merge_and_sync("alpha", 1, "deadbeef")
+    assert outcome.phase == "readable_result"
+    assert caplog.text.count("phase=readable_result") >= 3  # merge, sync, composite
+
+    caplog.clear()
+    unreadable = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)),
+        command=_undecodable_checker(tmp_path),
+    )
+    outcome = unreadable.merge_and_sync("alpha", 1, "deadbeef")
+    assert outcome.phase == "launched_unreadable"

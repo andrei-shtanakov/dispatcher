@@ -50,6 +50,7 @@ if (!HTML_PATH) {
 // tallied apart only so the summary can name which kind happened, never so
 // one of them can be quietly left out of the exit code.
 let caseFailures = 0;
+let skipped = 0;
 let asyncErrors = 0;
 const failed = () => caseFailures + asyncErrors;
 let currentCase = '(startup)';
@@ -141,12 +142,13 @@ const ONBOARDING = {
   roadmap_position: null, next_items: [], live_tasks: [], warnings: [],
 };
 
+const asCard = p => ({
+  name: p.name, detected: true, path: p.path,
+  counts: {tasks: 1, models: 0, test_results: 0, errors: 0},
+  freshness: 'fresh', warnings: [],
+});
 const overviewFor = project => ({
-  projects: [{
-    name: project.name, detected: true, path: project.path,
-    counts: {tasks: 1, models: 0, test_results: 0, errors: 0},
-    freshness: 'fresh', warnings: [],
-  }],
+  projects: (project.also ? [project, ...project.also] : [project]).map(asCard),
 });
 
 function defaultRoutes(project) {
@@ -208,9 +210,37 @@ function makeEnv(project) {
       return node;
     },
     set(id, value) { env.el(id).value = value; },
-    text(id) { return env.el(id).textContent; },
-    /** Fire a real event and wait for whatever it started. */
+    /**
+     * THE user-level oracle: what a person can actually read. Text inside a
+     * subtree hidden by `hidden`, `aria-hidden`, `display: none` or
+     * `visibility: hidden` is not on the screen, so it is not returned.
+     * Every "the screen says X" assertion in this file goes through here.
+     */
+    text(id) {
+      const node = env.el(id);
+      return node.visible ? node.textContent : '';
+    },
+    /**
+     * DOM-level read, deliberately ignoring visibility. Named `structural`
+     * so no reader mistakes it for a claim about what the operator sees; use
+     * it only to assert the shape of something already known to be hidden.
+     */
+    structuralText(id) { return env.el(id).textContent; },
+    /** True when the node is on screen at all. */
+    visible(id) { return env.el(id).visible; },
+    /**
+     * A USER action: only lands if the control is visible and enabled, just
+     * as for a person. Everything asserting product behaviour uses this.
+     */
     async fire(id, type, opts) { await env.fireNode(env.el(id), type, opts); },
+    /**
+     * STRUCTURAL: drives a handler the UI cannot reach (a disabled or hidden
+     * control), to exercise defence-in-depth code. Never evidence about what
+     * an operator can do.
+     */
+    async forceStructural(id, type) {
+      await env.fireNode(env.el(id), type, {force: true});
+    },
     async fireNode(node, type, opts) {
       await Promise.all(dispatch(node, type, opts));
       await drain();
@@ -235,8 +265,12 @@ function makeEnv(project) {
     },
     read(expression) { return vm.runInContext(expression, ctx); },
     /** The links the page actually rendered, href and text. */
+    /** The links a person can actually see and click. */
     links(id) {
-      return env.el(id).querySelectorAll('a')
+      const node = env.el(id);
+      if (!node.visible) return '';
+      return node.querySelectorAll('a')
+        .filter(a => a.visible)
         .map(a => `${a.getAttribute('href')} → ${a.textContent}`).join(' | ');
     },
     urls(prefix) { return requests.map(r => r.url).filter(u => u.startsWith(prefix)); },
@@ -252,8 +286,9 @@ async function boot(project) {
   return env;
 }
 
-async function selectProject(env) {
-  const card = env.document.querySelector('#projects .card[data-name]');
+async function selectProject(env, which = 0) {
+  const card = env.document
+    .querySelectorAll('#projects .card[data-name]')[which];
   if (!card) throw new Error('refresh() rendered no selectable project card');
   // Click the heading INSIDE the card, so the container's delegated handler
   // has to resolve the card itself via closest() — as it does for a person.
@@ -781,20 +816,29 @@ const CASES = [
     },
   },
   {
-    name: '26. a lookup with no project selected refuses instead of asking '
-      + 'the server about a repo called "null"',
+    name: '26. [defence in depth] a lookup with no repo refuses instead of '
+      + 'asking the server about a repo called "null" — the field is inside '
+      + 'a hidden panel, so this forces an event the UI cannot produce',
     async run(env) {
-      // deliberately no openPanel(): nothing has set taRepo yet
+      // deliberately no openPanel(): taRepo is unset AND #task-authoring is
+      // hidden, so a person cannot type here at all. `taRepo === null` with
+      // the panel VISIBLE is unreachable — detail() nulls taRepo and hides
+      // the panel in the same breath, and ta-open-panel refuses to open
+      // without a repo. The guard is real defence in depth; the interaction
+      // is not, so the event is forced and the invisibility asserted.
       env.set('ta-slug', 'add-x');
-      await env.fire('ta-slug', 'change');
+      await env.forceStructural('ta-slug', 'change');
       return {
-        'slug state': env.text('ta-slug-state'),
+        'the panel really is off screen': env.visible('ta-slug-state'),
+        'structural text (invisible by design here)':
+          env.structuralText('ta-slug-state'),
         'lookups issued': env.urls('/api/issue-lookup').length,
         'taRepo': env.read('taRepo'),
       };
     },
     expect: {
-      'slug state': 'no repo selected',
+      'the panel really is off screen': false,
+      'structural text (invisible by design here)': 'no repo selected',
       'lookups issued': 0,
       'taRepo': null,
     },
@@ -806,22 +850,41 @@ const CASES = [
       await create(env, 200, {ok: true, created: true, issue: GOOD_REF},
         {force: true});
       return {
-        'result': env.text('ta-result'),
+        'the panel really is off screen': env.visible('ta-result'),
+        'structural text (invisible by design here)':
+          env.structuralText('ta-result'),
         'POSTs issued': env.urls('/api/actions/request-task').length,
       };
     },
-    expect: {'result': 'no repo selected', 'POSTs issued': 0},
+    expect: {
+      'the panel really is off screen': false,
+      'structural text (invisible by design here)': 'no repo selected',
+      'POSTs issued': 0,
+    },
   },
   {
-    name: '28. the entry-point button explains itself when no card is selected',
+    name: '28. the entry-point button explains itself, ON SCREEN, when the '
+      + 'selected card carries no usable clone directory',
+    // A detected project whose path yields no basename renders data-dir="",
+    // so detail() sets mgEntryRepo = null while #detail-section IS visible —
+    // the reachable route to this message. (The previous version of this case
+    // clicked the button with #detail-section still hidden, i.e. asserted a
+    // message nobody could have read.)
+    project: {name: 'ghost', path: ''},
     async run(env) {
+      await selectProject(env);
+      const card = env.document.querySelector('#projects .card[data-name]');
       await env.fire('ta-open-panel', 'click');
       return {
+        'card data-dir (empty, hence no repo)': card.dataset.dir,
+        'the message is on screen': env.visible('ta-open-panel-error'),
         'error span': env.text('ta-open-panel-error'),
         'panel hidden': env.el('task-authoring').hidden,
       };
     },
     expect: {
+      'card data-dir (empty, hence no repo)': '',
+      'the message is on screen': true,
       'error span':
         'no repo directory known — select a detected project card first',
       'panel hidden': true,
@@ -984,7 +1047,7 @@ const CASES = [
         () => resp(200, {ok: true, matches: [], malformed: []}));
       env.set('ta-slug', 'add-y');
       await env.fire('ta-slug', 'change');
-      await env.fire('ta-open', 'click', {force: true});
+      await env.forceStructural('ta-open', 'click');
       return {
         'link shown for the first slug': shown,
         'existing innerHTML after': env.el('ta-existing').innerHTML,
@@ -1280,7 +1343,7 @@ const CASES = [
       env.route(u => u.startsWith('/api/issue-lookup'),
         () => resp(200, {ok: true, matches: [], malformed: []}));
       env.set('ta-slug', 'add-y');
-      await env.fire('ta-slug', 'change', {force: true});
+      await env.forceStructural('ta-slug', 'change');
       const during = {
         result: env.text('ta-result'),
         state: env.text('ta-slug-state'),
@@ -1316,8 +1379,9 @@ const CASES = [
     },
   },
   {
-    name: '49. [NEW-2] a POST answer that lands after the screen moved on is '
-      + 'NEVER discarded — it names the submitted slug and keeps Create off',
+    name: '49. [NEW-2/I-A] a POST answer that lands after the panel was '
+      + 'reopened goes to the banner, not into the fresh form it would '
+      + 'otherwise contaminate',
     async run(env) {
       await openPanel(env);
       await lookup(env, 'add-x', 200, {ok: true, matches: [], malformed: []});
@@ -1327,24 +1391,172 @@ const CASES = [
       env.set('ta-title', 'Add feature X');
       env.set('ta-prose', 'because Y, done when Z');
       const settle = await env.fireInFlight('ta-create', 'click');
-      // the operator re-opens the panel mid-flight: a new generation, and the
-      // POST for "add-x" is now about a screen state nobody is looking at
+      // the operator reopens the panel to start a DIFFERENT request
       await env.fire('ta-open-panel', 'click');
       releasePost(resp(200, {ok: true, created: true, issue: GOOD_REF}));
       await settle();
       await drain();
       return {
-        'the outcome was not silently dropped': env.text('ta-result'),
-        'Re-check offered': env.el('ta-recheck').hidden,
-        'Create disabled': env.el('ta-create').disabled,
+        'the outcome is readable': env.text('ta-outcomes').includes('add-x'),
+        'it says what happened': env.text('ta-outcomes').includes('created (#12)'),
+        'the fresh form was not contaminated': env.text('ta-result'),
+        'Create in the fresh form is still disabled':
+          env.el('ta-create').disabled,
       };
     },
     expect: {
-      'the outcome was not silently dropped':
-        'a request for "add-x" was sent and its outcome landed after the '
-        + 'screen moved on — re-check that slug before filing it again',
-      'Re-check offered': false,
-      'Create disabled': true,
+      'the outcome is readable': true,
+      'it says what happened': true,
+      'the fresh form was not contaminated': '',
+      'Create in the fresh form is still disabled': true,
+    },
+  },
+  {
+    name: '49b. [I-A] a POST that lands after the operator navigated to '
+      + 'ANOTHER project must still reach them — a mutation reported into a '
+      + 'hidden panel has not been reported at all',
+    project: {
+      name: 'widget', path: '/repos/widget',
+      also: [{name: 'other', path: '/repos/other'}],
+    },
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, 'add-x', 200, {ok: true, matches: [], malformed: []});
+      let releasePost;
+      const pending = new Promise(r => { releasePost = r; });
+      env.route(u => u.startsWith('/api/actions/request-task'), () => pending);
+      env.set('ta-title', 'Add feature X');
+      env.set('ta-prose', 'because Y, done when Z');
+      const settle = await env.fireInFlight('ta-create', 'click');
+
+      // the operator clicks the OTHER project card: detail() hides
+      // #task-authoring and bumps the generation. Unlike ta-open-panel, this
+      // reset never un-hides the panel again — which is why case 49 missed it.
+      await selectProject(env, 1);
+      releasePost(resp(200, {ok: true, created: true, issue: GOOD_REF}));
+      await settle();
+      await drain();
+
+      const banner = env.el('ta-outcomes');
+      return {
+        'the authoring panel is hidden, as navigation left it':
+          env.el('task-authoring').hidden,
+        'the outcome is READABLE somewhere on screen':
+          env.text('ta-outcomes').includes('add-x'),
+        'it names the target repo': env.text('ta-outcomes').includes('widget'),
+        'it states the outcome honestly':
+          env.text('ta-outcomes').includes('created'),
+        'the banner is visible': banner.visible,
+        'a Re-check is offered': banner
+          .querySelectorAll('button[data-ta-recheck]')
+          .filter(b => b.visible).length,
+      };
+    },
+    expect: {
+      'the authoring panel is hidden, as navigation left it': true,
+      'the outcome is READABLE somewhere on screen': true,
+      'it names the target repo': true,
+      'it states the outcome honestly': true,
+      'the banner is visible': true,
+      'a Re-check is offered': 1,
+    },
+  },
+  {
+    name: '49c. [I-A] the banner SURVIVES further navigation, and its '
+      + 'Re-check reopens the submitted slug — not whatever is typed now',
+    project: {
+      name: 'widget', path: '/repos/widget',
+      also: [{name: 'other', path: '/repos/other'}],
+    },
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, 'add-x', 200, {ok: true, matches: [], malformed: []});
+      let releasePost;
+      const pending = new Promise(r => { releasePost = r; });
+      env.route(u => u.startsWith('/api/actions/request-task'), () => pending);
+      env.set('ta-title', 'Add feature X');
+      env.set('ta-prose', 'because Y, done when Z');
+      const settle = await env.fireInFlight('ta-create', 'click');
+      await selectProject(env, 1);
+      releasePost(resp(200, {ok: true, created: null, error: 'no answer'}));
+      await settle();
+      await drain();
+
+      // keep navigating: every reset on the navigation path, in turn
+      await selectProject(env, 0);
+      await selectProject(env, 1);
+      await env.fire('ta-open-panel', 'click');
+      const survived = env.text('ta-outcomes').includes('add-x');
+
+      // now type a DIFFERENT slug into the reopened form, then Re-check from
+      // the banner: it must ask about "add-x", not "something-else"
+      env.set('ta-slug', 'something-else');
+      env.route(u => u.startsWith('/api/issue-lookup'),
+        () => resp(200, {ok: true, matches: [GOOD_REF], malformed: []}));
+      const button = env.el('ta-outcomes')
+        .querySelectorAll('button[data-ta-recheck]')[0];
+      await env.fireNode(button, 'click');
+      const lookups = env.urls('/api/issue-lookup');
+      return {
+        'survived three navigations': survived,
+        'Re-check asked about the SUBMITTED slug':
+          lookups[lookups.length - 1].endsWith('&slug=add-x'),
+        'and about the submitted repo':
+          lookups[lookups.length - 1].includes('dir=widget'),
+        'the panel it opened shows that slug': env.el('ta-slug').value,
+        'the panel is on screen': env.visible('ta-slug-state'),
+        'a definite answer resolves the entry, so the banner clears':
+          env.el('ta-outcomes').hidden,
+      };
+    },
+    expect: {
+      'survived three navigations': true,
+      'Re-check asked about the SUBMITTED slug': true,
+      'and about the submitted repo': true,
+      'the panel it opened shows that slug': 'add-x',
+      'the panel is on screen': true,
+      'a definite answer resolves the entry, so the banner clears': true,
+    },
+  },
+  {
+    name: '49d. [I-A] an INDEFINITE re-check leaves the entry standing, and '
+      + 'Dismiss is the only other way it goes away',
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, 'add-x', 200, {ok: true, matches: [], malformed: []});
+      let releasePost;
+      const pending = new Promise(r => { releasePost = r; });
+      env.route(u => u.startsWith('/api/actions/request-task'), () => pending);
+      env.set('ta-title', 'Add feature X');
+      env.set('ta-prose', 'because Y, done when Z');
+      const settle = await env.fireInFlight('ta-create', 'click');
+      await selectProject(env);
+      releasePost(resp(200, {ok: true, created: null, error: 'no answer'}));
+      await settle();
+      await drain();
+
+      env.route(u => u.startsWith('/api/issue-lookup'),
+        () => resp(503, {ok: false, error: 'upstream'}));
+      await env.fireNode(env.el('ta-outcomes')
+        .querySelectorAll('button[data-ta-recheck]')[0], 'click');
+      const stillThere = env.text('ta-outcomes').includes('add-x');
+
+      await env.fireNode(env.el('ta-outcomes')
+        .querySelectorAll('button[data-ta-dismiss]')[0], 'click');
+      return {
+        'status is honest about not knowing':
+          env.text('ta-outcomes').length === 0
+            ? '(gone)' : 'still shown',
+        'an indefinite re-check did NOT resolve it': stillThere,
+        'after Dismiss the banner is gone': env.el('ta-outcomes').hidden,
+        'and nothing is readable there': env.text('ta-outcomes'),
+      };
+    },
+    expect: {
+      'status is honest about not knowing': '(gone)',
+      'an indefinite re-check did NOT resolve it': true,
+      'after Dismiss the banner is gone': true,
+      'and nothing is readable there': '',
     },
   },
   {
@@ -1391,16 +1603,88 @@ const CASES = [
   },
 ];
 
+// ---- the gate's floor ------------------------------------------------------
+//
+// A suite with no cases printed "0/0 cases passed" and exited 0 — a gate that
+// asserts nothing is indistinguishable from a gate that passes, which is the
+// failure this whole harness exists to remove, one level up again. Three
+// things are checked before any case runs, and each is a hard error:
+//   * the suite is non-empty and meets a minimum size;
+//   * every case has a stable id, and no id appears twice (a duplicate makes
+//     one of them invisible to the required-set check below);
+//   * every REQUIRED_CASE_IDS entry is present — a count alone can be met by
+//     adding trivia while deleting the case that mattered.
+// A run in which nothing actually EXECUTED is an error too (see main).
+
+const MINIMUM_CASES = 55;
+
+// The load-bearing behaviours. Each pins a defect that was really shipped or
+// really reachable; losing one silently is the thing to prevent.
+const REQUIRED_CASE_IDS = [
+  '1',     // only an explicit [] enables Create
+  '5',     // matches: null is not "free"
+  '10',    // one bad item fails the whole list closed
+  '18',    // taRepo is the data-dir, never the display name
+  '20',    // the POST carries the slug that was checked
+  '21',    // a 5xx must not re-enable Create
+  '32',    // Re-check clears the warning it answers
+  '34',    // an indefinite Re-check preserves the unknown state
+  '38.1',  // ok:false is a refusal, not "already exists"
+  '42',    // the conflict-list link is built, not interpolated
+  '45',    // a prefix check must not pass an unparseable URL
+  '47',    // a stale lookup must not overwrite a newer one
+  '48',    // the form is locked while a POST is in flight
+  '49b',   // a mutation outcome survives navigating to another project
+  '49c',   // the banner survives navigation; Re-check uses the SUBMITTED slug
+];
+
+/** The stable id is the leading number in the case name (e.g. "38.1"). */
+function caseId(c) {
+  const m = /^(\d+(?:\.\d+)?[a-z]?)[.\s]/.exec(c.name);
+  if (!m) throw new Error(`case has no stable id in its name: ${c.name}`);
+  return m[1];
+}
+
+function checkSuiteFloor(cases) {
+  if (cases.length === 0) {
+    throw new Error(
+      'the case list is EMPTY — a gate that asserts nothing cannot pass');
+  }
+  if (cases.length < MINIMUM_CASES) {
+    throw new Error(`only ${cases.length} cases; at least ${MINIMUM_CASES} `
+      + 'are expected — cases were deleted, not fixed');
+  }
+  const ids = cases.map(caseId);
+  const seen = new Set();
+  const duplicated = ids.filter(id => seen.size === seen.add(id).size);
+  if (duplicated.length) {
+    throw new Error(
+      `duplicate case id(s): ${[...new Set(duplicated)].join(', ')}`);
+  }
+  const missing = REQUIRED_CASE_IDS.filter(id => !seen.has(id));
+  if (missing.length) {
+    throw new Error(`required case(s) missing: ${missing.join(', ')}`);
+  }
+}
+
 // ---- deliberate failures, for testing the runner itself --------------------
 //
 // Each of these is a REAL case run through the REAL loop below; only the
 // injected fault differs. tests/web/runner_selftest.js spawns one child
 // process per scenario so these failures never pollute the real run.
 
+// Scenarios come in two shapes: an extra CASE to append, or a TRANSFORM of
+// the whole list, for proving the floor rejects a degenerate suite.
 const SELFTEST_CASES = {
   clean: null,
+  empty: {transform: () => []},
+  'missing-required': {
+    transform: cases => cases.filter(c => caseId(c) !== '49b'),
+  },
+  'duplicate-id': {transform: cases => [...cases, cases[0]]},
+  'all-skipped': {transform: cases => cases.map(c => ({...c, skip: true}))},
   reject: {
-    name: 'selftest: a detached rejected promise must redden the run',
+    name: '901. selftest: a detached rejected promise must redden the run',
     async run(env) {
       await openPanel(env);
       Promise.reject(new Error('selftest: detached rejection'));
@@ -1410,7 +1694,7 @@ const SELFTEST_CASES = {
     expect: {'the case itself': 'passes'},
   },
   throw: {
-    name: 'selftest: a throwing timer callback must redden the run',
+    name: '902. selftest: a throwing timer callback must redden the run',
     async run(env) {
       await openPanel(env);
       setTimeout(() => { throw new Error('selftest: thrown callback'); }, 0);
@@ -1420,7 +1704,7 @@ const SELFTEST_CASES = {
     expect: {'the case itself': 'passes'},
   },
   assert: {
-    name: 'selftest: an ordinary assertion mismatch must redden the run',
+    name: '903. selftest: an ordinary assertion mismatch must redden the run',
     async run(env) {
       await openPanel(env);
       return {'ta-repo label': env.text('ta-repo')};
@@ -1428,12 +1712,12 @@ const SELFTEST_CASES = {
     expect: {'ta-repo label': 'not what the page shows'},
   },
   casethrow: {
-    name: 'selftest: a case that throws is a FAILED case, not an absent one',
+    name: '904. selftest: a case that throws is a FAILED case, not an absent one',
     async run() { throw new Error('selftest: the case body threw'); },
     expect: {},
   },
   hang: {
-    name: 'selftest: a case that awaits a promise which never settles must '
+    name: '905. selftest: a case that awaits a promise which never settles must '
       + 'not let the process exit 0 mid-run',
     async run() {
       await new Promise(() => {});  // never settles
@@ -1442,7 +1726,7 @@ const SELFTEST_CASES = {
     expect: {},
   },
   crash: {
-    name: 'selftest: a crash outside every case must redden the run',
+    name: '906. selftest: a crash outside every case must redden the run',
     async run() { return {}; },
     expect: {},
   },
@@ -1452,6 +1736,11 @@ const SELFTEST_CASES = {
 
 async function runCase(c) {
   currentCase = c.name;
+  if (c.skip) {
+    skipped++;
+    console.log(`\n[SKIP] ${c.name}`);
+    return;
+  }
   let env;
   try {
     env = await boot(c.project || WIDGET);
@@ -1486,8 +1775,15 @@ async function main() {
     throw new Error(`unknown --selftest scenario: ${SELFTEST}`);
   }
   const injected = SELFTEST ? SELFTEST_CASES[SELFTEST] : null;
-  const cases = injected ? [...CASES, injected] : CASES;
+  let cases = CASES;
+  if (injected && injected.transform) cases = injected.transform(CASES);
+  else if (injected) cases = [...CASES, injected];
+  checkSuiteFloor(cases);
   for (const c of cases) await runCase(c);
+  if (skipped === cases.length) {
+    throw new Error(`every one of the ${cases.length} cases was SKIPPED — a `
+      + 'run that executed nothing is not a passing run');
+  }
   if (SELFTEST === 'crash') {
     throw new Error('selftest: main() itself failed after the cases ran');
   }
@@ -1500,11 +1796,13 @@ main().then(async total => {
   // cannot describe a run that has not finished failing yet.
   await drain(10);
   console.log(
-    `\ncases: ${total} · failed cases: ${caseFailures} · async errors `
+    `\ncases: ${total} · executed: ${total - skipped} · skipped: ${skipped} `
+    + `· failed cases: ${caseFailures} · async errors `
     + `(unhandled rejections / uncaught exceptions): ${asyncErrors}`);
   if (failed() === 0) {
     summaryClaimedClean = true;
-    console.log(`\n${total}/${total} cases passed, no async errors`);
+    console.log(
+      `\n${total - skipped}/${total} cases passed, no async errors`);
   } else {
     console.log(
       `\nFAILED: ${total - caseFailures}/${total} cases passed, ${asyncErrors} `

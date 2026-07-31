@@ -169,6 +169,60 @@ class El {
 
   scrollIntoView() {}
   focus() {}
+  remove() {
+    if (!this.parentNode) return;
+    const siblings = this.parentNode.childNodes;
+    const at = siblings.indexOf(this);
+    if (at >= 0) siblings.splice(at, 1);
+    this.parentNode._rawHTML = null;
+    this.parentNode = null;
+  }
+
+  /** The inline `style` attribute, as a live object (display/visibility). */
+  get style() {
+    const self = this;
+    const parse = () => Object.fromEntries(
+      (self.attributes.style || '').split(';')
+        .map(rule => rule.split(':'))
+        .filter(pair => pair.length === 2)
+        .map(([k, v]) => [k.trim().toLowerCase(), v.trim().toLowerCase()]));
+    const write = decls => {
+      self.attributes.style = Object.entries(decls)
+        .map(([k, v]) => `${k}: ${v}`).join('; ');
+    };
+    return {
+      get display() { return parse().display || ''; },
+      set display(v) { write({...parse(), display: v}); },
+      get visibility() { return parse().visibility || ''; },
+      set visibility(v) { write({...parse(), visibility: v}); },
+    };
+  }
+
+  /** Is THIS node hidden, ignoring its ancestors? */
+  get selfHidden() {
+    if (this.hidden) return true;
+    if (this.attributes['aria-hidden'] === 'true') return true;
+    const decls = this.attributes.style || '';
+    if (/display\s*:\s*none/i.test(decls)) return true;
+    if (/visibility\s*:\s*hidden/i.test(decls)) return true;
+    return false;
+  }
+
+  /**
+   * Can a person actually see this node? Checked on the element AND EVERY
+   * ancestor, across all four ways a subtree goes off screen: `hidden`,
+   * `aria-hidden="true"`, `display: none`, `visibility: hidden`.
+   *
+   * The harness's oracle used to be bare `textContent`, which made every
+   * "the screen says X" claim satisfiable by markup nobody can see — and
+   * that is exactly where a real defect (I-A) lived: a mutation outcome
+   * written into a panel navigation had already hidden. No number of extra
+   * cases could have found it; only a better instrument could.
+   */
+  get visible() {
+    for (let n = this; n; n = n.parentNode) if (n.selfHidden) return false;
+    return true;
+  }
 }
 
 const camel = s => s.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
@@ -361,9 +415,11 @@ class Document {
  * await async handlers instead of racing them.
  */
 function dispatch(el, type, {force = false} = {}) {
-  // A disabled control produces no user events at all — not clicks, and not
-  // the `change` a locked field could otherwise appear to fire.
-  if (!force && el.disabled) return [];
+  // A real person can only act on a control that is BOTH visible and
+  // enabled. `force` is the structural escape hatch: it exists so a test can
+  // drive defence-in-depth code that the UI cannot reach, and every use of it
+  // is named as structural at the call site.
+  if (!force && (el.disabled || !el.visible)) return [];
   const event = {
     type, target: el, currentTarget: null,
     preventDefault() {}, stopPropagation() {},

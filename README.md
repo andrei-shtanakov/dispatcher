@@ -147,10 +147,38 @@ one gets an immediate 409 rather than a silent wait. `created` on the
 result is **three-valued**, mirroring `merged` above: `true` means the
 issue was filed; `false` means it was not (most commonly the idempotent
 case — the slug already had one, and the screen re-runs the lookup to
-show it); `null` means the create call itself broke (timeout, missing
-binary, unparseable output) and whether an issue exists is genuinely
-unknown. The screen never renders `null` as "not created", and the only
+show it); `null` means the verb **ran and its answer could not be read**,
+so whether an issue exists is genuinely unknown.
+
+Which failures land in which value is decided by `phase`, an additional
+field on every outcome, and it is not a matter of taste — it is which side
+of the `fork` the failure happened on:
+
+| `phase` | meaning | `created` |
+|---|---|---|
+| `pre_launch` | nothing was executed: argv refused (an embedded NUL), a missing binary, `E2BIG`, a body-write failure | `false` — nothing was filed |
+| `launched_unreadable` | the verb RAN; its output could not be decoded, or it timed out | `null` — an issue may exist |
+| `readable_result` | github-checker answered and we parsed it | whatever it said |
+
+A **missing binary is `pre_launch`/`created=false`**, not `null`: exec never
+happened. Only a failure on the far side of the fork may claim ignorance,
+and only that side may leave `created` unknown — inferring the phase from
+the exception type instead of the code path is exactly how a completed run
+once got labelled "refused before launch" and re-enabled Create. The screen never renders `null` as "not created", and the only
 follow-up it offers on an unknown outcome is Re-check.
+
+If a create POST completes **after the operator has navigated away**, its
+outcome is not written into the authoring panel — navigation hides that
+panel, so reporting there is reporting into a void. It goes to a persistent
+**Unresolved task requests** banner outside the panel, naming the target
+repo and the submitted slug with an honest status (created / not created /
+outcome unknown). The banner survives further navigation by construction —
+nothing on the navigation path touches it — and clears only when the
+operator resolves it (a Re-check that gets a definite answer, which reopens
+that repo's authoring screen on **the submitted slug**, not whatever is
+typed now) or dismisses it. Navigation is deliberately **not** blocked while
+a POST is in flight: the network can hang long after the mutation has gone
+out, so blocking would buy nothing and strand the operator.
 
 Create is forbidden **while the state is unknown, and until a Re-check
 succeeds** — not forever. Creating again straight off an unknown outcome is

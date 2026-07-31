@@ -416,6 +416,12 @@ class ActionRunner:
             # defect as claiming a non-merge we were not told about
             merged=merge.merged,
             local_sync=sync.local_sync or ("ok" if sync.ok else "failed"),
+            # The composite is only as readable as its LEAST readable step:
+            # claiming `readable_result` because the merge parsed, while the
+            # sync's answer could not be read, would assert knowledge of a
+            # step nobody read. Both component lines already carry their own
+            # phase; this is the one that was missing.
+            phase=(merge.phase if merge.phase != PHASE_READABLE else sync.phase),
             detail=merge.detail,
             error=sync.error,
             pr_url=merge.pr_url,

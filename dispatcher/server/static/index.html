@@ -118,12 +118,25 @@
   #overlay-editor { width: 100%; font-family: ui-monospace, monospace;
     font-size: 12px; margin-top: 6px; }
   #overlay-warning { color: var(--bad); margin-top: 6px; }
+  #ta-outcomes { border: 1px solid var(--warn); border-radius: 10px;
+    background: var(--card); padding: 10px 14px; margin-bottom: 12px; }
+  .ta-outcome { display: flex; gap: 8px; align-items: baseline;
+    flex-wrap: wrap; padding: 4px 0; }
+  .ta-outcome .what { font-weight: 600; }
 </style>
 </head>
 <body>
 <h1>Dispatcher</h1>
 <div class="sub">Ecosystem overview · auto-refresh 10s ·
   <span id="updated"></span></div>
+
+<!-- I-A: outcomes of MUTATIONS outlive the panel that started them. This
+     region is deliberately outside #task-authoring and #detail-section, so
+     nothing on the navigation path (detail(), ta-open-panel) can reach it:
+     a request that was actually sent stays on screen until the operator
+     resolves or dismisses it. -->
+<section id="ta-outcomes" hidden><h2>Unresolved task requests</h2>
+  <div id="ta-outcomes-list"></div></section>
 
 <section id="sync-section" style="margin-top:0"><h2>Sync
   <span id="sync-topline" class="badge dim">…</span>
@@ -1376,10 +1389,6 @@ let taGen = 0;
 // mutation is already on the wire and this screen cannot describe its result
 // yet.
 let taCreating = false;
-// The slug the in-flight POST was submitted for. A POST answer is NEVER
-// discarded as stale — it may have created an issue — so when the screen has
-// moved on we still have to name what was filed.
-let taSubmittedSlug = null;
 
 // While a mutation is on the wire the form is not a form: every field that
 // feeds it is locked, so the screen cannot be describing one slug while a
@@ -1435,9 +1444,128 @@ function taShow(id, on) { document.getElementById(id).hidden = !on; }
 // clicked Re-check to resolve, replacing "an issue may exist" with a bare
 // "cannot check" — losing information rather than refreshing it.
 function taAnswered() {
+  taAnsweredDefinitely = true;
   document.getElementById('ta-result').textContent = '';
   taShow('ta-recheck', false);
 }
+
+// True when the authoring panel is still the operator's context for this
+// generation. Both halves matter: a newer generation means the screen moved
+// on, and a hidden panel means they cannot read it even if it did not.
+function taPanelIsCurrent(gen) {
+  return gen === taGen && !document.getElementById('task-authoring').hidden;
+}
+
+// I-A: a mutating request that was SENT has an outcome the operator must be
+// able to read, and #task-authoring is not a safe place to put it — detail()
+// hides that panel on any project click and ta-open-panel wipes its fields.
+// Writing there after navigation is reporting into a void: the code believes
+// it told someone, and nobody can read it.
+//
+// So an outcome that lands while the panel is not the operator's current
+// context is recorded HERE instead: a persistent region outside the panel,
+// naming the target repo and the SUBMITTED slug, stating honestly what is
+// known, and offering a Re-check that reopens that repo's authoring screen
+// on that slug. It survives navigation by construction — nothing on the
+// navigation path touches it — and clears only when the operator resolves
+// it (a definite re-check) or dismisses it.
+//
+// Navigation is deliberately NOT blocked while a POST is in flight: the
+// network can hang long after the mutation has gone out, so blocking buys
+// nothing and strands the operator in front of a dead screen.
+const taOutcomes = [];
+
+function taOutcomeStatus(outcome) {
+  if (!outcome || typeof outcome !== 'object') {
+    return 'outcome unknown — needs checking';
+  }
+  if (outcome.created === true) {
+    const ref = outcome.issue;
+    const number = ref && Number.isInteger(ref.number) ? ` (#${ref.number})` : '';
+    return `created${number}`;
+  }
+  if (outcome.created === false && outcome.ok) {
+    return 'not created — a request for this slug already existed';
+  }
+  if (outcome.created === false) {
+    return `refused, nothing created: ${outcome.error || 'no reason given'}`;
+  }
+  return `outcome unknown — needs checking: ${outcome.error || 'no answer'}`;
+}
+
+function taRenderOutcomes() {
+  const box = document.getElementById('ta-outcomes');
+  const list = document.getElementById('ta-outcomes-list');
+  list.replaceChildren();
+  taOutcomes.forEach(entry => {
+    const row = document.createElement('div');
+    row.className = 'ta-outcome';
+    const what = document.createElement('span');
+    what.className = 'what';
+    // textContent, not markup: repo and slug are operator input
+    what.textContent = `${entry.repo} · ${entry.slug}`;
+    const status = document.createElement('span');
+    status.textContent = entry.status;
+    const recheck = document.createElement('button');
+    recheck.type = 'button';
+    recheck.setAttribute('data-ta-recheck', entry.id);
+    recheck.textContent = 'Re-check';
+    recheck.onclick = () => {
+      taResumeOutcome(entry).catch(err => {
+        status.textContent = `re-check failed: ${err}`;
+      });
+    };
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.setAttribute('data-ta-dismiss', entry.id);
+    dismiss.textContent = 'Dismiss';
+    dismiss.onclick = () => taDropOutcome(entry.id);
+    row.append(what, status, recheck, dismiss);
+    list.append(row);
+  });
+  box.hidden = taOutcomes.length === 0;
+}
+
+let taOutcomeSeq = 0;
+function taRecordOutcome(repo, slug, status) {
+  taOutcomes.push({id: `o${++taOutcomeSeq}`, repo, slug, status});
+  taRenderOutcomes();
+}
+
+function taDropOutcome(id) {
+  const at = taOutcomes.findIndex(e => e.id === id);
+  if (at >= 0) taOutcomes.splice(at, 1);
+  taRenderOutcomes();
+}
+
+// Re-check from the banner opens the authoring screen for the entry's OWN
+// repo and slug — never whatever happens to be typed in the form now, which
+// after navigation belongs to a different project entirely.
+async function taResumeOutcome(entry) {
+  taGen += 1;
+  taRepo = entry.repo;
+  document.getElementById('ta-repo').textContent = '— ' + taRepo;
+  document.getElementById('ta-slug').value = entry.slug;
+  document.getElementById('ta-title').value = '';
+  document.getElementById('ta-prose').value = '';
+  document.getElementById('ta-result').textContent = '';
+  taShow('ta-existing', false);
+  taShow('ta-open', false);
+  taShow('ta-recheck', false);
+  document.getElementById('ta-create').disabled = true;
+  const section = document.getElementById('task-authoring');
+  section.hidden = false;
+  section.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+  taAnsweredDefinitely = false;
+  await taCheckSlug();
+  // resolved only by a DEFINITE answer; an indefinite one leaves the entry
+  // exactly where it was, because nothing was learned
+  if (taAnsweredDefinitely) taDropOutcome(entry.id);
+}
+
+// set by taAnswered(), i.e. only on the three branches that really read the
+// inbox; read by taResumeOutcome to decide whether an entry is resolved
+let taAnsweredDefinitely = false;
 
 // *inherited* lets the create handler re-check under ITS generation instead
 // of opening a new one, so its own post-await checks stay meaningful.
@@ -1452,6 +1580,7 @@ async function taCheckSlug(inherited) {
   }
   const gen = inherited === undefined ? ++taGen : inherited;
   const issuedFor = slug;  // the subject this answer will be about
+  taAnsweredDefinitely = false;
   // hidden is not enough: a hidden #ta-existing keeps the PREVIOUS slug's
   // issue links in the DOM, and #ta-open keeps an onclick closed over the
   // previous ref's URL — anything that re-shows either without rewriting it
@@ -1609,7 +1738,7 @@ document.getElementById('ta-create').addEventListener('click', async () => {
   if (!taRepo) { result.textContent = 'no repo selected'; return; }
   const gen = ++taGen;
   const submitted = document.getElementById('ta-slug').value.trim();
-  taSubmittedSlug = submitted;
+  const taRepoAtSubmit = taRepo;
   taCreating = true;
   taLockFields(true);
   btn.disabled = true;
@@ -1638,8 +1767,13 @@ document.getElementById('ta-create').addEventListener('click', async () => {
     });
     outcome = await res.json();
   } catch (err) {
-    // the request itself broke: whether it landed is unknown. This is
-    // reported whether or not the screen moved on — see the stale branch.
+    // the request itself broke: whether it landed is unknown. If it was SENT
+    // and the screen has moved on, this must not go into a hidden panel.
+    if (sent && !taPanelIsCurrent(gen)) {
+      taRecordOutcome(taRepoAtSubmit, submitted,
+        `outcome unknown — needs checking: ${err}`);
+      return;
+    }
     result.textContent = sent
       ? `issue may have been created for "${submitted}"; state unknown (${err})`
       : `issue may have been created; state unknown (${err})`;
@@ -1654,12 +1788,10 @@ document.getElementById('ta-create').addEventListener('click', async () => {
   // SENT, so an issue may exist. Returning quietly here would hide a real
   // mutation behind a screen that has moved on — the worst version of the
   // duplicate this feature exists to prevent.
-  if (gen !== taGen) {
-    result.textContent =
-      `a request for "${submitted}" was sent and its outcome landed after the `
-      + 'screen moved on — re-check that slug before filing it again';
-    taShow('ta-recheck', true);
-    btn.disabled = true;
+  if (!taPanelIsCurrent(gen)) {
+    // The request WAS sent, so an issue may exist. The panel is no longer the
+    // operator's context — record it where navigation cannot reach.
+    taRecordOutcome(taRepoAtSubmit, submitted, taOutcomeStatus(outcome));
     return;
   }
   // Minor fix: a 200 (or any status) with a non-object JSON body (`null`,
