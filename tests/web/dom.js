@@ -57,6 +57,10 @@ class El {
     this.disabled = false;
     this.value = '';
     this.className = '';
+    // `rel` is a reflected IDL attribute in browsers: setting the
+    // property updates the attribute. Modelled so a security
+    // assertion about rel can be written against getAttribute.
+    this.rel = '';
     this.title = '';
     this.open = false;
     this._rawHTML = null;
@@ -80,12 +84,17 @@ class El {
     else if (name === 'hidden') this.hidden = true;
     else if (name === 'disabled') this.disabled = true;
     else if (name === 'value') this.value = v;
+    else if (name === 'rel') this.rel = v;
     else if (name === 'title') this.title = v;
     else if (name.startsWith('data-')) {
       this.dataset[camel(name.slice(5))] = v;
     }
   }
   getAttribute(name) {
+    // Reflected IDL attributes: the page sets the PROPERTY (`link.rel = …`),
+    // and a browser makes getAttribute see it. Model that, or a security
+    // assertion written against getAttribute silently reads nothing.
+    if (name === 'rel' && this.rel) return this.rel;
     return name in this.attributes ? this.attributes[name] : null;
   }
   hasAttribute(name) { return name in this.attributes; }

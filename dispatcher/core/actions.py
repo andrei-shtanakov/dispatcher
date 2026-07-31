@@ -135,8 +135,12 @@ def reject_control_chars(**fields: str) -> None:
         found = _CONTROL_RE.search(value)
         if found is not None:
             raise ActionRejectedError(
+                # one line: this string is both a 422 detail and an audit
+                # line, and a newline would split the latter in the log
                 f"{name} contains a control character "
-                f"(U+{ord(found.group()):04X}); it must not"
+                f"(U+{ord(found.group()):04X}); this value becomes an argument "
+                f"to the github-checker binary, where a control character "
+                f"would truncate it — remove the character and try again"
             )
 
 

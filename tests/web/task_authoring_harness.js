@@ -266,6 +266,13 @@ function makeEnv(project) {
     read(expression) { return vm.runInContext(expression, ctx); },
     /** The links the page actually rendered, href and text. */
     /** The links a person can actually see and click. */
+    /** The rel of every rendered link — reverse-tabnabbing hardening. */
+    linkRels(id) {
+      const node = env.el(id);
+      if (!node.visible) return '';
+      return [...node.querySelectorAll('a')]
+        .map(a => a.getAttribute('rel') || '(none)').join(' | ');
+    },
     links(id) {
       const node = env.el(id);
       if (!node.visible) return '';
@@ -378,6 +385,18 @@ const CASES = [
       'existing hidden': true,
       'Open-existing hidden': true,
     },
+  },
+  {
+    name: '2r. [security] a rendered link carries rel="noopener noreferrer" — '
+      + 'the opened page must not reach back through window.opener, and the '
+      + 'URL naming the target repo and slug is not handed over as a referrer',
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, 'add-x', 200,
+        {ok: true, matches: [GOOD_REF], malformed: []});
+      return {'rel on the rendered link': env.linkRels('ta-existing')};
+    },
+    expect: {'rel on the rendered link': 'noopener noreferrer'},
   },
   {
     name: '2. a taken slug renders the issue, disables Create, and '
@@ -1862,6 +1881,7 @@ const MINIMUM_CASES = 55;
 // The load-bearing behaviours. Each pins a defect that was really shipped or
 // really reachable; losing one silently is the thing to prevent.
 const REQUIRED_CASE_IDS = [
+  '2r',    // rel hardening on the one link sink — no other case reads rel
   '1',     // only an explicit [] enables Create
   '5',     // matches: null is not "free"
   '10',    // [URL] an item with an unusable URL fails the whole list closed

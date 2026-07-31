@@ -1332,3 +1332,16 @@ def test_merge_and_sync_composite_carries_a_phase(tmp_path: Path, caplog) -> Non
     )
     outcome = unreadable.merge_and_sync("alpha", 1, "deadbeef")
     assert outcome.phase == "launched_unreadable"
+
+
+def test_control_char_refusal_is_one_readable_line(tmp_path: Path) -> None:
+    """The message is both a 422 detail and an audit line: a newline would
+    split the log entry, and a truncated sentence leaves the operator with
+    nothing to act on."""
+    from dispatcher.core.actions import reject_control_chars
+
+    with pytest.raises(ActionRejectedError) as excinfo:
+        reject_control_chars(slug="a\x00b")
+    message = str(excinfo.value)
+    assert "\n" not in message
+    assert message.rstrip().endswith("try again"), message

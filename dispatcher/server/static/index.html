@@ -283,6 +283,10 @@ function safeLink(rawUrl, label) {
   const link = document.createElement('a');
   link.href = parsed.href;   // the canonical, percent-encoded form
   link.target = '_blank';
+  // noopener: the opened page must not reach back through window.opener.
+  // noreferrer: the URL carries the target repo and slug, and there is no
+  // reason to hand that to whatever the producer pointed us at.
+  link.rel = 'noopener noreferrer';
   link.textContent = label;  // the user string appears only as text
   return link;
 }
@@ -1741,7 +1745,7 @@ async function taCheckSlug(inherited) {
   const open = document.getElementById('ta-open');
   open.hidden = false;
   // the canonical parsed form, not the raw string the producer sent
-  open.onclick = () => window.open(link.href, '_blank');
+  open.onclick = () => window.open(link.href, '_blank', 'noopener,noreferrer');
   return definite();
 }
 
