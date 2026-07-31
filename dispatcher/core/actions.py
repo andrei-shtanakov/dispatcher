@@ -191,7 +191,9 @@ class ActionRunner:
                 ok=False,
                 error="github-checker returned JSON that is not an object",
             )
-        local = data.get("local") or {}
+        local = data.get("local")
+        if not isinstance(local, dict):
+            local = {}
         try:
             return ActionOutcome(
                 action=action,

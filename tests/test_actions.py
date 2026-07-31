@@ -591,20 +591,50 @@ def test_outcome_carries_the_issue_fields(tmp_path: Path) -> None:
     assert outcome.malformed == []
 
 
-def test_issue_lookup_takes_no_lock(tmp_path: Path) -> None:
+def test_issue_lookup_succeeds_while_a_composite_is_in_flight(tmp_path: Path) -> None:
+    """`issue_lookup` must not queue behind an in-flight merge_and_sync.
+
+    Proven by actually calling it while one is genuinely blocked mid-merge —
+    asserting `_busy == set()` only after the call returns would pass even if
+    `issue_lookup` took the lock and silently waited its turn first, since
+    `_hold`'s `finally` always clears `_busy` before returning.
+    """
     make_repo(tmp_path, "alpha")
-    payload = {
-        "action": "issue-lookup",
-        "dir": "alpha",
-        "ok": True,
-        "matches": [],
-        "malformed": [],
-    }
-    runner = ActionRunner(
-        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    in_merge = tmp_path / "in_merge"
+    go = tmp_path / "go"
+    script = tmp_path / "blocking_merge_for_lookup.py"
+    script.write_text(
+        "import sys, json, pathlib, time\n"
+        f"flag = pathlib.Path({str(in_merge)!r})\n"
+        f"gate = pathlib.Path({str(go)!r})\n"
+        "action = sys.argv[1]\n"
+        "if action == 'merge':\n"
+        "    flag.touch()\n"
+        "    while not gate.exists():\n"
+        "        time.sleep(0.01)\n"
+        "    json.dump({'action':'merge','dir':'alpha','ok':True,'merged':True},"
+        " sys.stdout)\n"
+        "elif action == 'issue-lookup':\n"
+        "    json.dump({'action':'issue-lookup','dir':'alpha','ok':True,"
+        "'matches':[],'malformed':[]}, sys.stdout)\n"
+        "else:\n"
+        "    json.dump({'action':'post-merge-sync','dir':'alpha','ok':True,"
+        "'local_sync':'ok'}, sys.stdout)\n"
     )
-    runner.issue_lookup("alpha", "wanted")
-    assert runner._busy == set()
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
+    )
+    worker = threading.Thread(target=runner.merge_and_sync, args=("alpha", 7, HEAD))
+    worker.start()
+    _wait_for(in_merge, "worker never entered the merge step")
+
+    assert runner._busy == {"alpha"}  # the repo really is held right now
+    outcome = runner.issue_lookup("alpha", "wanted")  # must succeed, no queueing
+    assert outcome.ok is True
+
+    go.touch()
+    worker.join(timeout=10)
+    assert not worker.is_alive(), "merge_and_sync worker did not finish in time"
 
 
 @pytest.mark.parametrize("payload", ["[1, 2]", "5", '"a string"', "null"])
@@ -643,3 +673,44 @@ def test_issue_lookup_passes_the_slug_through(tmp_path: Path) -> None:
     )
     outcome = runner.issue_lookup("alpha", "wanted")
     assert "--slug wanted" in (outcome.detail or "")
+
+
+@pytest.mark.parametrize("bad_local", [5, "x", [1, 2]])
+def test_non_dict_local_degrades_instead_of_crashing(
+    tmp_path: Path, bad_local: object
+) -> None:
+    """Pre-existing hole one line below the envelope guard: `data.get("local")
+    or {}` only rescues a *falsy* `local` (missing, `None`, `{}`); a truthy
+    non-dict scalar, string, or list still reached `local.get(...)` and
+    raised AttributeError out of the runner."""
+    make_repo(tmp_path, "alpha")
+    payload = {"action": "pull", "dir": "alpha", "ok": True, "local": bad_local}
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    outcome = runner.run("pull", "alpha")
+    assert outcome.local_behind is None
+    assert outcome.local_dirty is None
+
+
+def test_missing_matches_and_malformed_stay_none_not_empty(tmp_path: Path) -> None:
+    """`matches`/`malformed` unset (`null`) means github-checker hit its
+    internal cap or could not read a candidate — it could NOT confirm the
+    inbox is empty. `[]` means it looked and found nothing. Collapsing the
+    two (e.g. `data.get("matches") or []`) would silently turn "unknown"
+    into "confirmed empty" — the exact failure the producer's truncation
+    guard exists to prevent."""
+    make_repo(tmp_path, "alpha")
+    payload = {
+        "action": "issue-lookup",
+        "dir": "alpha",
+        "ok": False,
+        "matches": None,
+        "malformed": None,
+    }
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    outcome = runner.issue_lookup("alpha", "wanted")
+    assert outcome.matches is None
+    assert outcome.malformed is None
