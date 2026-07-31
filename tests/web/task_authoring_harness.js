@@ -331,6 +331,32 @@ async function freeSlugThen(env, fn) {
   return fn(env);
 }
 
+/**
+ * Leave ONE unresolved entry in the persistent outcome banner, the only way
+ * the product produces one: a create POST that lands after the operator has
+ * navigated away, answered `created: null` so the outcome stays unknown.
+ * `from`/`to` are project-card indices; they may be the same card.
+ */
+async function strandAnOutcome(env, {slug, from = 0, to = 0}) {
+  await selectProject(env, from);
+  await env.fire('ta-open-panel', 'click');
+  await lookup(env, slug, 200, {ok: true, matches: [], malformed: []});
+  let releasePost;
+  const pending = new Promise(r => { releasePost = r; });
+  env.route(u => u.startsWith('/api/actions/request-task'), () => pending);
+  env.set('ta-title', 'Add feature X');
+  env.set('ta-prose', 'because Y, done when Z');
+  const settle = await env.fireInFlight('ta-create', 'click');
+  await selectProject(env, to);
+  releasePost(resp(200, {ok: true, created: null, error: 'no answer'}));
+  await settle();
+  await drain();
+}
+
+/** The banner's Re-check buttons, in the order the rows are rendered. */
+const recheckButtons = env =>
+  env.el('ta-outcomes').querySelectorAll('button[data-ta-recheck]');
+
 // ---- cases -----------------------------------------------------------------
 
 const CASES = [
@@ -448,7 +474,7 @@ const CASES = [
     },
   })),
   {
-    name: '10. one valid + one invalid match fails the WHOLE list closed',
+    name: '10. [URL] one valid + one URL-less match fails the WHOLE list closed',
     async run(env) {
       await openPanel(env);
       await lookup(env, 'add-x', 200, {
@@ -490,6 +516,81 @@ const CASES = [
       'raw innerHTML holds the scheme': false,
     },
   },
+  // [C-1] The per-item contract check (taRefProblems), exercised through the
+  // five fields that are NOT the URL.
+  //
+  // Cases 10 and 11 above both plant their bad item's fault in `url`, which
+  // safeLink rejects at the sink on its own — so they passed through a
+  // DIFFERENT mechanism than the one they claim to cover, and gutting the
+  // per-item check on either match path left the whole suite green while the
+  // screen rendered "#undefined" under a definite "conflict" headline.
+  //
+  // Every item below therefore carries a perfectly good https: URL (asserted,
+  // not assumed, in each case) and breaks exactly ONE other required field,
+  // so the per-item check is the only thing that can reject it.
+  ...[
+    ['b', 'number', {number: undefined}],
+    ['c', 'title',  {title: 42}],
+    ['d', 'state',  {state: undefined}],
+    ['e', 'author', {author: null}],
+    ['f', 'labels', {labels: 'inbox'}],
+  ].flatMap(([suffix, field, fault]) => [
+    {
+      name: `10${suffix}. [C-1] a second match whose URL is perfectly valid `
+        + `but whose \`${field}\` is not fails the WHOLE conflict list closed`,
+      async run(env) {
+        await openPanel(env);
+        await lookup(env, 'add-x', 200, {
+          ok: true, malformed: [],
+          matches: [GOOD_REF, {...SECOND_REF, ...fault}],
+        });
+        return {
+          // the bad item cannot be rejected by the URL gate: pin that here,
+          // so this case can never quietly become another safeLink test
+          'the bad item\'s URL is a valid https one':
+            new URL(SECOND_REF.url).protocol,
+          'slug state': env.text('ta-slug-state'),
+          'Create disabled': env.el('ta-create').disabled,
+          'existing hidden': env.el('ta-existing').hidden,
+          'rendered links (none, not partial)': env.links('ta-existing'),
+        };
+      },
+      expect: {
+        'the bad item\'s URL is a valid https one': 'https:',
+        'slug state': 'cannot read the result',
+        'Create disabled': true,
+        'existing hidden': true,
+        'rendered links (none, not partial)': '',
+      },
+    },
+    {
+      name: `3${suffix}. [C-1] a single match whose URL is perfectly valid but `
+        + `whose \`${field}\` is not is unreadable, never rendered`,
+      async run(env) {
+        await openPanel(env);
+        await lookup(env, 'add-x', 200, {
+          ok: true, malformed: [], matches: [{...GOOD_REF, ...fault}],
+        });
+        return {
+          'the item\'s URL is a valid https one':
+            new URL(GOOD_REF.url).protocol,
+          'slug state': env.text('ta-slug-state'),
+          'Create disabled': env.el('ta-create').disabled,
+          'existing hidden': env.el('ta-existing').hidden,
+          'Open-existing hidden': env.el('ta-open').hidden,
+          'rendered links': env.links('ta-existing'),
+        };
+      },
+      expect: {
+        'the item\'s URL is a valid https one': 'https:',
+        'slug state': `cannot read: ${field} missing or wrong type`,
+        'Create disabled': true,
+        'existing hidden': true,
+        'Open-existing hidden': true,
+        'rendered links': '',
+      },
+    },
+  ]),
   {
     name: '12. created: null → state unknown, Re-check only, Create stays off',
     async run(env) {
@@ -1560,6 +1661,97 @@ const CASES = [
     },
   },
   {
+    name: '52. [I-B] one entry\'s re-check is resolved ONLY by its own '
+      + 'answer — a neighbour\'s definite answer must not resolve it',
+    project: {
+      name: 'widget', path: '/repos/widget',
+      also: [{name: 'other', path: '/repos/other'}],
+    },
+    async run(env) {
+      // two unresolved outcomes, in two different repos
+      await strandAnOutcome(env, {slug: 'add-x', from: 0, to: 1});
+      await strandAnOutcome(env, {slug: 'add-y', from: 1, to: 0});
+      const before = env.text('ta-outcomes');
+
+      // widget/add-x answers slowly; other/add-y answers at once
+      let releaseX;
+      const slowX = new Promise(r => { releaseX = r; });
+      env.route(u => u.includes('slug=add-y'),
+        () => resp(200, {ok: true, matches: [], malformed: []}));
+      env.route(u => u.includes('slug=add-x'), () => slowX);
+
+      // the operator does the obvious thing and clicks BOTH Re-checks
+      await env.fireNode(recheckButtons(env)[0], 'click');
+      await env.fireNode(recheckButtons(env)[1], 'click');
+      const afterNeighbour = env.text('ta-outcomes');
+
+      // now add-x's own answer arrives — stale, so nothing was learned
+      releaseX(resp(200, {ok: true, matches: [], malformed: []}));
+      await drain();
+      return {
+        'both outcomes are on screen to begin with':
+          before.includes('add-x') && before.includes('add-y'),
+        'the answered neighbour resolves and goes':
+          afterNeighbour.includes('add-y'),
+        'the UNANSWERED entry survives its neighbour\'s answer':
+          afterNeighbour.includes('add-x'),
+        'and survives its own STALE answer, which read nothing':
+          env.text('ta-outcomes').includes('add-x'),
+        'so the banner is still on screen': env.el('ta-outcomes').visible,
+        'and still names the repo whose inbox was never read':
+          env.text('ta-outcomes').includes('widget'),
+      };
+    },
+    expect: {
+      'both outcomes are on screen to begin with': true,
+      'the answered neighbour resolves and goes': false,
+      'the UNANSWERED entry survives its neighbour\'s answer': true,
+      'and survives its own STALE answer, which read nothing': true,
+      'so the banner is still on screen': true,
+      'and still names the repo whose inbox was never read': true,
+    },
+  },
+  {
+    name: '53. [I-B] a single entry\'s re-check is not resolved by a lookup '
+      + 'for a slug retyped into the panel it just opened',
+    async run(env) {
+      await strandAnOutcome(env, {slug: 'add-x'});
+      let releaseSlow;
+      const slow = new Promise(r => { releaseSlow = r; });
+      env.route(u => u.includes('slug=retyped'),
+        () => resp(200, {ok: true, matches: [], malformed: []}));
+      env.route(u => u.includes('slug=add-x'), () => slow);
+
+      await env.fireNode(recheckButtons(env)[0], 'click');
+      const opened = env.el('ta-slug').value;
+      // while add-x's lookup is in flight, the operator types a different
+      // slug into the very field the Re-check just filled in
+      env.set('ta-slug', 'retyped');
+      await env.fire('ta-slug', 'change');
+      const afterRetype = env.text('ta-outcomes');
+
+      releaseSlow(resp(200, {ok: true, matches: [], malformed: []}));
+      await drain();
+      return {
+        'Re-check opened the panel on the submitted slug': opened,
+        'the retyped slug got its own definite answer':
+          env.text('ta-slug-state'),
+        'a definite answer about ANOTHER slug does not resolve the entry':
+          afterRetype.includes('add-x'),
+        'nor does the entry\'s own stale answer':
+          env.text('ta-outcomes').includes('add-x'),
+        'so the banner is still on screen': env.el('ta-outcomes').visible,
+      };
+    },
+    expect: {
+      'Re-check opened the panel on the submitted slug': 'add-x',
+      'the retyped slug got its own definite answer': 'free',
+      'a definite answer about ANOTHER slug does not resolve the entry': true,
+      'nor does the entry\'s own stale answer': true,
+      'so the banner is still on screen': true,
+    },
+  },
+  {
     name: '51. [oracle] a control the operator cannot SEE cannot be operated '
       + '— with the panel open and a repo selected, so invisibility is the '
       + 'ONLY thing standing in the way',
@@ -1672,7 +1864,9 @@ const MINIMUM_CASES = 55;
 const REQUIRED_CASE_IDS = [
   '1',     // only an explicit [] enables Create
   '5',     // matches: null is not "free"
-  '10',    // one bad item fails the whole list closed
+  '10',    // [URL] an item with an unusable URL fails the whole list closed
+  '10b',   // and the multi-match path also checks the fields that are NOT url
+  '3b',    // as does the single-match path — neither leans on safeLink
   '18',    // taRepo is the data-dir, never the display name
   '20',    // the POST carries the slug that was checked
   '21',    // a 5xx must not re-enable Create
@@ -1686,6 +1880,8 @@ const REQUIRED_CASE_IDS = [
   '49b',   // a mutation outcome survives navigating to another project
   '49c',   // the banner survives navigation; Re-check uses the SUBMITTED slug
   '51',    // a control the operator cannot see cannot be operated
+  '52',    // one entry's re-check is not resolved by a neighbour's answer
+  '53',    // nor by a lookup for a slug retyped mid-flight
 ];
 
 /** The stable id is the leading number in the case name (e.g. "38.1"). */

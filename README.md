@@ -173,10 +173,16 @@ panel, so reporting there is reporting into a void. It goes to a persistent
 **Unresolved task requests** banner outside the panel, naming the target
 repo and the submitted slug with an honest status (created / not created /
 outcome unknown). The banner survives further navigation by construction —
-nothing on the navigation path touches it — and clears only when the
-operator resolves it (a Re-check that gets a definite answer, which reopens
-that repo's authoring screen on **the submitted slug**, not whatever is
-typed now) or dismisses it. Navigation is deliberately **not** blocked while
+nothing on the navigation path touches it. Within a page session an entry
+clears only when the operator resolves it (a Re-check that gets a definite
+answer **about that entry's own repo and slug** — it reopens that repo's
+authoring screen on **the submitted slug**, not whatever is typed now; a
+definite answer to any other lookup, including a second entry's Re-check or
+a slug retyped mid-flight, resolves nothing) or dismisses it. A **page
+reload does discard** unresolved entries: the banner is in-memory only, so
+"persistent" means across navigation within the session, not across a
+reload — the server-side `action=` audit line is what survives that.
+Navigation is deliberately **not** blocked while
 a POST is in flight: the network can hang long after the mutation has gone
 out, so blocking would buy nothing and strand the operator.
 

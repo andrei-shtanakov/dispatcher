@@ -1444,7 +1444,6 @@ function taShow(id, on) { document.getElementById(id).hidden = !on; }
 // clicked Re-check to resolve, replacing "an issue may exist" with a bare
 // "cannot check" — losing information rather than refreshing it.
 function taAnswered() {
-  taAnsweredDefinitely = true;
   document.getElementById('ta-result').textContent = '';
   taShow('ta-recheck', false);
 }
@@ -1556,31 +1555,60 @@ async function taResumeOutcome(entry) {
   const section = document.getElementById('task-authoring');
   section.hidden = false;
   section.scrollIntoView({behavior: 'smooth', block: 'nearest'});
-  taAnsweredDefinitely = false;
-  await taCheckSlug();
-  // resolved only by a DEFINITE answer; an indefinite one leaves the entry
-  // exactly where it was, because nothing was learned
-  if (taAnsweredDefinitely) taDropOutcome(entry.id);
+  const verdict = await taCheckSlug();
+  // I-B: this read happens AFTER an await, so it must consult only THIS
+  // operation's own answer. `verdict` is that answer and nothing else: the
+  // question it was issued for (repo + slug), and whether it was definitely
+  // answered while still current. An overlapping lookup — a second Re-check,
+  // or a slug the operator retyped into the panel this very call opened —
+  // produces its own verdict and cannot reach into this one.
+  //
+  // `definite` is the behavioural clause: an indefinite answer — including a
+  // stale one, which read nothing — leaves the entry exactly where it was.
+  // `issuedFor` and `repo` are defence in depth, and honestly so: this call
+  // sets taRepo and the slug field immediately above with no await in
+  // between, so today they cannot differ from the entry. They are here for
+  // the edit that adds one — the same shape as taPanelIsCurrent's `!hidden`
+  // half. Do not read their un-falsifiability as a missing test.
+  if (verdict.definite
+      && verdict.issuedFor === entry.slug
+      && verdict.repo === entry.repo) {
+    taDropOutcome(entry.id);
+  }
 }
 
-// set by taAnswered(), i.e. only on the three branches that really read the
-// inbox; read by taResumeOutcome to decide whether an entry is resolved
-let taAnsweredDefinitely = false;
+// The answer to ONE lookup, bound to the question that lookup asked. Returned
+// by value — deliberately NOT a shared flag: a flag read after an await says
+// "some lookup got a definite answer" and can never say WHICH question was
+// answered, so any concurrent lookup's answer would be credited to whoever
+// awaited next. Frozen, so a continuation cannot be handed a verdict that
+// changes underneath it.
+function taVerdict(gen, issuedFor, repo, definite) {
+  return Object.freeze({gen, issuedFor, repo, definite});
+}
 
 // *inherited* lets the create handler re-check under ITS generation instead
 // of opening a new one, so its own post-await checks stay meaningful.
+//
+// Returns the verdict for THIS call — `{gen, issuedFor, repo, definite}` — so
+// a caller resuming after the await can tell whether ITS OWN question was
+// answered. See taVerdict.
 async function taCheckSlug(inherited) {
   const slug = document.getElementById('ta-slug').value.trim();
   const state = document.getElementById('ta-slug-state');
+  // the question this call is about, captured before any await: a later read
+  // of taRepo / the slug field describes some other moment, not this one
+  const askedRepo = taRepo;
+  const issuedFor = slug;
   if (inherited === undefined && taCreating) {
     // Refuse rather than race: clearing "filing…" or enabling Create while a
     // create is on the wire is one click away from the duplicate.
     state.textContent = 'filing in progress — wait for the result';
-    return;
+    return taVerdict(taGen, issuedFor, askedRepo, false);
   }
   const gen = inherited === undefined ? ++taGen : inherited;
-  const issuedFor = slug;  // the subject this answer will be about
-  taAnsweredDefinitely = false;
+  const indefinite = () => taVerdict(gen, issuedFor, askedRepo, false);
+  const definite = () => taVerdict(gen, issuedFor, askedRepo, true);
   // hidden is not enough: a hidden #ta-existing keeps the PREVIOUS slug's
   // issue links in the DOM, and #ta-open keeps an onclick closed over the
   // previous ref's URL — anything that re-shows either without rewriting it
@@ -1592,11 +1620,11 @@ async function taCheckSlug(inherited) {
   openBtn.onclick = null;
   taShow('ta-open', false);
   document.getElementById('ta-create').disabled = true;
-  if (!slug) { state.textContent = ''; return; }
+  if (!slug) { state.textContent = ''; return indefinite(); }
   // Minor fix: taRepo is only null before an entry point has set it.
   // encodeURIComponent(null) silently becomes the string "null" in the
   // query — refuse rather than ask the server to look up a repo "null".
-  if (!taRepo) { state.textContent = 'no repo selected'; return; }
+  if (!taRepo) { state.textContent = 'no repo selected'; return indefinite(); }
   let outcome;
   try {
     const res = await fetch(
@@ -1604,12 +1632,12 @@ async function taCheckSlug(inherited) {
       `&slug=${encodeURIComponent(slug)}`);
     outcome = await res.json();
     // re-check the preconditions after EVERY await, before touching the DOM
-    if (!taStillCurrent(gen, issuedFor)) return;
-    if (!res.ok) { state.textContent = `cannot check: ${res.status}`; return; }
+    if (!taStillCurrent(gen, issuedFor)) return indefinite();
+    if (!res.ok) { state.textContent = `cannot check: ${res.status}`; return indefinite(); }
   } catch (err) {
-    if (!taStillCurrent(gen, issuedFor)) return;
+    if (!taStillCurrent(gen, issuedFor)) return indefinite();
     state.textContent = `cannot check: ${err}`;
-    return;
+    return indefinite();
   }
   // Same guard the create handler already carries: a 200 whose body is
   // `null` (or a bare number/string) parses without throwing, and every
@@ -1619,13 +1647,13 @@ async function taCheckSlug(inherited) {
   // purpose, and only on the paths that happen to have a .catch.
   if (outcome === null || typeof outcome !== 'object') {
     state.textContent = 'cannot check: unreadable response';
-    return;
+    return indefinite();
   }
   if (!outcome.ok) {
     // malformed candidates land here — a human has to look, and creating
     // on top of an unreadable inbox would compound it
     state.textContent = `cannot check: ${outcome.error || 'unreadable'}`;
-    return;
+    return indefinite();
   }
   // C-2 (Critical): `matches === null` (and `malformed === null`) means the
   // producer could NOT read the inbox exhaustively (200-issue cap, or a
@@ -1649,7 +1677,7 @@ async function taCheckSlug(inherited) {
   // repo, and this screen must not depend on it silently holding.
   if (!Array.isArray(outcome.matches) || !Array.isArray(outcome.malformed)) {
     state.textContent = 'cannot check: inbox could not be read exhaustively';
-    return;
+    return indefinite();
   }
   // Minor: `malformed` was type-checked and then never read. A non-empty
   // one means the producer FOUND inbox issues it could not map — the inbox
@@ -1659,14 +1687,14 @@ async function taCheckSlug(inherited) {
   if (outcome.malformed.length > 0) {
     state.textContent =
       `cannot check: ${outcome.malformed.length} unreadable candidate(s) in the inbox`;
-    return;
+    return indefinite();
   }
   const matches = outcome.matches;
   if (matches.length === 0) {
     taAnswered();
     state.textContent = 'free';
     document.getElementById('ta-create').disabled = false;
-    return;
+    return definite();
   }
   if (matches.length > 1) {
     // C-1 (Critical): every item must pass the same validation the single-
@@ -1677,7 +1705,7 @@ async function taCheckSlug(inherited) {
     // conflict list.
     if (matches.some(m => taRefProblems(m).length > 0)) {
       state.textContent = 'cannot read the result';
-      return;
+      return indefinite();
     }
     taAnswered();
     const links = matches.map(m => safeLink(m.url, `#${m.number}`));
@@ -1685,7 +1713,7 @@ async function taCheckSlug(inherited) {
       // taRefProblems already passed them; this is the same fail-closed rule
       // applied at the sink, where the URL is actually used
       state.textContent = 'cannot read the result';
-      return;
+      return indefinite();
     }
     state.textContent = `${matches.length} issues claim this slug — conflict`;
     const box = document.getElementById('ta-existing');
@@ -1695,15 +1723,15 @@ async function taCheckSlug(inherited) {
       box.append(link);
     });
     taShow('ta-existing', true);
-    return;
+    return definite();
   }
   const ref = matches[0];
   const problems = taRefProblems(ref);
-  if (problems.length) { state.textContent = `cannot read: ${problems.join('; ')}`; return; }
+  if (problems.length) { state.textContent = `cannot read: ${problems.join('; ')}`; return indefinite(); }
   const link = safeLink(ref.url, ref.url);
   if (link === null) {
     state.textContent = 'cannot read: url missing or wrong type';
-    return;
+    return indefinite();
   }
   taAnswered();
   state.textContent = 'already requested';
@@ -1714,6 +1742,7 @@ async function taCheckSlug(inherited) {
   open.hidden = false;
   // the canonical parsed form, not the raw string the producer sent
   open.onclick = () => window.open(link.href, '_blank');
+  return definite();
 }
 
 document.getElementById('ta-slug').addEventListener('change', () => {
