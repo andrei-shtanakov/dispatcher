@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "result_kind": "action",
+  "action": "pull",
+  "dir": "/repos/widget",
+  "ok": true,
+  "error": null,
+  "detail": "fast-forwarded",
+  "local": {
+    "branch": "master",
+    "ahead": 0,
+    "behind": 0,
+    "dirty": false,
+    "error": null
+  }
+}

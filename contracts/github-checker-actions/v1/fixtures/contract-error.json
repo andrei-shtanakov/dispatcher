@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "result_kind": "contract_error",
+  "action": "merge",
+  "dir": "/repos/widget",
+  "ok": false,
+  "error": "contract violation: merge did not match its contracted shape; missing=['local_sync', 'merged'] foreign=[]"
+}

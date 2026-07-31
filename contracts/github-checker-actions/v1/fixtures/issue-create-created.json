@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "result_kind": "action",
+  "action": "issue-create",
+  "dir": "/repos/widget",
+  "ok": true,
+  "error": null,
+  "detail": "created",
+  "matches": null,
+  "malformed": null,
+  "created": true,
+  "issue": {
+    "number": 12,
+    "title": "Add feature X",
+    "state": "closed",
+    "url": "https://github.com/acme/widget/issues/12",
+    "author": "someone",
+    "labels": [
+      "inbox"
+    ]
+  }
+}

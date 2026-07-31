@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "result_kind": "action",
+  "action": "issue-create",
+  "dir": "/repos/widget",
+  "ok": false,
+  "error": "invalid slug: 'Bad Slug'",
+  "detail": null,
+  "matches": null,
+  "malformed": null,
+  "created": false,
+  "issue": null
+}

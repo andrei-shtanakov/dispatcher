@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "result_kind": "action",
+  "action": "pr-detail",
+  "dir": "/repos/widget",
+  "ok": true,
+  "error": null,
+  "pr_detail": {
+    "number": 7,
+    "title": "Add feature X",
+    "url": "https://github.com/acme/widget/pull/7",
+    "state": "OPEN",
+    "is_draft": false,
+    "mergeable": "MERGEABLE",
+    "merge_state_status": "CLEAN",
+    "head_branch": "feat/x",
+    "head_sha": "a1b2c3d4",
+    "base_branch": "master",
+    "review_decision": "APPROVED",
+    "checks": [
+      {
+        "name": "lint",
+        "state": "SUCCESS"
+      },
+      {
+        "name": "test (3.12)",
+        "state": "SUCCESS"
+      }
+    ],
+    "checks_truncated": false,
+    "files": [
+      {
+        "path": "project.yaml",
+        "additions": 3,
+        "deletions": 1
+      },
+      {
+        "path": "README.md",
+        "additions": 12,
+        "deletions": 0
+      }
+    ],
+    "files_total": 2,
+    "files_truncated": false,
+    "review_threads": [
+      {
+        "id": "RT_1",
+        "is_resolved": true,
+        "is_outdated": false,
+        "path": "project.yaml",
+        "author": "reviewer",
+        "excerpt": "looks good"
+      }
+    ],
+    "threads_truncated": false,
+    "diff": "--- a\n+++ b\n",
+    "diff_truncated": false,
+    "allows_squash": true
+  }
+}

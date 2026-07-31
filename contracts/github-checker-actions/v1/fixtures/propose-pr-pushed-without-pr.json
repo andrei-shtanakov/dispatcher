@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "result_kind": "action",
+  "action": "propose-pr",
+  "dir": "/repos/widget",
+  "ok": false,
+  "error": "branch pushed but `gh pr create` failed",
+  "detail": null,
+  "pr_url": null,
+  "pr_state": null,
+  "branch": "propose/x",
+  "base_branch": "master",
+  "commit_sha": "deadbeef",
+  "changed_paths": [
+    "project.yaml"
+  ]
+}

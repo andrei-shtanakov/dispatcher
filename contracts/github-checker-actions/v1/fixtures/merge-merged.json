@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "result_kind": "action",
+  "action": "merge",
+  "dir": "/repos/widget",
+  "ok": true,
+  "error": null,
+  "detail": "pull request #7 squash-merged",
+  "pr_url": "https://x/7",
+  "merged": true,
+  "local_sync": "not_attempted",
+  "gate_failed": null,
+  "pr_detail": null
+}

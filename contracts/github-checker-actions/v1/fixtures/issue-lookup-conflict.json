@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "result_kind": "action",
+  "action": "issue-lookup",
+  "dir": "/repos/widget",
+  "ok": true,
+  "error": null,
+  "matches": [
+    {
+      "number": 12,
+      "title": "Add feature X",
+      "state": "closed",
+      "url": "https://github.com/acme/widget/issues/12",
+      "author": "someone",
+      "labels": [
+        "inbox"
+      ]
+    },
+    {
+      "number": 13,
+      "title": "Add feature X",
+      "state": "closed",
+      "url": "https://github.com/acme/widget/issues/12",
+      "author": "someone",
+      "labels": [
+        "inbox"
+      ]
+    }
+  ],
+  "malformed": []
+}

@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "result_kind": "cli_error",
+  "action": "merge",
+  "dir": "/repos/widget",
+  "ok": false,
+  "error": "invalid command line: argument --if-head: expected one argument"
+}
