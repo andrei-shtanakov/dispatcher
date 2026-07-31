@@ -38,6 +38,21 @@
   #mg-diff { max-height: 420px; overflow: auto; margin: 0;
     background: var(--card); border: 1px solid var(--line);
     border-radius: 10px; padding: 10px 12px; }
+  /* Форма авторинга. Без этих правил `label` остаётся inline, и поля текут
+     одной строкой: порядок на экране (slug → проза → title → кнопка) перестаёт
+     совпадать с порядком чтения, а span состояния распирает строку на 900px и
+     выталкивает title под textarea. Логика при этом верна — сломана только
+     раскладка, и увидеть это можно лишь в браузере. */
+  #task-authoring label { display: block; margin-bottom: 4px; color: var(--dim);
+    font-size: 13px; }
+  #task-authoring input, #ta-prose { display: block; width: 100%;
+    max-width: 640px; box-sizing: border-box; }
+  #ta-prose { margin: 10px 0; font: inherit; padding: 8px 10px;
+    background: var(--card); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 8px; resize: vertical; }
+  #ta-slug-state, #ta-result { display: block; margin-top: 4px; }
+  #ta-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    margin-top: 12px; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
   th, td { text-align: left; padding: 8px 12px;
     border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -168,16 +183,21 @@
 
 <section id="task-authoring" hidden>
   <h2>Task request <span id="ta-repo" class="sub"></span></h2>
-  <label>slug <input id="ta-slug" type="text" spellcheck="false"></label>
+  <label for="ta-slug">slug</label>
+  <input id="ta-slug" type="text" spellcheck="false">
   <span id="ta-slug-state" class="fresh"></span>
-  <label>title <input id="ta-title" type="text"></label>
-  <textarea id="ta-prose" rows="8" spellcheck="false"
-    placeholder="what is needed, and by what observable condition it is done"></textarea>
   <div id="ta-existing" class="fresh" hidden></div>
-  <button id="ta-create" type="button" disabled>Create request</button>
-  <button id="ta-open" type="button" hidden>Open existing issue</button>
-  <button id="ta-recheck" type="button" hidden>Re-check</button>
-  <span id="ta-result"></span>
+  <label for="ta-title">title</label>
+  <input id="ta-title" type="text">
+  <label for="ta-prose">what is needed, and by what observable condition it is done</label>
+  <textarea id="ta-prose" rows="8" spellcheck="false"
+    placeholder="Maestro's scheduler drops the retry budget on a requeue; done when a requeued task keeps its remaining attempts."></textarea>
+  <div id="ta-actions">
+    <button id="ta-create" type="button" disabled>Create request</button>
+    <button id="ta-open" type="button" hidden>Open existing issue</button>
+    <button id="ta-recheck" type="button" hidden>Re-check</button>
+    <span id="ta-result"></span>
+  </div>
 </section>
 
 <section><details id="errors-box">

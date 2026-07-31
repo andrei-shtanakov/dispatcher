@@ -792,6 +792,14 @@ git commit -m "feat(api): issue-lookup read and request-task action endpoints"
 
 **Structural fields are not form fields.** The form collects slug, title and prose only. `from:` is the server's, and the form must offer no way to set it.
 
+**The markup below needs CSS, and the plan's first version shipped without it.**
+A bare `<label>` is `display: inline`, so every field flowed onto one line: the
+on-screen order came out slug → prose → title → button, the submit button shared a
+row with an input, and the status `<span>` stretched to 900px and pushed `title`
+below the textarea. Every logic test passed throughout — only a browser showed it.
+Make the labels and inputs block-level, cap the field width, and put the buttons in
+their own `flex` row that wraps.
+
 - [ ] **Step 1: Add the markup**
 
 Insert after the `#merge-gate` section:
