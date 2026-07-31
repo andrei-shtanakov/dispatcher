@@ -65,3 +65,14 @@ def test_readme_carries_the_three_state_rule() -> None:
     """The README is normative: schema without it is shape without meaning."""
     readme = (VENDORED_ROOT / "README.md").read_text()
     assert "three-state rule" in readme
+
+
+def test_the_manifest_declares_the_contract_it_pins() -> None:
+    """`contract_version` is vendored but was asserted by nothing: a future
+    re-vendor that forgot to bump it would pass every other pin guard."""
+    manifest = json.loads((VENDORED_ROOT / "manifest.json").read_text())
+    assert manifest["contract"] == "github-checker-actions"
+    assert manifest["contract_version"] == 1
+    schema = json.loads((VENDORED_ROOT / "actions.schema.json").read_text())
+    # the schema's own version const must agree with what the manifest claims
+    assert schema["$defs"]["verb_pull"]["properties"]["schema_version"]["const"] == 1
