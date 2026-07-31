@@ -1561,7 +1561,8 @@ const CASES = [
   },
   {
     name: '51. [oracle] a control the operator cannot SEE cannot be operated '
-      + '— navigating away must disarm the whole panel, not just hide it',
+      + '— with the panel open and a repo selected, so invisibility is the '
+      + 'ONLY thing standing in the way',
     project: {
       name: 'widget', path: '/repos/widget',
       also: [{name: 'other', path: '/repos/other'}],
@@ -1569,34 +1570,42 @@ const CASES = [
     async run(env) {
       await openPanel(env);
       await lookup(env, 'add-x', 200, {ok: true, matches: [], malformed: []});
-      env.set('ta-title', 'Add feature X');
-      env.set('ta-prose', 'because Y, done when Z');
-      const armed = !env.el('ta-create').disabled;
-      // the operator moves to another project: the panel goes off screen,
-      // but #ta-create is still enabled in the DOM
+      // a definite answer withdraws Re-check. The panel is still open and
+      // taRepo is still set, so nothing ELSE would stop this handler: if the
+      // click landed, taCheckSlug would run and a second lookup would go out.
+      const recheckHidden = env.el('ta-recheck').hidden;
+      const panelOpen = env.visible('ta-slug-state');
+      await env.fire('ta-recheck', 'click');
+      const afterHiddenRecheck = env.urls('/api/issue-lookup').length;
+
+      // and the same rule one level up: navigating away leaves #ta-create
+      // ENABLED in the DOM, off screen, and inert
+      const armedBefore = !env.el('ta-create').disabled;
       await selectProject(env, 1);
-      const stillEnabled = !env.el('ta-create').disabled;
       env.route(u => u.startsWith('/api/actions/request-task'),
         () => resp(200, {ok: true, created: true, issue: GOOD_REF}));
       await env.fire('ta-create', 'click');
-      // and a hidden Re-check must be equally inert
-      await env.fire('ta-recheck', 'click');
       return {
-        'Create was armed before navigating': armed,
-        'it is still ENABLED in the DOM afterwards': stillEnabled,
+        'Re-check is hidden after a definite answer': recheckHidden,
+        'but the panel is open and the repo is set': panelOpen,
+        'clicking the hidden Re-check issues NO second lookup':
+          afterHiddenRecheck,
+        'Create was armed before navigating': armedBefore,
+        'it is still ENABLED in the DOM after navigating':
+          !env.el('ta-create').disabled,
         'but off screen': env.visible('ta-create'),
         'so clicking it files nothing':
           env.urls('/api/actions/request-task').length,
-        'and the hidden Re-check queries nothing':
-          env.urls('/api/issue-lookup').length,
       };
     },
     expect: {
+      'Re-check is hidden after a definite answer': true,
+      'but the panel is open and the repo is set': true,
+      'clicking the hidden Re-check issues NO second lookup': 1,
       'Create was armed before navigating': true,
-      'it is still ENABLED in the DOM afterwards': true,
+      'it is still ENABLED in the DOM after navigating': true,
       'but off screen': false,
       'so clicking it files nothing': 0,
-      'and the hidden Re-check queries nothing': 1,
     },
   },
   {
