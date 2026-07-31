@@ -1209,3 +1209,84 @@ def test_issue_lookup_success_audit_quotes_the_slug(tmp_path: Path, caplog) -> N
         runner.issue_lookup("alpha", "wanted")
     assert "slug='wanted'" in caplog.text
     assert "slug=wanted " not in caplog.text
+
+
+def _undecodable_checker(tmp_path: Path) -> tuple[str, ...]:
+    """A github-checker stand-in that RUNS to completion and writes bytes that
+    are not valid UTF-8 — the post-fork half of the NEW-1 distinction."""
+    script = tmp_path / "bad_bytes.py"
+    script.write_text(
+        "import sys;"
+        'sys.stdout.buffer.write(b\'{"ok": true, "created": true, \\xff}\');'
+        "sys.exit(0)"
+    )
+    return ("python3", str(script))
+
+
+def test_a_post_run_decode_failure_is_not_labelled_a_pre_launch_refusal(
+    tmp_path: Path, caplog
+) -> None:
+    """NEW-1: `UnicodeDecodeError` IS a `ValueError`, and `text=True` raises it
+    AFTER the child has run. The single `except ValueError` written for
+    `subprocess.run`'s pre-fork argv validation therefore swallowed a
+    post-execution failure and called it "refused before launch"."""
+    make_repo(tmp_path, "alpha")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=_undecodable_checker(tmp_path)
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        outcome = runner.issue_lookup("alpha", "wanted")
+    assert outcome.ok is False
+    assert "could not be decoded" in (outcome.error or "")
+    assert "refused before launch" not in (outcome.error or "")
+    assert "action=issue-lookup" in caplog.text
+
+
+def test_request_task_leaves_created_unknown_when_output_cannot_be_decoded(
+    tmp_path: Path, caplog
+) -> None:
+    """The classification ruling, pinned. The verb RAN: `issue-create` may
+    well have filed the issue and only its answer failed to decode, so
+    `created` is None (unknown), never False. `created=False` would send the
+    screen down the ordinary-refusal arm, which RE-ENABLES Create — the
+    duplicate this whole feature exists to prevent."""
+    make_repo(tmp_path, "alpha")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=_undecodable_checker(tmp_path)
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        outcome = runner.request_task(
+            "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+        )
+    assert outcome.ok is False
+    assert outcome.created is None
+    assert "could not be decoded" in (outcome.error or "")
+    assert "refused before launch" not in (outcome.error or "")
+    assert "action=request-task" in caplog.text
+    # `created=` is omitted entirely when unknown — never printed as False
+    assert "created=False" not in caplog.text
+
+
+def test_request_task_audits_even_when_the_temp_file_cannot_be_removed(
+    tmp_path: Path, caplog, monkeypatch
+) -> None:
+    """The one exit of the eight that could still vanish: an OSError from the
+    cleanup `unlink` in `finally` discarded the already-decided outcome and
+    took the audit call with it — a 500 with zero audit lines."""
+    make_repo(tmp_path, "alpha")
+
+    def boom(self, missing_ok: bool = False) -> None:
+        raise OSError("read-only filesystem (simulated)")
+
+    payload = {"action": "issue-create", "dir": "alpha", "ok": True, "created": True}
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    monkeypatch.setattr(Path, "unlink", boom)
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        outcome = runner.request_task(
+            "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+        )
+    assert outcome.created is True  # the decided outcome survives the cleanup
+    assert "action=request-task" in caplog.text
+    assert "cleanup_failed=" in caplog.text

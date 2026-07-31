@@ -265,10 +265,14 @@ function parseFragment(html) {
 
 function matchesCompound(el, compound) {
   if (el.nodeType !== 1) return false;
-  const re = /^([a-zA-Z][\w-]*)?((?:[#.][\w-]+|\[[^\]]+\])*)$/;
+  const re = /^(\*|[a-zA-Z][\w-]*)?((?:[#.][\w-]+|\[[^\]]+\])*)$/;
   const m = re.exec(compound);
   if (!m) throw new Error(`unsupported selector: ${compound}`);
-  if (m[1] && el.tagName.toLowerCase() !== m[1].toLowerCase()) return false;
+  // `*` matches any element — needed to ask "did ANY node acquire an
+  // attribute it should not have", which is how attribute breakout shows up
+  if (m[1] && m[1] !== '*' && el.tagName.toLowerCase() !== m[1].toLowerCase()) {
+    return false;
+  }
   const parts = m[2].match(/[#.][\w-]+|\[[^\]]+\]/g) || [];
   for (const p of parts) {
     if (p[0] === '#') {

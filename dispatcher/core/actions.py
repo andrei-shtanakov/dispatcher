@@ -90,6 +90,22 @@ class ActionRejectedError(Exception):
     """Bad target: unsafe name or not a git repo in the workspace (→ 422)."""
 
 
+def _argv_refusal(argv: list[str]) -> str | None:
+    """Name the first argv element the OS cannot be handed, or None.
+
+    Runs BEFORE `subprocess.run`, so a hit is unambiguously pre-fork: nothing
+    was executed and nothing was mutated. An embedded NUL is the reachable
+    case — JSON permits it in a string, so it arrives straight off the wire —
+    and `subprocess` itself raises `ValueError` for it, an exception type it
+    shares with the post-run decode failure. Checking here is what makes the
+    two distinguishable at all.
+    """
+    for index, arg in enumerate(argv):
+        if "\x00" in arg:
+            return f"argv[{index}] contains an embedded null byte"
+    return None
+
+
 def reject_control_chars(**fields: str) -> None:
     """Layer 1 of the argv defence: refuse control characters by name.
 
@@ -211,28 +227,43 @@ class ActionRunner:
         """Run one github-checker verb and parse its answer.
 
         *refusal_created* is the `created` value to stamp when the launch is
-        refused BEFORE anything runs (see the `ValueError` branch); callers
-        that mutate pass `False`, read-only callers leave it unknown.
+        refused BEFORE anything runs — a pre-mutation refusal; callers that
+        mutate pass `False`, read-only callers leave it unknown. It is
+        deliberately NOT applied to anything that happens after the fork: a
+        child that ran and then failed to be read leaves `created` unknown.
         """
         argv = [*self._command, action, str(target), *extra]
-        try:
-            proc = subprocess.run(
-                argv, capture_output=True, text=True, timeout=_ACTION_TIMEOUT
+        # NEW-1: the two failures are told apart STRUCTURALLY — by which side
+        # of the fork they happen on — not by exception type. Catching
+        # `ValueError` around `subprocess.run` looked like it meant "argv was
+        # refused", but `UnicodeDecodeError` IS a `ValueError` and is raised
+        # by `text=True` AFTER the child has run, while decoding its output.
+        # The one catch therefore labelled a completed run "refused before
+        # launch" and stamped `created=False` on it — asserting no issue was
+        # filed when `issue-create` may well have filed one and only its
+        # output failed to decode. The screen then took the ordinary-refusal
+        # arm and re-enabled Create: the duplicate this feature exists to
+        # prevent. Only code that knows which side of the fork it is on can
+        # classify these, so the pre-fork check and the decode are now two
+        # separate, explicitly-placed steps.
+        refusal = _argv_refusal(argv)
+        if refusal is not None:
+            return ActionOutcome(
+                action=action,
+                dir=target.name,
+                ok=False,
+                created=refusal_created,
+                error=f"refused before launch: {refusal}",
             )
+        try:
+            # NOT text=True: decoding must not happen inside this call, or a
+            # post-run decode failure re-enters the pre-fork branch below.
+            proc = subprocess.run(argv, capture_output=True, timeout=_ACTION_TIMEOUT)
         except ValueError as err:
-            # subprocess validates argv BEFORE it forks and raises ValueError
-            # for anything it cannot pass to exec — reachably, an embedded NUL,
-            # which JSON permits in a string (as the escape `\u0000`) and which therefore
-            # arrives straight off the wire. Uncaught it escaped as a 500 and,
-            # worse, left NO audit line at all, breaking this module's stated
-            # per-attempt guarantee and ADR-ECO-004a D1a-4 with it.
-            #
-            # Classified as a pre-mutation REFUSAL, not an unknown: the check
-            # happens before process creation, so no verb ran, nothing was
-            # mutated, and there is nothing to be uncertain about. That is the
-            # same reasoning as the body-write failure in request_task below —
-            # `created=None` would claim we cannot tell whether an issue was
-            # filed, when we know for certain none was.
+            # Belt and braces for whatever else subprocess may refuse to pass
+            # to exec in a future version: with decoding moved out, every
+            # ValueError reaching here is raised while validating argv, i.e.
+            # before process creation — a pre-mutation refusal.
             return ActionOutcome(
                 action=action,
                 dir=target.name,
@@ -252,14 +283,32 @@ class ActionRunner:
             return ActionOutcome(
                 action=action, dir=target.name, ok=False, error=str(err)
             )
+        # --- everything below here happens AFTER the child ran to completion.
         try:
-            data = json.loads(proc.stdout)
+            stdout = proc.stdout.decode("utf-8")
+            stderr = proc.stderr.decode("utf-8")
+        except UnicodeDecodeError as err:
+            # The verb RAN. For `issue-create` that means an issue may exist
+            # and we simply cannot read the answer — `created` stays None
+            # (unknown), never False, and the screen keeps Create disabled and
+            # offers Re-check.
+            return ActionOutcome(
+                action=action,
+                dir=target.name,
+                ok=False,
+                error=(
+                    "github-checker ran but its output could not be decoded "
+                    f"as UTF-8: {err}"
+                ),
+            )
+        try:
+            data = json.loads(stdout)
         except json.JSONDecodeError:
             return ActionOutcome(
                 action=action,
                 dir=target.name,
                 ok=False,
-                error=proc.stderr.strip() or "github-checker returned no JSON",
+                error=stderr.strip() or "github-checker returned no JSON",
             )
         if not isinstance(data, dict):
             return ActionOutcome(
@@ -479,7 +528,21 @@ class ActionRunner:
                 )
             finally:
                 if body_file is not None:
-                    Path(body_file).unlink(missing_ok=True)
+                    try:
+                        Path(body_file).unlink(missing_ok=True)
+                    except OSError as err:
+                        # The one exit of the eight that could still leave no
+                        # audit line: a cleanup failure (EACCES, EIO, a
+                        # read-only /tmp) raised out of `finally`, discarding
+                        # the outcome that was already decided and taking the
+                        # audit call below with it. A leaked temp file is a
+                        # nuisance; an unlogged mutation attempt is the thing
+                        # this module promises cannot happen.
+                        _audit.info(
+                            "action=request-task repo=%s cleanup_failed=%s",
+                            repo_dir,
+                            err,
+                        )
         outcome.action = "request-task"
         self._audit_outcome("request-task", repo_dir, outcome)
         return outcome

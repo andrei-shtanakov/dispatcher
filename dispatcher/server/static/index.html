@@ -639,6 +639,9 @@ async function detail(name, dirName) {
   // Same I-5 reasoning for the task-authoring panel: a stale form for the
   // previous project must not sit under this project's detail panel.
   document.getElementById("task-authoring").hidden = true;
+  // NEW-2: whatever is in flight for the PREVIOUS project must not write
+  // into this project's panel when it lands
+  taGen += 1;
   taRepo = null;
   document.getElementById("detail-name").textContent = "— " + name;
   document.getElementById("detail").textContent = "loading…";
@@ -1333,6 +1336,20 @@ document.getElementById('mg-retry-sync').addEventListener('click', async () => {
 });
 
 let taRepo = null;
+// NEW-2: #ta-result and #ta-create are shared by taCheckSlug and the create
+// handler, and neither used to re-assert its assumptions after an `await`.
+// Two ways that bit: two lookups racing could finish out of order and leave
+// a TAKEN slug reading "free" with Create live; and editing the slug while a
+// create POST was in flight wiped "filing…", enabled Create, and then let
+// the POST print "state unknown" beside it — the exact contradiction F-2 was
+// about. Every async entry takes a generation, and after every await work
+// whose generation is stale returns WITHOUT touching shared state.
+let taGen = 0;
+// A create POST is in flight. Distinct from the generation: a lookup started
+// mid-flight must not merely lose a race, it must not run at all — the
+// mutation is already on the wire and this screen cannot describe its result
+// yet.
+let taCreating = false;
 
 // Mirrors ISSUE_REF_REQUIRED in tests/test_api.py — the two must move
 // together. The payload is an opaque passthrough from another repo's
@@ -1372,9 +1389,18 @@ function taAnswered() {
   taShow('ta-recheck', false);
 }
 
-async function taCheckSlug() {
+// *inherited* lets the create handler re-check under ITS generation instead
+// of opening a new one, so its own post-await checks stay meaningful.
+async function taCheckSlug(inherited) {
   const slug = document.getElementById('ta-slug').value.trim();
   const state = document.getElementById('ta-slug-state');
+  if (inherited === undefined && taCreating) {
+    // Refuse rather than race: clearing "filing…" or enabling Create while a
+    // create is on the wire is one click away from the duplicate.
+    state.textContent = 'filing in progress — wait for the result';
+    return;
+  }
+  const gen = inherited === undefined ? ++taGen : inherited;
   // hidden is not enough: a hidden #ta-existing keeps the PREVIOUS slug's
   // issue links in the DOM, and #ta-open keeps an onclick closed over the
   // previous ref's URL — anything that re-shows either without rewriting it
@@ -1397,8 +1423,10 @@ async function taCheckSlug() {
       `/api/issue-lookup?dir=${encodeURIComponent(taRepo)}` +
       `&slug=${encodeURIComponent(slug)}`);
     outcome = await res.json();
+    if (gen !== taGen) return;  // superseded while in flight
     if (!res.ok) { state.textContent = `cannot check: ${res.status}`; return; }
   } catch (err) {
+    if (gen !== taGen) return;
     state.textContent = `cannot check: ${err}`;
     return;
   }
@@ -1440,6 +1468,16 @@ async function taCheckSlug() {
   // repo, and this screen must not depend on it silently holding.
   if (!Array.isArray(outcome.matches) || !Array.isArray(outcome.malformed)) {
     state.textContent = 'cannot check: inbox could not be read exhaustively';
+    return;
+  }
+  // Minor: `malformed` was type-checked and then never read. A non-empty
+  // one means the producer FOUND inbox issues it could not map — the inbox
+  // was not read exhaustively after all, so `matches: []` does not mean
+  // "free". Leaning on the producer's "malformed non-empty implies ok=False"
+  // invariant is exactly what the comment above refuses to do.
+  if (outcome.malformed.length > 0) {
+    state.textContent =
+      `cannot check: ${outcome.malformed.length} unreadable candidate(s) in the inbox`;
     return;
   }
   const matches = outcome.matches;
@@ -1494,12 +1532,15 @@ document.getElementById('ta-create').addEventListener('click', async () => {
   // Minor fix: same taRepo-null guard as taCheckSlug — refuse rather than
   // silently POST {dir: null}.
   if (!taRepo) { result.textContent = 'no repo selected'; return; }
+  const gen = ++taGen;
+  taCreating = true;
   btn.disabled = true;
   result.textContent = 'filing…';
   taShow('ta-recheck', false);
   let outcome, res;
   try {
     const token = await ensureActionToken();
+    if (gen !== taGen) return;  // superseded while in flight
     res = await fetch('/api/actions/request-task', {
       method: 'POST',
       headers: {'Content-Type': 'application/json', 'X-Action-Token': token},
@@ -1511,11 +1552,16 @@ document.getElementById('ta-create').addEventListener('click', async () => {
       }),
     });
     outcome = await res.json();
+    if (gen !== taGen) return;
   } catch (err) {
+    if (gen !== taGen) return;
     // the request itself broke: whether it landed is unknown
     result.textContent = `issue may have been created; state unknown (${err})`;
     taShow('ta-recheck', true);
     return;
+  } finally {
+    // the POST is off the wire either way, superseded or not
+    taCreating = false;
   }
   // Minor fix: a 200 (or any status) with a non-object JSON body (`null`,
   // a bare number/string) parses without throwing here, but every branch
@@ -1598,7 +1644,8 @@ document.getElementById('ta-create').addEventListener('click', async () => {
   if (outcome.created === false) {
     // the re-check runs FIRST: taCheckSlug clears ta-result (see F-2 there),
     // so writing the explanation before it would wipe the explanation
-    await taCheckSlug();
+    await taCheckSlug(gen);
+    if (gen !== taGen) return;
     if (!btn.disabled) {
       // The producer says a request for this slug already exists; the lookup
       // run immediately afterwards says the slug is free. One of them is
@@ -1651,6 +1698,7 @@ document.getElementById('ta-open-panel').addEventListener('click', () => {
   errorSpan.textContent = '';
   // I-6 parity: taRepo is the on-disk clone dirname (mgEntryRepo, itself
   // sourced from data-dir), NOT the project's display name.
+  taGen += 1;  // NEW-2: same reset reasoning as detail()
   taRepo = mgEntryRepo;
   document.getElementById('ta-repo').textContent = '— ' + taRepo;
   document.getElementById('ta-slug').value = '';

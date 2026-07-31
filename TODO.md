@@ -145,11 +145,22 @@
       failed outcome → аудит-строка. Два класса действий охраняют конверт на разную
       глубину, и это расхождение — из тех, что тихо становятся постоянными.
       Фикс — расширить catch вокруг `subprocess.run` до той же глубины.
-      **Частично закрыто 2026-07-31** (F-1 финального ревью task-authoring):
-      `ValueError` — NUL-байт в argv, приходящий прямо из JSON-тела (` `) —
-      теперь ловится и классифицируется как pre-mutation refusal с аудит-строкой.
-      Остаются открытыми два из трёх: `UnicodeDecodeError` на stdout продюсера,
-      который реально отработал, и не-`FileNotFoundError` `OSError` на exec.
+      **ЗАКРЫТО 2026-07-31** (ревью task-authoring, PR #TBD-task-authoring-console),
+      все три пути:
+      • NUL в argv (JSON пропускает его как escape `\u0000`, т.е. приходит прямо
+        с провода) → `_argv_refusal()` до `subprocess.run` → pre-mutation refusal
+        (`created=False`) с аудит-строкой;
+      • не-`FileNotFoundError` `OSError` на exec → catch расширен до
+        `(OSError, TimeoutExpired)`, симметрично продюсеру (реальная репродукция:
+        E2BIG на переразмеренном `--if-head`);
+      • `UnicodeDecodeError` на stdout продюсера, который **реально отработал** →
+        `text=True` убран, декодирование вынесено отдельным шагом ПОСЛЕ
+        `subprocess.run`. Это было не «ещё одно исключение»: `UnicodeDecodeError`
+        **является** `ValueError`, поэтому первый фикс ловил его в pre-fork ветку и
+        помечал завершившийся прогон как «refused before launch» с `created=False` —
+        экран после этого включал Create, т.е. ровно тот дубликат, против которого
+        сделана фича. Классификация теперь структурная (по стороне fork), а не по
+        типу исключения; post-run decode → `created=None` (unknown).
 
 - [ ] Вёрстка экранов (`<style>` в `<head>` у `index.html`) вне досягаемости
       Node-харнесса: удаление всего блока оставляет сьют зелёным

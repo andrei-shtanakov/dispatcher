@@ -54,6 +54,14 @@ let asyncErrors = 0;
 const failed = () => caseFailures + asyncErrors;
 let currentCase = '(startup)';
 let summaryClaimedClean = false;
+// The run is only meaningful if it REACHED the end. An `await` on a promise
+// that never settles is not an error in Node: the event loop simply drains
+// and the process exits 0 — mid-run, with no summary and every remaining
+// case silently skipped. That is this harness's own "green while covering
+// nothing" failure, and it happened here (a case that clicked Create against
+// a deliberately pending fetch swallowed the rest of the suite). The exit
+// hook below turns "the summary never printed" into a non-zero exit.
+let summaryPrinted = false;
 
 process.on('unhandledRejection', reason => {
   asyncErrors++;
@@ -68,6 +76,14 @@ process.on('uncaughtException', error => {
     (error && error.stack) || error);
 });
 process.on('exit', code => {
+  if (!summaryPrinted) {
+    process.exitCode = 1;
+    console.error(
+      `\nRUN DID NOT FINISH: the process exited during ${currentCase} without `
+      + 'reaching the summary. Every case after that one was silently skipped '
+      + '— most likely an await on a promise that never settles.');
+    return;
+  }
   if (code !== 0 && summaryClaimedClean) {
     console.error(
       'LATE ASYNC ERROR: an async failure surfaced after the summary was '
@@ -106,6 +122,10 @@ const GOOD_REF = {
 const SECOND_REF = {
   ...GOOD_REF, number: 13, url: 'https://github.com/acme/widget/issues/13',
 };
+// Parses as https: — confirmed against the platform parser, not assumed —
+// while carrying a double quote that would close the href attribute if the
+// sink rendered it unescaped.
+const XSS_URL = 'https://gh.com/a"><img src=x onerror=alert(1)>';
 
 const resp = (status, body) => ({
   status, ok: status >= 200 && status < 300,
@@ -191,6 +211,24 @@ function makeEnv(project) {
     async fireNode(node, type, opts) {
       await Promise.all(dispatch(node, type, opts));
       await drain();
+    },
+    /**
+     * Fire an event whose handler is EXPECTED to stay in flight (its fetch
+     * fixture has not been resolved yet). The handler's promise is kept and
+     * given a catch, so a later rejection is still attributed rather than
+     * orphaned — but it is not awaited here, because awaiting a handler that
+     * cannot finish would hang the whole run.
+     */
+    async fireInFlight(id, type, opts) {
+      const pending = Promise.all(dispatch(env.el(id), type, opts));
+      pending.catch(err => {
+        caseFailures++;
+        console.log(`  in-flight handler rejected: ${(err && err.stack) || err}`);
+      });
+      await drain();
+      // a thunk, not the promise: returning the promise would make the
+      // caller's own `await` wait for the very thing that has not happened yet
+      return () => pending;
     },
     read(expression) { return vm.runInContext(expression, ctx); },
     /** The links the page actually rendered, href and text. */
@@ -1046,6 +1084,185 @@ const CASES = [
       'Create disabled': false,
     },
   },
+  // --- hole #4: nothing pinned esc() on the URL sinks -------------------
+  //
+  // isHttpsUrl only PARSES for a scheme; the sink then renders the ORIGINAL
+  // string. `new URL()` reports 'https:' for a URL whose path carries a
+  // double quote, so validation passes with the quote intact and esc() is
+  // the only thing standing between it and attribute breakout. These cases
+  // assert on the parsed DOM — element counts and href values — because a
+  // string comparison would pass on markup that had already broken out.
+  ...[
+    ['42. conflict list', 2, async env => {
+      const evil = {...SECOND_REF, url: XSS_URL};
+      await lookup(env, 'add-x', 200,
+        {ok: true, matches: [GOOD_REF, evil], malformed: []});
+      return 'ta-existing';
+    }],
+    ['43. single-match render', 1, async env => {
+      await lookup(env, 'add-x', 200,
+        {ok: true, matches: [{...GOOD_REF, url: XSS_URL}], malformed: []});
+      return 'ta-existing';
+    }],
+    ['44. create-result link', 1, async env => {
+      await freeSlugThen(env, e => create(e, 200,
+        {ok: true, created: true, issue: {...GOOD_REF, url: XSS_URL}}));
+      return 'ta-result';
+    }],
+  ].map(([name, anchors, drive]) => ({
+    name: `${name}: an https: URL carrying a double quote is escaped, not `
+      + 'allowed to break out of the href attribute',
+    async run(env) {
+      await openPanel(env);
+      const sink = await drive(env);
+      const el = env.el(sink);
+      return {
+        'anchors rendered': el.querySelectorAll('a').length,
+        'injected elements': el.querySelectorAll('img').length
+          + el.querySelectorAll('script').length,
+        'href is the whole URL, escaped and intact':
+          el.querySelectorAll('a').map(a => a.getAttribute('href')).pop(),
+        'no attribute broke out (onerror)':
+          el.querySelectorAll('*').some(n => n.hasAttribute('onerror')),
+      };
+    },
+    expect: {
+      'anchors rendered': anchors,
+      'injected elements': 0,
+      'href is the whole URL, escaped and intact': XSS_URL,
+      'no attribute broke out (onerror)': false,
+    },
+  })),
+  {
+    name: '45. [URL] `https://[oops` has the right prefix but does not parse '
+      + '— a prefix check would let it through, the parser must not',
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, 'add-x', 200,
+        {ok: true, matches: [{...GOOD_REF, url: 'https://[oops'}], malformed: []});
+      return {
+        'slug state': env.text('ta-slug-state'),
+        'anchors rendered': env.el('ta-existing').querySelectorAll('a').length,
+        'Open-existing hidden': env.el('ta-open').hidden,
+        // the premise, asserted rather than assumed
+        'and it DOES start with https://':
+          'https://[oops'.startsWith('https://'),
+      };
+    },
+    expect: {
+      'slug state': 'cannot read: url missing or wrong type',
+      'anchors rendered': 0,
+      'Open-existing hidden': true,
+      'and it DOES start with https://': true,
+    },
+  },
+  {
+    name: '46. [minor] a non-empty `malformed` means the inbox was NOT read '
+      + 'exhaustively — `matches: []` beside it is not "free"',
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, 'add-x', 200, {
+        ok: true, matches: [],
+        malformed: [{number: 9, why: 'no slug line'}],
+      });
+      return {
+        'slug state': env.text('ta-slug-state'),
+        'Create disabled': env.el('ta-create').disabled,
+      };
+    },
+    expect: {
+      'slug state': 'cannot check: 1 unreadable candidate(s) in the inbox',
+      'Create disabled': true,
+    },
+  },
+  {
+    name: '47. [NEW-2] two lookups racing: a stale answer must not overwrite '
+      + 'the newer one — a taken slug must never end up reading "free"',
+    async run(env) {
+      await openPanel(env);
+      // the FIRST lookup is slow and would answer "free"
+      let releaseStale;
+      const stale = new Promise(r => { releaseStale = r; });
+      env.route(u => u.includes('slug=first'), () => stale);
+      env.route(u => u.includes('slug=second'),
+        () => resp(200, {ok: true, matches: [GOOD_REF], malformed: []}));
+
+      env.set('ta-slug', 'first');
+      await env.fire('ta-slug', 'change');       // in flight, unanswered
+      const midFlight = env.text('ta-slug-state');
+      env.set('ta-slug', 'second');
+      await env.fire('ta-slug', 'change');       // answers immediately: taken
+      const afterSecond = env.text('ta-slug-state');
+      releaseStale(resp(200, {ok: true, matches: [], malformed: []}));
+      await new Promise(r => setTimeout(r, 5));
+      return {
+        'state while the first was in flight': midFlight,
+        'state after the second answered': afterSecond,
+        'state after the stale answer landed': env.text('ta-slug-state'),
+        'Create disabled': env.el('ta-create').disabled,
+      };
+    },
+    expect: {
+      'state while the first was in flight': '',
+      'state after the second answered': 'already requested',
+      'state after the stale answer landed': 'already requested',
+      'Create disabled': true,
+    },
+  },
+  {
+    name: '48. [NEW-2] editing the slug while the create POST is in flight '
+      + 'must not wipe "filing…" or re-enable Create',
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, 'add-x', 200, {ok: true, matches: [], malformed: []});
+      let releasePost;
+      const pending = new Promise(r => { releasePost = r; });
+      env.route(u => u.startsWith('/api/actions/request-task'), () => pending);
+      env.set('ta-title', 'Add feature X');
+      env.set('ta-prose', 'because Y, done when Z');
+      // NOT awaited: the fixture is deliberately unresolved, and awaiting a
+      // handler that cannot finish would hang the run (see summaryPrinted)
+      const settle = await env.fireInFlight('ta-create', 'click');
+      const filing = env.text('ta-result');
+
+      // the operator edits the slug mid-flight; a fresh lookup would answer
+      // "free" and, unguarded, would clear "filing…" and light up Create
+      env.route(u => u.startsWith('/api/issue-lookup'),
+        () => resp(200, {ok: true, matches: [], malformed: []}));
+      env.set('ta-slug', 'add-y');
+      await env.fire('ta-slug', 'change');
+      const duringFlight = {
+        result: env.text('ta-result'),
+        state: env.text('ta-slug-state'),
+        disabled: env.el('ta-create').disabled,
+      };
+
+      releasePost(resp(200, {ok: true, created: null, error: 'no answer'}));
+      await settle();
+      await drain();
+      return {
+        'result while filing': filing,
+        'result survived the edit': duringFlight.result,
+        'slug state explains the refusal': duringFlight.state,
+        'Create stayed disabled during the flight': duringFlight.disabled,
+        'result after the POST answered': env.text('ta-result'),
+        'Create disabled after the POST answered':
+          env.el('ta-create').disabled,
+        'lookups issued (the mid-flight one never went out)':
+          env.urls('/api/issue-lookup').length,
+      };
+    },
+    expect: {
+      'result while filing': 'filing…',
+      'result survived the edit': 'filing…',
+      'slug state explains the refusal': 'filing in progress — wait for the result',
+      'Create stayed disabled during the flight': true,
+      'result after the POST answered':
+        'issue may have been created; state unknown: no answer',
+      'Create disabled after the POST answered': true,
+      'lookups issued (the mid-flight one never went out)': 1,
+    },
+  },
   {
     name: '37. a lookup answering 200 with a `null` body fails closed on '
       + 'purpose, not as a raw TypeError',
@@ -1103,6 +1320,15 @@ const SELFTEST_CASES = {
   casethrow: {
     name: 'selftest: a case that throws is a FAILED case, not an absent one',
     async run() { throw new Error('selftest: the case body threw'); },
+    expect: {},
+  },
+  hang: {
+    name: 'selftest: a case that awaits a promise which never settles must '
+      + 'not let the process exit 0 mid-run',
+    async run() {
+      await new Promise(() => {});  // never settles
+      return {};
+    },
     expect: {},
   },
   crash: {
@@ -1175,8 +1401,10 @@ main().then(async total => {
       + 'async error(s) — see the [FAIL] blocks and any '
       + 'UNHANDLED/UNCAUGHT reports above');
   }
+  summaryPrinted = true;
   process.exitCode = failed() === 0 ? 0 : 1;
 }).catch(err => {
+  summaryPrinted = true;
   console.error('\nHARNESS CRASHED:', (err && err.stack) || err);
   process.exitCode = 1;
 });

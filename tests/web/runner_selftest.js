@@ -59,6 +59,13 @@ const SCENARIOS = [
     forbidStdout: /cases passed, no async errors/,
   },
   {
+    scenario: 'hang',
+    why: 'a never-settling await must not end the run at exit 0 mid-suite',
+    expectZero: false,
+    expectStderr: /RUN DID NOT FINISH/,
+    forbidStdout: /cases passed, no async errors/,
+  },
+  {
     scenario: 'crash',
     why: 'a failure outside every case still exits non-zero via main().catch',
     expectZero: false,
