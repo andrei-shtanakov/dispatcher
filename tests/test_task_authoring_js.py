@@ -52,3 +52,42 @@ def test_task_authoring_js_harness() -> None:
         f"task-authoring JS harness failed (exit {result.returncode}):\n"
         f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
     )
+
+
+def test_task_authoring_js_harness_reports_a_thrown_case_as_failure() -> None:
+    """Regression guard for a defect the harness itself once had.
+
+    An uncaught exception inside one case's `drive()` used to propagate out
+    of the whole run, skipping the harness's own summary/exit-code lines
+    entirely — and because the harness installs an `unhandledRejection`
+    listener (to COUNT rejections), that same listener suppresses Node's
+    default crash-on-unhandled-rejection behaviour, so the process just
+    drained its event loop and exited 0. The harness printed the rejection
+    and even counted it, but nothing read that counter before the process
+    ended: a run that crashed mid-case reported success.
+
+    `--self-check-throw` appends one case whose `drive()` deliberately
+    throws, run through the exact same per-case loop machinery as the 20
+    real cases (not a reimplementation elsewhere). This test is the
+    black-box half of that regression guard: it does not care how the
+    harness catches the throw, only that the PROCESS exit code is non-zero
+    when a case throws — the same signal CI reads.
+    """
+    node = shutil.which("node")
+    assert node is not None, (
+        "node is a required prerequisite of this test suite — see "
+        "test_task_authoring_js_harness's assertion message for the "
+        "full list of what goes unverified without it."
+    )
+    result = subprocess.run(
+        [node, str(HARNESS), str(INDEX_HTML), "--self-check-throw"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode != 0, (
+        "the harness must exit non-zero when a case's drive() throws — it "
+        f"did not (exit {result.returncode}), which is the exact defect "
+        "this test guards against:\n"
+        f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
+    )

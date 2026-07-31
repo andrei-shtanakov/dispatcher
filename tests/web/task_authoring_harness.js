@@ -417,7 +417,23 @@ const CASES = [
     // data-dir rule: the entry point must copy the on-disk clone dirname
     // (mgEntryRepo, itself sourced from data-dir/mgDirBasename(p.path)),
     // never a display name -- see mutation proof #3 in the harness runner.
-    name: '16. entry point uses data-dir basename, never the display name',
+    //
+    // SCOPE LIMIT, stated plainly rather than left implicit: this proves
+    // the REAL ta-open-panel handler (sliced verbatim) copies whatever
+    // `mgEntryRepo` holds into `taRepo` byte-for-byte. `mgEntryRepo` itself
+    // is injected here via vm.runInContext, standing in for what detail()
+    // (elsewhere in index.html, NOT part of this slice -- it belongs to
+    // Task 2/3's merge-gate wiring, which has no harness at all) sets it
+    // to. This case does NOT prove detail() sources mgEntryRepo from
+    // data-dir rather than the display name -- only that ONE line copies
+    // it through unmodified. A mutation that swaps in a genuinely
+    // undefined "display name" identifier (as opposed to transforming the
+    // injected mgEntryRepo string, e.g. capitalizing it) throws a
+    // ReferenceError here rather than producing a value mismatch, BECAUSE
+    // no such identifier exists in this slice's scope -- that throw is
+    // still correctly caught and reported as a FAILED case (see the main
+    // loop's try/catch), it just isn't a clean "wrong value" diff.
+    name: '16. ta-open-panel copies mgEntryRepo (data-dir) into taRepo verbatim',
     drive: async (ctx, document) => {
       vm.runInContext("mgEntryRepo = 'maestro'", ctx);
       document.getElementById('ta-open-panel').listeners.click();
@@ -531,6 +547,33 @@ const CASES = [
   },
 ];
 
+// Regression guard (`--self-check-throw`), separate from the 20 app-
+// behaviour cases above: proves a case whose drive() THROWS is caught by
+// the main loop, reported as a FAILED case, and forces a non-zero exit --
+// rather than propagating out of the whole run uncaught. That is exactly
+// what used to happen: an uncaught exception inside a case's drive()
+// escaped the for-loop entirely, skipped the final summary/exit-code lines
+// below, and because this file installs an `unhandledRejection` listener
+// (to COUNT rejections), that same listener suppresses Node's own default
+// crash-on-unhandled-rejection behaviour -- so the process just drained
+// its event loop and exited 0, silently, mid-run. Invoked from
+// tests/test_task_authoring_js.py as its own separate subprocess check
+// (`node <this> <index.html> --self-check-throw`), asserting the exit code
+// is non-zero -- kept OUT of the normal 20-case run so a clean run stays
+// a clean 20/20, and kept as a REAL case run through the REAL per-case
+// loop machinery below, not a reimplementation of it elsewhere.
+if (process.argv.includes('--self-check-throw')) {
+  CASES.push({
+    name: '21. [self-check] a case whose drive() throws must be a FAILED ' +
+      'case, not a silently-aborted run',
+    drive: async () => {
+      throw new Error('deliberate self-check throw (--self-check-throw)');
+    },
+    check: () => ({}),
+    expect: {},
+  });
+}
+
 (async () => {
   let unhandled = 0;
   process.on('unhandledRejection', e => {
@@ -553,7 +596,25 @@ const CASES = [
     vm.createContext(ctx);
     vm.runInContext(`${helpers}\n${taBlock}`, ctx);
 
-    await c.drive(ctx, document);
+    // Any exception thrown by drive() -- synchronous, or a rejected
+    // promise from an awaited call -- MUST be caught HERE, per case. Left
+    // unguarded, it propagates out of this for-loop and out of the whole
+    // top-level async IIFE, skipping every line below (including the exit
+    // code below) -- the exact defect this harness once had (case 21
+    // regression-guards it).
+    let threw = null;
+    try {
+      await c.drive(ctx, document);
+    } catch (err) {
+      threw = err;
+    }
+    if (threw !== null) {
+      failures += 1;
+      console.log(`\n[FAIL] ${c.name}`);
+      console.log(`  threw: ${(threw && threw.stack) || threw}`);
+      continue;
+    }
+
     const got = c.check(document, ctx);
     const exp = c.expect;
     let ok = true;
@@ -567,8 +628,21 @@ const CASES = [
       console.log(`  ${k}: ${JSON.stringify(got[k])} ${mark} expected ${JSON.stringify(exp[k])}`);
     }
   }
+  // Gives any truly DISCONNECTED promise rejection (e.g. an async click
+  // handler invoked fire-and-forget, never awaited by a case's own drive())
+  // a chance to surface via the unhandledRejection listener above before
+  // the final tally below reads `unhandled`.
   await new Promise(r => setTimeout(r, 20));
+
+  const allPassed = failures === 0 && unhandled === 0;
   console.log(`\nunhandled rejections: ${unhandled}`);
-  console.log(`\n${CASES.length - failures}/${CASES.length} cases passed`);
-  process.exit(failures || unhandled ? 1 : 0);
+  // Never print "N/N cases passed" next to a nonzero rejection count --
+  // that reads as clean when it is not. State the failure explicitly.
+  console.log(allPassed
+    ? `\n${CASES.length}/${CASES.length} cases passed`
+    : `\nFAILED: ${CASES.length - failures}/${CASES.length} cases passed` +
+      (unhandled
+        ? `, plus ${unhandled} unhandled rejection(s) -- treating the run as FAILED`
+        : ''));
+  process.exit(allPassed ? 0 : 1);
 })();
