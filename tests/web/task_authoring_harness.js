@@ -1560,6 +1560,46 @@ const CASES = [
     },
   },
   {
+    name: '51. [oracle] a control the operator cannot SEE cannot be operated '
+      + '— navigating away must disarm the whole panel, not just hide it',
+    project: {
+      name: 'widget', path: '/repos/widget',
+      also: [{name: 'other', path: '/repos/other'}],
+    },
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, 'add-x', 200, {ok: true, matches: [], malformed: []});
+      env.set('ta-title', 'Add feature X');
+      env.set('ta-prose', 'because Y, done when Z');
+      const armed = !env.el('ta-create').disabled;
+      // the operator moves to another project: the panel goes off screen,
+      // but #ta-create is still enabled in the DOM
+      await selectProject(env, 1);
+      const stillEnabled = !env.el('ta-create').disabled;
+      env.route(u => u.startsWith('/api/actions/request-task'),
+        () => resp(200, {ok: true, created: true, issue: GOOD_REF}));
+      await env.fire('ta-create', 'click');
+      // and a hidden Re-check must be equally inert
+      await env.fire('ta-recheck', 'click');
+      return {
+        'Create was armed before navigating': armed,
+        'it is still ENABLED in the DOM afterwards': stillEnabled,
+        'but off screen': env.visible('ta-create'),
+        'so clicking it files nothing':
+          env.urls('/api/actions/request-task').length,
+        'and the hidden Re-check queries nothing':
+          env.urls('/api/issue-lookup').length,
+      };
+    },
+    expect: {
+      'Create was armed before navigating': true,
+      'it is still ENABLED in the DOM afterwards': true,
+      'but off screen': false,
+      'so clicking it files nothing': 0,
+      'and the hidden Re-check queries nothing': 1,
+    },
+  },
+  {
     name: '50. [NEW-2] a lookup answer is applied only if the SLUG it was '
       + 'issued for is still on screen, not merely the generation',
     async run(env) {
@@ -1636,6 +1676,7 @@ const REQUIRED_CASE_IDS = [
   '48',    // the form is locked while a POST is in flight
   '49b',   // a mutation outcome survives navigating to another project
   '49c',   // the banner survives navigation; Re-check uses the SUBMITTED slug
+  '51',    // a control the operator cannot see cannot be operated
 ];
 
 /** The stable id is the leading number in the case name (e.g. "38.1"). */
