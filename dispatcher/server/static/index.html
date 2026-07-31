@@ -216,6 +216,24 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const get = async p => (await fetch(p)).json();
 
+// Shared by every sink that renders or opens a URL from an opaque
+// passthrough payload (merge-gate's MG_REQUIRED, task-authoring's
+// TA_REF_REQUIRED). A `startsWith('https://')` check is a string
+// comparison pretending to be a parser — it passes malformed values that
+// merely happen to share the prefix. Parse with the platform's own URL
+// parser and allow only the 'https:' scheme; anything that fails to parse,
+// or parses to a different scheme, is unreadable, not merely "not
+// clickable" — fails closed on the CONSUMER side, independent of whatever
+// the producer is assumed to send.
+function isHttpsUrl(v) {
+  if (typeof v !== 'string') return false;
+  try {
+    return new URL(v).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 const ERRORS_DAYS_DEFAULT = 14;
 const MSG_LIMIT = 160;
 let errorsDays = ERRORS_DAYS_DEFAULT;  // null = show all
@@ -968,7 +986,9 @@ const MG_REQUIRED = [
   // M-1: esc() blocks attribute breakout, not the URL SCHEME — a
   // `javascript:` URL from the passthrough would otherwise render as a live
   // link in mg-head. Same trust boundary as the array-item security round.
-  ['url',          v => typeof v === 'string' && v.startsWith('https://')],
+  // Uses isHttpsUrl (real URL parser + scheme allowlist), not a prefix
+  // check — a string comparison passes malformed values sharing the prefix.
+  ['url',          v => isHttpsUrl(v)],
   ['state',        v => typeof v === 'string'],
   ['is_draft',     v => typeof v === 'boolean'],
   ['mergeable',    v => typeof v === 'string'],
@@ -1301,7 +1321,9 @@ const TA_REF_REQUIRED = [
   ['number', v => Number.isInteger(v)],
   ['title',  v => typeof v === 'string'],
   ['state',  v => typeof v === 'string'],
-  ['url',    v => typeof v === 'string' && v.startsWith('https://')],
+  // Uses isHttpsUrl (real URL parser + 'https:' scheme allowlist), not a
+  // prefix check — same trust boundary as MG_REQUIRED's `url` above.
+  ['url',    v => isHttpsUrl(v)],
   ['author', v => typeof v === 'string'],
   ['labels', v => Array.isArray(v)],
 ];
@@ -1320,6 +1342,10 @@ async function taCheckSlug() {
   taShow('ta-existing', false); taShow('ta-open', false);
   document.getElementById('ta-create').disabled = true;
   if (!slug) { state.textContent = ''; return; }
+  // Minor fix: taRepo is only null before an entry point has set it.
+  // encodeURIComponent(null) silently becomes the string "null" in the
+  // query — refuse rather than ask the server to look up a repo "null".
+  if (!taRepo) { state.textContent = 'no repo selected'; return; }
   let outcome;
   try {
     const res = await fetch(
@@ -1337,13 +1363,47 @@ async function taCheckSlug() {
     state.textContent = `cannot check: ${outcome.error || 'unreadable'}`;
     return;
   }
-  const matches = outcome.matches || [];
+  // C-2 (Critical): `matches === null` (and `malformed === null`) means the
+  // producer could NOT read the inbox exhaustively (200-issue cap, or a
+  // candidate it couldn't map) — that is not the same thing as a confirmed-
+  // empty `[]`. `outcome.matches || []` folded both into "free" and enabled
+  // Create on the one wire state that means "I could not tell you whether
+  // this slug is taken" — precisely the failure this feature exists to
+  // prevent (pinned on the wire by
+  // test_issue_lookup_preserves_null_matches / _malformed in test_api.py).
+  // Checked here via `Array.isArray`, not just `=== null`, so the SAME
+  // branch also catches the field being absent entirely (`undefined`) and
+  // a wrong-type value (an object/string where an array is expected) — all
+  // three are "cannot verify", not just the one literal `null` shape.
+  // This runs BEFORE any business-state read (free/taken/conflict below):
+  // envelope/type checks first, business state second — reading `.length`
+  // or calling `.some()` on an unvalidated value first is exactly how a
+  // wrong-type payload (e.g. a string) would throw past this handler
+  // instead of failing closed with a message. Checked here explicitly,
+  // without leaning on the producer's own truncated⇒ok=False invariant —
+  // that invariant lives in github-checker, is not vendored into this
+  // repo, and this screen must not depend on it silently holding.
+  if (!Array.isArray(outcome.matches) || !Array.isArray(outcome.malformed)) {
+    state.textContent = 'cannot check: inbox could not be read exhaustively';
+    return;
+  }
+  const matches = outcome.matches;
   if (matches.length === 0) {
     state.textContent = 'free';
     document.getElementById('ta-create').disabled = false;
     return;
   }
   if (matches.length > 1) {
+    // C-1 (Critical): every item must pass the same validation the single-
+    // match path below already applies via taRefProblems — including the
+    // 'https://' scheme gate on `url` (esc() blocks attribute breakout, not
+    // a `javascript:` scheme; same trust boundary as the merge-gate's M-1).
+    // A bad item here must fail closed, never render a partial/garbled
+    // conflict list.
+    if (matches.some(m => taRefProblems(m).length > 0)) {
+      state.textContent = 'cannot read the result';
+      return;
+    }
     state.textContent = `${matches.length} issues claim this slug — conflict`;
     document.getElementById('ta-existing').innerHTML = matches.map(
       m => `<a href="${esc(m.url)}" target="_blank">#${esc(m.number)}</a>`
@@ -1373,6 +1433,9 @@ document.getElementById('ta-slug').addEventListener('change', () => {
 document.getElementById('ta-create').addEventListener('click', async () => {
   const btn = document.getElementById('ta-create');
   const result = document.getElementById('ta-result');
+  // Minor fix: same taRepo-null guard as taCheckSlug — refuse rather than
+  // silently POST {dir: null}.
+  if (!taRepo) { result.textContent = 'no repo selected'; return; }
   btn.disabled = true;
   result.textContent = 'filing…';
   taShow('ta-recheck', false);
@@ -1396,9 +1459,42 @@ document.getElementById('ta-create').addEventListener('click', async () => {
     taShow('ta-recheck', true);
     return;
   }
-  if (!res.ok && res.status !== 200) {
-    if (res.status === 409) { result.textContent = 'another action is in flight'; }
-    else { result.textContent = `request rejected: ${outcome.detail || res.status}`; }
+  // Minor fix: a 200 (or any status) with a non-object JSON body (`null`,
+  // a bare number/string) parses without throwing here, but every branch
+  // below reads properties off `outcome` — that would throw past this
+  // handler's own try/catch as an unhandled rejection, stranding the
+  // screen on "filing…" forever with Create still disabled and no action
+  // offered. An unreadable body is the same "state unknown" case as a
+  // broken request.
+  if (outcome === null || typeof outcome !== 'object') {
+    result.textContent =
+      'issue may have been created; state unknown: unreadable response';
+    taShow('ta-recheck', true);
+    return;
+  }
+  // dead-condition fix: `!res.ok` already excludes 200 (200 is always ok
+  // per the fetch spec's 200-299 range), so `&& res.status !== 200` never
+  // changed the branch taken — removed rather than left as a red herring.
+  if (!res.ok) {
+    if (res.status === 409) {
+      result.textContent = 'another action is in flight';
+      btn.disabled = false;
+      return;
+    }
+    // I-1 (Important): a 4xx here is a REFUSAL — the whitelist gate
+    // rejected the request (bad action token, rejected dir) before it ever
+    // reached github-checker, so nothing was attempted and retrying is
+    // safe. A 5xx is different: the request passed the gate and may have
+    // reached the runner before the failure, so whether it landed is
+    // unknown — same as the transport-error catch block above, this must
+    // offer only Re-check, never re-enable Create.
+    if (res.status >= 500) {
+      result.textContent = `issue may have been created; state unknown: ${
+        outcome.detail || `HTTP ${res.status}`}`;
+      taShow('ta-recheck', true);
+      return;
+    }
+    result.textContent = `request rejected: ${outcome.detail || res.status}`;
     btn.disabled = false;
     return;
   }
