@@ -1111,7 +1111,12 @@ def test_invoke_catches_a_nul_even_with_layer_one_disabled(
     with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
         outcome = runner.issue_lookup("alpha", f"want{NUL}ed")
     assert outcome.ok is False
-    assert "refused before launch" in (outcome.error or "")
+    # `_argv_refusal` names WHICH argument; `subprocess`'s own "embedded null
+    # byte" does not. That name is the point of checking before the call
+    # rather than leaning on subprocess to raise — and it is what makes the
+    # pre-fork step observable instead of decorative.
+    assert "refused before launch: argv[" in (outcome.error or "")
+    assert "embedded null byte" in (outcome.error or "")
     assert "action=issue-lookup" in caplog.text
 
 
@@ -1133,7 +1138,7 @@ def test_request_task_layer_two_classifies_the_refusal_as_not_created(
         )
     assert outcome.ok is False
     assert outcome.created is False
-    assert "refused before launch" in (outcome.error or "")
+    assert "refused before launch: argv[" in (outcome.error or "")
     assert "created=False" in caplog.text
     # and the lock came back: the refusal must not wedge the repo
     again = runner.request_task(
