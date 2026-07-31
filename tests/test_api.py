@@ -1,6 +1,7 @@
 """Integration tests for the HTTP API over a fixtures root."""
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -1445,3 +1446,99 @@ async def test_task_authoring_markup_is_served(tmp_path: Path) -> None:
     assert 'id="task-authoring"' in body
     assert "taCheckSlug" in body
     assert "/api/actions/request-task" in body
+
+
+# --- F-1 at the HTTP boundary ----------------------------------------------
+#
+# A status code alone would not settle this: the whole reason F-1 mattered is
+# that the attempt vanished from the audit log, so each test asserts the line
+# as well. Driven through the endpoints on purpose — the defect was reachable
+# from a request body, and a runner-level test would not have shown the 500.
+
+_NUL = "\x00"
+
+
+def _make_git_repo(tmp_path: Path, name: str = "nultest") -> str:
+    """A real workspace repo, so `_target` passes and the control-character
+    refusal is what the request actually meets."""
+    (tmp_path / name / ".git").mkdir(parents=True, exist_ok=True)
+    return name
+
+
+async def test_issue_lookup_with_a_nul_byte_is_refused_and_audited(
+    tmp_path: Path, caplog
+) -> None:
+    """A NUL in the query is a 422 refusal with an audit line, never a 500.
+
+    `subprocess.run` raises `ValueError("embedded null byte")` while
+    validating argv — before it forks. Uncaught, that surfaced as a 500 AND
+    left no audit line at all, which is the part that breaks ADR-ECO-004a
+    D1a-4 ("every attempt leaves a line").
+    """
+    repo = _make_git_repo(tmp_path)
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        async with _client(tmp_path) as client:
+            resp = await client.get(
+                "/api/issue-lookup", params={"dir": repo, "slug": f"a{_NUL}b"}
+            )
+    assert resp.status_code != 500
+    assert resp.status_code == 422
+    assert "control character" in resp.json()["detail"]
+    assert "action=issue-lookup" in caplog.text
+    assert "rejected=" in caplog.text
+
+
+async def test_request_task_with_a_nul_byte_is_refused_and_audited(
+    tmp_path: Path, caplog
+) -> None:
+    """Same at the mutating endpoint, with a real NUL in the POST body.
+
+    JSON permits `\\u0000` in a string, so this is what an HTTP client can
+    actually send. The audit line must say `created=False`: nothing ran, so
+    "unknown" would overstate our ignorance.
+    """
+    repo = _make_git_repo(tmp_path)
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        async with _client(tmp_path) as client:
+            token = (await client.get("/api/actions/session")).json()["token"]
+            resp = await client.post(
+                "/api/actions/request-task",
+                json={
+                    "dir": repo,
+                    "slug": f"wan{_NUL}ted",
+                    "title": "t",
+                    "prose": "because Y, done when Z",
+                },
+                headers={"X-Action-Token": token},
+            )
+    assert resp.status_code != 500
+    assert resp.status_code == 422
+    assert "control character" in resp.json()["detail"]
+    assert "action=request-task" in caplog.text
+    assert "created=False" in caplog.text
+
+
+async def test_request_task_with_a_nul_title_is_refused_and_audited(
+    tmp_path: Path, caplog
+) -> None:
+    """`title` is a structural argv element too (`--title <title>`), and a
+    validator that covered only `slug` would leave the same 500 reachable
+    one field over."""
+    repo = _make_git_repo(tmp_path)
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        async with _client(tmp_path) as client:
+            token = (await client.get("/api/actions/session")).json()["token"]
+            resp = await client.post(
+                "/api/actions/request-task",
+                json={
+                    "dir": repo,
+                    "slug": "wanted",
+                    "title": f"ti{_NUL}tle",
+                    "prose": "because Y, done when Z",
+                },
+                headers={"X-Action-Token": token},
+            )
+    assert resp.status_code != 500
+    assert resp.status_code == 422
+    assert "action=request-task" in caplog.text
+    assert "created=False" in caplog.text

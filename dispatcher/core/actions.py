@@ -45,6 +45,12 @@ from dispatcher.core.discovery import DispatcherConfig
 
 _ACTION_TIMEOUT = 120
 _SAFE_DIR_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")
+# C0 controls plus DEL. None of them belong in a value that becomes its own
+# argv element: NUL is the sharp case (`subprocess.run` refuses argv containing
+# one, and JSON permits it in a string, so it arrives straight off the wire),
+# but a newline or an ESC in a slug or an issue title is equally meaningless
+# and equally capable of confusing whatever reads the audit log afterwards.
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 Action = Literal["pull", "open-pr", "post-merge-sync"]
 _WHITELIST = frozenset({"pull", "open-pr", "post-merge-sync"})
@@ -82,6 +88,30 @@ class ActionBusyError(Exception):
 
 class ActionRejectedError(Exception):
     """Bad target: unsafe name or not a git repo in the workspace (→ 422)."""
+
+
+def reject_control_chars(**fields: str) -> None:
+    """Layer 1 of the argv defence: refuse control characters by name.
+
+    Every value here becomes a structural argv element (`--slug <slug>`,
+    `--title <title>`, …). A NUL makes `subprocess.run` raise before it even
+    forks, which used to escape as a 500 with no audit line at all; the rest
+    of the C0 range is simply not meaningful in a slug or a one-line title.
+
+    This is the INTENDED refusal, and it is deliberately not the only one:
+    `_invoke` still catches `ValueError` around `subprocess.run` regardless
+    of whether this ran (layer 2). A validator only covers the fields someone
+    remembered to list, and the next field added to an argv is exactly the
+    one that will be forgotten — so the boundary keeps its own guard rather
+    than trusting that this one was called.
+    """
+    for name, value in fields.items():
+        found = _CONTROL_RE.search(value)
+        if found is not None:
+            raise ActionRejectedError(
+                f"{name} contains a control character "
+                f"(U+{ord(found.group()):04X}); it must not"
+            )
 
 
 class ActionRunner:
@@ -337,9 +367,13 @@ class ActionRunner:
         """Ask whether a slug already has an inbox issue. A read takes no lock."""
         try:
             target = self._target(repo_dir)
+            reject_control_chars(slug=slug)
         except ActionRejectedError as err:
+            # slug is %r, not %s: a rejected slug can contain the very control
+            # characters that made it a rejection, and writing them raw into
+            # the audit trail is how a log line stops being readable
             _audit.info(
-                "action=issue-lookup repo=%s slug=%s ok=False rejected=%s",
+                "action=issue-lookup repo=%s slug=%r ok=False rejected=%s",
                 repo_dir,
                 slug,
                 err,
@@ -385,6 +419,17 @@ class ActionRunner:
         `created=None` (`None` would claim we don't know whether something
         was attempted, when we know nothing was).
         """
+        # Layer 1, before the lock: a request this malformed must not occupy
+        # the repo, and — the point of F-1 — must not vanish from the log.
+        try:
+            reject_control_chars(slug=slug, sender=sender, title=title)
+        except ActionRejectedError as err:
+            _audit.info(
+                "action=request-task repo=%s ok=False created=False rejected=%s",
+                repo_dir,
+                err,
+            )
+            raise
         with self._hold("request-task", repo_dir) as target:
             # the name must be recorded before anything can fail with the
             # file already open, so every exit below — success, a broken

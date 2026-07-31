@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from dispatcher.core import actions as actions_module
 from dispatcher.core.actions import (
     ActionBusyError,
     ActionOutcome,
@@ -1038,67 +1039,107 @@ def test_request_task_handles_a_temp_file_creation_failure(
     assert "action=request-task" in caplog.text
 
 
-def test_issue_lookup_refuses_a_nul_byte_instead_of_raising(
+# --- F-1: two layers of argv defence ---------------------------------------
+#
+# Layer 1 (`reject_control_chars`) is the intended, named refusal. Layer 2
+# (`_invoke`'s `except ValueError`) is boundary defence that must hold even
+# when layer 1 is bypassed or a future argv field is added without being
+# listed in it. Both are tested, and layer 2 is tested WITH layer 1 disabled
+# — testing it through layer 1 would only prove layer 1 works.
+
+NUL = "\x00"
+
+
+def test_issue_lookup_rejects_a_control_character_by_name(
     tmp_path: Path, caplog
 ) -> None:
-    """`subprocess.run` raises `ValueError("embedded null byte")` while
-    validating argv — before it forks, so nothing runs. JSON permits `\\u0000`
-    in a string, so this arrives straight off an HTTP body. Uncaught it
-    escaped as a 500 and left NO audit line, breaking this module's stated
-    per-attempt guarantee (ADR-ECO-004a D1a-4)."""
+    """Layer 1 on the read path: a named 422-shaped refusal, plus an audit
+    line. Before this, `subprocess.run` raised `ValueError("embedded null
+    byte")` while validating argv — the request became a 500 and the attempt
+    left NO audit line, breaking this module's per-attempt guarantee and
+    ADR-ECO-004a D1a-4 with it."""
     make_repo(tmp_path, "alpha")
     runner = ActionRunner(
         DispatcherConfig(roots=(tmp_path,)), command=("python3", "-c", "pass")
     )
     with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
-        outcome = runner.issue_lookup("alpha", "want\x00ed")
+        with pytest.raises(ActionRejectedError, match="control character"):
+            runner.issue_lookup("alpha", f"want{NUL}ed")
+    assert "action=issue-lookup" in caplog.text
+    assert "rejected=" in caplog.text
+    assert NUL not in caplog.text  # the slug is repr'd, not pasted in raw
+
+
+@pytest.mark.parametrize("field", ["slug", "title"])
+def test_request_task_rejects_a_control_character_before_taking_the_lock(
+    tmp_path: Path, caplog, field: str
+) -> None:
+    """Layer 1 on the write path, for every value that becomes its own argv
+    element. It runs before `_hold`, so a request this malformed cannot
+    occupy the repo — and the audit line says `created=False`, because
+    nothing was attempted and `created=None` would claim we cannot tell."""
+    make_repo(tmp_path, "alpha")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", "-c", "pass")
+    )
+    kwargs = {"slug": "wanted", "sender": "dispatcher", "title": "t", "prose": "p"}
+    kwargs[field] = f"bad{NUL}value"
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        with pytest.raises(ActionRejectedError, match="control character"):
+            runner.request_task("alpha", **kwargs)  # type: ignore[arg-type]
+    assert "action=request-task" in caplog.text
+    assert "created=False" in caplog.text
+    # the repo was never held: the next request must not meet a 409
+    outcome = runner.request_task(
+        "alpha", slug="wanted", sender="dispatcher", title="t", prose="p"
+    )
+    assert outcome.action == "request-task"
+
+
+def test_invoke_catches_a_nul_even_with_layer_one_disabled(
+    tmp_path: Path, caplog, monkeypatch
+) -> None:
+    """Layer 2 alone. `reject_control_chars` is stubbed to a no-op, standing
+    in for the field nobody remembered to list — the boundary must still turn
+    `subprocess.run`'s pre-fork `ValueError` into a controlled failure with an
+    audit line, not an exception out of the runner."""
+    make_repo(tmp_path, "alpha")
+    monkeypatch.setattr(actions_module, "reject_control_chars", lambda **kw: None)
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", "-c", "pass")
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        outcome = runner.issue_lookup("alpha", f"want{NUL}ed")
     assert outcome.ok is False
     assert "refused before launch" in (outcome.error or "")
     assert "action=issue-lookup" in caplog.text
 
 
-def test_request_task_refuses_a_nul_byte_as_a_pre_mutation_refusal(
-    tmp_path: Path, caplog
+def test_request_task_layer_two_classifies_the_refusal_as_not_created(
+    tmp_path: Path, caplog, monkeypatch
 ) -> None:
-    """Same argv refusal on the mutating path. It is a refusal, not an
-    unknown: the check happens before process creation, so no verb ran and
-    no issue was filed — `created=None` would claim we cannot tell, when we
-    can. Both the outcome and the audit line must say `created=False`."""
+    """Layer 2 on the write path. It is a pre-mutation refusal, not an
+    unknown: `subprocess.run` validates argv before it forks, so no verb ran
+    and no issue was filed. `created=None` would claim we cannot tell whether
+    one exists, when we know for certain none does."""
     make_repo(tmp_path, "alpha")
+    monkeypatch.setattr(actions_module, "reject_control_chars", lambda **kw: None)
     runner = ActionRunner(
         DispatcherConfig(roots=(tmp_path,)), command=("python3", "-c", "pass")
     )
     with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
         outcome = runner.request_task(
-            "alpha",
-            slug="wan\x00ted",
-            sender="dispatcher",
-            title="t",
-            prose="p",
+            "alpha", slug=f"wan{NUL}ted", sender="dispatcher", title="t", prose="p"
         )
     assert outcome.ok is False
     assert outcome.created is False
     assert "refused before launch" in (outcome.error or "")
-    assert "action=request-task" in caplog.text
     assert "created=False" in caplog.text
-
-
-def test_request_task_releases_the_lock_after_an_argv_refusal(
-    tmp_path: Path,
-) -> None:
-    """The refusal must not wedge the repo: the lock and the temp file are
-    released on this path exactly as on every other."""
-    make_repo(tmp_path, "alpha")
-    runner = ActionRunner(
-        DispatcherConfig(roots=(tmp_path,)), command=("python3", "-c", "pass")
-    )
-    runner.request_task(
-        "alpha", slug="a\x00b", sender="dispatcher", title="t", prose="p"
-    )
+    # and the lock came back: the refusal must not wedge the repo
     again = runner.request_task(
-        "alpha", slug="c\x00d", sender="dispatcher", title="t", prose="p"
+        "alpha", slug="ok", sender="dispatcher", title="t", prose="p"
     )
-    assert again.created is False  # not a 409: the repo was free again
+    assert again.action == "request-task"
 
 
 def test_issue_lookup_audit_distinguishes_unreadable_from_confirmed_empty(

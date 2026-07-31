@@ -1356,22 +1356,35 @@ function taRefProblems(ref) {
 
 function taShow(id, on) { document.getElementById(id).hidden = !on; }
 
+// F-2: a lookup that DEFINITELY read the inbox supersedes any earlier
+// "issue may have been created; state unknown" warning — leaving it up
+// beside the fresh answer (and, on `free`, beside a live Create button)
+// tells the operator two contradictory things about the same moment.
+//
+// Called only from the three branches that got a real answer, never at the
+// top of taCheckSlug: on an indefinite answer (transport failure, non-ok
+// status, unreadable envelope, a malformed item) the unknown state is still
+// the truth, and clearing it there would DELETE the warning the operator
+// clicked Re-check to resolve, replacing "an issue may exist" with a bare
+// "cannot check" — losing information rather than refreshing it.
+function taAnswered() {
+  document.getElementById('ta-result').textContent = '';
+  taShow('ta-recheck', false);
+}
+
 async function taCheckSlug() {
   const slug = document.getElementById('ta-slug').value.trim();
   const state = document.getElementById('ta-slug-state');
-  taShow('ta-existing', false); taShow('ta-open', false);
-  // F-2: ta-result and ta-recheck belong in this reset too. Re-check calls
-  // THIS function, and this function may re-enable Create — so leaving the
-  // create step's "state unknown: …" warning on screen produced a direct
-  // contradiction: the operator read a warning saying an issue may already
-  // exist next to a live Create button, and both appeared to describe the
-  // same moment. Re-enabling Create after a fresh explicit `[]` is correct
-  // (issue-lookup runs `gh issue list`, which asks the API rather than the
-  // lagging search index, so an explicit empty answer is the best evidence
-  // obtainable, and refusing forever would strand the operator); what must
-  // not survive is the stale warning beside it.
-  document.getElementById('ta-result').textContent = '';
-  taShow('ta-recheck', false);
+  // hidden is not enough: a hidden #ta-existing keeps the PREVIOUS slug's
+  // issue links in the DOM, and #ta-open keeps an onclick closed over the
+  // previous ref's URL — anything that re-shows either without rewriting it
+  // would open a stale issue while the label described a new one
+  const existing = document.getElementById('ta-existing');
+  existing.innerHTML = '';
+  taShow('ta-existing', false);
+  const openBtn = document.getElementById('ta-open');
+  openBtn.onclick = null;
+  taShow('ta-open', false);
   document.getElementById('ta-create').disabled = true;
   if (!slug) { state.textContent = ''; return; }
   // Minor fix: taRepo is only null before an entry point has set it.
@@ -1431,6 +1444,7 @@ async function taCheckSlug() {
   }
   const matches = outcome.matches;
   if (matches.length === 0) {
+    taAnswered();
     state.textContent = 'free';
     document.getElementById('ta-create').disabled = false;
     return;
@@ -1446,6 +1460,7 @@ async function taCheckSlug() {
       state.textContent = 'cannot read the result';
       return;
     }
+    taAnswered();
     state.textContent = `${matches.length} issues claim this slug — conflict`;
     document.getElementById('ta-existing').innerHTML = matches.map(
       m => `<a href="${esc(m.url)}" target="_blank">#${esc(m.number)}</a>`
@@ -1456,6 +1471,7 @@ async function taCheckSlug() {
   const ref = matches[0];
   const problems = taRefProblems(ref);
   if (problems.length) { state.textContent = `cannot read: ${problems.join('; ')}`; return; }
+  taAnswered();
   state.textContent = 'already requested';
   document.getElementById('ta-existing').innerHTML =
     `#${esc(ref.number)} · ${esc(ref.state)} · ` +

@@ -754,41 +754,51 @@ const CASES = [
     },
   },
   {
-    name: '32. [F-2] Re-check clears the very warning it answers — an "issue '
-      + 'may have been created" notice must never sit beside a live Create',
+    name: '32. [Re-check transition 1/3] unknown → Re-check → zero matches: '
+      + 'the stale warning is gone and Create is enabled',
     async run(env) {
       await openPanel(env);
       await freeSlugThen(env, e =>
         create(e, 200, {ok: true, created: null, error: 'no answer'}));
       const warned = env.text('ta-result');
+      const offered = !env.el('ta-recheck').hidden;
       env.route(u => u.startsWith('/api/issue-lookup'),
         () => resp(200, {ok: true, matches: [], malformed: []}));
       await env.fire('ta-recheck', 'click');
       return {
         'warning shown before Re-check': warned,
-        'result after Re-check': env.text('ta-result'),
+        'Re-check offered before': offered,
+        'result cleared': env.text('ta-result'),
         'Re-check hidden after': env.el('ta-recheck').hidden,
+        'existing cleared': env.el('ta-existing').innerHTML,
+        'existing hidden': env.el('ta-existing').hidden,
+        'Open-existing hidden': env.el('ta-open').hidden,
         'slug state': env.text('ta-slug-state'),
         // the ruling: an explicit [] from `gh issue list` is the best
         // evidence obtainable, so Create MAY come back — the contradiction
         // above is what must not
         'Create disabled': env.el('ta-create').disabled,
-        'lookups issued': env.urls('/api/issue-lookup').length,
+        'lookups issued (the click really re-queried)':
+          env.urls('/api/issue-lookup').length,
       };
     },
     expect: {
       'warning shown before Re-check':
         'issue may have been created; state unknown: no answer',
-      'result after Re-check': '',
+      'Re-check offered before': true,
+      'result cleared': '',
       'Re-check hidden after': true,
+      'existing cleared': '',
+      'existing hidden': true,
+      'Open-existing hidden': true,
       'slug state': 'free',
       'Create disabled': false,
-      'lookups issued': 2,
+      'lookups issued (the click really re-queried)': 2,
     },
   },
   {
-    name: '33. [F-2] Re-check that FINDS the issue shows it and keeps Create '
-      + 'off, with no stale warning left over',
+    name: '33. [Re-check transition 2/3] unknown → Re-check → one match: the '
+      + 'existing issue is shown and Create stays disabled',
     async run(env) {
       await openPanel(env);
       await freeSlugThen(env, e =>
@@ -797,7 +807,7 @@ const CASES = [
         () => resp(200, {ok: true, matches: [GOOD_REF], malformed: []}));
       await env.fire('ta-recheck', 'click');
       return {
-        'result after Re-check': env.text('ta-result'),
+        'result cleared': env.text('ta-result'),
         'Re-check hidden after': env.el('ta-recheck').hidden,
         'slug state': env.text('ta-slug-state'),
         'Create disabled': env.el('ta-create').disabled,
@@ -806,7 +816,7 @@ const CASES = [
       };
     },
     expect: {
-      'result after Re-check': '',
+      'result cleared': '',
       'Re-check hidden after': true,
       'slug state': 'already requested',
       'Create disabled': true,
@@ -815,8 +825,70 @@ const CASES = [
         + 'https://github.com/acme/widget/issues/12',
     },
   },
+  ...[
+    ['34. [Re-check transition 3/3, matches: null]', 200,
+      {ok: true, matches: null, malformed: []},
+      'cannot check: inbox could not be read exhaustively'],
+    ['35. [Re-check transition 3/3, HTTP failure]', 503,
+      {ok: false, error: 'upstream'}, 'cannot check: 503'],
+  ].map(([name, status, body, slugState]) => ({
+    name: `${name} unknown → Re-check → no answer: the unknown state SURVIVES `
+      + '— the warning stays, Re-check stays offered, Create stays disabled',
+    async run(env) {
+      await openPanel(env);
+      await freeSlugThen(env, e =>
+        create(e, 200, {ok: true, created: null, error: 'no answer'}));
+      env.route(u => u.startsWith('/api/issue-lookup'), () => resp(status, body));
+      await env.fire('ta-recheck', 'click');
+      return {
+        'warning preserved': env.text('ta-result'),
+        'Re-check still offered': env.el('ta-recheck').hidden,
+        'slug state': env.text('ta-slug-state'),
+        'Create disabled': env.el('ta-create').disabled,
+      };
+    },
+    expect: {
+      // clearing this would DELETE the fact the operator clicked Re-check to
+      // resolve, replacing "an issue may exist" with a bare "cannot check"
+      'warning preserved': 'issue may have been created; state unknown: no answer',
+      'Re-check still offered': false,
+      'slug state': slugState,
+      'Create disabled': true,
+    },
+  })),
   {
-    name: '34. a lookup answering 200 with a `null` body fails closed on '
+    name: '36. a fresh lookup clears the PREVIOUS slug\'s issue, not just '
+      + 'hides it — and drops the stale "Open existing" target with it',
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, 'add-x', 200,
+        {ok: true, matches: [GOOD_REF], malformed: []});
+      const shown = env.links('ta-existing');
+      env.route(u => u.startsWith('/api/issue-lookup'),
+        () => resp(200, {ok: true, matches: [], malformed: []}));
+      env.set('ta-slug', 'add-y');
+      await env.fire('ta-slug', 'change');
+      await env.fire('ta-open', 'click', {force: true});
+      return {
+        'link shown for the first slug': shown,
+        'existing innerHTML after': env.el('ta-existing').innerHTML,
+        'existing hidden after': env.el('ta-existing').hidden,
+        'Open-existing hidden after': env.el('ta-open').hidden,
+        'stale window.open fired': JSON.stringify(env.windowOpens),
+      };
+    },
+    expect: {
+      'link shown for the first slug':
+        'https://github.com/acme/widget/issues/12 → '
+        + 'https://github.com/acme/widget/issues/12',
+      'existing innerHTML after': '',
+      'existing hidden after': true,
+      'Open-existing hidden after': true,
+      'stale window.open fired': '[]',
+    },
+  },
+  {
+    name: '37. a lookup answering 200 with a `null` body fails closed on '
       + 'purpose, not as a raw TypeError',
     async run(env) {
       await openPanel(env);
