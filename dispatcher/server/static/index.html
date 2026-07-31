@@ -245,13 +245,33 @@ const get = async p => (await fetch(p)).json();
 // or parses to a different scheme, is unreadable, not merely "not
 // clickable" — fails closed on the CONSUMER side, independent of whatever
 // the producer is assumed to send.
-function isHttpsUrl(v) {
-  if (typeof v !== 'string') return false;
+function parseHttpsUrl(v) {
+  if (typeof v !== 'string') return null;
   try {
-    return new URL(v).protocol === 'https:';
+    const parsed = new URL(v);
+    return parsed.protocol === 'https:' ? parsed : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+// THE ONLY way a URL from an opaque passthrough payload reaches the DOM.
+// Interpolating one into an href through innerHTML — even after esc() — puts
+// a hostile string one deleted call away from attribute breakout, and
+// validation does not save it: `new URL()` reports 'https:' for
+// `https://gh.com/a"><img src=x onerror=alert(1)>`, quote intact, so the
+// sink would render the original string. Setting .href on a real element
+// cannot break out of an attribute whatever the string contains, so the
+// class of bug is removed rather than guarded. Returns null when the URL is
+// not a parseable https: one — every caller fails closed.
+function safeLink(rawUrl, label) {
+  const parsed = parseHttpsUrl(rawUrl);
+  if (parsed === null) return null;
+  const link = document.createElement('a');
+  link.href = parsed.href;   // the canonical, percent-encoded form
+  link.target = '_blank';
+  link.textContent = label;  // the user string appears only as text
+  return link;
 }
 
 const ERRORS_DAYS_DEFAULT = 14;
@@ -1009,9 +1029,9 @@ const MG_REQUIRED = [
   // M-1: esc() blocks attribute breakout, not the URL SCHEME — a
   // `javascript:` URL from the passthrough would otherwise render as a live
   // link in mg-head. Same trust boundary as the array-item security round.
-  // Uses isHttpsUrl (real URL parser + scheme allowlist), not a prefix
+  // Uses parseHttpsUrl (the one real parser + scheme allowlist), not a prefix
   // check — a string comparison passes malformed values sharing the prefix.
-  ['url',          v => isHttpsUrl(v)],
+  ['url',          v => parseHttpsUrl(v) !== null],
   ['state',        v => typeof v === 'string'],
   ['is_draft',     v => typeof v === 'boolean'],
   ['mergeable',    v => typeof v === 'string'],
@@ -1175,9 +1195,15 @@ async function openMergeGate(repoDir, pr, sticky) {
 function renderMergeGate(d) {
   mgHead = d.head_sha;
   document.getElementById('mg-title').textContent = `#${d.number} ${d.title}`;
-  document.getElementById('mg-head').innerHTML =
-    `<a href="${esc(d.url)}" target="_blank">${esc(d.url)}</a> · ` +
-    `${esc(d.head_branch)} → ${esc(d.base_branch)} · ${esc(d.head_sha.slice(0, 8))}`;
+  // Same rule as the task-authoring sinks: the URL is BUILT into an element,
+  // never interpolated. mgPayloadProblems already parsed it, so a null here
+  // would mean the two disagreed — fail closed rather than render a string.
+  const prLink = safeLink(d.url, d.url);
+  const head = document.getElementById('mg-head');
+  if (prLink === null) { mgCannotRead('url missing or wrong type'); return; }
+  head.replaceChildren(
+    prLink,
+    ` · ${d.head_branch} → ${d.base_branch} · ${d.head_sha.slice(0, 8)}`);
 
   const failed = MG_PREDICATES.filter(([, ok]) => !ok(d)).map(([name]) => name);
   document.getElementById('mg-gate').innerHTML = failed.length
@@ -1381,9 +1407,9 @@ const TA_REF_REQUIRED = [
   ['number', v => Number.isInteger(v)],
   ['title',  v => typeof v === 'string'],
   ['state',  v => typeof v === 'string'],
-  // Uses isHttpsUrl (real URL parser + 'https:' scheme allowlist), not a
+  // Uses parseHttpsUrl (the one real parser + 'https:' allowlist), not a
   // prefix check — same trust boundary as MG_REQUIRED's `url` above.
-  ['url',    v => isHttpsUrl(v)],
+  ['url',    v => parseHttpsUrl(v) !== null],
   ['author', v => typeof v === 'string'],
   ['labels', v => Array.isArray(v)],
 ];
@@ -1396,29 +1422,6 @@ function taRefProblems(ref) {
 
 function taShow(id, on) { document.getElementById(id).hidden = !on; }
 
-// Links are BUILT, never interpolated. esc() was the only thing standing
-// between a validated-but-hostile URL and attribute breakout: isHttpsUrl only
-// parses for a scheme, and `new URL()` reports 'https:' for
-// `https://gh.com/a"><img src=x onerror=alert(1)>` — quote intact — after
-// which the sink rendered the ORIGINAL string. One deleted esc() and that is
-// a live injection. Setting .href on a real element cannot break out of an
-// attribute no matter what the string contains, so the class of bug is gone
-// rather than guarded: there is no markup for a payload to escape from.
-// Returns null if the URL is not a parseable https: URL — callers fail closed.
-function taLink(rawUrl, label) {
-  let parsed;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    return null;
-  }
-  if (parsed.protocol !== 'https:') return null;
-  const link = document.createElement('a');
-  link.href = parsed.href;          // the canonical, percent-encoded form
-  link.target = '_blank';
-  link.textContent = label;         // the user string appears only as text
-  return link;
-}
 
 // F-2: a lookup that DEFINITELY read the inbox supersedes any earlier
 // "issue may have been created; state unknown" warning — leaving it up
@@ -1548,7 +1551,7 @@ async function taCheckSlug(inherited) {
       return;
     }
     taAnswered();
-    const links = matches.map(m => taLink(m.url, `#${m.number}`));
+    const links = matches.map(m => safeLink(m.url, `#${m.number}`));
     if (links.some(link => link === null)) {
       // taRefProblems already passed them; this is the same fail-closed rule
       // applied at the sink, where the URL is actually used
@@ -1568,7 +1571,7 @@ async function taCheckSlug(inherited) {
   const ref = matches[0];
   const problems = taRefProblems(ref);
   if (problems.length) { state.textContent = `cannot read: ${problems.join('; ')}`; return; }
-  const link = taLink(ref.url, ref.url);
+  const link = safeLink(ref.url, ref.url);
   if (link === null) {
     state.textContent = 'cannot read: url missing or wrong type';
     return;
@@ -1768,7 +1771,7 @@ document.getElementById('ta-create').addEventListener('click', async () => {
     taShow('ta-recheck', true);
     return;
   }
-  const link = taLink(outcome.issue.url, `#${outcome.issue.number}`);
+  const link = safeLink(outcome.issue.url, `#${outcome.issue.number}`);
   if (link === null) {
     result.textContent = 'created, but cannot read the result: url missing or wrong type';
     taShow('ta-recheck', true);

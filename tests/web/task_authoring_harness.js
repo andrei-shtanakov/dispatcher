@@ -1150,6 +1150,41 @@ const CASES = [
     },
   })),
   {
+    name: '44b. [merge gate] the PR link is built too — the same payload that '
+      + 'passes MG_REQUIRED must not reach an href as a string',
+    async run(env) {
+      await selectProject(env);
+      env.route(u => u.startsWith('/api/pr-detail'), () => resp(200, {
+        action: 'pr-detail', dir: 'widget', ok: true,
+        pr_detail: {
+          number: 7, title: 'a pr', url: XSS_URL, state: 'open',
+          is_draft: false, mergeable: 'MERGEABLE', head_branch: 'feat',
+          head_sha: 'abcdef1234', base_branch: 'master', checks: [],
+          files: [], review_threads: [], review_decision: 'APPROVED',
+          allows_squash: true,
+        },
+      }));
+      env.set('mg-pr-input', '7');
+      await env.fire('mg-open-gate', 'click');
+      const head = env.el('mg-head');
+      const all = head.querySelectorAll('*');
+      return {
+        'anchors built': all.filter(n => n.tagName === 'A').length,
+        'img elements created': head.querySelectorAll('img').length,
+        'elements carrying an inline handler': all.filter(
+          n => Object.keys(n.attributes).some(a => a.startsWith('on'))).length,
+        'href is the canonical parsed form':
+          all.filter(n => n.tagName === 'A').map(a => a.getAttribute('href'))[0],
+      };
+    },
+    expect: {
+      'anchors built': 1,
+      'img elements created': 0,
+      'elements carrying an inline handler': 0,
+      'href is the canonical parsed form': XSS_HREF,
+    },
+  },
+  {
     name: '45. [URL] `https://[oops` has the right prefix but does not parse '
       + '— a prefix check would let it through, the parser must not',
     async run(env) {
