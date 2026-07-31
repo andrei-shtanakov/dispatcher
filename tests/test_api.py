@@ -1110,6 +1110,67 @@ async def test_request_task_maps_busy_to_409(
     assert response.status_code == 409
 
 
+async def test_request_task_maps_rejection_to_422(tmp_path: Path) -> None:
+    async with _client(tmp_path) as client:
+        token = await _token(client)
+        response = await client.post(
+            "/api/actions/request-task",
+            json={"dir": "../etc", "slug": "wanted", "title": "t", "prose": "p"},
+            headers={"X-Action-Token": token},
+        )
+    assert response.status_code == 422
+
+
+async def test_issue_lookup_preserves_null_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`matches=None` means github-checker could not read the inbox
+    exhaustively (200-issue cap hit, or a candidate didn't map) — a real
+    `[]` means it positively confirmed nothing is there. Collapsing null
+    into [] on the wire is exactly how a taken slug ends up looking free
+    and a duplicate issue gets filed."""
+    from dispatcher.core.actions import ActionOutcome, ActionRunner
+
+    monkeypatch.setattr(
+        ActionRunner,
+        "issue_lookup",
+        lambda self, repo_dir, slug: ActionOutcome(
+            action="issue-lookup", dir=repo_dir, ok=True, matches=None, malformed=[]
+        ),
+    )
+    async with _client(tmp_path) as client:
+        response = await client.get(
+            "/api/issue-lookup", params={"dir": "alpha", "slug": "wanted"}
+        )
+    body = response.json()
+    assert "matches" in body
+    assert body["matches"] is None
+
+
+async def test_issue_lookup_preserves_null_malformed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same null-vs-`[]` distinction as `matches`, mirrored for `malformed`:
+    None means the read was not exhaustive, [] means it positively found
+    no malformed candidates."""
+    from dispatcher.core.actions import ActionOutcome, ActionRunner
+
+    monkeypatch.setattr(
+        ActionRunner,
+        "issue_lookup",
+        lambda self, repo_dir, slug: ActionOutcome(
+            action="issue-lookup", dir=repo_dir, ok=True, matches=[], malformed=None
+        ),
+    )
+    async with _client(tmp_path) as client:
+        response = await client.get(
+            "/api/issue-lookup", params={"dir": "alpha", "slug": "wanted"}
+        )
+    body = response.json()
+    assert "malformed" in body
+    assert body["malformed"] is None
+
+
 async def test_issue_lookup_is_readable_without_a_token(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
