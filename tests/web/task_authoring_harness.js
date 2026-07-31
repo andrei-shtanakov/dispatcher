@@ -1,648 +1,873 @@
-// Runs the SHIPPED task-authoring JS -- sliced verbatim out of
-// dispatcher/server/static/index.html -- under a stub DOM with a scripted
-// fetch queue. There is no browser/JS test runner wired into this Python
-// project's own test suite, so this drives the REAL client code (not a
-// reimplementation of its logic) through vm.runInContext: line-slice the
-// actual <script> content by locating stable markers, eval it, then invoke
-// the real exported functions and the real (anonymous) click-handler
-// closures, and read the real DOM-stub state back out.
+// Exercises the task-authoring screen by running the REAL, WHOLE <script> of
+// dispatcher/server/static/index.html inside a VM over the page's own parsed
+// markup (tests/web/dom.js). Nothing is sliced by string markers, nothing is
+// re-implemented, no handler is simulated, and no assertion checks that the
+// source "contains" some literal: every case reaches the shipped code through
+// the events a person produces — click a project card, click "Create task
+// request", type a slug, fire `change`, click "Create request" — and then
+// asserts on real state (the button's `disabled` flag, `taRepo`, the anchors
+// actually rendered, the text actually displayed).
 //
-// Invoked from tests/test_task_authoring_js.py via `node <this> <index.html>`
-// so it runs inside the Python test suite everyone already runs, rather than
-// requiring a second toolchain to be set up on its own. `node` itself is a
-// hard prerequisite of that Python test -- its absence FAILS the suite, it
-// does not skip it (a skip is how a suite goes green while covering
-// nothing). Exit code 0 = all cases passed; non-zero = at least one case
-// (or an unhandled rejection) failed, and the failure detail was already
-// printed to stdout.
+// Why the whole page script rather than an extracted module: this block reads
+// and writes module-scope state owned by the rest of the file — `mgEntryRepo`,
+// which `detail()` sets from a card's `data-dir`, which `refresh()` renders
+// from `mgDirBasename(p.path)`. Extracting "the pure UI functions" would have
+// cut exactly the wire the data-dir rule lives on. Running the whole file
+// keeps that rule verifiable end to end and costs only a fixture for each API
+// the page calls on load.
 //
-// Add a case here per rule the operator-console section relies on -- this
-// list must not silently drift from dispatcher/server/static/index.html.
+// Failure policy: a case whose expectations do not match FAILS; a case whose
+// handler rejects FAILS (its rejection is awaited, never orphaned); anything
+// that still escapes — a detached promise, a throwing timer callback — is
+// caught by the process-level handlers below, counted, and forces a non-zero
+// exit. The summary can never say "N/N passed" beside one. `--selftest=NAME`
+// injects a deliberate failure of each kind so this policy is itself tested;
+// tests/web/runner_selftest.js runs those in child processes and asserts the
+// exit codes.
+//
+// Usage: node task_authoring_harness.js <path-to-index.html> [--selftest=NAME]
 'use strict';
-const fs = require('fs');
-const vm = require('vm');
 
-const HTML = process.argv[2];
-if (!HTML) {
-  console.error('usage: node task_authoring_harness.js <path-to-index.html>');
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+const {Document, dispatch} = require(path.join(__dirname, 'dom.js'));
+
+const HTML_PATH = process.argv[2];
+const SELFTEST_ARG = process.argv.find(a => a.startsWith('--selftest='));
+const SELFTEST = SELFTEST_ARG ? SELFTEST_ARG.split('=')[1] : null;
+
+if (!HTML_PATH) {
+  console.error(
+    'usage: node task_authoring_harness.js <index.html> [--selftest=NAME]');
   process.exit(2);
 }
-const lines = fs.readFileSync(HTML, 'utf8').split('\n');
-const slice = (a, b) => lines.slice(a - 1, b).join('\n'); // 1-based inclusive
-const at = needle => lines.findIndex(l => l.includes(needle)) + 1; // 1-based
 
-// esc / isHttpsUrl are shared top-of-file helpers this block depends on but
-// does not itself define; sliced as one contiguous chunk from `const esc =`
-// through the end of `isHttpsUrl`'s closing brace.
-const escStart = at('const esc =');
-const isHttpsUrlEnd = (() => {
-  const start = at('function isHttpsUrl(v)');
-  return start + lines.slice(start - 1).findIndex(l => l === '}');
-})();
-const taStart = at('let taRepo = null;');
-const taEnd = at("getElementById('ta-open-panel').addEventListener")
-  + lines.slice(at("getElementById('ta-open-panel').addEventListener") - 1)
-      .findIndex(l => l === '});');
+// ---- process-level error policy -------------------------------------------
 
-const helpers = slice(escStart, isHttpsUrlEnd);
-const taBlock = slice(taStart, taEnd);
+// `caseFailures` counts cases whose expectations did not hold; `asyncErrors`
+// counts faults that escaped a case entirely. Both are failures — they are
+// tallied apart only so the summary can name which kind happened, never so
+// one of them can be quietly left out of the exit code.
+let caseFailures = 0;
+let asyncErrors = 0;
+const failed = () => caseFailures + asyncErrors;
+let currentCase = '(startup)';
+let summaryClaimedClean = false;
 
-// sanity: the slices must be the real thing, not a drifted line range
-for (const [name, text, needle] of [
-  ['helpers esc', helpers, 'const esc ='],
-  ['helpers isHttpsUrl', helpers, 'function isHttpsUrl(v)'],
-  ['helpers scheme allowlist', helpers, "protocol === 'https:'"],
-  ['taBlock', taBlock, 'async function taCheckSlug'],
-  ['taBlock envelope/type guard', taBlock, '!Array.isArray(outcome.matches)'],
-  ['taBlock multi-match item guard', taBlock, 'taRefProblems(m).length > 0'],
-  ['taBlock 5xx guard', taBlock, 'res.status >= 500'],
-  ['taBlock non-object body guard', taBlock, "typeof outcome !== 'object'"],
-  ['taBlock taRepo guard', taBlock, 'if (!taRepo)'],
-  ['taBlock end', taBlock, "getElementById('ta-open-panel')"],
-]) {
-  if (!text.includes(needle)) throw new Error(`slice ${name} missed ${needle}`);
+process.on('unhandledRejection', reason => {
+  asyncErrors++;
+  process.exitCode = 1;
+  console.error(`\nUNHANDLED REJECTION during ${currentCase}:`,
+    (reason && reason.stack) || reason);
+});
+process.on('uncaughtException', error => {
+  asyncErrors++;
+  process.exitCode = 1;
+  console.error(`\nUNCAUGHT EXCEPTION during ${currentCase}:`,
+    (error && error.stack) || error);
+});
+process.on('exit', code => {
+  if (code !== 0 && summaryClaimedClean) {
+    console.error(
+      'LATE ASYNC ERROR: an async failure surfaced after the summary was '
+      + 'printed — the summary above is WRONG, the exit code is right.');
+  }
+});
+
+// ---- page loading ----------------------------------------------------------
+
+const html = fs.readFileSync(HTML_PATH, 'utf8');
+
+function between(source, openRe, closeTag, what) {
+  const open = openRe.exec(source);
+  const close = source.lastIndexOf(closeTag);
+  if (!open || close === -1 || close < open.index) {
+    throw new Error(`${HTML_PATH}: could not find <${what}> … ${closeTag}`);
+  }
+  return source.slice(open.index + open[0].length, close);
 }
 
-function makeDom() {
-  const els = {};
-  const el = () => ({
-    textContent: '', innerHTML: '', hidden: false, disabled: false, value: '',
-    listeners: {},
-    addEventListener(ev, fn) { this.listeners[ev] = fn; },
-    scrollIntoView() {},
-  });
-  return {
-    getElementById: id => (els[id] = els[id] || el()),
-    _els: els,
-  };
+const BODY_HTML = between(html, /<body[^>]*>/i, '</body>', 'body');
+if (BODY_HTML.split('<script').length !== 2) {
+  throw new Error(
+    `${HTML_PATH}: expected exactly one <script> in <body>; this harness runs `
+    + 'the whole page script and would otherwise silently skip one');
 }
+const PAGE_SCRIPT = between(BODY_HTML, /<script[^>]*>/i, '</script>', 'script');
 
-function respond(status, body) {
-  return Promise.resolve({
-    status, ok: status >= 200 && status < 300,
-    json: () => Promise.resolve(body),
-  });
-}
-
-// ---- fixtures -------------------------------------------------------------
+// ---- fixtures --------------------------------------------------------------
 
 const GOOD_REF = {
   number: 12, title: 'add feature X', state: 'open',
   url: 'https://github.com/acme/widget/issues/12',
   author: 'octocat', labels: ['inbox'],
 };
+const SECOND_REF = {
+  ...GOOD_REF, number: 13, url: 'https://github.com/acme/widget/issues/13',
+};
 
-function tokenAwareFetch(mainResponse) {
-  return url => {
-    if (String(url).startsWith('/api/actions/session')) {
-      return respond(200, {token: 'test-token'});
-    }
-    return mainResponse(url);
-  };
+const resp = (status, body) => ({
+  status, ok: status >= 200 && status < 300,
+  json: () => Promise.resolve(body),
+});
+const ok = body => resp(200, body);
+
+const ONBOARDING = {
+  project: {description: 'a repo', description_source: 'README'},
+  roadmap_position: null, next_items: [], live_tasks: [], warnings: [],
+};
+
+const overviewFor = project => ({
+  projects: [{
+    name: project.name, detected: true, path: project.path,
+    counts: {tasks: 1, models: 0, test_results: 0, errors: 0},
+    freshness: 'fresh', warnings: [],
+  }],
+});
+
+function defaultRoutes(project) {
+  return [
+    [u => u.startsWith('/api/overview'), () => ok(overviewFor(project))],
+    [u => u.startsWith('/api/errors'), () => ok([])],
+    [u => u.startsWith('/api/models'), () => ok([])],
+    [u => u.startsWith('/api/contracts'), () => ok([])],
+    [u => u.startsWith('/api/roadmap/summary'), () => ok({projects: []})],
+    [u => u.startsWith('/api/roadmap'), () => ok({roadmaps: [], items: []})],
+    [u => u.startsWith('/api/sync'), () => ok({
+      fetch_in_flight: false,
+      report: {top_line: 'ok', top_reason: null, proposals: [], hosts: []},
+    })],
+    [u => u.startsWith('/api/actions/session'), () => ok({token: 'test-token'})],
+    [u => u.startsWith('/api/spec-runner-config/suggest-availability'),
+      () => ok({available: false, detail: 'n/a'})],
+    [u => u.endsWith('/onboarding'), () => ok(ONBOARDING)],
+    [u => u.endsWith('/spec-runner-config'), () => resp(404, {detail: 'none'})],
+  ];
 }
+
+// ---- environment -----------------------------------------------------------
+
+const drain = async (turns = 5) => {
+  for (let i = 0; i < turns; i++) await new Promise(r => setTimeout(r, 0));
+};
+
+function makeEnv(project) {
+  const document = new Document(BODY_HTML);
+  const routes = defaultRoutes(project);
+  const windowOpens = [];
+  const requests = [];
+
+  const ctx = {
+    document, console, URL,
+    setTimeout, clearTimeout,
+    // The page installs a 10s auto-refresh; a test run must neither keep the
+    // event loop alive nor re-fetch in the middle of an assertion.
+    setInterval: () => 0,
+    clearInterval: () => {},
+    fetch: (url, init) => {
+      const u = String(url);
+      requests.push({url: u, init});
+      for (const [test, make] of routes) if (test(u)) return Promise.resolve(make(u));
+      return Promise.reject(new Error(`no fixture route for ${u}`));
+    },
+    window: {open: (u, target) => windowOpens.push({url: u, target})},
+  };
+  vm.createContext(ctx);
+
+  const env = {
+    ctx, document, windowOpens, requests,
+    /** Put a route at the front, so a case can override a default. */
+    route(test, make) { routes.unshift([test, make]); },
+    el(id) {
+      const node = document.getElementById(id);
+      if (!node) throw new Error(`#${id} is not in the page markup`);
+      return node;
+    },
+    set(id, value) { env.el(id).value = value; },
+    text(id) { return env.el(id).textContent; },
+    /** Fire a real event and wait for whatever it started. */
+    async fire(id, type, opts) { await env.fireNode(env.el(id), type, opts); },
+    async fireNode(node, type, opts) {
+      await Promise.all(dispatch(node, type, opts));
+      await drain();
+    },
+    read(expression) { return vm.runInContext(expression, ctx); },
+    /** The links the page actually rendered, href and text. */
+    links(id) {
+      return env.el(id).querySelectorAll('a')
+        .map(a => `${a.getAttribute('href')} → ${a.textContent}`).join(' | ');
+    },
+    urls(prefix) { return requests.map(r => r.url).filter(u => u.startsWith(prefix)); },
+  };
+  return env;
+}
+
+/** Load the page exactly as a browser would, and let its first refresh land. */
+async function boot(project) {
+  const env = makeEnv(project);
+  vm.runInContext(PAGE_SCRIPT, env.ctx);
+  await drain();
+  return env;
+}
+
+async function selectProject(env) {
+  const card = env.document.querySelector('#projects .card[data-name]');
+  if (!card) throw new Error('refresh() rendered no selectable project card');
+  // Click the heading INSIDE the card, so the container's delegated handler
+  // has to resolve the card itself via closest() — as it does for a person.
+  await env.fireNode(card.querySelector('h2') || card, 'click');
+}
+
+async function openPanel(env) {
+  await selectProject(env);
+  await env.fire('ta-open-panel', 'click');
+}
+
+const WIDGET = {name: 'widget', path: '/repos/widget'};
+// The display name the collector reports ("Maestro") is deliberately NOT the
+// on-disk clone directory ("maestro"); that divergence is the entire reason
+// the data-dir rule exists.
+const MAESTRO = {name: 'Maestro', path: '/home/dev/repos/maestro'};
+
+/** Drive the real slug field through a lookup with the given wire answer. */
+async function lookup(env, slug, status, body) {
+  env.route(u => u.startsWith('/api/issue-lookup'), () => resp(status, body));
+  env.set('ta-slug', slug);
+  await env.fire('ta-slug', 'change');
+}
+
+/** Drive the real Create button with the given wire answer. */
+async function create(env, status, body, {force = false} = {}) {
+  env.route(u => u.startsWith('/api/actions/request-task'),
+    () => resp(status, body));
+  env.set('ta-title', 'Add feature X');
+  env.set('ta-prose', 'because Y, done when Z');
+  await env.fire('ta-create', 'click', {force});
+}
+
+/** The only path to an enabled Create button: a slug the lookup says is free. */
+async function freeSlugThen(env, fn) {
+  await lookup(env, 'add-x', 200, {ok: true, matches: [], malformed: []});
+  if (env.el('ta-create').disabled) {
+    throw new Error('precondition failed: a free slug did not enable Create');
+  }
+  return fn(env);
+}
+
+// ---- cases -----------------------------------------------------------------
 
 const CASES = [
   {
-    name: '1. free slug enables Create (the ONLY combo that may)',
-    drive: async (ctx, document) => {
-      vm.runInContext("taRepo = 'widget'", ctx);
-      document.getElementById('ta-slug').value = 'add-x';
-      ctx.fetch = () => respond(200, {ok: true, matches: [], malformed: []});
-      await vm.runInContext('taCheckSlug()', ctx);
+    name: '1. a free slug is the only lookup answer that enables Create',
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, 'add-x', 200, {ok: true, matches: [], malformed: []});
+      return {
+        'slug state': env.text('ta-slug-state'),
+        'Create disabled': env.el('ta-create').disabled,
+        'existing hidden': env.el('ta-existing').hidden,
+        'Open-existing hidden': env.el('ta-open').hidden,
+      };
     },
-    check: document => ({
-      'ta-slug-state.textContent': document.getElementById('ta-slug-state').textContent,
-      'ta-create.disabled': document.getElementById('ta-create').disabled,
-    }),
     expect: {
-      'ta-slug-state.textContent': 'free',
-      'ta-create.disabled': false,
+      'slug state': 'free',
+      'Create disabled': false,
+      'existing hidden': true,
+      'Open-existing hidden': true,
     },
   },
   {
-    name: '2. taken slug shows the issue and offers Open existing',
-    drive: async (ctx, document) => {
-      vm.runInContext("taRepo = 'widget'", ctx);
-      document.getElementById('ta-slug').value = 'add-x';
-      ctx.fetch = () => respond(200, {ok: true, matches: [GOOD_REF], malformed: []});
-      await vm.runInContext('taCheckSlug()', ctx);
+    name: '2. a taken slug renders the issue, disables Create, and '
+      + '"Open existing" navigates to the real https URL',
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, 'add-x', 200,
+        {ok: true, matches: [GOOD_REF], malformed: []});
+      await env.fire('ta-open', 'click');
+      return {
+        'slug state': env.text('ta-slug-state'),
+        'Create disabled': env.el('ta-create').disabled,
+        'existing hidden': env.el('ta-existing').hidden,
+        'rendered link': env.links('ta-existing'),
+        'window.open': JSON.stringify(env.windowOpens),
+      };
     },
-    check: document => ({
-      'ta-slug-state.textContent': document.getElementById('ta-slug-state').textContent,
-      'ta-create.disabled': document.getElementById('ta-create').disabled,
-      'ta-open.hidden': document.getElementById('ta-open').hidden,
-    }),
     expect: {
-      'ta-slug-state.textContent': 'already requested',
-      'ta-create.disabled': true,
-      'ta-open.hidden': false,
+      'slug state': 'already requested',
+      'Create disabled': true,
+      'existing hidden': false,
+      'rendered link': 'https://github.com/acme/widget/issues/12 → '
+        + 'https://github.com/acme/widget/issues/12',
+      'window.open':
+        '[{"url":"https://github.com/acme/widget/issues/12","target":"_blank"}]',
     },
   },
   {
-    // "every sink" #1 (single-match render + Open existing button).
-    name: '3. [URL] single match with a javascript: URL is unreadable, not clickable',
-    drive: async (ctx, document) => {
-      vm.runInContext("taRepo = 'widget'", ctx);
-      document.getElementById('ta-slug').value = 'add-x';
-      const evil = {...GOOD_REF, url: 'javascript:alert(1)'};
-      ctx.fetch = () => respond(200, {ok: true, matches: [evil], malformed: []});
-      await vm.runInContext('taCheckSlug()', ctx);
+    name: '3. [URL] a single match with a javascript: URL is unreadable, '
+      + 'never a clickable link',
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, 'add-x', 200, {
+        ok: true, malformed: [],
+        matches: [{...GOOD_REF, url: 'javascript:alert(1)'}],
+      });
+      return {
+        'slug state': env.text('ta-slug-state'),
+        'Open-existing hidden': env.el('ta-open').hidden,
+        'Create disabled': env.el('ta-create').disabled,
+        'rendered links': env.links('ta-existing'),
+      };
     },
-    check: document => ({
-      'ta-slug-state.textContent': document.getElementById('ta-slug-state').textContent,
-      'ta-open.hidden': document.getElementById('ta-open').hidden,
-      'ta-create.disabled': document.getElementById('ta-create').disabled,
-    }),
     expect: {
-      'ta-slug-state.textContent': 'cannot read: url missing or wrong type',
-      'ta-open.hidden': true,
-      'ta-create.disabled': true,
+      'slug state': 'cannot read: url missing or wrong type',
+      'Open-existing hidden': true,
+      'Create disabled': true,
+      'rendered links': '',
     },
   },
   {
-    name: '4. several VALID matches show a conflict and keep Create disabled',
-    drive: async (ctx, document) => {
-      vm.runInContext("taRepo = 'widget'", ctx);
-      document.getElementById('ta-slug').value = 'add-x';
-      const ref2 = {...GOOD_REF, number: 13, url: 'https://github.com/acme/widget/issues/13'};
-      ctx.fetch = () => respond(200, {ok: true, matches: [GOOD_REF, ref2], malformed: []});
-      await vm.runInContext('taCheckSlug()', ctx);
+    name: '4. several valid matches render a conflict list and keep Create off',
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, 'add-x', 200,
+        {ok: true, matches: [GOOD_REF, SECOND_REF], malformed: []});
+      return {
+        'slug state': env.text('ta-slug-state'),
+        'Create disabled': env.el('ta-create').disabled,
+        'rendered links': env.links('ta-existing'),
+      };
     },
-    check: document => ({
-      'ta-slug-state.textContent': document.getElementById('ta-slug-state').textContent,
-      'ta-create.disabled': document.getElementById('ta-create').disabled,
-      'ta-existing.innerHTML': document.getElementById('ta-existing').innerHTML,
-    }),
     expect: {
-      'ta-slug-state.textContent': '2 issues claim this slug — conflict',
-      'ta-create.disabled': true,
-      'ta-existing.innerHTML':
-        '<a href="https://github.com/acme/widget/issues/12" target="_blank">#12</a> · ' +
-        '<a href="https://github.com/acme/widget/issues/13" target="_blank">#13</a>',
+      'slug state': '2 issues claim this slug — conflict',
+      'Create disabled': true,
+      'rendered links': 'https://github.com/acme/widget/issues/12 → #12 | '
+        + 'https://github.com/acme/widget/issues/13 → #13',
+    },
+  },
+  ...[
+    ['5. matches: null — the inbox was not read exhaustively',
+      {ok: true, matches: null, malformed: []}],
+    ['6. matches absent from the envelope entirely',
+      {ok: true, malformed: []}],
+    ['7. matches: {} — an object where an array belongs',
+      {ok: true, matches: {}, malformed: []}],
+    ['8. matches: "ab" — a length-having non-array must not reach .some()',
+      {ok: true, matches: 'ab', malformed: []}],
+    ['9. malformed: null with matches: [] is still not "free"',
+      {ok: true, matches: [], malformed: null}],
+  ].map(([name, body]) => ({
+    name: `${name} → "cannot check", Create stays disabled`,
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, 'add-x', 200, body);
+      return {
+        'slug state': env.text('ta-slug-state'),
+        'Create disabled': env.el('ta-create').disabled,
+      };
+    },
+    expect: {
+      'slug state': 'cannot check: inbox could not be read exhaustively',
+      'Create disabled': true,
+    },
+  })),
+  {
+    name: '10. one valid + one invalid match fails the WHOLE list closed',
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, 'add-x', 200, {
+        ok: true, malformed: [],
+        matches: [GOOD_REF, {...SECOND_REF, url: undefined}],
+      });
+      return {
+        'slug state': env.text('ta-slug-state'),
+        'Create disabled': env.el('ta-create').disabled,
+        'existing hidden': env.el('ta-existing').hidden,
+        'rendered links (none, not partial)': env.links('ta-existing'),
+      };
+    },
+    expect: {
+      'slug state': 'cannot read the result',
+      'Create disabled': true,
+      'existing hidden': true,
+      'rendered links (none, not partial)': '',
     },
   },
   {
-    // C-2 (Critical), input 1 of 3: literal null.
-    name: '5. [C-2] matches: null must NOT enable Create or say "free"',
-    drive: async (ctx, document) => {
-      vm.runInContext("taRepo = 'widget'", ctx);
-      document.getElementById('ta-slug').value = 'add-x';
-      ctx.fetch = () => respond(200, {ok: true, matches: null, malformed: []});
-      await vm.runInContext('taCheckSlug()', ctx);
+    name: '11. [URL] a javascript: URL among several matches renders nothing',
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, 'add-x', 200, {
+        ok: true, malformed: [],
+        matches: [GOOD_REF, {...SECOND_REF, url: 'javascript:alert(1)'}],
+      });
+      return {
+        'slug state': env.text('ta-slug-state'),
+        'rendered links': env.links('ta-existing'),
+        'raw innerHTML holds the scheme':
+          env.el('ta-existing').innerHTML.includes('javascript:'),
+      };
     },
-    check: document => ({
-      'ta-slug-state.textContent': document.getElementById('ta-slug-state').textContent,
-      'ta-create.disabled': document.getElementById('ta-create').disabled,
-    }),
     expect: {
-      'ta-slug-state.textContent': 'cannot check: inbox could not be read exhaustively',
-      'ta-create.disabled': true,
+      'slug state': 'cannot read the result',
+      'rendered links': '',
+      'raw innerHTML holds the scheme': false,
     },
   },
   {
-    // C-2 (Critical), input 2 of 3: field absent entirely (undefined).
-    name: '6. [C-2] matches field ABSENT entirely must NOT enable Create',
-    drive: async (ctx, document) => {
-      vm.runInContext("taRepo = 'widget'", ctx);
-      document.getElementById('ta-slug').value = 'add-x';
-      ctx.fetch = () => respond(200, {ok: true, malformed: []}); // no `matches` key at all
-      await vm.runInContext('taCheckSlug()', ctx);
+    name: '12. created: null → state unknown, Re-check only, Create stays off',
+    async run(env) {
+      await openPanel(env);
+      await freeSlugThen(env, e =>
+        create(e, 200, {ok: true, created: null, error: 'no answer'}));
+      return {
+        'result': env.text('ta-result'),
+        'Re-check hidden': env.el('ta-recheck').hidden,
+        'Create disabled': env.el('ta-create').disabled,
+      };
     },
-    check: document => ({
-      'ta-slug-state.textContent': document.getElementById('ta-slug-state').textContent,
-      'ta-create.disabled': document.getElementById('ta-create').disabled,
-    }),
     expect: {
-      'ta-slug-state.textContent': 'cannot check: inbox could not be read exhaustively',
-      'ta-create.disabled': true,
+      'result': 'issue may have been created; state unknown: no answer',
+      'Re-check hidden': false,
+      'Create disabled': true,
     },
   },
   {
-    // C-2 (Critical), input 3 of 3: an object where an array is expected.
-    name: '7. [C-2] matches: {} (object, not array) must NOT enable Create',
-    drive: async (ctx, document) => {
-      vm.runInContext("taRepo = 'widget'", ctx);
-      document.getElementById('ta-slug').value = 'add-x';
-      ctx.fetch = () => respond(200, {ok: true, matches: {}, malformed: []});
-      await vm.runInContext('taCheckSlug()', ctx);
+    name: '13. created: true with issue: null → "reading it back failed"',
+    async run(env) {
+      await openPanel(env);
+      await freeSlugThen(env, e =>
+        create(e, 200, {ok: true, created: true, issue: null}));
+      return {
+        'result': env.text('ta-result'),
+        'Re-check hidden': env.el('ta-recheck').hidden,
+        'Create disabled': env.el('ta-create').disabled,
+      };
     },
-    check: document => ({
-      'ta-slug-state.textContent': document.getElementById('ta-slug-state').textContent,
-      'ta-create.disabled': document.getElementById('ta-create').disabled,
-    }),
     expect: {
-      'ta-slug-state.textContent': 'cannot check: inbox could not be read exhaustively',
-      'ta-create.disabled': true,
+      'result': 'issue created, but reading it back failed',
+      'Re-check hidden': false,
+      'Create disabled': true,
     },
   },
   {
-    // Ordering proof: if business logic (matches.length / .some()) ran
-    // BEFORE the Array.isArray type check, a string is `length`-having and
-    // array-*like* enough to reach `matches.some(...)`, which strings do
-    // NOT implement -> TypeError -> unhandled rejection, never a message.
-    // Type-check-first means this is caught cleanly instead.
-    name: '8. [ordering] matches: "ab" (string, length 2) must not crash, and ' +
-      'must land in the SAME unknown state as null/absent/object',
-    drive: async (ctx, document) => {
-      vm.runInContext("taRepo = 'widget'", ctx);
-      document.getElementById('ta-slug').value = 'add-x';
-      ctx.fetch = () => respond(200, {ok: true, matches: 'ab', malformed: []});
-      await vm.runInContext('taCheckSlug()', ctx);
+    name: '14. a malformed issue in the create response is never rendered',
+    async run(env) {
+      await openPanel(env);
+      await freeSlugThen(env, e => create(e, 200, {
+        ok: true, created: true,
+        issue: {number: '12', title: 't', state: 'open', author: 'o',
+          url: 'https://github.com/acme/widget/issues/12'},
+      }));
+      return {
+        'result': env.text('ta-result'),
+        'rendered links': env.links('ta-result'),
+      };
     },
-    check: document => ({
-      'ta-slug-state.textContent': document.getElementById('ta-slug-state').textContent,
-      'ta-create.disabled': document.getElementById('ta-create').disabled,
-    }),
     expect: {
-      'ta-slug-state.textContent': 'cannot check: inbox could not be read exhaustively',
-      'ta-create.disabled': true,
-    },
-    // (unhandled-rejection count is asserted globally at the end of the run)
-  },
-  {
-    // C-2 (Critical), malformed variant: matches: [] (confirmed empty) but
-    // malformed: null (not exhaustive) is STILL an unknown state overall.
-    name: '9. [C-2] malformed: null with matches: [] must NOT enable Create',
-    drive: async (ctx, document) => {
-      vm.runInContext("taRepo = 'widget'", ctx);
-      document.getElementById('ta-slug').value = 'add-x';
-      ctx.fetch = () => respond(200, {ok: true, matches: [], malformed: null});
-      await vm.runInContext('taCheckSlug()', ctx);
-    },
-    check: document => ({
-      'ta-slug-state.textContent': document.getElementById('ta-slug-state').textContent,
-      'ta-create.disabled': document.getElementById('ta-create').disabled,
-    }),
-    expect: {
-      'ta-slug-state.textContent': 'cannot check: inbox could not be read exhaustively',
-      'ta-create.disabled': true,
+      'result': 'created, but cannot read the result: number missing or wrong '
+        + 'type; labels missing or wrong type',
+      'rendered links': '',
     },
   },
   {
-    // C-1 (Critical): a bad item in a multi-match list must fail the WHOLE
-    // list closed -- the good item must NOT render as a normal conflict
-    // entry with the bad one silently dropped (a partial list looks
-    // authoritative and is not).
-    name: '10. [C-1] one valid + one invalid item -> nothing rendered as a normal conflict',
-    drive: async (ctx, document) => {
-      vm.runInContext("taRepo = 'widget'", ctx);
-      document.getElementById('ta-slug').value = 'add-x';
-      const bad = {...GOOD_REF, number: 13, url: undefined};
-      ctx.fetch = () => respond(200, {ok: true, matches: [GOOD_REF, bad], malformed: []});
-      await vm.runInContext('taCheckSlug()', ctx);
+    name: '15. [URL] a javascript: URL in the create response is not rendered',
+    async run(env) {
+      await openPanel(env);
+      await freeSlugThen(env, e => create(e, 200, {
+        ok: true, created: true, issue: {...GOOD_REF, url: 'javascript:alert(1)'},
+      }));
+      return {
+        'result': env.text('ta-result'),
+        'rendered links': env.links('ta-result'),
+        'raw innerHTML holds the scheme':
+          env.el('ta-result').innerHTML.includes('javascript:'),
+      };
     },
-    check: document => ({
-      'ta-slug-state.textContent': document.getElementById('ta-slug-state').textContent,
-      'ta-create.disabled': document.getElementById('ta-create').disabled,
-      'ta-existing.hidden': document.getElementById('ta-existing').hidden,
-      'ta-existing.innerHTML (must be empty, not partial)':
-        document.getElementById('ta-existing').innerHTML,
-    }),
     expect: {
-      'ta-slug-state.textContent': 'cannot read the result',
-      'ta-create.disabled': true,
-      'ta-existing.hidden': true,
-      'ta-existing.innerHTML (must be empty, not partial)': '',
+      'result': 'created, but cannot read the result: url missing or wrong type',
+      'rendered links': '',
+      'raw innerHTML holds the scheme': false,
     },
   },
   {
-    // "every sink" #2 (multi-match render): C-1 + URL scheme gate combined.
-    name: '11. [C-1 + URL] multi-match with a javascript: URL -> cannot read the result',
-    drive: async (ctx, document) => {
-      vm.runInContext("taRepo = 'widget'", ctx);
-      document.getElementById('ta-slug').value = 'add-x';
-      const evil = {...GOOD_REF, number: 13, url: 'javascript:alert(1)'};
-      ctx.fetch = () => respond(200, {ok: true, matches: [GOOD_REF, evil], malformed: []});
-      await vm.runInContext('taCheckSlug()', ctx);
+    name: '16. a good create response renders the real issue link',
+    async run(env) {
+      await openPanel(env);
+      await freeSlugThen(env, e =>
+        create(e, 200, {ok: true, created: true, issue: GOOD_REF}));
+      return {
+        'result': env.text('ta-result'),
+        'rendered links': env.links('ta-result'),
+      };
     },
-    check: document => ({
-      'ta-slug-state.textContent': document.getElementById('ta-slug-state').textContent,
-      'ta-existing.innerHTML': document.getElementById('ta-existing').innerHTML,
-    }),
     expect: {
-      'ta-slug-state.textContent': 'cannot read the result',
-      // must never contain the raw scheme -- proves the list was NOT
-      // rendered at all, not just that esc() was applied to it
-      'ta-existing.innerHTML': '',
+      'result': 'created · #12',
+      'rendered links': 'https://github.com/acme/widget/issues/12 → #12',
     },
   },
   {
-    name: '12. created: null renders "state unknown" and offers only Re-check',
-    drive: async (ctx, document) => {
-      vm.runInContext("taRepo = 'widget'", ctx);
-      document.getElementById('ta-slug').value = 'add-x';
-      document.getElementById('ta-title').value = 'Add feature X';
-      document.getElementById('ta-prose').value = 'because Y, done when Z';
-      ctx.fetch = tokenAwareFetch(() => respond(200, {ok: true, created: null, error: 'no answer'}));
-      document.getElementById('ta-create').listeners.click();
-      await new Promise(r => setTimeout(r, 20));
+    name: '17. created: false → "already exists", and the screen re-checks '
+      + 'instead of offering another create',
+    async run(env) {
+      await openPanel(env);
+      await freeSlugThen(env, e => create(e, 200, {ok: true, created: false}));
+      return {
+        'result': env.text('ta-result'),
+        'slug state after the automatic re-check': env.text('ta-slug-state'),
+        'lookups issued': env.urls('/api/issue-lookup').length,
+      };
     },
-    check: document => ({
-      'ta-result.textContent': document.getElementById('ta-result').textContent,
-      'ta-recheck.hidden': document.getElementById('ta-recheck').hidden,
-      'ta-create.disabled': document.getElementById('ta-create').disabled,
-    }),
     expect: {
-      'ta-result.textContent': 'issue may have been created; state unknown: no answer',
-      'ta-recheck.hidden': false,
-      'ta-create.disabled': true,
+      'result': 'a request for this slug already exists',
+      'slug state after the automatic re-check': 'free',
+      'lookups issued': 2,
     },
   },
   {
-    name: '13. created: true, issue: null renders "reading it back failed"',
-    drive: async (ctx, document) => {
-      vm.runInContext("taRepo = 'widget'", ctx);
-      document.getElementById('ta-slug').value = 'add-x';
-      document.getElementById('ta-title').value = 'Add feature X';
-      document.getElementById('ta-prose').value = 'because Y, done when Z';
-      ctx.fetch = tokenAwareFetch(() => respond(200, {ok: true, created: true, issue: null}));
-      document.getElementById('ta-create').listeners.click();
-      await new Promise(r => setTimeout(r, 20));
+    name: '18. [entry point] taRepo is the card\'s data-dir basename, never '
+      + 'the display name',
+    project: MAESTRO,
+    async run(env) {
+      await openPanel(env);
+      const card = env.document.querySelector('#projects .card[data-name]');
+      return {
+        'card data-name (display)': card.dataset.name,
+        'card data-dir (on-disk clone dir)': card.dataset.dir,
+        'detail heading (display name)': env.text('detail-name'),
+        'ta-repo label': env.text('ta-repo'),
+        'taRepo': env.read('taRepo'),
+        'panel hidden': env.el('task-authoring').hidden,
+        'Create disabled': env.el('ta-create').disabled,
+      };
     },
-    check: document => ({
-      'ta-result.textContent': document.getElementById('ta-result').textContent,
-      'ta-recheck.hidden': document.getElementById('ta-recheck').hidden,
-    }),
     expect: {
-      'ta-result.textContent': 'issue created, but reading it back failed',
-      'ta-recheck.hidden': false,
+      'card data-name (display)': 'Maestro',
+      'card data-dir (on-disk clone dir)': 'maestro',
+      'detail heading (display name)': '— Maestro',
+      'ta-repo label': '— maestro',
+      'taRepo': 'maestro',
+      'panel hidden': false,
+      'Create disabled': true,
     },
   },
   {
-    name: '14. malformed issue in the CREATE response -> cannot read the result',
-    drive: async (ctx, document) => {
-      vm.runInContext("taRepo = 'widget'", ctx);
-      document.getElementById('ta-slug').value = 'add-x';
-      document.getElementById('ta-title').value = 'Add feature X';
-      document.getElementById('ta-prose').value = 'because Y, done when Z';
-      const badIssue = {
-        number: '12', title: 'add feature X', state: 'open',
-        url: 'https://github.com/acme/widget/issues/12', author: 'octocat',
-      }; // number is a string, labels missing
-      ctx.fetch = tokenAwareFetch(() => respond(200, {ok: true, created: true, issue: badIssue}));
-      document.getElementById('ta-create').listeners.click();
-      await new Promise(r => setTimeout(r, 20));
+    name: '19. [entry point] the lookup query carries the data-dir, not the '
+      + 'display name',
+    project: MAESTRO,
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, 'add-x', 200, {ok: true, matches: [], malformed: []});
+      return {'issue-lookup URL': env.urls('/api/issue-lookup')[0]};
     },
-    check: document => ({'ta-result.textContent': document.getElementById('ta-result').textContent}),
+    expect: {'issue-lookup URL': '/api/issue-lookup?dir=maestro&slug=add-x'},
+  },
+  {
+    name: '20. [entry point] the create POST carries the data-dir too',
+    project: MAESTRO,
+    async run(env) {
+      await openPanel(env);
+      await freeSlugThen(env, e =>
+        create(e, 200, {ok: true, created: true, issue: GOOD_REF}));
+      const post = env.requests.find(
+        r => r.url.startsWith('/api/actions/request-task'));
+      return {'POST body dir': JSON.parse(post.init.body).dir};
+    },
+    expect: {'POST body dir': 'maestro'},
+  },
+  {
+    name: '21. a 5xx create → state unknown; Create must NOT be re-enabled',
+    async run(env) {
+      await openPanel(env);
+      await freeSlugThen(env, e => create(e, 500, {detail: 'internal error'}));
+      return {
+        'result': env.text('ta-result'),
+        'Re-check hidden': env.el('ta-recheck').hidden,
+        'Create disabled': env.el('ta-create').disabled,
+      };
+    },
     expect: {
-      'ta-result.textContent':
-        'created, but cannot read the result: number missing or wrong type; ' +
-        'labels missing or wrong type',
+      'result': 'issue may have been created; state unknown: internal error',
+      'Re-check hidden': false,
+      'Create disabled': true,
     },
   },
   {
-    // "every sink" #3 (create-result render).
-    name: '15. [URL] create response with a javascript: URL -> cannot read the result',
-    drive: async (ctx, document) => {
-      vm.runInContext("taRepo = 'widget'", ctx);
-      document.getElementById('ta-slug').value = 'add-x';
-      document.getElementById('ta-title').value = 'Add feature X';
-      document.getElementById('ta-prose').value = 'because Y, done when Z';
-      const evilIssue = {...GOOD_REF, url: 'javascript:alert(1)'};
-      ctx.fetch = tokenAwareFetch(() => respond(200, {ok: true, created: true, issue: evilIssue}));
-      document.getElementById('ta-create').listeners.click();
-      await new Promise(r => setTimeout(r, 20));
+    name: '22. a 4xx create is a refusal → Create IS re-enabled, no Re-check',
+    async run(env) {
+      await openPanel(env);
+      await freeSlugThen(env, e => create(e, 422, {detail: 'bad dir'}));
+      return {
+        'result': env.text('ta-result'),
+        'Re-check hidden': env.el('ta-recheck').hidden,
+        'Create disabled': env.el('ta-create').disabled,
+      };
     },
-    check: document => ({
-      'ta-result.textContent': document.getElementById('ta-result').textContent,
-      'ta-result.innerHTML (must not contain the scheme)':
-        document.getElementById('ta-result').innerHTML,
-    }),
     expect: {
-      'ta-result.textContent': 'created, but cannot read the result: url missing or wrong type',
-      'ta-result.innerHTML (must not contain the scheme)': '',
+      'result': 'request rejected: bad dir',
+      'Re-check hidden': true,
+      'Create disabled': false,
     },
   },
   {
-    // data-dir rule: the entry point must copy the on-disk clone dirname
-    // (mgEntryRepo, itself sourced from data-dir/mgDirBasename(p.path)),
-    // never a display name -- see mutation proof #3 in the harness runner.
-    //
-    // SCOPE LIMIT, stated plainly rather than left implicit: this proves
-    // the REAL ta-open-panel handler (sliced verbatim) copies whatever
-    // `mgEntryRepo` holds into `taRepo` byte-for-byte. `mgEntryRepo` itself
-    // is injected here via vm.runInContext, standing in for what detail()
-    // (elsewhere in index.html, NOT part of this slice -- it belongs to
-    // Task 2/3's merge-gate wiring, which has no harness at all) sets it
-    // to. This case does NOT prove detail() sources mgEntryRepo from
-    // data-dir rather than the display name -- only that ONE line copies
-    // it through unmodified. A mutation that swaps in a genuinely
-    // undefined "display name" identifier (as opposed to transforming the
-    // injected mgEntryRepo string, e.g. capitalizing it) throws a
-    // ReferenceError here rather than producing a value mismatch, BECAUSE
-    // no such identifier exists in this slice's scope -- that throw is
-    // still correctly caught and reported as a FAILED case (see the main
-    // loop's try/catch), it just isn't a clean "wrong value" diff.
-    name: '16. ta-open-panel copies mgEntryRepo (data-dir) into taRepo verbatim',
-    drive: async (ctx, document) => {
-      vm.runInContext("mgEntryRepo = 'maestro'", ctx);
-      document.getElementById('ta-open-panel').listeners.click();
+    name: '23. a 409 create → "another action is in flight", retry allowed',
+    async run(env) {
+      await openPanel(env);
+      await freeSlugThen(env, e => create(e, 409, {detail: 'locked'}));
+      return {
+        'result': env.text('ta-result'),
+        'Create disabled': env.el('ta-create').disabled,
+        'Re-check hidden': env.el('ta-recheck').hidden,
+      };
     },
-    check: document => ({
-      'ta-repo.textContent': document.getElementById('ta-repo').textContent,
-      'task-authoring.hidden': document.getElementById('task-authoring').hidden,
-    }),
     expect: {
-      'ta-repo.textContent': '— maestro',
-      'task-authoring.hidden': false,
+      'result': 'another action is in flight',
+      'Create disabled': false,
+      'Re-check hidden': true,
     },
   },
   {
-    // I-1 (Important): a 5xx may have reached the runner past the whitelist
-    // gate -- whether it landed is unknown, so Create must stay disabled
-    // and only Re-check is offered (contrast with case 18).
-    name: '17. [I-1] 500 response -> state unknown, Re-check only, Create NOT re-enabled',
-    drive: async (ctx, document) => {
-      vm.runInContext("taRepo = 'widget'", ctx);
-      document.getElementById('ta-slug').value = 'add-x';
-      document.getElementById('ta-title').value = 'Add feature X';
-      document.getElementById('ta-prose').value = 'because Y, done when Z';
-      ctx.fetch = tokenAwareFetch(() => respond(500, {detail: 'internal error'}));
-      document.getElementById('ta-create').listeners.click();
-      await new Promise(r => setTimeout(r, 20));
+    name: '24. a 200 with a `null` body must not strand the screen on "filing…"',
+    async run(env) {
+      await openPanel(env);
+      await freeSlugThen(env, e => create(e, 200, null));
+      return {
+        'result': env.text('ta-result'),
+        'Re-check hidden': env.el('ta-recheck').hidden,
+      };
     },
-    check: document => ({
-      'ta-result.textContent': document.getElementById('ta-result').textContent,
-      'ta-recheck.hidden': document.getElementById('ta-recheck').hidden,
-      'ta-create.disabled': document.getElementById('ta-create').disabled,
-    }),
     expect: {
-      'ta-result.textContent': 'issue may have been created; state unknown: internal error',
-      'ta-recheck.hidden': false,
-      'ta-create.disabled': true,
+      'result': 'issue may have been created; state unknown: unreadable response',
+      'Re-check hidden': false,
     },
   },
   {
-    // I-1 contrast case: a 422 is a REFUSAL (never reached the runner) --
-    // safe to re-enable Create, no Re-check needed.
-    name: '18. [I-1] 422 response -> request rejected, Create IS re-enabled',
-    drive: async (ctx, document) => {
-      vm.runInContext("taRepo = 'widget'", ctx);
-      document.getElementById('ta-slug').value = 'add-x';
-      document.getElementById('ta-title').value = 'Add feature X';
-      document.getElementById('ta-prose').value = 'because Y, done when Z';
-      ctx.fetch = tokenAwareFetch(() => respond(422, {detail: 'bad dir'}));
-      document.getElementById('ta-create').listeners.click();
-      await new Promise(r => setTimeout(r, 20));
+    name: '25. a transport failure on create → state unknown, Re-check offered',
+    async run(env) {
+      await openPanel(env);
+      await freeSlugThen(env, e => {
+        e.route(u => u.startsWith('/api/actions/request-task'),
+          () => { throw new Error('network down'); });
+        e.set('ta-title', 'Add feature X');
+        e.set('ta-prose', 'because Y, done when Z');
+        return e.fire('ta-create', 'click');
+      });
+      return {
+        'result': env.text('ta-result'),
+        'Re-check hidden': env.el('ta-recheck').hidden,
+        'Create disabled': env.el('ta-create').disabled,
+      };
     },
-    check: document => ({
-      'ta-result.textContent': document.getElementById('ta-result').textContent,
-      'ta-recheck.hidden': document.getElementById('ta-recheck').hidden,
-      'ta-create.disabled': document.getElementById('ta-create').disabled,
-    }),
     expect: {
-      'ta-result.textContent': 'request rejected: bad dir',
-      'ta-recheck.hidden': true,
-      'ta-create.disabled': false,
+      'result': 'issue may have been created; state unknown (Error: network down)',
+      'Re-check hidden': false,
+      'Create disabled': true,
     },
   },
   {
-    name: '19. [minor] 200 with `null` body must not strand the screen',
-    drive: async (ctx, document) => {
-      vm.runInContext("taRepo = 'widget'", ctx);
-      document.getElementById('ta-slug').value = 'add-x';
-      document.getElementById('ta-title').value = 'Add feature X';
-      document.getElementById('ta-prose').value = 'because Y, done when Z';
-      ctx.fetch = tokenAwareFetch(() => respond(200, null));
-      document.getElementById('ta-create').listeners.click();
-      await new Promise(r => setTimeout(r, 20));
+    name: '26. a lookup with no project selected refuses instead of asking '
+      + 'the server about a repo called "null"',
+    async run(env) {
+      // deliberately no openPanel(): nothing has set taRepo yet
+      env.set('ta-slug', 'add-x');
+      await env.fire('ta-slug', 'change');
+      return {
+        'slug state': env.text('ta-slug-state'),
+        'lookups issued': env.urls('/api/issue-lookup').length,
+        'taRepo': env.read('taRepo'),
+      };
     },
-    check: document => ({
-      'ta-result.textContent': document.getElementById('ta-result').textContent,
-      'ta-recheck.hidden': document.getElementById('ta-recheck').hidden,
-    }),
     expect: {
-      'ta-result.textContent': 'issue may have been created; state unknown: unreadable response',
-      'ta-recheck.hidden': false,
+      'slug state': 'no repo selected',
+      'lookups issued': 0,
+      'taRepo': null,
     },
   },
   {
-    name: '20. [minor] taRepo === null refuses instead of sending dir=null',
-    drive: async (ctx, document) => {
-      let fetchCalled = false;
-      ctx.fetch = () => { fetchCalled = true; return respond(200, {ok: true, matches: []}); };
-      document.getElementById('ta-slug').value = 'add-x';
-      await vm.runInContext('taCheckSlug()', ctx);
-      ctx._fetchCalledOnLookup = fetchCalled;
-
-      fetchCalled = false;
-      document.getElementById('ta-title').value = 'Add feature X';
-      document.getElementById('ta-prose').value = 'because Y, done when Z';
-      document.getElementById('ta-create').listeners.click();
-      await new Promise(r => setTimeout(r, 20));
-      ctx._fetchCalledOnCreate = fetchCalled;
+    name: '27. [defence in depth] Create with no repo refuses without POSTing '
+      + '— the button is disabled in the UI; this drives the guard behind it',
+    async run(env) {
+      await create(env, 200, {ok: true, created: true, issue: GOOD_REF},
+        {force: true});
+      return {
+        'result': env.text('ta-result'),
+        'POSTs issued': env.urls('/api/actions/request-task').length,
+      };
     },
-    check: (document, ctx) => ({
-      'ta-slug-state.textContent (lookup)': document.getElementById('ta-slug-state').textContent,
-      'fetch called on lookup': ctx._fetchCalledOnLookup,
-      'ta-result.textContent (create)': document.getElementById('ta-result').textContent,
-      'fetch called on create': ctx._fetchCalledOnCreate,
-    }),
+    expect: {'result': 'no repo selected', 'POSTs issued': 0},
+  },
+  {
+    name: '28. the entry-point button explains itself when no card is selected',
+    async run(env) {
+      await env.fire('ta-open-panel', 'click');
+      return {
+        'error span': env.text('ta-open-panel-error'),
+        'panel hidden': env.el('task-authoring').hidden,
+      };
+    },
     expect: {
-      'ta-slug-state.textContent (lookup)': 'no repo selected',
-      'fetch called on lookup': false,
-      'ta-result.textContent (create)': 'no repo selected',
-      'fetch called on create': false,
+      'error span':
+        'no repo directory known — select a detected project card first',
+      'panel hidden': true,
+    },
+  },
+  {
+    name: '29. selecting a project again clears the panel and drops taRepo',
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, 'add-x', 200,
+        {ok: true, matches: [GOOD_REF], malformed: []});
+      await selectProject(env);
+      return {
+        'panel hidden': env.el('task-authoring').hidden,
+        'taRepo': env.read('taRepo'),
+      };
+    },
+    expect: {'panel hidden': true, 'taRepo': null},
+  },
+  {
+    name: '30. a non-ok lookup response reports the status, never "free"',
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, 'add-x', 503, {ok: false, error: 'upstream'});
+      return {
+        'slug state': env.text('ta-slug-state'),
+        'Create disabled': env.el('ta-create').disabled,
+      };
+    },
+    expect: {'slug state': 'cannot check: 503', 'Create disabled': true},
+  },
+  {
+    name: '31. ok:false (unreadable inbox) reports the reason, never "free"',
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, 'add-x', 200,
+        {ok: false, error: 'inbox unreadable', matches: null, malformed: null});
+      return {
+        'slug state': env.text('ta-slug-state'),
+        'Create disabled': env.el('ta-create').disabled,
+      };
+    },
+    expect: {
+      'slug state': 'cannot check: inbox unreadable',
+      'Create disabled': true,
     },
   },
 ];
 
-// Regression guard (`--self-check-throw`), separate from the 20 app-
-// behaviour cases above: proves a case whose drive() THROWS is caught by
-// the main loop, reported as a FAILED case, and forces a non-zero exit --
-// rather than propagating out of the whole run uncaught. That is exactly
-// what used to happen: an uncaught exception inside a case's drive()
-// escaped the for-loop entirely, skipped the final summary/exit-code lines
-// below, and because this file installs an `unhandledRejection` listener
-// (to COUNT rejections), that same listener suppresses Node's own default
-// crash-on-unhandled-rejection behaviour -- so the process just drained
-// its event loop and exited 0, silently, mid-run. Invoked from
-// tests/test_task_authoring_js.py as its own separate subprocess check
-// (`node <this> <index.html> --self-check-throw`), asserting the exit code
-// is non-zero -- kept OUT of the normal 20-case run so a clean run stays
-// a clean 20/20, and kept as a REAL case run through the REAL per-case
-// loop machinery below, not a reimplementation of it elsewhere.
-if (process.argv.includes('--self-check-throw')) {
-  CASES.push({
-    name: '21. [self-check] a case whose drive() throws must be a FAILED ' +
-      'case, not a silently-aborted run',
-    drive: async () => {
-      throw new Error('deliberate self-check throw (--self-check-throw)');
+// ---- deliberate failures, for testing the runner itself --------------------
+//
+// Each of these is a REAL case run through the REAL loop below; only the
+// injected fault differs. tests/web/runner_selftest.js spawns one child
+// process per scenario so these failures never pollute the real run.
+
+const SELFTEST_CASES = {
+  clean: null,
+  reject: {
+    name: 'selftest: a detached rejected promise must redden the run',
+    async run(env) {
+      await openPanel(env);
+      Promise.reject(new Error('selftest: detached rejection'));
+      await drain();
+      return {'the case itself': 'passes'};
     },
-    check: () => ({}),
+    expect: {'the case itself': 'passes'},
+  },
+  throw: {
+    name: 'selftest: a throwing timer callback must redden the run',
+    async run(env) {
+      await openPanel(env);
+      setTimeout(() => { throw new Error('selftest: thrown callback'); }, 0);
+      await drain();
+      return {'the case itself': 'passes'};
+    },
+    expect: {'the case itself': 'passes'},
+  },
+  assert: {
+    name: 'selftest: an ordinary assertion mismatch must redden the run',
+    async run(env) {
+      await openPanel(env);
+      return {'ta-repo label': env.text('ta-repo')};
+    },
+    expect: {'ta-repo label': 'not what the page shows'},
+  },
+  casethrow: {
+    name: 'selftest: a case that throws is a FAILED case, not an absent one',
+    async run() { throw new Error('selftest: the case body threw'); },
     expect: {},
-  });
+  },
+  crash: {
+    name: 'selftest: a crash outside every case must redden the run',
+    async run() { return {}; },
+    expect: {},
+  },
+};
+
+// ---- runner ----------------------------------------------------------------
+
+async function runCase(c) {
+  currentCase = c.name;
+  let env;
+  try {
+    env = await boot(c.project || WIDGET);
+  } catch (err) {
+    caseFailures++;
+    console.log(`\n[FAIL] ${c.name}`);
+    console.log(`  the page would not load: ${(err && err.stack) || err}`);
+    return;
+  }
+  let got;
+  try {
+    got = await c.run(env);
+  } catch (err) {
+    caseFailures++;
+    console.log(`\n[FAIL] ${c.name}`);
+    console.log(`  the case threw: ${(err && err.stack) || err}`);
+    return;
+  }
+  const keys = Object.keys(c.expect);
+  const ok = keys.every(k => got[k] === c.expect[k]);
+  if (!ok) caseFailures++;
+  console.log(`\n[${ok ? 'PASS' : 'FAIL'}] ${c.name}`);
+  for (const k of keys) {
+    const mark = got[k] === c.expect[k] ? '=' : '!=';
+    console.log(
+      `  ${k}: ${JSON.stringify(got[k])} ${mark} ${JSON.stringify(c.expect[k])}`);
+  }
 }
 
-(async () => {
-  let unhandled = 0;
-  process.on('unhandledRejection', e => {
-    unhandled += 1;
-    console.log(`    !! UNHANDLED REJECTION: ${e && e.stack || e}`);
-  });
-
-  let failures = 0;
-  for (const c of CASES) {
-    const document = makeDom();
-    const ctx = {
-      document, console, setTimeout, URL,
-      fetch: () => Promise.reject(new Error('unset')),
-      // ensureActionToken() is a pre-existing helper "already in the file"
-      // (brief's Interfaces section) -- a dependency of the create handler,
-      // not part of the task-authoring block, so it's stubbed rather than
-      // sliced in.
-      ensureActionToken: async () => 'test-token',
-    };
-    vm.createContext(ctx);
-    vm.runInContext(`${helpers}\n${taBlock}`, ctx);
-
-    // Any exception thrown by drive() -- synchronous, or a rejected
-    // promise from an awaited call -- MUST be caught HERE, per case. Left
-    // unguarded, it propagates out of this for-loop and out of the whole
-    // top-level async IIFE, skipping every line below (including the exit
-    // code below) -- the exact defect this harness once had (case 21
-    // regression-guards it).
-    let threw = null;
-    try {
-      await c.drive(ctx, document);
-    } catch (err) {
-      threw = err;
-    }
-    if (threw !== null) {
-      failures += 1;
-      console.log(`\n[FAIL] ${c.name}`);
-      console.log(`  threw: ${(threw && threw.stack) || threw}`);
-      continue;
-    }
-
-    const got = c.check(document, ctx);
-    const exp = c.expect;
-    let ok = true;
-    for (const k of Object.keys(exp)) {
-      if (got[k] !== exp[k]) ok = false;
-    }
-    failures += ok ? 0 : 1;
-    console.log(`\n[${ok ? 'PASS' : 'FAIL'}] ${c.name}`);
-    for (const k of Object.keys(exp)) {
-      const mark = got[k] === exp[k] ? '=' : '!=';
-      console.log(`  ${k}: ${JSON.stringify(got[k])} ${mark} expected ${JSON.stringify(exp[k])}`);
-    }
+async function main() {
+  if (SELFTEST !== null && !(SELFTEST in SELFTEST_CASES)) {
+    throw new Error(`unknown --selftest scenario: ${SELFTEST}`);
   }
-  // Gives any truly DISCONNECTED promise rejection (e.g. an async click
-  // handler invoked fire-and-forget, never awaited by a case's own drive())
-  // a chance to surface via the unhandledRejection listener above before
-  // the final tally below reads `unhandled`.
-  await new Promise(r => setTimeout(r, 20));
+  const injected = SELFTEST ? SELFTEST_CASES[SELFTEST] : null;
+  const cases = injected ? [...CASES, injected] : CASES;
+  for (const c of cases) await runCase(c);
+  if (SELFTEST === 'crash') {
+    throw new Error('selftest: main() itself failed after the cases ran');
+  }
+  return cases.length;
+}
 
-  const allPassed = failures === 0 && unhandled === 0;
-  console.log(`\nunhandled rejections: ${unhandled}`);
-  // Never print "N/N cases passed" next to a nonzero rejection count --
-  // that reads as clean when it is not. State the failure explicitly.
-  console.log(allPassed
-    ? `\n${CASES.length}/${CASES.length} cases passed`
-    : `\nFAILED: ${CASES.length - failures}/${CASES.length} cases passed` +
-      (unhandled
-        ? `, plus ${unhandled} unhandled rejection(s) -- treating the run as FAILED`
-        : ''));
-  process.exit(allPassed ? 0 : 1);
-})();
+main().then(async total => {
+  currentCase = '(drain)';
+  // Let anything still in flight surface BEFORE the summary, so the summary
+  // cannot describe a run that has not finished failing yet.
+  await drain(10);
+  console.log(
+    `\ncases: ${total} · failed cases: ${caseFailures} · async errors `
+    + `(unhandled rejections / uncaught exceptions): ${asyncErrors}`);
+  if (failed() === 0) {
+    summaryClaimedClean = true;
+    console.log(`\n${total}/${total} cases passed, no async errors`);
+  } else {
+    console.log(
+      `\nFAILED: ${total - caseFailures}/${total} cases passed, ${asyncErrors} `
+      + 'async error(s) — see the [FAIL] blocks and any '
+      + 'UNHANDLED/UNCAUGHT reports above');
+  }
+  process.exitCode = failed() === 0 ? 0 : 1;
+}).catch(err => {
+  console.error('\nHARNESS CRASHED:', (err && err.stack) || err);
+  process.exitCode = 1;
+});
