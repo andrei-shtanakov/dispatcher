@@ -1431,3 +1431,17 @@ async def test_merge_gate_markup_is_served(tmp_path: Path) -> None:
     assert 'id="merge-gate"' in body
     assert "openMergeGate" in body
     assert "/api/actions/merge-and-sync" in body
+
+
+async def test_task_authoring_markup_is_served(tmp_path: Path) -> None:
+    """Same convention as test_merge_gate_markup_is_served above: the
+    module-level `pytestmark = pytest.mark.anyio` already covers this test,
+    so no per-test decorator is needed (the brief's sample used both a
+    decorator and a sync `client` fixture that doesn't exist here)."""
+    async with _client(tmp_path) as client:
+        resp = await client.get("/")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'id="task-authoring"' in body
+    assert "taCheckSlug" in body
+    assert "/api/actions/request-task" in body

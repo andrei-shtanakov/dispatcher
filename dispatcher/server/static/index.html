@@ -128,6 +128,9 @@
     <input id="mg-pr-input" type="number" min="1" inputmode="numeric"></label>
     <button id="mg-open-gate" type="button">Open merge gate</button>
     <span id="mg-open-gate-error" class="fresh"></span></div>
+  <div id="task-authoring-open">
+    <button id="ta-open-panel" type="button">Create task request</button>
+    <span id="ta-open-panel-error" class="fresh"></span></div>
   <div id="spec-runner-config" hidden>
     <h3>Spec-runner config</h3>
     <form id="spec-runner-config-form"></form>
@@ -161,6 +164,20 @@
   <button id="mg-merge" type="button" disabled>Merge</button>
   <button id="mg-retry-sync" type="button" hidden>Retry local sync</button>
   <span id="mg-result"></span>
+</section>
+
+<section id="task-authoring" hidden>
+  <h2>Task request <span id="ta-repo" class="sub"></span></h2>
+  <label>slug <input id="ta-slug" type="text" spellcheck="false"></label>
+  <span id="ta-slug-state" class="fresh"></span>
+  <label>title <input id="ta-title" type="text"></label>
+  <textarea id="ta-prose" rows="8" spellcheck="false"
+    placeholder="what is needed, and by what observable condition it is done"></textarea>
+  <div id="ta-existing" class="fresh" hidden></div>
+  <button id="ta-create" type="button" disabled>Create request</button>
+  <button id="ta-open" type="button" hidden>Open existing issue</button>
+  <button id="ta-recheck" type="button" hidden>Re-check</button>
+  <span id="ta-result"></span>
 </section>
 
 <section><details id="errors-box">
@@ -581,6 +598,10 @@ async function detail(name, dirName) {
   // I-5: a stale gate for the PREVIOUS project must not sit under this
   // project's panel; openMergeGate() clears its own fields on next open.
   document.getElementById("merge-gate").hidden = true;
+  // Same I-5 reasoning for the task-authoring panel: a stale form for the
+  // previous project must not sit under this project's detail panel.
+  document.getElementById("task-authoring").hidden = true;
+  taRepo = null;
   document.getElementById("detail-name").textContent = "— " + name;
   document.getElementById("detail").textContent = "loading…";
   try {
@@ -1269,6 +1290,181 @@ document.getElementById('mg-retry-sync').addEventListener('click', async () => {
   } catch (err) {
     result.textContent = `local sync request failed: ${err}`;
   }
+});
+
+let taRepo = null;
+
+// Mirrors ISSUE_REF_REQUIRED in tests/test_api.py — the two must move
+// together. The payload is an opaque passthrough from another repo's
+// binary, so presence AND type are checked before anything is rendered.
+const TA_REF_REQUIRED = [
+  ['number', v => Number.isInteger(v)],
+  ['title',  v => typeof v === 'string'],
+  ['state',  v => typeof v === 'string'],
+  ['url',    v => typeof v === 'string' && v.startsWith('https://')],
+  ['author', v => typeof v === 'string'],
+  ['labels', v => Array.isArray(v)],
+];
+
+function taRefProblems(ref) {
+  if (ref === null || typeof ref !== 'object') return ['issue is not an object'];
+  return TA_REF_REQUIRED.filter(([k, ok]) => !ok(ref[k]))
+    .map(([k]) => `${k} missing or wrong type`);
+}
+
+function taShow(id, on) { document.getElementById(id).hidden = !on; }
+
+async function taCheckSlug() {
+  const slug = document.getElementById('ta-slug').value.trim();
+  const state = document.getElementById('ta-slug-state');
+  taShow('ta-existing', false); taShow('ta-open', false);
+  document.getElementById('ta-create').disabled = true;
+  if (!slug) { state.textContent = ''; return; }
+  let outcome;
+  try {
+    const res = await fetch(
+      `/api/issue-lookup?dir=${encodeURIComponent(taRepo)}` +
+      `&slug=${encodeURIComponent(slug)}`);
+    outcome = await res.json();
+    if (!res.ok) { state.textContent = `cannot check: ${res.status}`; return; }
+  } catch (err) {
+    state.textContent = `cannot check: ${err}`;
+    return;
+  }
+  if (!outcome.ok) {
+    // malformed candidates land here — a human has to look, and creating
+    // on top of an unreadable inbox would compound it
+    state.textContent = `cannot check: ${outcome.error || 'unreadable'}`;
+    return;
+  }
+  const matches = outcome.matches || [];
+  if (matches.length === 0) {
+    state.textContent = 'free';
+    document.getElementById('ta-create').disabled = false;
+    return;
+  }
+  if (matches.length > 1) {
+    state.textContent = `${matches.length} issues claim this slug — conflict`;
+    document.getElementById('ta-existing').innerHTML = matches.map(
+      m => `<a href="${esc(m.url)}" target="_blank">#${esc(m.number)}</a>`
+    ).join(' · ');
+    taShow('ta-existing', true);
+    return;
+  }
+  const ref = matches[0];
+  const problems = taRefProblems(ref);
+  if (problems.length) { state.textContent = `cannot read: ${problems.join('; ')}`; return; }
+  state.textContent = 'already requested';
+  document.getElementById('ta-existing').innerHTML =
+    `#${esc(ref.number)} · ${esc(ref.state)} · ` +
+    `<a href="${esc(ref.url)}" target="_blank">${esc(ref.url)}</a>`;
+  taShow('ta-existing', true);
+  const open = document.getElementById('ta-open');
+  open.hidden = false;
+  open.onclick = () => window.open(ref.url, '_blank');
+}
+
+document.getElementById('ta-slug').addEventListener('change', () => {
+  taCheckSlug().catch(err => {
+    document.getElementById('ta-slug-state').textContent = `cannot check: ${err}`;
+  });
+});
+
+document.getElementById('ta-create').addEventListener('click', async () => {
+  const btn = document.getElementById('ta-create');
+  const result = document.getElementById('ta-result');
+  btn.disabled = true;
+  result.textContent = 'filing…';
+  taShow('ta-recheck', false);
+  let outcome, res;
+  try {
+    const token = await ensureActionToken();
+    res = await fetch('/api/actions/request-task', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-Action-Token': token},
+      body: JSON.stringify({
+        dir: taRepo,
+        slug: document.getElementById('ta-slug').value.trim(),
+        title: document.getElementById('ta-title').value.trim(),
+        prose: document.getElementById('ta-prose').value,
+      }),
+    });
+    outcome = await res.json();
+  } catch (err) {
+    // the request itself broke: whether it landed is unknown
+    result.textContent = `issue may have been created; state unknown (${err})`;
+    taShow('ta-recheck', true);
+    return;
+  }
+  if (!res.ok && res.status !== 200) {
+    if (res.status === 409) { result.textContent = 'another action is in flight'; }
+    else { result.textContent = `request rejected: ${outcome.detail || res.status}`; }
+    btn.disabled = false;
+    return;
+  }
+  // `!created` would fold null into false — check unknown FIRST
+  if (outcome.created === null || outcome.created === undefined) {
+    result.textContent =
+      `issue may have been created; state unknown: ${outcome.error || 'no answer'}`;
+    taShow('ta-recheck', true);
+    return;
+  }
+  if (outcome.created === false) {
+    result.textContent = 'a request for this slug already exists';
+    await taCheckSlug();
+    return;
+  }
+  if (!outcome.issue) {
+    result.textContent = 'issue created, but reading it back failed';
+    taShow('ta-recheck', true);
+    return;
+  }
+  const problems = taRefProblems(outcome.issue);
+  if (problems.length) {
+    result.textContent = `created, but cannot read the result: ${problems.join('; ')}`;
+    taShow('ta-recheck', true);
+    return;
+  }
+  result.innerHTML = `created · <a href="${esc(outcome.issue.url)}" ` +
+    `target="_blank">#${esc(outcome.issue.number)}</a>`;
+});
+
+// Re-check never re-creates: after an unknown outcome, creating again is
+// how a duplicate is born.
+document.getElementById('ta-recheck').addEventListener('click', () => {
+  taCheckSlug().catch(err => {
+    document.getElementById('ta-result').textContent = `re-check failed: ${err}`;
+  });
+});
+
+document.getElementById('ta-open-panel').addEventListener('click', () => {
+  // No project-card PR listing exists yet to make individual PRs clickable
+  // (same absence noted by mg-open-gate above); this button is the minimal
+  // wiring into the already-selected project.
+  const errorSpan = document.getElementById('ta-open-panel-error');
+  if (!mgEntryRepo) {
+    // M-4 parity: a silent no-op looks like a dead button — say why.
+    errorSpan.textContent =
+      'no repo directory known — select a detected project card first';
+    return;
+  }
+  errorSpan.textContent = '';
+  // I-6 parity: taRepo is the on-disk clone dirname (mgEntryRepo, itself
+  // sourced from data-dir), NOT the project's display name.
+  taRepo = mgEntryRepo;
+  document.getElementById('ta-repo').textContent = '— ' + taRepo;
+  document.getElementById('ta-slug').value = '';
+  document.getElementById('ta-slug-state').textContent = '';
+  document.getElementById('ta-title').value = '';
+  document.getElementById('ta-prose').value = '';
+  document.getElementById('ta-result').textContent = '';
+  taShow('ta-existing', false);
+  taShow('ta-open', false);
+  taShow('ta-recheck', false);
+  document.getElementById('ta-create').disabled = true;
+  const section = document.getElementById('task-authoring');
+  section.hidden = false;
+  section.scrollIntoView({behavior: 'smooth', block: 'nearest'});
 });
 
 refresh();
