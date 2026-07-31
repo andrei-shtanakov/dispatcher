@@ -1117,6 +1117,7 @@ def test_invoke_catches_a_nul_even_with_layer_one_disabled(
     # pre-fork step observable instead of decorative.
     assert "refused before launch: argv[" in (outcome.error or "")
     assert "embedded null byte" in (outcome.error or "")
+    assert outcome.phase == "pre_launch"
     assert "action=issue-lookup" in caplog.text
 
 
@@ -1138,8 +1139,10 @@ def test_request_task_layer_two_classifies_the_refusal_as_not_created(
         )
     assert outcome.ok is False
     assert outcome.created is False
+    assert outcome.phase == "pre_launch"
     assert "refused before launch: argv[" in (outcome.error or "")
     assert "created=False" in caplog.text
+    assert "phase=pre_launch" in caplog.text
     # and the lock came back: the refusal must not wedge the repo
     again = runner.request_task(
         "alpha", slug="ok", sender="dispatcher", title="t", prose="p"
@@ -1191,6 +1194,7 @@ def test_invoke_survives_an_oversized_argument(tmp_path: Path, caplog) -> None:
     with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
         outcome = runner.merge_and_sync("alpha", 1, "d" * 2_000_000)
     assert outcome.ok is False
+    assert outcome.phase == "pre_launch"  # exec failed: nothing ran
     assert "Argument list too long" in (outcome.error or "")
     # merged stays UNKNOWN: exec never happened, but this path must not claim
     # a non-merge it was never told about
@@ -1242,9 +1246,13 @@ def test_a_post_run_decode_failure_is_not_labelled_a_pre_launch_refusal(
     with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
         outcome = runner.issue_lookup("alpha", "wanted")
     assert outcome.ok is False
-    assert "could not be decoded" in (outcome.error or "")
+    assert outcome.error == (
+        "process completed, but its response was unreadable; mutation outcome unknown"
+    )
+    assert outcome.phase == "launched_unreadable"
     assert "refused before launch" not in (outcome.error or "")
     assert "action=issue-lookup" in caplog.text
+    assert "phase=launched_unreadable" in caplog.text
 
 
 def test_request_task_leaves_created_unknown_when_output_cannot_be_decoded(
@@ -1265,9 +1273,13 @@ def test_request_task_leaves_created_unknown_when_output_cannot_be_decoded(
         )
     assert outcome.ok is False
     assert outcome.created is None
-    assert "could not be decoded" in (outcome.error or "")
+    assert outcome.phase == "launched_unreadable"
+    assert outcome.error == (
+        "process completed, but its response was unreadable; mutation outcome unknown"
+    )
     assert "refused before launch" not in (outcome.error or "")
     assert "action=request-task" in caplog.text
+    assert "phase=launched_unreadable" in caplog.text
     # `created=` is omitted entirely when unknown — never printed as False
     assert "created=False" not in caplog.text
 

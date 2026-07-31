@@ -63,6 +63,13 @@ class El {
   }
 
   get id() { return this.attributes.id || ''; }
+  // Reflected IDL attributes: `link.href = x` must be visible to
+  // getAttribute('href'), because that is how the browser behaves and how a
+  // test can tell a safely-built element from a string-interpolated one.
+  get href() { return this.attributes.href || ''; }
+  set href(v) { this.setAttribute('href', v); }
+  get target() { return this.attributes.target || ''; }
+  set target(v) { this.setAttribute('target', v); }
   get parentElement() { return this.parentNode; }
   get children() { return this.childNodes.filter(n => n.nodeType === 1); }
 
@@ -127,9 +134,22 @@ class El {
   }
 
   appendChild(node) {
+    // any structural edit invalidates the raw string the innerHTML getter
+    // would otherwise keep returning
+    this._rawHTML = null;
     node.parentNode = this;
     this.childNodes.push(node);
     return node;
+  }
+  append(...nodes) {
+    for (const n of nodes) {
+      this.appendChild(typeof n === 'string' ? new TextNode(n) : n);
+    }
+  }
+  replaceChildren(...nodes) {
+    this._rawHTML = null;
+    this.childNodes = [];
+    this.append(...nodes);
   }
 
   addEventListener(type, fn) {
@@ -341,7 +361,9 @@ class Document {
  * await async handlers instead of racing them.
  */
 function dispatch(el, type, {force = false} = {}) {
-  if (!force && type === 'click' && el.disabled) return [];
+  // A disabled control produces no user events at all — not clicks, and not
+  // the `change` a locked field could otherwise appear to fire.
+  if (!force && el.disabled) return [];
   const event = {
     type, target: el, currentTarget: null,
     preventDefault() {}, stopPropagation() {},

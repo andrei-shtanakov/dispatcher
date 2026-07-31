@@ -51,6 +51,11 @@ _SAFE_DIR_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")
 # but a newline or an ESC in a slug or an issue title is equally meaningless
 # and equally capable of confusing whatever reads the audit log afterwards.
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+# The three phases an outcome can be decided in. They are a property of WHERE
+# in _invoke the decision was made, not of which exception was raised.
+PHASE_PRE_LAUNCH = "pre_launch"
+PHASE_LAUNCHED_UNREADABLE = "launched_unreadable"
+PHASE_READABLE = "readable_result"
 
 Action = Literal["pull", "open-pr", "post-merge-sync"]
 _WHITELIST = frozenset({"pull", "open-pr", "post-merge-sync"})
@@ -80,6 +85,11 @@ class ActionOutcome(BaseModel):
     malformed: list[dict[str, Any]] | None = None
     created: bool | None = None
     issue: dict[str, Any] | None = None
+    # Which side of the fork this outcome was decided on. Not cosmetic: it is
+    # what stops "nothing ran" and "it ran and we could not read the answer"
+    # from being told apart by Python's exception hierarchy, which is the
+    # inference that produced the created=False-on-a-completed-run bug.
+    phase: str | None = None  # pre_launch | launched_unreadable | readable_result
 
 
 class ActionBusyError(Exception):
@@ -207,6 +217,11 @@ class ActionRunner:
             # case (slug already existed) — precisely the one D1a-4 needs
             # visible in the audit line, and truthiness would drop it
             merge_fields += f" created={outcome.created}"
+        if outcome.phase is not None:
+            # Which side of the fork decided this. `launched_unreadable` beside
+            # an absent `created=` is the shape a reader must be able to spot:
+            # the verb RAN and we cannot say what it did.
+            merge_fields += f" phase={outcome.phase}"
         _audit.info(
             "action=%s repo=%s ok=%s%s detail=%s error=%s",
             action,
@@ -233,74 +248,77 @@ class ActionRunner:
         child that ran and then failed to be read leaves `created` unknown.
         """
         argv = [*self._command, action, str(target), *extra]
-        # NEW-1: the two failures are told apart STRUCTURALLY — by which side
-        # of the fork they happen on — not by exception type. Catching
-        # `ValueError` around `subprocess.run` looked like it meant "argv was
-        # refused", but `UnicodeDecodeError` IS a `ValueError` and is raised
-        # by `text=True` AFTER the child has run, while decoding its output.
-        # The one catch therefore labelled a completed run "refused before
-        # launch" and stamped `created=False` on it — asserting no issue was
-        # filed when `issue-create` may well have filed one and only its
-        # output failed to decode. The screen then took the ordinary-refusal
-        # arm and re-enabled Create: the duplicate this feature exists to
-        # prevent. Only code that knows which side of the fork it is on can
-        # classify these, so the pre-fork check and the decode are now two
-        # separate, explicitly-placed steps.
+
+        def refused(reason: str) -> ActionOutcome:
+            """PHASE 1 — nothing was executed. Safe to say nothing changed."""
+            return ActionOutcome(
+                action=action,
+                dir=target.name,
+                ok=False,
+                created=refusal_created,
+                phase=PHASE_PRE_LAUNCH,
+                error=f"refused before launch: {reason}",
+            )
+
+        def unreadable() -> ActionOutcome:
+            """PHASE 2 — the child RAN; its answer could not be read.
+
+            `created` is left None on purpose and `refusal_created` is NOT
+            consulted: for `issue-create` the issue may exist. Claiming
+            `created=False` here sends the screen down the ordinary-refusal
+            arm, which re-enables Create — the duplicate this feature exists
+            to prevent.
+            """
+            return ActionOutcome(
+                action=action,
+                dir=target.name,
+                ok=False,
+                created=None,
+                phase=PHASE_LAUNCHED_UNREADABLE,
+                error=(
+                    "process completed, but its response was unreadable; "
+                    "mutation outcome unknown"
+                ),
+            )
+
+        # PHASE 1. Explicit, before the call: a hit here is unambiguously
+        # pre-fork because no process has been created yet. Inferring the same
+        # thing from the exception subprocess happens to raise is what broke.
         refusal = _argv_refusal(argv)
         if refusal is not None:
-            return ActionOutcome(
-                action=action,
-                dir=target.name,
-                ok=False,
-                created=refusal_created,
-                error=f"refused before launch: {refusal}",
-            )
+            return refused(refusal)
         try:
-            # NOT text=True: decoding must not happen inside this call, or a
-            # post-run decode failure re-enters the pre-fork branch below.
+            # Bytes, NOT text=True. Decoding inside this call would put a
+            # post-execution failure inside a pre-launch except clause, and no
+            # ordering of handlers can undo that: the phase boundary has to be
+            # a boundary in the CODE.
             proc = subprocess.run(argv, capture_output=True, timeout=_ACTION_TIMEOUT)
+        except UnicodeDecodeError:
+            # ORDER IS LOAD-BEARING: UnicodeDecodeError IS a ValueError, so it
+            # must precede the clause below or it would be caught as a
+            # pre-launch refusal. Unreachable while output is captured as
+            # bytes — kept so that re-adding text=True degrades to the correct
+            # phase instead of silently to the wrong one.
+            return unreadable()
         except ValueError as err:
-            # Belt and braces for whatever else subprocess may refuse to pass
-            # to exec in a future version: with decoding moved out, every
-            # ValueError reaching here is raised while validating argv, i.e.
-            # before process creation — a pre-mutation refusal.
-            return ActionOutcome(
-                action=action,
-                dir=target.name,
-                ok=False,
-                created=refusal_created,
-                error=f"refused before launch: {err}",
-            )
-        except (OSError, subprocess.TimeoutExpired) as err:
-            # N-3: widened from `FileNotFoundError` (an OSError subclass, so
-            # this is strictly wider, not a replacement). Any other OSError on
-            # exec — E2BIG "Argument list too long" from an oversized
-            # client-supplied argument such as `--if-head`, EACCES, ENOMEM —
-            # raised straight out of here: a 500 with ZERO audit lines, the
-            # same guarantee break as F-1. The producer side of this contract
-            # already widened its equivalent catch to `(OSError,
-            # TimeoutExpired)`; we fixed one end and left the other.
-            return ActionOutcome(
-                action=action, dir=target.name, ok=False, error=str(err)
-            )
-        # --- everything below here happens AFTER the child ran to completion.
+            return refused(str(err))
+        except subprocess.TimeoutExpired:
+            # The child started and was killed: it may have done its work.
+            return unreadable()
+        except OSError as err:
+            # N-3: exec itself failed (E2BIG from an oversized client-supplied
+            # `--if-head`, EACCES, ENOMEM). Nothing ran. Previously only
+            # FileNotFoundError was caught and the rest raised out — a 500
+            # with ZERO audit lines, the same guarantee break as F-1.
+            return refused(str(err))
+        # PHASE 2 boundary: everything below happens with a completed child.
         try:
             stdout = proc.stdout.decode("utf-8")
             stderr = proc.stderr.decode("utf-8")
-        except UnicodeDecodeError as err:
-            # The verb RAN. For `issue-create` that means an issue may exist
-            # and we simply cannot read the answer — `created` stays None
-            # (unknown), never False, and the screen keeps Create disabled and
-            # offers Re-check.
-            return ActionOutcome(
-                action=action,
-                dir=target.name,
-                ok=False,
-                error=(
-                    "github-checker ran but its output could not be decoded "
-                    f"as UTF-8: {err}"
-                ),
-            )
+        except UnicodeDecodeError:
+            return unreadable()
+        # PHASE 3 — we hold a readable answer; every outcome below is a
+        # statement about what github-checker actually said.
         try:
             data = json.loads(stdout)
         except json.JSONDecodeError:
@@ -308,6 +326,7 @@ class ActionRunner:
                 action=action,
                 dir=target.name,
                 ok=False,
+                phase=PHASE_READABLE,
                 error=stderr.strip() or "github-checker returned no JSON",
             )
         if not isinstance(data, dict):
@@ -315,6 +334,7 @@ class ActionRunner:
                 action=action,
                 dir=target.name,
                 ok=False,
+                phase=PHASE_READABLE,
                 error="github-checker returned JSON that is not an object",
             )
         local = data.get("local")
@@ -338,6 +358,7 @@ class ActionRunner:
                 malformed=data.get("malformed"),
                 created=data.get("created"),
                 issue=data.get("issue"),
+                phase=PHASE_READABLE,
             )
         except ValidationError as err:
             # the pr_detail PAYLOAD is validated by the console; the envelope
@@ -348,6 +369,7 @@ class ActionRunner:
                 action=action,
                 dir=target.name,
                 ok=False,
+                phase=PHASE_READABLE,
                 error=(
                     "github-checker returned an unparseable envelope: "
                     # one audit line per attempt: pydantic's report is
@@ -417,7 +439,13 @@ class ActionRunner:
             )
             raise
         outcome = self._invoke("pr-detail", target, str(pr))
-        _audit.info("action=pr-detail repo=%s pr=%s ok=%s", repo_dir, pr, outcome.ok)
+        _audit.info(
+            "action=pr-detail repo=%s pr=%s ok=%s phase=%s",
+            repo_dir,
+            pr,
+            outcome.ok,
+            outcome.phase,
+        )
         return outcome
 
     def issue_lookup(self, repo_dir: str, slug: str) -> ActionOutcome:
@@ -448,10 +476,11 @@ class ActionRunner:
             # %r on the slug here too: the success path logs whatever the
             # client sent, and a slug that merely LOOKS ordinary can still
             # carry characters that break a log line
-            "action=issue-lookup repo=%s slug=%r ok=%s matches=%s",
+            "action=issue-lookup repo=%s slug=%r ok=%s phase=%s matches=%s",
             repo_dir,
             slug,
             outcome.ok,
+            outcome.phase,
             len(matches) if isinstance(matches, list) else "unknown",
         )
         return outcome
@@ -524,6 +553,7 @@ class ActionRunner:
                     dir=target.name,
                     ok=False,
                     created=False,
+                    phase=PHASE_PRE_LAUNCH,
                     error=f"could not write the request body: {err}",
                 )
             finally:

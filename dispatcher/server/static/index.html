@@ -1350,6 +1350,29 @@ let taGen = 0;
 // mutation is already on the wire and this screen cannot describe its result
 // yet.
 let taCreating = false;
+// The slug the in-flight POST was submitted for. A POST answer is NEVER
+// discarded as stale — it may have created an issue — so when the screen has
+// moved on we still have to name what was filed.
+let taSubmittedSlug = null;
+
+// While a mutation is on the wire the form is not a form: every field that
+// feeds it is locked, so the screen cannot be describing one slug while a
+// POST for another is in flight.
+function taLockFields(locked) {
+  for (const id of ['ta-slug', 'ta-title', 'ta-prose']) {
+    document.getElementById(id).disabled = locked;
+  }
+}
+
+// A lookup answer may be applied only if BOTH still hold: the generation is
+// current (nothing newer started) and the slug it was issued for is still the
+// slug on screen. The generation alone is not enough — the slug is the
+// subject of the answer, and applying an answer about a different subject is
+// how "free" ends up next to a taken slug.
+function taStillCurrent(gen, issuedFor) {
+  return gen === taGen
+    && issuedFor === document.getElementById('ta-slug').value.trim();
+}
 
 // Mirrors ISSUE_REF_REQUIRED in tests/test_api.py — the two must move
 // together. The payload is an opaque passthrough from another repo's
@@ -1372,6 +1395,30 @@ function taRefProblems(ref) {
 }
 
 function taShow(id, on) { document.getElementById(id).hidden = !on; }
+
+// Links are BUILT, never interpolated. esc() was the only thing standing
+// between a validated-but-hostile URL and attribute breakout: isHttpsUrl only
+// parses for a scheme, and `new URL()` reports 'https:' for
+// `https://gh.com/a"><img src=x onerror=alert(1)>` — quote intact — after
+// which the sink rendered the ORIGINAL string. One deleted esc() and that is
+// a live injection. Setting .href on a real element cannot break out of an
+// attribute no matter what the string contains, so the class of bug is gone
+// rather than guarded: there is no markup for a payload to escape from.
+// Returns null if the URL is not a parseable https: URL — callers fail closed.
+function taLink(rawUrl, label) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'https:') return null;
+  const link = document.createElement('a');
+  link.href = parsed.href;          // the canonical, percent-encoded form
+  link.target = '_blank';
+  link.textContent = label;         // the user string appears only as text
+  return link;
+}
 
 // F-2: a lookup that DEFINITELY read the inbox supersedes any earlier
 // "issue may have been created; state unknown" warning — leaving it up
@@ -1401,6 +1448,7 @@ async function taCheckSlug(inherited) {
     return;
   }
   const gen = inherited === undefined ? ++taGen : inherited;
+  const issuedFor = slug;  // the subject this answer will be about
   // hidden is not enough: a hidden #ta-existing keeps the PREVIOUS slug's
   // issue links in the DOM, and #ta-open keeps an onclick closed over the
   // previous ref's URL — anything that re-shows either without rewriting it
@@ -1423,10 +1471,11 @@ async function taCheckSlug(inherited) {
       `/api/issue-lookup?dir=${encodeURIComponent(taRepo)}` +
       `&slug=${encodeURIComponent(slug)}`);
     outcome = await res.json();
-    if (gen !== taGen) return;  // superseded while in flight
+    // re-check the preconditions after EVERY await, before touching the DOM
+    if (!taStillCurrent(gen, issuedFor)) return;
     if (!res.ok) { state.textContent = `cannot check: ${res.status}`; return; }
   } catch (err) {
-    if (gen !== taGen) return;
+    if (!taStillCurrent(gen, issuedFor)) return;
     state.textContent = `cannot check: ${err}`;
     return;
   }
@@ -1499,28 +1548,51 @@ async function taCheckSlug(inherited) {
       return;
     }
     taAnswered();
+    const links = matches.map(m => taLink(m.url, `#${m.number}`));
+    if (links.some(link => link === null)) {
+      // taRefProblems already passed them; this is the same fail-closed rule
+      // applied at the sink, where the URL is actually used
+      state.textContent = 'cannot read the result';
+      return;
+    }
     state.textContent = `${matches.length} issues claim this slug — conflict`;
-    document.getElementById('ta-existing').innerHTML = matches.map(
-      m => `<a href="${esc(m.url)}" target="_blank">#${esc(m.number)}</a>`
-    ).join(' · ');
+    const box = document.getElementById('ta-existing');
+    box.replaceChildren();
+    links.forEach((link, i) => {
+      if (i > 0) box.append(' · ');
+      box.append(link);
+    });
     taShow('ta-existing', true);
     return;
   }
   const ref = matches[0];
   const problems = taRefProblems(ref);
   if (problems.length) { state.textContent = `cannot read: ${problems.join('; ')}`; return; }
+  const link = taLink(ref.url, ref.url);
+  if (link === null) {
+    state.textContent = 'cannot read: url missing or wrong type';
+    return;
+  }
   taAnswered();
   state.textContent = 'already requested';
-  document.getElementById('ta-existing').innerHTML =
-    `#${esc(ref.number)} · ${esc(ref.state)} · ` +
-    `<a href="${esc(ref.url)}" target="_blank">${esc(ref.url)}</a>`;
+  const box = document.getElementById('ta-existing');
+  box.replaceChildren(`#${ref.number} · ${ref.state} · `, link);
   taShow('ta-existing', true);
   const open = document.getElementById('ta-open');
   open.hidden = false;
-  open.onclick = () => window.open(ref.url, '_blank');
+  // the canonical parsed form, not the raw string the producer sent
+  open.onclick = () => window.open(link.href, '_blank');
 }
 
 document.getElementById('ta-slug').addEventListener('change', () => {
+  // A different slug is a different subject: the previous slug's result, its
+  // issue list and its Re-check offer all describe something the operator is
+  // no longer looking at. (Distinct from Re-check on the SAME slug, which
+  // must preserve an unknown outcome — see taAnswered.)
+  if (!taCreating) {
+    document.getElementById('ta-result').textContent = '';
+    taShow('ta-recheck', false);
+  }
   taCheckSlug().catch(err => {
     document.getElementById('ta-slug-state').textContent = `cannot check: ${err}`;
   });
@@ -1533,14 +1605,24 @@ document.getElementById('ta-create').addEventListener('click', async () => {
   // silently POST {dir: null}.
   if (!taRepo) { result.textContent = 'no repo selected'; return; }
   const gen = ++taGen;
+  const submitted = document.getElementById('ta-slug').value.trim();
+  taSubmittedSlug = submitted;
   taCreating = true;
+  taLockFields(true);
   btn.disabled = true;
   result.textContent = 'filing…';
   taShow('ta-recheck', false);
   let outcome, res;
+  let sent = false;
   try {
     const token = await ensureActionToken();
-    if (gen !== taGen) return;  // superseded while in flight
+    if (gen !== taGen) {
+      // nothing has gone out yet — say so rather than leaving "filing…" up
+      result.textContent =
+        `request for "${submitted}" abandoned before it was sent`;
+      return;
+    }
+    sent = true;
     res = await fetch('/api/actions/request-task', {
       method: 'POST',
       headers: {'Content-Type': 'application/json', 'X-Action-Token': token},
@@ -1552,16 +1634,30 @@ document.getElementById('ta-create').addEventListener('click', async () => {
       }),
     });
     outcome = await res.json();
-    if (gen !== taGen) return;
   } catch (err) {
-    if (gen !== taGen) return;
-    // the request itself broke: whether it landed is unknown
-    result.textContent = `issue may have been created; state unknown (${err})`;
+    // the request itself broke: whether it landed is unknown. This is
+    // reported whether or not the screen moved on — see the stale branch.
+    result.textContent = sent
+      ? `issue may have been created for "${submitted}"; state unknown (${err})`
+      : `issue may have been created; state unknown (${err})`;
     taShow('ta-recheck', true);
     return;
   } finally {
     // the POST is off the wire either way, superseded or not
     taCreating = false;
+    taLockFields(false);
+  }
+  // A POST answer is never silently dropped for being stale: the request was
+  // SENT, so an issue may exist. Returning quietly here would hide a real
+  // mutation behind a screen that has moved on — the worst version of the
+  // duplicate this feature exists to prevent.
+  if (gen !== taGen) {
+    result.textContent =
+      `a request for "${submitted}" was sent and its outcome landed after the `
+      + 'screen moved on — re-check that slug before filing it again';
+    taShow('ta-recheck', true);
+    btn.disabled = true;
+    return;
   }
   // Minor fix: a 200 (or any status) with a non-object JSON body (`null`,
   // a bare number/string) parses without throwing here, but every branch
@@ -1672,8 +1768,13 @@ document.getElementById('ta-create').addEventListener('click', async () => {
     taShow('ta-recheck', true);
     return;
   }
-  result.innerHTML = `created · <a href="${esc(outcome.issue.url)}" ` +
-    `target="_blank">#${esc(outcome.issue.number)}</a>`;
+  const link = taLink(outcome.issue.url, `#${outcome.issue.number}`);
+  if (link === null) {
+    result.textContent = 'created, but cannot read the result: url missing or wrong type';
+    taShow('ta-recheck', true);
+    return;
+  }
+  result.replaceChildren('created · ', link);
 });
 
 // Re-check never re-creates: after an unknown outcome, creating again is

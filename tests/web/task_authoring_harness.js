@@ -126,6 +126,9 @@ const SECOND_REF = {
 // while carrying a double quote that would close the href attribute if the
 // sink rendered it unescaped.
 const XSS_URL = 'https://gh.com/a"><img src=x onerror=alert(1)>';
+// What `new URL()` canonicalises it to — the only form allowed to reach an
+// href. Computed by the platform parser, not hand-written.
+const XSS_HREF = new URL(XSS_URL).href;
 
 const resp = (status, body) => ({
   status, ok: status >= 200 && status < 300,
@@ -769,7 +772,10 @@ const CASES = [
       };
     },
     expect: {
-      'result': 'issue may have been created; state unknown (Error: network down)',
+      // the slug is named: a transport failure after the POST went out is
+      // exactly when the operator needs to know WHAT may have been filed
+      'result':
+        'issue may have been created for "add-x"; state unknown (Error: network down)',
       'Re-check hidden': false,
       'Create disabled': true,
     },
@@ -1084,53 +1090,63 @@ const CASES = [
       'Create disabled': false,
     },
   },
-  // --- hole #4: nothing pinned esc() on the URL sinks -------------------
+  // --- hole #4: the URL sinks build DOM, they do not print markup -------
   //
-  // isHttpsUrl only PARSES for a scheme; the sink then renders the ORIGINAL
-  // string. `new URL()` reports 'https:' for a URL whose path carries a
-  // double quote, so validation passes with the quote intact and esc() is
-  // the only thing standing between it and attribute breakout. These cases
-  // assert on the parsed DOM — element counts and href values — because a
-  // string comparison would pass on markup that had already broken out.
+  // isHttpsUrl only PARSES for a scheme; the old sinks then interpolated the
+  // ORIGINAL string into an href through innerHTML, so esc() was the only
+  // thing between a validated-but-hostile URL and attribute breakout — and
+  // nothing pinned esc(). `new URL()` reports 'https:' for a URL whose path
+  // carries a double quote (asserted below, not assumed), so the payload
+  // passes validation with the quote intact. Links are now built with
+  // createElement, which has no markup for a payload to escape from.
   ...[
-    ['42. conflict list', 2, async env => {
+    ['42. conflict list', 2, XSS_HREF, async env => {
       const evil = {...SECOND_REF, url: XSS_URL};
       await lookup(env, 'add-x', 200,
         {ok: true, matches: [GOOD_REF, evil], malformed: []});
       return 'ta-existing';
     }],
-    ['43. single-match render', 1, async env => {
+    ['43. single-match render', 1, XSS_HREF, async env => {
       await lookup(env, 'add-x', 200,
         {ok: true, matches: [{...GOOD_REF, url: XSS_URL}], malformed: []});
       return 'ta-existing';
     }],
-    ['44. create-result link', 1, async env => {
+    ['44. create-result link', 1, XSS_HREF, async env => {
       await freeSlugThen(env, e => create(e, 200,
         {ok: true, created: true, issue: {...GOOD_REF, url: XSS_URL}}));
       return 'ta-result';
     }],
-  ].map(([name, anchors, drive]) => ({
-    name: `${name}: an https: URL carrying a double quote is escaped, not `
-      + 'allowed to break out of the href attribute',
+  ].map(([name, anchors, href, drive]) => ({
+    name: `${name}: a quote-bearing https: URL creates no element, no inline `
+      + 'handler, a canonical href, and text that is only text',
     async run(env) {
       await openPanel(env);
       const sink = await drive(env);
       const el = env.el(sink);
+      const all = el.querySelectorAll('*');
       return {
-        'anchors rendered': el.querySelectorAll('a').length,
-        'injected elements': el.querySelectorAll('img').length
-          + el.querySelectorAll('script').length,
-        'href is the whole URL, escaped and intact':
-          el.querySelectorAll('a').map(a => a.getAttribute('href')).pop(),
-        'no attribute broke out (onerror)':
-          el.querySelectorAll('*').some(n => n.hasAttribute('onerror')),
+        'the payload really does parse as https:':
+          new URL(XSS_URL).protocol,
+        'anchors built': all.filter(n => n.tagName === 'A').length,
+        'img elements created': el.querySelectorAll('img').length,
+        'elements carrying an inline handler': all.filter(
+          n => Object.keys(n.attributes).some(a => a.startsWith('on'))).length,
+        'href is the canonical parsed form':
+          all.filter(n => n.tagName === 'A').pop().getAttribute('href'),
+        'no attribute anywhere holds raw markup': all.every(
+          n => Object.values(n.attributes).every(v => !v.includes('<'))),
+        'the raw payload survives only inside text':
+          el.textContent.includes('<img') === el.textContent.includes(XSS_URL),
       };
     },
     expect: {
-      'anchors rendered': anchors,
-      'injected elements': 0,
-      'href is the whole URL, escaped and intact': XSS_URL,
-      'no attribute broke out (onerror)': false,
+      'the payload really does parse as https:': 'https:',
+      'anchors built': anchors,
+      'img elements created': 0,
+      'elements carrying an inline handler': 0,
+      'href is the canonical parsed form': href,
+      'no attribute anywhere holds raw markup': true,
+      'the raw payload survives only inside text': true,
     },
   })),
   {
@@ -1210,8 +1226,8 @@ const CASES = [
     },
   },
   {
-    name: '48. [NEW-2] editing the slug while the create POST is in flight '
-      + 'must not wipe "filing…" or re-enable Create',
+    name: '48. [NEW-2] while the create POST is in flight the whole form is '
+      + 'locked — and a change forced through anyway is refused, not raced',
     async run(env) {
       await openPanel(env);
       await lookup(env, 'add-x', 200, {ok: true, matches: [], malformed: []});
@@ -1220,47 +1236,106 @@ const CASES = [
       env.route(u => u.startsWith('/api/actions/request-task'), () => pending);
       env.set('ta-title', 'Add feature X');
       env.set('ta-prose', 'because Y, done when Z');
-      // NOT awaited: the fixture is deliberately unresolved, and awaiting a
-      // handler that cannot finish would hang the run (see summaryPrinted)
       const settle = await env.fireInFlight('ta-create', 'click');
-      const filing = env.text('ta-result');
 
-      // the operator edits the slug mid-flight; a fresh lookup would answer
-      // "free" and, unguarded, would clear "filing…" and light up Create
+      const locked = ['ta-slug', 'ta-title', 'ta-prose']
+        .map(id => env.el(id).disabled).join(',');
+      // force the event a locked field could not produce, to prove the
+      // handler refuses on its own rather than relying on the lock
       env.route(u => u.startsWith('/api/issue-lookup'),
         () => resp(200, {ok: true, matches: [], malformed: []}));
       env.set('ta-slug', 'add-y');
-      await env.fire('ta-slug', 'change');
-      const duringFlight = {
+      await env.fire('ta-slug', 'change', {force: true});
+      const during = {
         result: env.text('ta-result'),
         state: env.text('ta-slug-state'),
         disabled: env.el('ta-create').disabled,
+        lookups: env.urls('/api/issue-lookup').length,
       };
 
       releasePost(resp(200, {ok: true, created: null, error: 'no answer'}));
       await settle();
       await drain();
       return {
-        'result while filing': filing,
-        'result survived the edit': duringFlight.result,
-        'slug state explains the refusal': duringFlight.state,
-        'Create stayed disabled during the flight': duringFlight.disabled,
+        'fields locked during the POST (slug,title,prose)': locked,
+        'result survived the forced change': during.result,
+        'the forced lookup was refused': during.state,
+        'Create stayed disabled': during.disabled,
+        'no second lookup went out': during.lookups,
+        'fields unlocked afterwards': ['ta-slug', 'ta-title', 'ta-prose']
+          .map(id => env.el(id).disabled).join(','),
         'result after the POST answered': env.text('ta-result'),
-        'Create disabled after the POST answered':
-          env.el('ta-create').disabled,
-        'lookups issued (the mid-flight one never went out)':
-          env.urls('/api/issue-lookup').length,
+        'Create disabled after the POST answered': env.el('ta-create').disabled,
       };
     },
     expect: {
-      'result while filing': 'filing…',
-      'result survived the edit': 'filing…',
-      'slug state explains the refusal': 'filing in progress — wait for the result',
-      'Create stayed disabled during the flight': true,
+      'fields locked during the POST (slug,title,prose)': 'true,true,true',
+      'result survived the forced change': 'filing…',
+      'the forced lookup was refused': 'filing in progress — wait for the result',
+      'Create stayed disabled': true,
+      'no second lookup went out': 1,
+      'fields unlocked afterwards': 'false,false,false',
       'result after the POST answered':
         'issue may have been created; state unknown: no answer',
       'Create disabled after the POST answered': true,
-      'lookups issued (the mid-flight one never went out)': 1,
+    },
+  },
+  {
+    name: '49. [NEW-2] a POST answer that lands after the screen moved on is '
+      + 'NEVER discarded — it names the submitted slug and keeps Create off',
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, 'add-x', 200, {ok: true, matches: [], malformed: []});
+      let releasePost;
+      const pending = new Promise(r => { releasePost = r; });
+      env.route(u => u.startsWith('/api/actions/request-task'), () => pending);
+      env.set('ta-title', 'Add feature X');
+      env.set('ta-prose', 'because Y, done when Z');
+      const settle = await env.fireInFlight('ta-create', 'click');
+      // the operator re-opens the panel mid-flight: a new generation, and the
+      // POST for "add-x" is now about a screen state nobody is looking at
+      await env.fire('ta-open-panel', 'click');
+      releasePost(resp(200, {ok: true, created: true, issue: GOOD_REF}));
+      await settle();
+      await drain();
+      return {
+        'the outcome was not silently dropped': env.text('ta-result'),
+        'Re-check offered': env.el('ta-recheck').hidden,
+        'Create disabled': env.el('ta-create').disabled,
+      };
+    },
+    expect: {
+      'the outcome was not silently dropped':
+        'a request for "add-x" was sent and its outcome landed after the '
+        + 'screen moved on — re-check that slug before filing it again',
+      'Re-check offered': false,
+      'Create disabled': true,
+    },
+  },
+  {
+    name: '50. [NEW-2] a lookup answer is applied only if the SLUG it was '
+      + 'issued for is still on screen, not merely the generation',
+    async run(env) {
+      await openPanel(env);
+      let release;
+      const slow = new Promise(r => { release = r; });
+      env.route(u => u.includes('slug=first'), () => slow);
+      env.set('ta-slug', 'first');
+      await env.fire('ta-slug', 'change');
+      // the operator keeps typing: the field changes without a new `change`,
+      // so the generation is UNCHANGED and only the slug snapshot can catch it
+      env.set('ta-slug', 'first-and-more');
+      release(resp(200, {ok: true, matches: [], malformed: []}));
+      await drain();
+      return {
+        'slug state (the stale "free" must not be applied)':
+          env.text('ta-slug-state'),
+        'Create disabled': env.el('ta-create').disabled,
+      };
+    },
+    expect: {
+      'slug state (the stale "free" must not be applied)': '',
+      'Create disabled': true,
     },
   },
   {
