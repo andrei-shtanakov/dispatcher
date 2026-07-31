@@ -1,0 +1,33 @@
+{
+  "action": "issue-lookup",
+  "dir": "../prograph-vault",
+  "ok": true,
+  "error": null,
+  "detail": null,
+  "pr_url": null,
+  "pr_state": null,
+  "local": null,
+  "branch": null,
+  "base_branch": null,
+  "commit_sha": null,
+  "changed_paths": null,
+  "merged": null,
+  "local_sync": null,
+  "gate_failed": null,
+  "pr_detail": null,
+  "matches": [
+    {
+      "number": 54,
+      "title": "ADR-ECO-004 D1: amend the dispatcher clause to permit task authoring (S2)",
+      "state": "closed",
+      "url": "https://github.com/andrei-shtanakov/prograph-vault/issues/54",
+      "author": "andrei-shtanakov",
+      "labels": [
+        "inbox"
+      ]
+    }
+  ],
+  "malformed": [],
+  "created": null,
+  "issue": null
+}

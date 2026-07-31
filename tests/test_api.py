@@ -1025,6 +1025,119 @@ async def test_post_merge_sync_endpoint_retries_the_local_half(
         assert resp.json()["local_sync"] == "ok"
 
 
+async def test_request_task_requires_the_action_token(tmp_path: Path) -> None:
+    async with _client(tmp_path) as client:
+        response = await client.post(
+            "/api/actions/request-task",
+            json={"dir": "alpha", "slug": "wanted", "title": "t", "prose": "p"},
+        )
+    assert response.status_code == 403
+
+
+async def test_request_task_returns_the_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dispatcher.core.actions import ActionOutcome, ActionRunner
+
+    monkeypatch.setattr(
+        ActionRunner,
+        "request_task",
+        lambda self, repo_dir, **kw: ActionOutcome(
+            action="request-task",
+            dir=repo_dir,
+            ok=True,
+            created=True,
+            issue={"number": 9, "url": "https://x/9"},
+        ),
+    )
+    async with _client(tmp_path) as client:
+        token = await _token(client)
+        response = await client.post(
+            "/api/actions/request-task",
+            json={"dir": "alpha", "slug": "wanted", "title": "t", "prose": "p"},
+            headers={"X-Action-Token": token},
+        )
+    assert response.status_code == 200
+    assert response.json()["created"] is True
+
+
+async def test_request_task_never_takes_from_from_the_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`from` lands in the issue's structural block; the client cannot set it."""
+    seen: dict[str, Any] = {}
+
+    from dispatcher.core.actions import ActionOutcome, ActionRunner
+
+    def capture(self: ActionRunner, repo_dir: str, **kw: Any) -> ActionOutcome:
+        seen.update(kw)
+        return ActionOutcome(action="request-task", dir=repo_dir, ok=True, created=True)
+
+    monkeypatch.setattr(ActionRunner, "request_task", capture)
+    async with _client(tmp_path) as client:
+        token = await _token(client)
+        await client.post(
+            "/api/actions/request-task",
+            json={
+                "dir": "alpha",
+                "slug": "wanted",
+                "title": "t",
+                "prose": "p",
+                "sender": "spoofed",
+                "from": "spoofed",
+            },
+            headers={"X-Action-Token": token},
+        )
+    assert seen["sender"] == "dispatcher"
+
+
+async def test_request_task_maps_busy_to_409(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dispatcher.core.actions import ActionBusyError, ActionRunner
+
+    def busy(self: ActionRunner, repo_dir: str, **kw: Any) -> None:
+        raise ActionBusyError("alpha: action already in flight")
+
+    monkeypatch.setattr(ActionRunner, "request_task", busy)
+    async with _client(tmp_path) as client:
+        token = await _token(client)
+        response = await client.post(
+            "/api/actions/request-task",
+            json={"dir": "alpha", "slug": "wanted", "title": "t", "prose": "p"},
+            headers={"X-Action-Token": token},
+        )
+    assert response.status_code == 409
+
+
+async def test_issue_lookup_is_readable_without_a_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dispatcher.core.actions import ActionOutcome, ActionRunner
+
+    monkeypatch.setattr(
+        ActionRunner,
+        "issue_lookup",
+        lambda self, repo_dir, slug: ActionOutcome(
+            action="issue-lookup", dir=repo_dir, ok=True, matches=[], malformed=[]
+        ),
+    )
+    async with _client(tmp_path) as client:
+        response = await client.get(
+            "/api/issue-lookup", params={"dir": "alpha", "slug": "wanted"}
+        )
+    assert response.status_code == 200
+    assert response.json()["matches"] == []
+
+
+async def test_issue_lookup_maps_rejection_to_422(tmp_path: Path) -> None:
+    async with _client(tmp_path) as client:
+        response = await client.get(
+            "/api/issue-lookup", params={"dir": "../etc", "slug": "wanted"}
+        )
+    assert response.status_code == 422
+
+
 def _isinstance_strict(value: object, expected: type | tuple[type, ...]) -> bool:
     """Like `isinstance`, but a `bool` never satisfies a plain `int` check.
 
@@ -1199,6 +1312,51 @@ def test_real_pr_detail_payload_has_every_field_the_console_reads() -> None:
             detail["checks"], "checks", PR_DETAIL_CHECK_ITEM_REQUIRED
         )
     assert missing == [], f"github-checker payload no longer provides: {missing}"
+
+
+ISSUE_REF_REQUIRED: dict[str, type | tuple[type, ...]] = {
+    "number": int,
+    "title": str,
+    "state": str,
+    "url": str,
+    "author": str,
+    "labels": list,
+}
+
+# Captured 2026-07-31 via:
+#   uv run --project ../github-checker github-checker issue-lookup \
+#     ../prograph-vault --slug amend-adr-eco-004-d1-task-authoring
+# Pinned to the producer commit: `git -C ../github-checker rev-parse HEAD` ==
+# 4532a8a (master, both inbox-issue verbs merged). The slug has a real,
+# closed inbox issue (prograph-vault#54) — a state the console must also
+# render correctly, not just the open case.
+ISSUE_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "issue_lookup_github_checker_4532a8a.json"
+)
+
+
+def test_real_issue_lookup_payload_has_every_field_the_console_reads() -> None:
+    """Consumer check against github-checker's ACTUAL output, not a fake.
+
+    Provisional-adapter guard: the issue payload is an opaque passthrough
+    until contracts/actions/v1 is published and vendored
+    (TODO @id:vendor-contracts-actions-v1).
+    """
+    envelope = json.loads(ISSUE_FIXTURE.read_text())
+    assert envelope["ok"] is True
+    assert envelope["matches"], "fixture must pin a slug that actually exists"
+    for ref in envelope["matches"]:
+        missing = [
+            key
+            for key, expected in ISSUE_REF_REQUIRED.items()
+            if not isinstance(ref.get(key), expected)
+        ]
+        assert missing == [], f"github-checker payload no longer provides: {missing}"
+    # The producer normalises `state` to lowercase (`gh issue list` itself
+    # emits OPEN/CLOSED); assert the lowercase form rather than adapting to
+    # whatever the fixture happens to contain — an uppercase value here would
+    # be a producer regression to report, not a shape to accept.
+    assert all(ref["state"] == ref["state"].lower() for ref in envelope["matches"])
 
 
 async def test_merge_gate_markup_is_served(tmp_path: Path) -> None:

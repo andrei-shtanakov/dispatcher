@@ -98,6 +98,20 @@ class ActionRequest(BaseModel):
     dir: str
 
 
+class TaskRequest(BaseModel):
+    """POST /api/actions/request-task body.
+
+    `from` is deliberately absent: the server supplies it. It is written
+    into the issue's structural block, so a client-settable value would be
+    a way to forge the sender.
+    """
+
+    dir: str
+    slug: str
+    title: str
+    prose: str
+
+
 class MergeRequest(BaseModel):
     """POST /api/actions/merge-and-sync body."""
 
@@ -341,6 +355,36 @@ def create_app(
     ) -> ActionOutcome:
         """Добор локальной половины, когда merge прошёл, а sync — нет."""
         return _run_action("post-merge-sync", request, x_action_token)
+
+    @app.get("/api/issue-lookup", response_model=ActionOutcome)
+    def issue_lookup(dir: str, slug: str) -> ActionOutcome:
+        """Read-through to github-checker; no mutation, so no token."""
+        try:
+            return actions.issue_lookup(dir.strip(), slug.strip())
+        except ActionRejectedError as err:
+            raise HTTPException(status_code=422, detail=str(err)) from err
+
+    @app.post("/api/actions/request-task", response_model=ActionOutcome)
+    def action_request_task(
+        request: TaskRequest,
+        x_action_token: str | None = Header(default=None),
+    ) -> ActionOutcome:
+        """Явный клик человека: завести inbox-issue в целевом репо."""
+        if x_action_token != action_token:
+            raise HTTPException(status_code=403, detail="bad or missing action token")
+        try:
+            outcome = actions.request_task(
+                request.dir.strip(),
+                slug=request.slug.strip(),
+                sender="dispatcher",  # never from the client — see TaskRequest
+                title=request.title.strip(),
+                prose=request.prose,
+            )
+        except ActionRejectedError as err:
+            raise HTTPException(status_code=422, detail=str(err)) from err
+        except ActionBusyError as err:
+            raise HTTPException(status_code=409, detail=str(err)) from err
+        return outcome
 
     @app.get("/api/spec-runner-configs", response_model=list[ProjectSpecRunnerConfig])
     def spec_runner_configs_list() -> list[ProjectSpecRunnerConfig]:
