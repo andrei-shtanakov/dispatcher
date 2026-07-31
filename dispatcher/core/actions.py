@@ -69,6 +69,10 @@ class ActionOutcome(BaseModel):
     local_sync: str | None = None  # ok | failed | not_attempted | not_applicable
     gate_failed: list[str] | None = None
     pr_detail: dict[str, Any] | None = None
+    matches: list[dict[str, Any]] | None = None
+    malformed: list[dict[str, Any]] | None = None
+    created: bool | None = None
+    issue: dict[str, Any] | None = None
 
 
 class ActionBusyError(Exception):
@@ -180,6 +184,13 @@ class ActionRunner:
                 ok=False,
                 error=proc.stderr.strip() or "github-checker returned no JSON",
             )
+        if not isinstance(data, dict):
+            return ActionOutcome(
+                action=action,
+                dir=target.name,
+                ok=False,
+                error="github-checker returned JSON that is not an object",
+            )
         local = data.get("local") or {}
         try:
             return ActionOutcome(
@@ -195,6 +206,10 @@ class ActionRunner:
                 local_sync=data.get("local_sync"),
                 gate_failed=data.get("gate_failed"),
                 pr_detail=data.get("pr_detail"),
+                matches=data.get("matches"),
+                malformed=data.get("malformed"),
+                created=data.get("created"),
+                issue=data.get("issue"),
             )
         except ValidationError as err:
             # the pr_detail PAYLOAD is validated by the console; the envelope
@@ -275,4 +290,28 @@ class ActionRunner:
             raise
         outcome = self._invoke("pr-detail", target, str(pr))
         _audit.info("action=pr-detail repo=%s pr=%s ok=%s", repo_dir, pr, outcome.ok)
+        return outcome
+
+    def issue_lookup(self, repo_dir: str, slug: str) -> ActionOutcome:
+        """Ask whether a slug already has an inbox issue. A read takes no lock."""
+        try:
+            target = self._target(repo_dir)
+        except ActionRejectedError as err:
+            _audit.info(
+                "action=issue-lookup repo=%s slug=%s ok=False rejected=%s",
+                repo_dir,
+                slug,
+                err,
+            )
+            raise
+        outcome = self._invoke("issue-lookup", target, "--slug", slug)
+        # not _audit_outcome: that helper's format has no room for the slug,
+        # and the slug is the whole point of this line
+        _audit.info(
+            "action=issue-lookup repo=%s slug=%s ok=%s matches=%s",
+            repo_dir,
+            slug,
+            outcome.ok,
+            len(outcome.matches or []),
+        )
         return outcome

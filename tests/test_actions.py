@@ -570,3 +570,76 @@ def test_pr_detail_still_validates_the_repo_dir(tmp_path: Path) -> None:
     runner = ActionRunner(DispatcherConfig(roots=(tmp_path,)))
     with pytest.raises(ActionRejectedError, match="unsafe"):
         runner.pr_detail("../etc", 7)
+
+
+def test_outcome_carries_the_issue_fields(tmp_path: Path) -> None:
+    make_repo(tmp_path, "alpha")
+    payload = {
+        "action": "issue-lookup",
+        "dir": "alpha",
+        "ok": True,
+        "matches": [{"number": 7, "state": "open"}],
+        "malformed": [],
+    }
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    outcome = runner.issue_lookup("alpha", "wanted")
+    assert outcome.ok is True
+    assert outcome.matches is not None  # narrow for pyrefly, mirrors pr_detail tests
+    assert outcome.matches[0]["number"] == 7
+    assert outcome.malformed == []
+
+
+def test_issue_lookup_takes_no_lock(tmp_path: Path) -> None:
+    make_repo(tmp_path, "alpha")
+    payload = {
+        "action": "issue-lookup",
+        "dir": "alpha",
+        "ok": True,
+        "matches": [],
+        "malformed": [],
+    }
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    runner.issue_lookup("alpha", "wanted")
+    assert runner._busy == set()
+
+
+@pytest.mark.parametrize("payload", ["[1, 2]", "5", '"a string"', "null"])
+def test_non_object_json_is_a_failed_outcome_not_an_exception(
+    tmp_path: Path, payload: str
+) -> None:
+    """Pre-existing hole: `data.get` sat outside the try, so a non-object
+    top-level payload raised AttributeError out of the runner."""
+    make_repo(tmp_path, "alpha")
+    script = tmp_path / "bad_json.py"
+    script.write_text(f"import sys; sys.stdout.write({payload!r})")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
+    )
+    outcome = runner.run("pull", "alpha")
+    assert outcome.ok is False
+    assert "not an object" in (outcome.error or "")
+
+
+def test_issue_lookup_still_validates_the_repo_dir(tmp_path: Path) -> None:
+    runner = ActionRunner(DispatcherConfig(roots=(tmp_path,)))
+    with pytest.raises(ActionRejectedError, match="unsafe"):
+        runner.issue_lookup("../etc", "wanted")
+
+
+def test_issue_lookup_passes_the_slug_through(tmp_path: Path) -> None:
+    make_repo(tmp_path, "alpha")
+    script = tmp_path / "echo_argv.py"
+    script.write_text(
+        "import sys, json;"
+        "json.dump({'action':'issue-lookup','dir':'alpha','ok':True,"
+        "'detail':' '.join(sys.argv[1:])}, sys.stdout)"
+    )
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
+    )
+    outcome = runner.issue_lookup("alpha", "wanted")
+    assert "--slug wanted" in (outcome.detail or "")
