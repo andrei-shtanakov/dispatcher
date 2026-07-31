@@ -1556,6 +1556,38 @@ document.getElementById('ta-create').addEventListener('click', async () => {
     btn.disabled = false;
     return;
   }
+  // N-1 (Important): a 200 whose ENVELOPE says `ok: false` is a refusal, and
+  // it was being read as business state. Every refusal arrives as
+  // `{ok: false, created: false}` — prose over the size bound, an invalid
+  // slug, an invalid `from`, "ambiguous — not creating", and dispatcher's own
+  // two pre-mutation refusals (the argv control-character catch and the body
+  // write failure) — so it fell into the `created === false` arm below and
+  // rendered "a request for this slug already exists". That is false for all
+  // of them: nothing exists, the operator's request was rejected, and
+  // `outcome.error` (which says WHY) was discarded. Envelope first, business
+  // state second — the same ordering taCheckSlug already applies.
+  if (!outcome.ok) {
+    const why = outcome.error || outcome.detail || 'refused, no reason given';
+    if (outcome.created === null || outcome.created === undefined) {
+      // refused AND unsure whether anything landed: unknown wins
+      result.textContent = `issue may have been created; state unknown: ${why}`;
+      taShow('ta-recheck', true);
+      return;
+    }
+    if (outcome.created === true) {
+      // a contradictory envelope — it reports failure and a creation at
+      // once. Not renderable as success, and not safe to retry blind.
+      result.textContent = `cannot read the result: reported both a failure `
+        + `and a created issue: ${why}`;
+      taShow('ta-recheck', true);
+      return;
+    }
+    // the ordinary refusal: nothing ran, nothing exists, fixing the input
+    // and retrying is safe — same reasoning as the 4xx branch above
+    result.textContent = `request rejected: ${why}`;
+    btn.disabled = false;
+    return;
+  }
   // `!created` would fold null into false — check unknown FIRST
   if (outcome.created === null || outcome.created === undefined) {
     result.textContent =
@@ -1567,6 +1599,18 @@ document.getElementById('ta-create').addEventListener('click', async () => {
     // the re-check runs FIRST: taCheckSlug clears ta-result (see F-2 there),
     // so writing the explanation before it would wipe the explanation
     await taCheckSlug();
+    if (!btn.disabled) {
+      // The producer says a request for this slug already exists; the lookup
+      // run immediately afterwards says the slug is free. One of them is
+      // wrong and this screen cannot tell which — offering Create under a
+      // line reading "already exists" is how the duplicate this feature
+      // exists to prevent gets filed anyway. Fail closed and say so.
+      btn.disabled = true;
+      result.textContent = 'a request for this slug already exists, but the '
+        + 're-check could not find it — look before filing again';
+      taShow('ta-recheck', true);
+      return;
+    }
     result.textContent = 'a request for this slug already exists';
     return;
   }

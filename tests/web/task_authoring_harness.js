@@ -507,21 +507,49 @@ const CASES = [
     },
   },
   {
-    name: '17. created: false → "already exists", and the screen re-checks '
-      + 'instead of offering another create',
+    name: '17. created: false whose re-check FINDS the issue → "already '
+      + 'exists", Create stays disabled',
+    async run(env) {
+      await openPanel(env);
+      await freeSlugThen(env, e => {
+        e.route(u => u.startsWith('/api/issue-lookup'),
+          () => resp(200, {ok: true, matches: [GOOD_REF], malformed: []}));
+        return create(e, 200, {ok: true, created: false});
+      });
+      return {
+        'result': env.text('ta-result'),
+        'slug state after the automatic re-check': env.text('ta-slug-state'),
+        'Create disabled': env.el('ta-create').disabled,
+        'lookups issued': env.urls('/api/issue-lookup').length,
+      };
+    },
+    expect: {
+      'result': 'a request for this slug already exists',
+      'slug state after the automatic re-check': 'already requested',
+      'Create disabled': true,
+      'lookups issued': 2,
+    },
+  },
+  {
+    name: '17b. created: false whose re-check CANNOT find it → the screen '
+      + 'says so and keeps Create off, rather than offering it under an '
+      + '"already exists" line',
     async run(env) {
       await openPanel(env);
       await freeSlugThen(env, e => create(e, 200, {ok: true, created: false}));
       return {
         'result': env.text('ta-result'),
         'slug state after the automatic re-check': env.text('ta-slug-state'),
-        'lookups issued': env.urls('/api/issue-lookup').length,
+        'Create disabled': env.el('ta-create').disabled,
+        'Re-check offered': env.el('ta-recheck').hidden,
       };
     },
     expect: {
-      'result': 'a request for this slug already exists',
+      'result': 'a request for this slug already exists, but the re-check '
+        + 'could not find it — look before filing again',
       'slug state after the automatic re-check': 'free',
-      'lookups issued': 2,
+      'Create disabled': true,
+      'Re-check offered': false,
     },
   },
   {
@@ -563,7 +591,9 @@ const CASES = [
     expect: {'issue-lookup URL': '/api/issue-lookup?dir=maestro&slug=add-x'},
   },
   {
-    name: '20. [entry point] the create POST carries the data-dir too',
+    name: '20. the create POST carries the data-dir AND the operator\'s own '
+      + 'slug, title and prose — the slug it filed under must be the slug it '
+      + 'checked',
     project: MAESTRO,
     async run(env) {
       await openPanel(env);
@@ -571,9 +601,51 @@ const CASES = [
         create(e, 200, {ok: true, created: true, issue: GOOD_REF}));
       const post = env.requests.find(
         r => r.url.startsWith('/api/actions/request-task'));
-      return {'POST body dir': JSON.parse(post.init.body).dir};
+      const body = JSON.parse(post.init.body);
+      return {
+        'POST body dir': body.dir,
+        'POST body slug': body.slug,
+        'POST body slug === the slug looked up':
+          env.urls('/api/issue-lookup')[0].endsWith(`&slug=${body.slug}`),
+        'POST body title': body.title,
+        'POST body prose': body.prose,
+        'POST body keys': Object.keys(body).sort().join(','),
+      };
     },
-    expect: {'POST body dir': 'maestro'},
+    expect: {
+      'POST body dir': 'maestro',
+      'POST body slug': 'add-x',
+      'POST body slug === the slug looked up': true,
+      'POST body title': 'Add feature X',
+      'POST body prose': 'because Y, done when Z',
+      'POST body keys': 'dir,prose,slug,title',
+    },
+  },
+  {
+    name: '20b. slug and title are trimmed on the way out; prose is sent '
+      + 'verbatim, newlines and all',
+    async run(env) {
+      await openPanel(env);
+      await lookup(env, '  spaced-slug  ', 200,
+        {ok: true, matches: [], malformed: []});
+      env.route(u => u.startsWith('/api/actions/request-task'),
+        () => resp(200, {ok: true, created: true, issue: GOOD_REF}));
+      env.set('ta-title', '  Padded title  ');
+      env.set('ta-prose', 'line one\n\n  line two, indented  \n');
+      await env.fire('ta-create', 'click');
+      const body = JSON.parse(env.requests.find(
+        r => r.url.startsWith('/api/actions/request-task')).init.body);
+      return {
+        'slug trimmed': body.slug,
+        'title trimmed': body.title,
+        'prose verbatim': JSON.stringify(body.prose),
+      };
+    },
+    expect: {
+      'slug trimmed': 'spaced-slug',
+      'title trimmed': 'Padded title',
+      'prose verbatim': '"line one\\n\\n  line two, indented  \\n"',
+    },
   },
   {
     name: '21. a 5xx create → state unknown; Create must NOT be re-enabled',
@@ -885,6 +957,93 @@ const CASES = [
       'existing hidden after': true,
       'Open-existing hidden after': true,
       'stale window.open fired': '[]',
+    },
+  },
+  ...[
+    ['prose exceeds the 60000-byte bound', 'prose exceeds the 60000-byte bound'],
+    ['slug is not a valid slug', 'slug is not a valid slug'],
+    ['ambiguous — not creating', 'ambiguous — not creating'],
+    ['refused before launch: embedded null byte',
+      'refused before launch: embedded null byte'],
+  ].map(([error, shown], i) => ({
+    name: `38.${i + 1} [N-1] a 200 whose envelope says ok:false is a REFUSAL `
+      + `("${error}") — never "a request for this slug already exists"`,
+    async run(env) {
+      await openPanel(env);
+      await freeSlugThen(env, e =>
+        create(e, 200, {ok: false, created: false, error}));
+      return {
+        'result': env.text('ta-result'),
+        // nothing was created, so fixing the input and retrying is safe
+        'Create disabled': env.el('ta-create').disabled,
+        'Re-check hidden': env.el('ta-recheck').hidden,
+        // the refusal must not have triggered the created:false re-check
+        'lookups issued': env.urls('/api/issue-lookup').length,
+      };
+    },
+    expect: {
+      'result': `request rejected: ${shown}`,
+      'Create disabled': false,
+      'Re-check hidden': true,
+      'lookups issued': 1,
+    },
+  })),
+  {
+    name: '39. [N-1] ok:false with created:null is a refusal we are unsure '
+      + 'about — unknown wins, Create stays off',
+    async run(env) {
+      await openPanel(env);
+      await freeSlugThen(env, e => create(e, 200,
+        {ok: false, created: null, error: 'github-checker returned no JSON'}));
+      return {
+        'result': env.text('ta-result'),
+        'Create disabled': env.el('ta-create').disabled,
+        'Re-check hidden': env.el('ta-recheck').hidden,
+      };
+    },
+    expect: {
+      'result': 'issue may have been created; state unknown: '
+        + 'github-checker returned no JSON',
+      'Create disabled': true,
+      'Re-check hidden': false,
+    },
+  },
+  {
+    name: '40. [N-1] ok:false with created:true is a contradictory envelope — '
+      + 'not rendered as a success',
+    async run(env) {
+      await openPanel(env);
+      await freeSlugThen(env, e => create(e, 200,
+        {ok: false, created: true, issue: GOOD_REF, error: 'partial failure'}));
+      return {
+        'result': env.text('ta-result'),
+        'rendered links': env.links('ta-result'),
+        'Create disabled': env.el('ta-create').disabled,
+        'Re-check hidden': env.el('ta-recheck').hidden,
+      };
+    },
+    expect: {
+      'result': 'cannot read the result: reported both a failure and a '
+        + 'created issue: partial failure',
+      'rendered links': '',
+      'Create disabled': true,
+      'Re-check hidden': false,
+    },
+  },
+  {
+    name: '41. [N-1] an ok:false refusal with no `error` still says it was '
+      + 'refused, rather than inventing an outcome',
+    async run(env) {
+      await openPanel(env);
+      await freeSlugThen(env, e => create(e, 200, {ok: false, created: false}));
+      return {
+        'result': env.text('ta-result'),
+        'Create disabled': env.el('ta-create').disabled,
+      };
+    },
+    expect: {
+      'result': 'request rejected: refused, no reason given',
+      'Create disabled': false,
     },
   },
   {

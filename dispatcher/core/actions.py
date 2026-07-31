@@ -240,7 +240,15 @@ class ActionRunner:
                 created=refusal_created,
                 error=f"refused before launch: {err}",
             )
-        except (FileNotFoundError, subprocess.TimeoutExpired) as err:
+        except (OSError, subprocess.TimeoutExpired) as err:
+            # N-3: widened from `FileNotFoundError` (an OSError subclass, so
+            # this is strictly wider, not a replacement). Any other OSError on
+            # exec — E2BIG "Argument list too long" from an oversized
+            # client-supplied argument such as `--if-head`, EACCES, ENOMEM —
+            # raised straight out of here: a 500 with ZERO audit lines, the
+            # same guarantee break as F-1. The producer side of this contract
+            # already widened its equivalent catch to `(OSError,
+            # TimeoutExpired)`; we fixed one end and left the other.
             return ActionOutcome(
                 action=action, dir=target.name, ok=False, error=str(err)
             )
@@ -388,7 +396,10 @@ class ActionRunner:
         # not _audit_outcome: that helper's format has no room for the slug,
         # and the slug is the whole point of this line
         _audit.info(
-            "action=issue-lookup repo=%s slug=%s ok=%s matches=%s",
+            # %r on the slug here too: the success path logs whatever the
+            # client sent, and a slug that merely LOOKS ordinary can still
+            # carry characters that break a log line
+            "action=issue-lookup repo=%s slug=%r ok=%s matches=%s",
             repo_dir,
             slug,
             outcome.ok,

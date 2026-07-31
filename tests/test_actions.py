@@ -1167,3 +1167,28 @@ def test_issue_lookup_audit_distinguishes_unreadable_from_confirmed_empty(
     with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
         runner.issue_lookup("alpha", "wanted")
     assert "matches=0" in caplog.text
+
+
+def test_invoke_survives_an_oversized_argument(tmp_path: Path, caplog) -> None:
+    """N-3: `_invoke` caught only `FileNotFoundError`/`TimeoutExpired`, so any
+    OTHER `OSError` on exec raised straight out — a 500 with zero audit lines,
+    the same guarantee break as the NUL byte. `--if-head` is client-supplied
+    and wire-reachable, so an oversized one is enough to trigger a real
+    `[Errno 7] Argument list too long` here — not a mocked failure.
+
+    The producer side of this contract had already widened its equivalent
+    catch to `(OSError, TimeoutExpired)`; this is the matching end.
+    """
+    make_repo(tmp_path, "alpha")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", "-c", "pass")
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        outcome = runner.merge_and_sync("alpha", 1, "d" * 2_000_000)
+    assert outcome.ok is False
+    assert "Argument list too long" in (outcome.error or "")
+    # merged stays UNKNOWN: exec never happened, but this path must not claim
+    # a non-merge it was never told about
+    assert outcome.merged is None
+    assert "action=merge-and-sync" in caplog.text
+    assert "local_sync=not_attempted" in caplog.text
