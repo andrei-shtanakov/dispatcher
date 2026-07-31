@@ -1192,3 +1192,20 @@ def test_invoke_survives_an_oversized_argument(tmp_path: Path, caplog) -> None:
     assert outcome.merged is None
     assert "action=merge-and-sync" in caplog.text
     assert "local_sync=not_attempted" in caplog.text
+
+
+def test_issue_lookup_success_audit_quotes_the_slug(tmp_path: Path, caplog) -> None:
+    """The success path logged the slug with `%s` while its own rejection
+    sibling used `%r`. Layer 1 now refuses control characters, so nothing
+    hostile should reach here — but that is exactly the assumption that makes
+    a raw `%s` survive a later widening of the validator unnoticed. Pinned as
+    the quoted form, so the two lines cannot drift apart again."""
+    make_repo(tmp_path, "alpha")
+    payload = {"action": "issue-lookup", "dir": "alpha", "ok": True, "matches": []}
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        runner.issue_lookup("alpha", "wanted")
+    assert "slug='wanted'" in caplog.text
+    assert "slug=wanted " not in caplog.text
