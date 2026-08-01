@@ -623,3 +623,39 @@ def test_the_config_runner_refuses_an_answer_about_another_verb(
     assert outcome.pr_url is None
     assert outcome.error is not None
     assert "propose-pr" in outcome.error and "open-pr" in outcome.error
+
+
+def test_the_config_runners_audit_line_is_one_line_too(tmp_path: Path, caplog) -> None:
+    """The audit-line flattening landed on `core/actions.py` and not on
+    this runner, which logs the same producer-derived `detail`/`error` at
+    its own site. Two converged consumers, one of them still able to turn
+    a single attempt into a six-line record — the same defect one module
+    over, which is the shape every round of this review has found."""
+    repo = make_project(tmp_path, "alpha")
+    command, _ = fake_checker(
+        tmp_path,
+        {
+            "ok": False,
+            "detail": "first line\nsecond line",
+            "error": "a\nb\nc",
+            "pr_url": None,
+            "pr_state": None,
+            "branch": None,
+            "base_branch": None,
+            "commit_sha": None,
+            "changed_paths": None,
+        },
+        returncode=1,
+    )
+    runner = SpecRunnerConfigActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=command
+    )
+    with caplog.at_level("INFO", logger="dispatcher.actions.spec_runner_config"):
+        runner.run("alpha", _candidate(repo))
+    lines = [
+        r.getMessage()
+        for r in caplog.records
+        if "action=update-spec-runner-config" in r.getMessage()
+    ]
+    assert lines, "the attempt must be audited at all"
+    assert all("\n" not in line for line in lines), lines

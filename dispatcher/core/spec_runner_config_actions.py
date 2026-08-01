@@ -40,6 +40,7 @@ from dispatcher.core.actions import (
     PHASE_PRE_LAUNCH,
     PHASE_READABLE,
     ActionOutcome,
+    one_line,
     project_outcome,
     unusable_answer,
     verb_mismatch,
@@ -253,8 +254,8 @@ class SpecRunnerConfigActionRunner:
             "action=update-spec-runner-config repo=%s ok=%s detail=%s error=%s",
             repo_dir,
             outcome.ok,
-            outcome.detail,
-            outcome.error,
+            one_line(outcome.detail),
+            one_line(outcome.error),
         )
         return outcome
 

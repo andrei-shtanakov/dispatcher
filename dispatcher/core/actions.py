@@ -195,8 +195,13 @@ def project_outcome(ingested: Ingested, *, action: str, dir_name: str) -> Action
     return ActionOutcome(**fields)
 
 
-def _one_line(text: str | None) -> str | None:
-    """Collapse producer text to a single line for the audit log."""
+def one_line(text: str | None) -> str | None:
+    """Collapse producer text to a single line for the audit log.
+
+    Public because both runners log producer-derived `detail`/`error`, and
+    the guarantee they state — one audit line per attempt — is a property
+    of the log as a whole, not of whichever module remembered to flatten.
+    """
     return None if text is None else " ".join(text.split())
 
 
@@ -386,8 +391,8 @@ class ActionRunner:
             # a nine-line audit record. "One audit line per attempt" was
             # enforced on the refusal path and not on this one; a log a
             # reader cannot count attempts in is not an audit log.
-            _one_line(outcome.detail),
-            _one_line(outcome.error),
+            one_line(outcome.detail),
+            one_line(outcome.error),
         )
 
     def _invoke(
