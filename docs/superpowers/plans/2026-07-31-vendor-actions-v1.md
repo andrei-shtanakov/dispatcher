@@ -30,6 +30,25 @@ schema  sha256 b45e1536a5ec216260c98eedd8ebba403b587cf73a7f71969763b77f2a6f3e06
 - **Never read `../github-checker` at run time.** Vendoring is the whole point; a sibling path in shipped code defeats it.
 - Type hints everywhere; docstrings on public functions; comments sparse, explaining *why*.
 
+## Plan review notes (defects found during execution)
+
+- **`_fixture` was never defined.** Task 2's and Task 3's example tests call a
+  `_fixture(name)` helper that this plan introduces nowhere. Implementers must
+  write it (read the named JSON out of the vendored `fixtures/` directory)
+  rather than hunt for it — a plan defect, not a missing import.
+- **Task 3 may legitimately touch `contract.py`.** Its file list names only
+  `actions.py` and `models.py`, but typing `PrDetail`/`IssueRef` reaches into
+  the boundary where they are currently `dict[str, Any]`. Widening to
+  `contract.py` is an accepted divergence: record the reason and cover it with
+  a test rather than contorting the change to fit the original list.
+- **Three of Task 2's four required guard mutations did not redden its own
+  tests.** `jsonschema`'s `const`/`oneOf` already enforces the discriminators
+  type-correctly, and two schema-validation tests were masked by the
+  exit-code guard firing first. The manual prechecks earn their place through
+  *diagnosis* — "unknown schema_version" instead of a wall of schema errors —
+  not through being the only thing that rejects. Tests must isolate each guard
+  from `jsonschema` and from the exit-code check, or they prove nothing.
+
 ## Out of scope — do not fold in
 
 The hand-rolled DOM stub (`@id:web-tests-hand-rolled-dom`), the gate-floor gaps, and the rest of the UI debt. `DESIGN-405` level 3 is the **next** slice, deliberately after this one: it can then lean on the typed boundary and the vendored fixtures instead of inventing its own.
