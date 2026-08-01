@@ -57,6 +57,24 @@ def fake_checker(
     stdout — propose-pr's real no-op behavior (rc=1 + JSON) must never be
     misread as "no JSON".
     """
+    if "schema_version" not in payload:
+        # Since Task 3 this runner accepts nothing but a legal actions/v1
+        # envelope, so the bare `{"ok": ..., "detail": ...}` these tests
+        # used to send is refused before they can make their point. The
+        # test's own fields go on top of the vendored `propose-pr`
+        # envelope: it keeps saying only the thing it is about, inside a
+        # real envelope.
+        import json as _json
+
+        fixture = (
+            Path(__file__).parent.parent
+            / "contracts"
+            / "github-checker-actions"
+            / "v1"
+            / "fixtures"
+            / "propose-pr-created.json"
+        )
+        payload = _json.loads(fixture.read_text()) | payload
     record = tmp_path / "record.json"
     script = tmp_path / "fake_checker.py"
     script.write_text(
@@ -430,3 +448,77 @@ def test_target_prefers_first_root_on_name_collision(tmp_path: Path) -> None:
     assert outcome.ok, outcome.error
     argv = _json.loads(record.read_text())["argv"]
     assert argv[1] == str(tmp_path / "root1" / "gamma")
+
+
+def test_the_config_runner_has_no_parse_path_of_its_own(tmp_path: Path) -> None:
+    """This module shells out to the same producer as `core/actions.py`,
+    and had the same second `json.loads` with the same `.get()` per field.
+    Two parse paths over one contract are two sets of rules about what to
+    believe, and they drift. A payload that is not an actions/v1 envelope
+    must be refused here exactly as it is there."""
+    repo = make_project(tmp_path, "alpha")
+    # Carries its own `schema_version`, so `fake_checker` passes it through
+    # untouched — which is how a test sends a drifted envelope on purpose
+    # rather than having the helper quietly repair it.
+    drifted = {
+        "schema_version": 2,
+        "result_kind": "action",
+        "action": "propose-pr",
+        "dir": "alpha",
+        "ok": True,
+        "pr_url": "https://x",
+    }
+    command, _ = fake_checker(tmp_path, drifted)
+    runner = SpecRunnerConfigActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=command
+    )
+    outcome = runner.run("alpha", _candidate(repo))
+    assert outcome.ok is False
+    assert outcome.error is not None
+    assert outcome.pr_url is None, "nothing may be read out of a refused envelope"
+
+
+def test_the_config_runner_projects_only_what_the_producer_set(
+    tmp_path: Path,
+) -> None:
+    """`propose-pr` has no concept of a merge, so the outcome must carry no
+    answer about one — and `.get("merged")` returning `None` is exactly the
+    answer this distinction forbids."""
+    import json as _json
+
+    fixtures = (
+        Path(__file__).parent.parent
+        / "contracts"
+        / "github-checker-actions"
+        / "v1"
+        / "fixtures"
+    )
+    payload = _json.loads((fixtures / "propose-pr-created.json").read_text())
+    command, _ = fake_checker(tmp_path, payload)
+    repo = make_project(tmp_path, "alpha")
+    runner = SpecRunnerConfigActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=command
+    )
+    outcome = runner.run("alpha", _candidate(repo))
+    assert outcome.ok is True
+    assert outcome.action == "update-spec-runner-config", "the consumer's own verb"
+    assert "merged" not in outcome.model_fields_set
+    assert "pr_url" in outcome.model_fields_set
+
+
+def test_the_config_runner_checks_the_exit_code_too(tmp_path: Path) -> None:
+    """The exit code is half the contract, and it is `ingest` that checks
+    it — so this runner gets that check by going through `ingest` rather
+    than by remembering to do it. An answer that says `ok: true` and exits
+    1 is a producer contradicting itself, and neither half may be believed
+    over the other."""
+    repo = make_project(tmp_path, "alpha")
+    payload = {"ok": True, "detail": "pull request created"}
+    command, _ = fake_checker(tmp_path, payload, returncode=1)
+    runner = SpecRunnerConfigActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=command
+    )
+    outcome = runner.run("alpha", _candidate(repo))
+    assert outcome.ok is False
+    assert outcome.error is not None
+    assert "exit" in outcome.error

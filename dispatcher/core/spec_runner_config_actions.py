@@ -23,7 +23,6 @@ return code, to tell a no-op apart from a real failure.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import re
 import subprocess
@@ -36,7 +35,8 @@ from typing import Any
 from pydantic import BaseModel
 from ruamel.yaml import YAML
 
-from dispatcher.core.actions import ActionOutcome
+from dispatcher.core.actions import ActionOutcome, project_outcome
+from dispatcher.core.contract import ContractViolation, ingest
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.spec_runner_config import TYPED_DEFAULTS, TYPED_FIELDS
 from dispatcher.core.spec_runner_config_schema import (
@@ -281,23 +281,19 @@ class SpecRunnerConfigActionRunner:
                 error=str(err),
             )
         try:
-            data = json.loads(proc.stdout)
-        except json.JSONDecodeError:
+            ingested = ingest(proc.stdout, returncode=proc.returncode)
+        except ContractViolation as violation:
+            # Same producer, same contract, same single ingestion path as
+            # `core/actions.py`. This module used to keep its own
+            # `json.loads` and its own `.get()` per field; two parse paths
+            # over one contract are two sets of rules about what to
+            # believe, and they drift.
             return ActionOutcome(
                 action="update-spec-runner-config",
                 dir=target.name,
                 ok=False,
-                error=proc.stderr.strip() or "github-checker returned no JSON",
+                error=f"github-checker returned an unparseable envelope: {violation}",
             )
-        return ActionOutcome(
-            action="update-spec-runner-config",
-            dir=target.name,
-            ok=bool(data.get("ok")),
-            detail=data.get("detail"),
-            error=data.get("error"),
-            pr_url=data.get("pr_url"),
-            branch=data.get("branch"),
-            base_branch=data.get("base_branch"),
-            commit_sha=data.get("commit_sha"),
-            changed_paths=data.get("changed_paths"),
+        return project_outcome(
+            ingested, action="update-spec-runner-config", dir_name=target.name
         )

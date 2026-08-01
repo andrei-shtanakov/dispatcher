@@ -1572,3 +1572,25 @@ def test_a_cli_error_projects_only_diagnostic_fields(tmp_path: Path) -> None:
     assert outcome.action == "pull", "the requested verb, not the producer's"
     assert outcome.error
     assert "merged" not in outcome.model_fields_set
+
+
+def test_an_optional_nested_field_the_producer_omitted_stays_omitted(
+    tmp_path: Path,
+) -> None:
+    """The absent/null rule survives into the DTO one level down too. A
+    plain `model_dump()` would refill `pr_detail`'s optional fields with
+    nulls, turning "the producer said nothing about squash-merging" into
+    "the producer said it is unknown" — and this field used to reach the
+    wire as the producer's own dict, so the nulls would be new."""
+    detail = pr_detail_obj()
+    del detail["allows_squash"]  # optional in the schema; legal to omit
+    payload = v1("pr-detail", dir="alpha", ok=True, pr_detail=detail)
+    make_repo(tmp_path, "alpha")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    outcome = runner.pr_detail("alpha", 7)
+    assert outcome.ok is True
+    assert outcome.pr_detail is not None
+    assert "allows_squash" not in outcome.pr_detail
+    assert "diff_truncated" in outcome.pr_detail, "what was sent still arrives"

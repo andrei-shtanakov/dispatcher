@@ -33,8 +33,15 @@ def git(cwd, *args):
     r = subprocess.run(["git", "-C", str(cwd), *args],
                        capture_output=True, text=True)
     if r.returncode != 0:
-        raise SystemExit(json.dump(
-            {"ok": False, "error": r.stderr.strip()}, sys.stdout) or 1)
+        # actions/v1: the envelope is complete or it is refused, and the
+        # exit code is half the contract (`ok: false` exits 1).
+        json.dump({"schema_version": 1, "result_kind": "action",
+                   "action": "propose-pr", "dir": str(cwd), "ok": False,
+                   "error": r.stderr.strip(), "detail": None,
+                   "pr_url": None, "pr_state": None, "branch": None,
+                   "base_branch": None, "commit_sha": None,
+                   "changed_paths": None}, sys.stdout)
+        raise SystemExit(1)
     return r.stdout.strip()
 
 
@@ -69,9 +76,11 @@ def main():
         git(wt, "push", "-u", "origin", branch)
         git(target, "worktree", "remove", "--force", str(wt))
     git(target, "branch", "-D", branch)
-    json.dump({"ok": True, "detail": "pull request created",
-               "pr_url": "https://example/pr/42", "branch": branch,
-               "base_branch": "main", "commit_sha": sha,
+    json.dump({"schema_version": 1, "result_kind": "action",
+               "action": "propose-pr", "dir": str(target), "ok": True,
+               "error": None, "detail": "pull request created",
+               "pr_url": "https://example/pr/42", "pr_state": "OPEN",
+               "branch": branch, "base_branch": "main", "commit_sha": sha,
                "changed_paths": paths}, sys.stdout)
 
 

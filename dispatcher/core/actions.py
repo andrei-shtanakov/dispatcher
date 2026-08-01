@@ -112,7 +112,7 @@ _PLAIN_PROJECTED = (
 )
 
 
-def _project(ingested: Ingested, *, action: str, dir_name: str) -> ActionOutcome:
+def project_outcome(ingested: Ingested, *, action: str, dir_name: str) -> ActionOutcome:
     """The legacy HTTP DTO, projected from one typed producer answer.
 
     `ActionOutcome` is the `response_model` of eight endpoints, so its
@@ -436,7 +436,7 @@ class ActionRunner:
                     else stderr.strip()
                 ),
             )
-        return _project(ingested, action=action, dir_name=target.name)
+        return project_outcome(ingested, action=action, dir_name=target.name)
 
     def merge_and_sync(self, repo_dir: str, pr: int, if_head: str) -> ActionOutcome:
         """Merge one PR and re-sync the clone, holding the repo lock throughout.
