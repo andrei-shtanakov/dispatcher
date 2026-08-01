@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -961,21 +962,183 @@ def test_a_local_status_field_the_schema_requires_has_no_default() -> None:
     assert read.local.error is not None, "the fixture must carry a real error"
 
 
-def test_every_vendored_fixture_agrees_with_the_typed_models() -> None:
-    """Typing tightened the consumer: the nested models forbid unknown
-    keys and `LocalStatus` now requires what the schema requires. If a
-    model and the vendored schema ever disagree, `model_validate` raises
-    `ValidationError` — and that is deliberately *not* wrapped into
-    `ContractViolation`, for the same reason an unloadable schema is not:
-    it is a consumer fault, and dressing it as a producer violation would
-    blame the producer for a broken consumer. Which makes the agreement
-    itself the thing to pin, over the whole normative surface rather than
-    the handful of fixtures the tests above happen to use."""
-    fixtures = sorted((VENDORED_ROOT / "fixtures").glob("*.json"))
-    assert len(fixtures) == 34, "the sweep must cover the whole surface"
-    for path in fixtures:
-        payload = json.loads(path.read_text())
-        expected_exit = (
-            0 if (payload["result_kind"] == "action" and payload["ok"]) else 1
-        )
-        ingest(path.read_text(), returncode=expected_exit)
+# --- Task 4: consumer conformance -------------------------------------
+#
+# The pin tests prove the vendored copy is the producer's bytes. These
+# prove the consumer can actually consume them: a fixture that validates
+# but cannot be turned into a model is a contract this side does not have.
+
+VENDORED_FIXTURES = sorted((VENDORED_ROOT / "fixtures").glob("*.json"))
+
+
+def _expected_exit(payload: dict[str, Any]) -> int:
+    """The exit code the contract pairs with this envelope."""
+    return 0 if (payload["result_kind"] == "action" and payload["ok"]) else 1
+
+
+def test_the_sweep_covers_every_fixture() -> None:
+    """A glob that matched nothing would make every sweep below vacuous
+    and green — the failure mode a sweep cannot report about itself."""
+    assert len(VENDORED_FIXTURES) == 34
+
+
+@pytest.mark.parametrize("path", VENDORED_FIXTURES, ids=lambda p: p.stem)
+def test_every_vendored_fixture_ingests(path: Path) -> None:
+    """Parametrised rather than looped: a loop reports the first failure
+    and hides the rest, and which fixtures fail is the diagnosis."""
+    payload = json.loads(path.read_text())
+    result = ingest(path.read_text(), returncode=_expected_exit(payload))
+    assert result is not None
+    assert result.schema_version == 1
+
+
+@pytest.mark.parametrize("path", VENDORED_FIXTURES, ids=lambda p: p.stem)
+def test_every_fixture_round_trips_key_for_key(path: Path) -> None:
+    """Whole key sets, not selected keys. A significant `null` must not
+    vanish on the way in, and a field the verb has no concept of must not
+    appear on the way out — the two directions of the same rule, and the
+    ones a spot-check of a few fields would miss."""
+    payload = json.loads(path.read_text())
+    ingested = ingest(path.read_text(), returncode=_expected_exit(payload))
+    assert set(ingested.model_dump(exclude_unset=True)) == set(payload)
+
+
+@pytest.mark.parametrize("path", VENDORED_FIXTURES, ids=lambda p: p.stem)
+def test_every_nested_object_round_trips_key_for_key(path: Path) -> None:
+    """The same property one level down, where the optional fields are."""
+    payload = json.loads(path.read_text())
+    ingested = ingest(path.read_text(), returncode=_expected_exit(payload))
+    dumped = ingested.model_dump(exclude_unset=True)
+    for key in ("local", "pr_detail", "issue"):
+        if isinstance(payload.get(key), dict):
+            assert set(dumped[key]) == set(payload[key]), key
+    for key in ("matches", "malformed"):
+        for sent, got in zip(payload.get(key) or [], dumped.get(key) or []):
+            assert set(got) == set(sent), key
+
+
+# --- Step 3: the paths this consumer actually has ---------------------
+
+
+def test_the_merge_partial_outcome_survives_the_whole_way() -> None:
+    """S1's hardest case: the merge answered, and what it did is unknown.
+    `merged: null` beside `ok: false` is a producer saying "I could not
+    establish it" — the one value that must never become `false`, because
+    a screen reading `false` re-enables the merge button."""
+    outcome = _ingest_action("merge-unknown", 1)
+    assert outcome.merged is None
+    assert "merged" in outcome.model_fields_set
+    assert outcome.local_sync == "not_attempted"
+    assert outcome.pr_detail is None
+
+
+def test_read_and_empty_is_not_the_same_answer_as_unread() -> None:
+    """S2's hardest case, and the reason the producer workstream existed."""
+    free = _ingest_action("issue-lookup-free", 0)
+    unread = _ingest_action("issue-lookup-unread", 1)
+    assert free.matches == [] and free.malformed == []
+    assert unread.matches is None and unread.malformed is None
+    assert free.ok is True and unread.ok is False
+
+
+def test_the_malformed_and_conflict_lookups_carry_their_evidence() -> None:
+    """A slug claimed by several issues, or by an issue nobody can parse,
+    is a human's decision — so the consumer has to be able to show which
+    issues, not merely that there was a problem."""
+    malformed = _ingest_action("issue-lookup-malformed", 1)
+    assert malformed.matches == []
+    assert malformed.malformed is not None and len(malformed.malformed) >= 1
+    assert isinstance(malformed.malformed[0], IssueRef)
+
+    # `ok: true` — several matches is a legitimate reading of the inbox,
+    # not a failure; the decision it forces is a human's.
+    conflict = _ingest_action("issue-lookup-conflict", 0)
+    assert conflict.matches is not None and len(conflict.matches) > 1
+    assert all(isinstance(m, IssueRef) for m in conflict.matches)
+
+
+def test_a_populated_pr_detail_keeps_its_nested_collections() -> None:
+    """The truncation flags are the load-bearing part: a green verdict
+    computed over a truncated check list is not a green verdict."""
+    full = _ingest_action("pr-detail-full", 0)
+    assert isinstance(full.pr_detail, PrDetail)
+    assert full.pr_detail.checks and full.pr_detail.files
+    assert full.pr_detail.review_threads
+    assert full.pr_detail.checks_truncated is False
+
+    truncated = _ingest_action("pr-detail-truncated", 0)
+    assert truncated.pr_detail is not None
+    # Truncation is stated by the flags, not inferred from arithmetic:
+    # this fixture's `files_total` equals its `files` length, so a
+    # consumer comparing the two would call a truncated answer complete.
+    assert truncated.pr_detail.checks_truncated is True
+    assert truncated.pr_detail.files_truncated is True
+    assert truncated.pr_detail.threads_truncated is True
+
+    unavailable = _ingest_action("pr-detail-unavailable", 1)
+    assert unavailable.pr_detail is None
+    assert "pr_detail" in unavailable.model_fields_set, "null, not absent"
+
+
+# --- Step 4: the negative sweep ---------------------------------------
+
+
+def _drop(payload: dict[str, Any], key: str) -> dict[str, Any]:
+    return {k: v for k, v in payload.items() if k != key}
+
+
+@pytest.mark.parametrize(
+    "mutate, returncode, names_the_reason",
+    [
+        (lambda p: p | {"schema_version": 2}, 0, "schema_version"),
+        (lambda p: p | {"result_kind": "something_new"}, 0, "result_kind"),
+        (lambda p: p | {"merged": True}, 0, "unexpected"),
+        (lambda p: _drop(p, "local"), 0, "missing required"),
+        (lambda p: p | {"ok": "yes"}, 0, "$.ok"),
+        (lambda p: p, 1, "exit code"),
+    ],
+    ids=[
+        "unknown-schema-version",
+        "unknown-result-kind",
+        "extra-field",
+        "missing-required-field",
+        "wrong-typed-field",
+        "mismatched-exit-code",
+    ],
+)
+def test_the_negative_sweep_fails_closed_and_says_why(
+    mutate: Any, returncode: int, names_the_reason: str
+) -> None:
+    """Each refusal must name its own reason. Failing closed is half of
+    it: a boundary that refuses everything with one message is fail-closed
+    and undiagnosable, which is the state this diagnosis was rebuilt out
+    of twice."""
+    payload = mutate(_fixture("pull-success"))
+    with pytest.raises(ContractViolation) as exc_info:
+        ingest(json.dumps(payload), returncode=returncode)
+    message = str(exc_info.value)
+    assert names_the_reason in message, message
+    assert "\n" not in message
+    assert len(message) < 300
+
+
+def test_a_tampered_vendored_file_is_caught_by_its_own_manifest(
+    tmp_path: Path,
+) -> None:
+    """The pin tests assert the copy matches its manifest. This asserts
+    the check can fail: a hash comparison nobody has watched reject
+    anything is a hash comparison that might be comparing a value to
+    itself."""
+    tampered = tmp_path / "v1"
+    shutil.copytree(VENDORED_ROOT, tampered)
+    victim = tampered / "fixtures" / "pull-success.json"
+    victim.write_text(victim.read_text().replace('"ok": true', '"ok": false'))
+
+    manifest = json.loads((tampered / "manifest.json").read_text())
+    mismatched = [
+        entry["path"]
+        for entry in manifest["surface"]
+        if hashlib.sha256((tampered / entry["path"]).read_bytes()).hexdigest()
+        != entry["sha256"]
+    ]
+    assert mismatched == ["fixtures/pull-success.json"]

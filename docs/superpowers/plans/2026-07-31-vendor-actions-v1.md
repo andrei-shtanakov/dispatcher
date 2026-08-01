@@ -18,6 +18,20 @@ source  contracts/actions/v1/{actions.schema.json, README.md, fixtures/ (34)}
 schema  sha256 b45e1536a5ec216260c98eedd8ebba403b587cf73a7f71969763b77f2a6f3e06
 ```
 
+## Status
+
+The per-step checkboxes below were never maintained — not for Tasks 1 and 2
+either — so ticking only the later ones would read as "the unticked ones are
+open", which is worse than an unmaintained list. State lives here instead.
+
+| Task | State | Landed at |
+|------|-------|-----------|
+| 1. Vendor and pin | done | `c0f2b94`, `eab071f` |
+| 2. Strict ingestion boundary | done | `687a734` … `de09cf3` (four review rounds; see notes below) |
+| 3. Typed consumer models | done | `5d1b561` … `226f1a3` (one task review + two targeted re-reviews) |
+| 4. Consumer conformance | done | this commit |
+| 5. Integration and documentation | open | — |
+
 ## Global Constraints
 
 - **uv only**: `uv run pytest`, `uv run ruff`, `uv run pyrefly`. Never `pip`.
