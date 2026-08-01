@@ -12,6 +12,7 @@ import pytest
 
 from dispatcher.core import actions as actions_module
 from dispatcher.core.actions import (
+    PHASE_READABLE,
     ActionBusyError,
     ActionOutcome,
     ActionRejectedError,
@@ -44,10 +45,73 @@ def make_repo(workspace: Path, name: str) -> Path:
 
 
 def fake_checker(tmp_path: Path, payload: dict) -> tuple[str, ...]:
-    """A stand-in github-checker binary printing a fixed ActionResult."""
+    """A stand-in github-checker printing one actions/v1 ActionResult.
+
+    Since Task 3 the runner accepts nothing but a legal actions/v1
+    envelope, so a bare `{"action": ..., "ok": ...}` — what these tests
+    used to send — is now refused before any of them can make their
+    point. Rather than restate every verb's full envelope in twenty-odd
+    literals, a payload that does not already carry `schema_version` is
+    laid over the vendored fixture for its verb: the test keeps saying
+    only the thing it is about, and says it inside a real envelope.
+
+    Anything the test *did* set wins, including a deliberately wrong type
+    — the envelope is completed, never corrected. Payloads that name no
+    known verb, or that carry their own `schema_version`, are passed
+    through untouched, which is how a test sends a malformed envelope on
+    purpose.
+
+    The exit code follows the contract, because `ingest` checks it: an
+    `action` envelope with `ok: true` exits 0, everything else exits 1.
+    """
+    if "schema_version" not in payload and payload.get("action") in _CANONICAL:
+        payload = v1(str(payload["action"])) | payload
     script = tmp_path / "fake_checker.py"
-    script.write_text(f"import sys, json; json.dump({payload!r}, sys.stdout)")
+    script.write_text(
+        "import sys, json\n"
+        f"payload = {payload!r}\n"
+        "json.dump(payload, sys.stdout)\n"
+        "sys.exit(0 if payload.get('result_kind') == 'action' "
+        "and payload.get('ok') else 1)\n"
+    )
     return ("python3", str(script))
+
+
+def v1_literal(verb: str, **overrides: object) -> str:
+    """A complete actions/v1 envelope as a Python literal.
+
+    The concurrency tests build their fake github-checker as an inline
+    script, so their payloads are text rather than dicts and cannot go
+    through `fake_checker`'s completion. This gives them the same thing:
+    the vendored envelope for the verb, with the test's own fields on top.
+    """
+    return repr(v1(verb, **overrides))
+
+
+def issue_ref(**overrides: object) -> dict:
+    """A complete `$defs/issue_ref`, with the test's own fields on top.
+
+    `issue_ref` requires six fields and forbids extras, so the partial
+    `{"number": 9, "url": "..."}` these tests used to send is no longer a
+    legal answer — the runner refuses the whole envelope before the test
+    can make its point. Same idea as `v1`, one level down.
+    """
+    return v1("issue-lookup")["matches"][0] | overrides
+
+
+def pr_detail_obj(**overrides: object) -> dict:
+    """A complete `$defs/pr_detail`, with the test's own fields on top."""
+    return v1("pr-detail")["pr_detail"] | overrides
+
+
+def local_status(**overrides: object) -> dict:
+    """A complete `$defs/local_status`, with the test's own fields on top.
+
+    All five fields are required and the object is closed, so the partial
+    `{"behind": 0, "dirty": False}` these tests used to send is not a legal
+    clone status.
+    """
+    return v1("pull")["local"] | overrides
 
 
 def test_run_delegates_and_parses(tmp_path: Path) -> None:
@@ -57,7 +121,7 @@ def test_run_delegates_and_parses(tmp_path: Path) -> None:
         "dir": "alpha",
         "ok": True,
         "detail": "fast-forwarded",
-        "local": {"behind": 0, "dirty": False},
+        "local": local_status(behind=0, dirty=False),
     }
     runner = ActionRunner(
         DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
@@ -200,8 +264,8 @@ def test_invoke_passes_extra_argv_through(tmp_path: Path) -> None:
     script = tmp_path / "echo_argv.py"
     script.write_text(
         "import sys, json;"
-        "json.dump({'action':'merge','dir':'alpha','ok':True,"
-        "'detail':' '.join(sys.argv[1:])}, sys.stdout)"
+        f"json.dump({v1_literal('merge', dir='alpha', ok=True)}"
+        " | {'detail': ' '.join(sys.argv[1:])}, sys.stdout)"
     )
     runner = ActionRunner(
         DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
@@ -214,6 +278,10 @@ def test_invoke_passes_extra_argv_through(tmp_path: Path) -> None:
 
 def scripted_checker(tmp_path: Path, by_action: dict[str, dict]) -> tuple[str, ...]:
     """A fake github-checker answering differently per verb, recording argv."""
+    by_action = {
+        verb: (v1(verb) | payload if "schema_version" not in payload else payload)
+        for verb, payload in by_action.items()
+    }
     script = tmp_path / "scripted_checker.py"
     script.write_text(
         "import sys, json, pathlib\n"
@@ -224,7 +292,8 @@ def scripted_checker(tmp_path: Path, by_action: dict[str, dict]) -> tuple[str, .
         "    fh.write(' '.join(sys.argv[1:]) + '\\n')\n"
         "payload = table[action]\n"
         "json.dump(payload, sys.stdout)\n"
-        "sys.exit(0 if payload.get('ok') else 1)\n"
+        "sys.exit(0 if payload.get('result_kind') == 'action' "
+        "and payload.get('ok') else 1)\n"
     )
     return ("python3", str(script))
 
@@ -385,6 +454,10 @@ def test_a_merge_answer_without_merged_is_not_claimed_as_merged(
     github-checker stamps `merged` on every answer today; if it ever stops,
     `ok: true` alone must not be reported as a *confirmed* merge — an unknown
     is an unknown in both directions.
+
+    Under actions/v1 the key cannot simply go missing — `verb_merge`
+    requires it — so the unknown is said the way the contract says it, with
+    an explicit `null`. That is the same statement, made legally.
     """
     make_repo(tmp_path, "alpha")
     runner = ActionRunner(
@@ -392,7 +465,12 @@ def test_a_merge_answer_without_merged_is_not_claimed_as_merged(
         command=scripted_checker(
             tmp_path,
             {
-                "merge": {"action": "merge", "dir": "alpha", "ok": True},
+                "merge": {
+                    "action": "merge",
+                    "dir": "alpha",
+                    "ok": True,
+                    "merged": None,
+                },
                 "post-merge-sync": {
                     "action": "post-merge-sync",
                     "dir": "alpha",
@@ -414,7 +492,12 @@ def test_malformed_envelope_is_a_failed_outcome_with_an_audit_line(
     """A wrong-typed envelope field used to raise out of `_invoke`, so a
     subprocess that genuinely ran left no audit line at all."""
     make_repo(tmp_path, "alpha")
-    payload = {"action": "pull", "dir": "alpha", "ok": True, "merged": {"nope": 1}}
+    # A *declared* field with the wrong type: its path names it, because a
+    # `json_path` segment that is a schema-declared property name is
+    # schema-side. An undeclared field is different on purpose — the name is
+    # producer text, so it is counted rather than echoed; that half is
+    # asserted below.
+    payload = {"action": "pull", "dir": "alpha", "ok": True, "detail": {"nope": 1}}
     runner = ActionRunner(
         DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
     )
@@ -423,7 +506,7 @@ def test_malformed_envelope_is_a_failed_outcome_with_an_audit_line(
     assert outcome.ok is False
     assert outcome.error is not None
     assert "unparseable envelope" in outcome.error
-    assert "merged" in outcome.error  # the offending field, not just "invalid"
+    assert "$.detail" in outcome.error  # the offending field, not just "invalid"
     assert "\n" not in outcome.error  # one audit line per attempt
     assert any(
         "action=pull" in r.getMessage() and "unparseable envelope" in r.getMessage()
@@ -471,14 +554,12 @@ def test_lock_is_held_across_both_steps(tmp_path: Path, monkeypatch) -> None:
         "    in_merge.touch()\n"
         "    while not go_merge.exists():\n"
         "        time.sleep(0.01)\n"
-        "    json.dump({'action':'merge','dir':'alpha','ok':True,'merged':True},"
-        " sys.stdout)\n"
+        f"    json.dump({v1_literal('merge', dir='alpha', ok=True, merged=True)}, sys.stdout)\n"
         "else:\n"
         "    in_sync.touch()\n"
         "    while not go_sync.exists():\n"
         "        time.sleep(0.01)\n"
-        "    json.dump({'action':'post-merge-sync','dir':'alpha','ok':True,"
-        "'local_sync':'ok'}, sys.stdout)\n"
+        f"    json.dump({v1_literal('post-merge-sync', dir='alpha', ok=True, local_sync='ok')}, sys.stdout)\n"
     )
     runner = ActionRunner(
         DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
@@ -512,7 +593,7 @@ def test_pr_detail_passes_through_without_taking_the_lock(tmp_path: Path) -> Non
         "action": "pr-detail",
         "dir": "alpha",
         "ok": True,
-        "pr_detail": {"number": 7, "head_sha": HEAD, "is_draft": False},
+        "pr_detail": pr_detail_obj(number=7, head_sha=HEAD, is_draft=False),
     }
     runner = ActionRunner(
         DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
@@ -544,14 +625,11 @@ def test_pr_detail_succeeds_while_a_composite_is_in_flight(tmp_path: Path) -> No
         "    flag.touch()\n"
         "    while not gate.exists():\n"
         "        time.sleep(0.01)\n"
-        "    json.dump({'action':'merge','dir':'alpha','ok':True,'merged':True},"
-        " sys.stdout)\n"
+        f"    json.dump({v1_literal('merge', dir='alpha', ok=True, merged=True)}, sys.stdout)\n"
         "elif action == 'pr-detail':\n"
-        "    json.dump({'action':'pr-detail','dir':'alpha','ok':True,"
-        "'pr_detail':{'number':7}}, sys.stdout)\n"
+        f"    json.dump({v1_literal('pr-detail', dir='alpha', ok=True)}, sys.stdout)\n"
         "else:\n"
-        "    json.dump({'action':'post-merge-sync','dir':'alpha','ok':True,"
-        "'local_sync':'ok'}, sys.stdout)\n"
+        f"    json.dump({v1_literal('post-merge-sync', dir='alpha', ok=True, local_sync='ok')}, sys.stdout)\n"
     )
     runner = ActionRunner(
         DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
@@ -581,7 +659,7 @@ def test_outcome_carries_the_issue_fields(tmp_path: Path) -> None:
         "action": "issue-lookup",
         "dir": "alpha",
         "ok": True,
-        "matches": [{"number": 7, "state": "open"}],
+        "matches": [issue_ref(number=7, state="open")],
         "malformed": [],
     }
     runner = ActionRunner(
@@ -615,14 +693,11 @@ def test_issue_lookup_succeeds_while_a_composite_is_in_flight(tmp_path: Path) ->
         "    flag.touch()\n"
         "    while not gate.exists():\n"
         "        time.sleep(0.01)\n"
-        "    json.dump({'action':'merge','dir':'alpha','ok':True,'merged':True},"
-        " sys.stdout)\n"
+        f"    json.dump({v1_literal('merge', dir='alpha', ok=True, merged=True)}, sys.stdout)\n"
         "elif action == 'issue-lookup':\n"
-        "    json.dump({'action':'issue-lookup','dir':'alpha','ok':True,"
-        "'matches':[],'malformed':[]}, sys.stdout)\n"
+        f"    json.dump({v1_literal('issue-lookup', dir='alpha', ok=True, matches=[], malformed=[])}, sys.stdout)\n"
         "else:\n"
-        "    json.dump({'action':'post-merge-sync','dir':'alpha','ok':True,"
-        "'local_sync':'ok'}, sys.stdout)\n"
+        f"    json.dump({v1_literal('post-merge-sync', dir='alpha', ok=True, local_sync='ok')}, sys.stdout)\n"
     )
     runner = ActionRunner(
         DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
@@ -654,7 +729,7 @@ def test_non_object_json_is_a_failed_outcome_not_an_exception(
     )
     outcome = runner.run("pull", "alpha")
     assert outcome.ok is False
-    assert "not an object" in (outcome.error or "")
+    assert "must be a JSON object" in (outcome.error or "")
 
 
 def test_issue_lookup_still_validates_the_repo_dir(tmp_path: Path) -> None:
@@ -665,17 +740,20 @@ def test_issue_lookup_still_validates_the_repo_dir(tmp_path: Path) -> None:
 
 def test_issue_lookup_passes_the_slug_through(tmp_path: Path) -> None:
     make_repo(tmp_path, "alpha")
-    script = tmp_path / "echo_argv.py"
-    script.write_text(
-        "import sys, json;"
-        "json.dump({'action':'issue-lookup','dir':'alpha','ok':True,"
-        "'detail':' '.join(sys.argv[1:])}, sys.stdout)"
-    )
+    # Echoed through the call log rather than through a payload field:
+    # `verb_issue_lookup` declares no `detail`, and the envelope is closed,
+    # so the old trick of reflecting argv into `detail` no longer produces
+    # a legal answer. What the test is about — the slug reaching argv — is
+    # unchanged.
     runner = ActionRunner(
-        DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
+        DispatcherConfig(roots=(tmp_path,)),
+        command=scripted_checker(
+            tmp_path, {"issue-lookup": v1("issue-lookup", dir="alpha", ok=True)}
+        ),
     )
     outcome = runner.issue_lookup("alpha", "wanted")
-    assert "--slug wanted" in (outcome.detail or "")
+    assert outcome.ok is True
+    assert any("--slug wanted" in call for call in read_calls(tmp_path))
 
 
 @pytest.mark.parametrize("bad_local", [5, "x", [1, 2]])
@@ -726,7 +804,7 @@ def test_request_task_creates_and_confirms(tmp_path: Path) -> None:
         "dir": "alpha",
         "ok": True,
         "created": True,
-        "issue": {"number": 9, "url": "https://x/9"},
+        "issue": issue_ref(number=9, url="https://x/9"),
     }
     runner = ActionRunner(
         DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
@@ -747,7 +825,9 @@ def test_request_task_reports_a_taken_slug_as_success(tmp_path: Path) -> None:
         "dir": "alpha",
         "ok": True,
         "created": False,
-        "issue": {"number": 5, "url": "https://x/5"},
+        # The slug was taken, so the *existing* issue is the answer here;
+        # the assertion below is about `created`, not about `issue`.
+        "issue": issue_ref(number=5, url="https://x/5"),
         "detail": "an inbox issue for this slug already exists",
     }
     runner = ActionRunner(
@@ -815,6 +895,9 @@ def test_request_task_passes_a_duplicate_conflict_through(tmp_path: Path) -> Non
         "dir": "alpha",
         "ok": False,
         "created": False,
+        # required by `verb_issue_create`: "we have no issue" is an
+        # explicit null, never an omission
+        "issue": None,
         "error": "several inbox issues claim this slug",
     }
     runner = ActionRunner(
@@ -839,6 +922,9 @@ def test_request_task_reports_an_unavailable_lookup_as_not_created(
         "dir": "alpha",
         "ok": False,
         "created": False,
+        # `verb_issue_create` requires `issue`, so "we have no issue" is
+        # said with an explicit null; the producer cannot simply omit it.
+        "issue": None,
         "error": "slug lookup failed before create",
     }
     runner = ActionRunner(
@@ -861,7 +947,7 @@ def test_request_task_audits_whether_it_created(tmp_path: Path, caplog) -> None:
         "dir": "alpha",
         "ok": True,
         "created": False,
-        "issue": {"number": 5},
+        "issue": issue_ref(number=5),
     }
     runner = ActionRunner(
         DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
@@ -897,8 +983,8 @@ def test_request_task_passes_prose_through_a_file_not_argv(
         "import sys, json, pathlib\n"
         "i = sys.argv.index('--body-file')\n"
         "body = pathlib.Path(sys.argv[i + 1]).read_text()\n"
-        "json.dump({'action':'issue-create','dir':'alpha','ok':True,"
-        "'created':True,'detail':body}, sys.stdout)\n"
+        f"json.dump({v1_literal('issue-create', dir='alpha', ok=True, created=True)}"
+        " | {'detail': body}, sys.stdout)\n"
     )
     runner = ActionRunner(
         DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
@@ -923,8 +1009,7 @@ def test_request_task_holds_the_repo_lock(tmp_path: Path) -> None:
         "flag.touch()\n"
         "while not gate.exists():\n"
         "    time.sleep(0.01)\n"
-        "json.dump({'action':'issue-create','dir':'alpha','ok':True,"
-        "'created':True}, sys.stdout)\n"
+        f"json.dump({v1_literal('issue-create', dir='alpha', ok=True, created=True)}, sys.stdout)\n"
     )
     runner = ActionRunner(
         DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
@@ -1158,7 +1243,15 @@ def test_issue_lookup_audit_distinguishes_unreadable_from_confirmed_empty(
     means "could not read the inbox", reproducing the exact collapse the rest
     of this feature exists to prevent."""
     make_repo(tmp_path, "alpha")
-    payload = {"action": "issue-lookup", "dir": "alpha", "ok": False}
+    # `matches: null` — "could not read the inbox" — is the value under
+    # test, and the verb requires the key, so it is sent explicitly.
+    payload = {
+        "action": "issue-lookup",
+        "dir": "alpha",
+        "ok": False,
+        "matches": None,
+        "malformed": None,
+    }
     runner = ActionRunner(
         DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
     )
@@ -1345,3 +1438,137 @@ def test_control_char_refusal_is_one_readable_line(tmp_path: Path) -> None:
     message = str(excinfo.value)
     assert "\n" not in message
     assert message.rstrip().endswith("try again"), message
+
+
+# --- Task 3 part 2: one ingestion path, one explicit projection --------
+
+VENDORED_FIXTURES = (
+    Path(__file__).parent.parent
+    / "contracts"
+    / "github-checker-actions"
+    / "v1"
+    / "fixtures"
+)
+_CANONICAL = {
+    "pull": "pull-success",
+    "open-pr": "open-pr-created",
+    "post-merge-sync": "post-merge-sync-ok",
+    "merge": "merge-merged",
+    "pr-detail": "pr-detail-full",
+    "issue-lookup": "issue-lookup-one",
+    "issue-create": "issue-create-created",
+    "propose-pr": "propose-pr-created",
+}
+DROP = object()
+
+
+def v1(verb: str, **overrides: object) -> dict:
+    """A vendored actions/v1 envelope for `verb`, with overrides applied.
+
+    Built from the normative fixture rather than hand-written, so a test
+    payload cannot quietly stop being a legal envelope — which is the
+    whole point now that `_invoke` refuses anything that is not one. Pass
+    `DROP` to remove a key, which is how a test says *absent* as opposed
+    to `null`.
+    """
+    import json as _json
+
+    payload = _json.loads((VENDORED_FIXTURES / f"{_CANONICAL[verb]}.json").read_text())
+    for key, value in overrides.items():
+        if value is DROP:
+            payload.pop(key, None)
+        else:
+            payload[key] = value
+    return payload
+
+
+def contract_checker(tmp_path: Path, payload: dict) -> tuple[str, ...]:
+    """A stand-in github-checker that also exits the way the contract says."""
+    script = tmp_path / "contract_checker.py"
+    script.write_text(
+        "import sys, json\n"
+        f"payload = {payload!r}\n"
+        "json.dump(payload, sys.stdout)\n"
+        "sys.exit(0 if payload.get('result_kind') == 'action' "
+        "and payload.get('ok') else 1)\n"
+    )
+    return ("python3", str(script))
+
+
+def _run_pull(tmp_path: Path, payload: dict) -> ActionOutcome:
+    make_repo(tmp_path, "alpha")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)),
+        command=contract_checker(tmp_path, payload),
+    )
+    return runner.run("pull", "alpha")
+
+
+def test_the_runner_has_no_parse_path_of_its_own(tmp_path: Path) -> None:
+    """A payload that is not an actions/v1 envelope must be refused, not
+    read field by field. Before this task `_invoke` had its own
+    `json.loads` and `.get()`s, so a v0-shaped answer was accepted and
+    silently reinterpreted."""
+    legacy = {"action": "pull", "dir": "alpha", "ok": True, "detail": "done"}
+    outcome = _run_pull(tmp_path, legacy)
+    assert outcome.ok is False
+    assert outcome.error is not None
+    assert outcome.phase == PHASE_READABLE, "the child ran and was read"
+
+
+def test_the_projection_copies_only_what_the_producer_set(tmp_path: Path) -> None:
+    """`pull` has no concept of an inbox, so the outcome must not carry an
+    answer about one. `.get(name)` returning `None` is indistinguishable
+    from the producer sending `null`, which is the distinction the whole
+    producer workstream exists to preserve."""
+    outcome = _run_pull(tmp_path, v1("pull"))
+    assert outcome.ok is True
+    assert "matches" not in outcome.model_fields_set
+    assert "merged" not in outcome.model_fields_set
+    assert "detail" in outcome.model_fields_set
+
+
+def test_a_null_producer_field_is_projected_as_an_explicit_none(
+    tmp_path: Path,
+) -> None:
+    """`null` is an answer — "applicable, unknown" — and must arrive as a
+    field that was set, to a value of `None`."""
+    outcome = _run_pull(tmp_path, v1("pull", detail=None))
+    assert "detail" in outcome.model_fields_set
+    assert outcome.detail is None
+
+
+def test_local_is_projected_only_when_the_producer_sent_it(tmp_path: Path) -> None:
+    """`local_behind`/`local_dirty` are a consumer projection of one
+    producer fact. With no `local` on the wire there is no fact to
+    project, and a `None` there would read as "read, and not behind"."""
+    with_local = _run_pull(tmp_path, v1("pull"))
+    assert with_local.local_dirty is False
+    assert "local_behind" in with_local.model_fields_set
+
+    # `issue-lookup`, not `pull` with `local: null`: the schema makes
+    # `local` required for `pull`, so "the producer sent no local status"
+    # is only reachable through a verb that has no clone concept at all —
+    # which is the case this is about.
+    make_repo(tmp_path, "beta")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)),
+        command=contract_checker(tmp_path, v1("issue-lookup")),
+    )
+    without = runner.issue_lookup("beta", "some-slug")
+    assert "local_behind" not in without.model_fields_set
+    assert without.local_behind is None
+
+
+def test_a_cli_error_projects_only_diagnostic_fields(tmp_path: Path) -> None:
+    """`cli_error`'s `action` names the attempted verb for diagnosis and
+    must never select a verb's payload. The projection carries the
+    consumer's own requested action, never the producer's."""
+    import json as _json
+
+    payload = _json.loads((VENDORED_FIXTURES / "cli-error.json").read_text())
+    outcome = _run_pull(tmp_path, payload)
+    assert outcome.ok is False
+    assert outcome.action == "pull", "the requested verb, not the producer's"
+    assert outcome.error
+    assert "merged" not in outcome.model_fields_set

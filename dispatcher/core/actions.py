@@ -28,7 +28,6 @@ classes are deliberately not merged; see that module's docstring.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import subprocess
@@ -39,8 +38,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
+from dispatcher.core.contract import (
+    ActionPayload,
+    ContractViolation,
+    Ingested,
+    ingest,
+)
 from dispatcher.core.discovery import DispatcherConfig
 
 _ACTION_TIMEOUT = 120
@@ -90,6 +95,89 @@ class ActionOutcome(BaseModel):
     # from being told apart by Python's exception hierarchy, which is the
     # inference that produced the created=False-on-a-completed-run bug.
     phase: str | None = None  # pre_launch | launched_unreadable | readable_result
+
+
+_PLAIN_PROJECTED = (
+    "detail",
+    "error",
+    "pr_url",
+    "branch",
+    "base_branch",
+    "commit_sha",
+    "changed_paths",
+    "merged",
+    "local_sync",
+    "gate_failed",
+    "created",
+)
+
+
+def _project(ingested: Ingested, *, action: str, dir_name: str) -> ActionOutcome:
+    """The legacy HTTP DTO, projected from one typed producer answer.
+
+    `ActionOutcome` is the `response_model` of eight endpoints, so its
+    field set is the wire contract the SPA and the VS Code extension read.
+    It is therefore a *DTO*, not the canonical producer model, and this is
+    where the two are kept apart: `ingest` decides what to believe, and
+    nothing here re-decides it — no validation, no interpretation, no
+    second parse.
+
+    The rule that makes the projection faithful is that it copies only
+    fields the producer actually **set**. `.get(name)` returning `None` is
+    indistinguishable from the producer sending `null`, and that
+    distinction — absent means the verb has no such concept, `null` means
+    applicable but unknown — is the entire reason the producer workstream
+    happened. So absence stays absence, in this model's
+    ``model_fields_set`` too.
+
+    (What crosses the wire is a separate question with a separate answer:
+    no route sets ``response_model_exclude_unset``, so unset fields still
+    serialise as explicit nulls. Turning that on would be a wire change
+    for the SPA and the extension, so it is pinned by a golden test rather
+    than done here as a side effect.)
+    """
+    fields: dict[str, Any] = {
+        "action": action,  # the requested verb; the producer's is diagnostic
+        "dir": dir_name,
+        "ok": ingested.ok,
+        "phase": PHASE_READABLE,
+    }
+    sent = ingested.model_fields_set
+    if not isinstance(ingested, ActionPayload):
+        # cli_error / contract_error are not a ninth verb: they carry no
+        # verb payload, so only the shared diagnostic fields project.
+        if "error" in sent:
+            fields["error"] = ingested.error
+        return ActionOutcome(**fields)
+
+    for name in _PLAIN_PROJECTED:
+        if name in sent:
+            fields[name] = getattr(ingested, name)
+    for name in ("pr_detail", "issue"):
+        if name in sent:
+            nested = getattr(ingested, name)
+            # `exclude_unset` for the same reason as above, one level
+            # down: a full dump would refill the nested optionals the
+            # producer omitted, and this field used to reach the wire as
+            # the producer's own dict.
+            fields[name] = (
+                None if nested is None else nested.model_dump(exclude_unset=True)
+            )
+    for name in ("matches", "malformed"):
+        if name in sent:
+            listed = getattr(ingested, name)
+            fields[name] = (
+                None
+                if listed is None
+                else [item.model_dump(exclude_unset=True) for item in listed]
+            )
+    if "local" in sent and ingested.local is not None:
+        # Two consumer columns over one producer fact. With no `local` on
+        # the wire there is no fact to project, and `local_behind=None`
+        # would read as "read, and not behind".
+        fields["local_behind"] = ingested.local.behind
+        fields["local_dirty"] = ingested.local.dirty
+    return ActionOutcome(**fields)
 
 
 class ActionBusyError(Exception):
@@ -324,51 +412,16 @@ class ActionRunner:
         # PHASE 3 — we hold a readable answer; every outcome below is a
         # statement about what github-checker actually said.
         try:
-            data = json.loads(stdout)
-        except json.JSONDecodeError:
-            return ActionOutcome(
-                action=action,
-                dir=target.name,
-                ok=False,
-                phase=PHASE_READABLE,
-                error=stderr.strip() or "github-checker returned no JSON",
-            )
-        if not isinstance(data, dict):
-            return ActionOutcome(
-                action=action,
-                dir=target.name,
-                ok=False,
-                phase=PHASE_READABLE,
-                error="github-checker returned JSON that is not an object",
-            )
-        local = data.get("local")
-        if not isinstance(local, dict):
-            local = {}
-        try:
-            return ActionOutcome(
-                action=action,
-                dir=target.name,
-                ok=bool(data.get("ok")),
-                detail=data.get("detail"),
-                error=data.get("error"),
-                pr_url=data.get("pr_url"),
-                local_behind=local.get("behind"),
-                local_dirty=local.get("dirty"),
-                merged=data.get("merged"),
-                local_sync=data.get("local_sync"),
-                gate_failed=data.get("gate_failed"),
-                pr_detail=data.get("pr_detail"),
-                matches=data.get("matches"),
-                malformed=data.get("malformed"),
-                created=data.get("created"),
-                issue=data.get("issue"),
-                phase=PHASE_READABLE,
-            )
-        except ValidationError as err:
-            # the pr_detail PAYLOAD is validated by the console; the envelope
-            # around it had no boundary at all — a wrong-typed field raised
-            # out of here, so a merge subprocess that genuinely ran left no
-            # audit line, breaking this module's stated guarantee
+            ingested = ingest(stdout, returncode=proc.returncode)
+        except ContractViolation as violation:
+            # The one place a producer answer is judged. Everything this
+            # module used to do by hand here — its own `json.loads`, its
+            # own root-object check, `.get()` per field — is gone: a
+            # second parse path is a second set of rules about what to
+            # believe, and the two drift. A refusal is still an outcome
+            # with an audit line, never an exception out of the runner:
+            # a merge subprocess that genuinely ran must not vanish from
+            # the log because its answer was unreadable.
             return ActionOutcome(
                 action=action,
                 dir=target.name,
@@ -376,12 +429,14 @@ class ActionRunner:
                 phase=PHASE_READABLE,
                 error=(
                     "github-checker returned an unparseable envelope: "
-                    # one audit line per attempt: pydantic's report is
-                    # multi-line, and its detail is what makes the drift
-                    # diagnosable, so flatten rather than truncate
-                    + " ".join(str(err).split())
+                    # one audit line per attempt; `ContractViolation`
+                    # messages are single-line and bounded by construction
+                    f"{violation}"
+                    if str(violation)
+                    else stderr.strip()
                 ),
             )
+        return _project(ingested, action=action, dir_name=target.name)
 
     def merge_and_sync(self, repo_dir: str, pr: int, if_head: str) -> ActionOutcome:
         """Merge one PR and re-sync the clone, holding the repo lock throughout.
