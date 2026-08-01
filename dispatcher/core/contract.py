@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 import jsonschema
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 _SCHEMA_PATH = (
     Path(__file__).resolve().parents[2]
@@ -58,13 +58,104 @@ class ContractViolation(Exception):
 
 
 class LocalStatus(BaseModel):
-    """State of one local clone relative to its upstream (`$defs/local_status`)."""
+    """State of one local clone relative to its upstream (`$defs/local_status`).
 
-    branch: str | None = None
-    ahead: int | None = None
-    behind: int | None = None
+    All five fields are `required` in the schema, so none carries a
+    default: a default here would be a consumer answer standing in for a
+    producer fact, and `error: None` in particular reads as "the clone was
+    read and was fine".
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    branch: str | None
+    ahead: int | None
+    behind: int | None
     dirty: bool
-    error: str | None = None
+    error: str | None
+
+
+class CheckRun(BaseModel):
+    """One check run on a PR head (`$defs/check_run`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    state: str
+
+
+class ChangedFile(BaseModel):
+    """One file in a PR's diff (`$defs/changed_file`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    additions: int
+    deletions: int
+
+
+class ReviewThread(BaseModel):
+    """One review thread (`$defs/review_thread`).
+
+    ``path``/``author``/``excerpt`` are optional in the schema, so they
+    keep the three-state rule one level down: absent is not the same
+    answer as ``null``, and ``model_fields_set`` is what tells them apart.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    is_resolved: bool
+    is_outdated: bool
+    path: str | None = None
+    author: str | None = None
+    excerpt: str | None = None
+
+
+class IssueRef(BaseModel):
+    """One inbox issue (`$defs/issue_ref`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    number: int
+    title: str
+    state: Literal["open", "closed"]
+    url: str
+    author: str
+    labels: list[str]
+
+
+class PrDetail(BaseModel):
+    """One PR's reviewable state (`$defs/pr_detail`).
+
+    The ``*_truncated`` flags are load-bearing rather than cosmetic: a
+    green verdict computed over a truncated check list is not a green
+    verdict, so they are required by the schema and required here.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    number: int
+    title: str
+    url: str
+    state: str
+    is_draft: bool
+    mergeable: str
+    merge_state_status: str | None = None
+    head_branch: str
+    head_sha: str
+    base_branch: str
+    review_decision: str | None = None
+    checks: list[CheckRun]
+    checks_truncated: bool
+    files: list[ChangedFile]
+    files_total: int
+    files_truncated: bool
+    review_threads: list[ReviewThread]
+    threads_truncated: bool
+    diff: str | None = None
+    diff_truncated: bool
+    allows_squash: bool | None = None
 
 
 class ActionPayload(BaseModel):
@@ -77,10 +168,17 @@ class ActionPayload(BaseModel):
     *set* on this model (present-vs-null-vs-absent survives typing; see
     Task 3, which reads ``model_fields_set``).
 
-    Nested payloads that vary per verb (``pr_detail``, ``matches``,
-    ``malformed``, ``issue``) stay as validated-but-untyped dicts/lists
-    here; they were already checked against the vendored schema, so a
-    later typed refinement is additive, not a second validation path.
+    The nested payloads that vary per verb (``pr_detail``, ``matches``,
+    ``malformed``, ``issue``) are typed (Task 3). They were already
+    checked against the vendored schema before this model is built, so
+    the models are a *view* over validated data, not a second validation
+    path — nothing here decides whether the producer is to be believed.
+
+    Every optional field keeps its ``= None`` default so that absence is
+    representable at all, and the default is never the answer: which of
+    absent / ``null`` the producer sent is read from
+    ``model_fields_set``, and ``model_validate`` is handed exactly the
+    verb's own validated dict so an inapplicable field is never *set*.
     """
 
     schema_version: int
@@ -97,14 +195,14 @@ class ActionPayload(BaseModel):
     base_branch: str | None = None
     commit_sha: str | None = None
     changed_paths: list[str] | None = None
-    pr_detail: dict[str, Any] | None = None
+    pr_detail: PrDetail | None = None
     merged: bool | None = None
     local_sync: str | None = None
     gate_failed: list[str] | None = None
-    matches: list[dict[str, Any]] | None = None
-    malformed: list[dict[str, Any]] | None = None
+    matches: list[IssueRef] | None = None
+    malformed: list[IssueRef] | None = None
     created: bool | None = None
-    issue: dict[str, Any] | None = None
+    issue: IssueRef | None = None
 
 
 class CliError(BaseModel):

@@ -49,6 +49,35 @@ schema  sha256 b45e1536a5ec216260c98eedd8ebba403b587cf73a7f71969763b77f2a6f3e06
   not through being the only thing that rejects. Tests must isolate each guard
   from `jsonschema` and from the exit-code check, or they prove nothing.
 
+- **Task 3's one prescribed mutation does not redden its own prescribed
+  test.** The plan says: default `matches` to `[]`, confirm
+  `test_null_and_empty_survive_typing` reddens. It does not.
+  `issue-lookup-unread` carries an explicit `"matches": null`, so the default
+  is never reached, and `model_fields_set` excludes defaults either way. What
+  the mutation actually changes is the value read off a verb with *no such
+  concept* — `pull.matches` becomes `[]`, i.e. "the inbox was read and was
+  empty" about a verb that never looked at one. The test must read the value
+  on such a verb, not only the bookkeeping on a verb that answered.
+- **Divergence taken, Task 3 → `contract.py` (the accepted one above,
+  exercised).** `PrDetail`/`IssueRef`/`CheckRun`/`ChangedFile`/`ReviewThread`
+  live next to `ActionPayload`, whose fields they replace. This is
+  integration of a typed result, not new trust logic: the authoritative
+  root-`oneOf` check still solely decides accept/reject, no parse path was
+  added, and the models are built from the same already-validated dict —
+  they narrow types the schema had already enforced. `LocalStatus` lost its
+  four defaults for the same reason the models exist: the schema marks all
+  five fields required, so a default there is a consumer answer standing in
+  for a producer fact, and `error: None` in particular reads as "the clone
+  was read and was fine".
+- **Tightening the models creates a divergence risk the plan does not
+  mention.** `extra="forbid"` and the newly-required `LocalStatus` fields
+  mean a model could reject what the schema accepts, and `model_validate` is
+  deliberately *not* wrapped into `ContractViolation` — a model/schema
+  disagreement is a consumer fault, and dressing it as a producer violation
+  would blame the producer for a broken consumer. So the agreement itself is
+  pinned, over all 34 fixtures rather than the handful the semantics tests
+  use.
+
 ## Out of scope — do not fold in
 
 The hand-rolled DOM stub (`@id:web-tests-hand-rolled-dom`), the gate-floor gaps, and the rest of the UI debt. `DESIGN-405` level 3 is the **next** slice, deliberately after this one: it can then lean on the typed boundary and the vendored fixtures instead of inventing its own.

@@ -16,13 +16,21 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from dispatcher.core.contract import (
     _MAX_SCHEMA_ERROR_LEN,
     _VARIANT_DEFS,
+    ActionPayload,
+    ChangedFile,
+    CheckRun,
     CliError,
     ContractError,
     ContractViolation,
+    IssueRef,
+    LocalStatus,
+    PrDetail,
+    ReviewThread,
     _describe_untrusted,
     _schema,
     _verb_defs,
@@ -43,6 +51,20 @@ def _load_manifest() -> dict:
 def _fixture(name: str) -> dict[str, Any]:
     """Load one vendored golden fixture as a plain dict, by stem."""
     return json.loads((VENDORED_ROOT / "fixtures" / f"{name}.json").read_text())
+
+
+def _ingest_action(name: str, returncode: int) -> ActionPayload:
+    """Ingest one fixture and narrow to the action variant.
+
+    `ingest` returns the three-variant union, so reading an action-only
+    field off it is a type error — and asserting the variant is the right
+    fix rather than a cast: a test that reads `.matches` is a test about
+    an action payload, and if ingestion ever returns something else that
+    is the failure, not a nuisance.
+    """
+    result = ingest(json.dumps(_fixture(name)), returncode=returncode)
+    assert isinstance(result, ActionPayload)
+    return result
 
 
 def test_the_vendored_surface_matches_its_manifest() -> None:
@@ -812,3 +834,148 @@ def test_mutating_the_returned_schema_does_not_corrupt_future_validation() -> No
     assert result.action == "pull"
     with pytest.raises(ContractViolation):
         ingest(json.dumps(_fixture("pull-success") | {"merged": True}), returncode=0)
+
+
+# --- Task 3: typed consumer models ------------------------------------
+#
+# The three-state rule is the whole reason the producer workstream
+# happened: absent means the verb has no such concept, `null` means
+# applicable but unknown, `false`/`[]` means applicable and definitely
+# negative. Typing is where that distinction is most easily lost, because
+# a pydantic default refills exactly what the producer deliberately left
+# out — and a consumer default is indistinguishable from a producer
+# answer once it is in the model.
+
+
+def test_null_and_empty_survive_typing() -> None:
+    unread = _ingest_action("issue-lookup-unread", 1)
+    confirmed = _ingest_action("issue-lookup-free", 0)
+    assert unread.matches is None, "the inbox was not read exhaustively"
+    assert confirmed.matches == [], "read, and empty"
+
+
+def test_a_verb_without_the_concept_has_no_field_at_all() -> None:
+    """The plan prescribed exactly one mutation for this task — default
+    `matches` to `[]` — and prescribed a test that cannot catch it:
+    `issue-lookup-unread` carries an explicit `"matches": null`, so the
+    default is never reached, and `model_fields_set` excludes defaults
+    either way. What the mutation actually changes is the *value* read off
+    a verb that has no such concept: `pull.matches` becomes `[]`, which
+    says "the inbox was read and was empty" about a verb that never looked
+    at an inbox. So read the value, not only the bookkeeping."""
+    pulled = _ingest_action("pull-success", 0)
+    assert "matches" not in pulled.model_fields_set
+    assert pulled.matches is None, "no concept is not an empty answer"
+    assert pulled.issue is None
+    assert pulled.pr_detail is None
+    assert pulled.created is None
+
+    unread = _ingest_action("issue-lookup-unread", 1)
+    assert "matches" in unread.model_fields_set, "null is an answer, absence is not"
+
+
+def test_the_consumer_never_synthesises_a_value() -> None:
+    """A default filled in here is indistinguishable from a producer answer
+    once it is in the model."""
+    unknown = _ingest_action("merge-unknown", 1)
+    assert unknown.merged is None
+    assert unknown.merged is not False
+
+
+def test_created_true_with_an_unread_issue_stays_unread() -> None:
+    """`issue: null` with `created: true` is the producer saying the issue
+    exists but reading it back failed. Typing must not turn that into
+    "no issue" — the screen would re-enable Create and make the duplicate
+    this contract exists to prevent."""
+    outcome = _ingest_action("issue-create-no-readback", 0)
+    assert outcome.created is True
+    assert outcome.issue is None
+    assert "issue" in outcome.model_fields_set
+
+
+def test_the_nested_payloads_are_typed_not_dicts() -> None:
+    """`pr_detail`, `matches`, `malformed` and `issue` were left as
+    validated-but-untyped dicts by Task 2. They are already schema-checked,
+    so typing them is a view over the same validated data, not a second
+    validation path."""
+    detail = _ingest_action("pr-detail-full", 0)
+    assert isinstance(detail.pr_detail, PrDetail)
+    assert isinstance(detail.pr_detail.checks[0], CheckRun)
+    assert isinstance(detail.pr_detail.files[0], ChangedFile)
+    assert isinstance(detail.pr_detail.review_threads[0], ReviewThread)
+
+    malformed = _ingest_action("issue-lookup-malformed", 1)
+    assert malformed.malformed is not None
+    assert isinstance(malformed.malformed[0], IssueRef)
+
+    one = _ingest_action("issue-lookup-one", 0)
+    assert one.matches is not None
+    assert isinstance(one.matches[0], IssueRef)
+
+    created = _ingest_action("issue-create-created", 0)
+    assert isinstance(created.issue, IssueRef)
+
+
+def test_an_absent_nested_field_stays_absent_after_typing() -> None:
+    """The rule holds one level down too: `review_thread.path` is optional
+    in the schema, so a thread that omits it must not come back carrying a
+    consumer `None` that reads as "the producer said there is no path"."""
+    thread = ReviewThread.model_validate(
+        {"id": "t1", "is_resolved": False, "is_outdated": False}
+    )
+    assert "path" not in thread.model_fields_set
+    explicit = ReviewThread.model_validate(
+        {"id": "t1", "is_resolved": False, "is_outdated": False, "path": None}
+    )
+    assert "path" in explicit.model_fields_set
+    assert explicit.path is None
+
+
+def test_a_typed_model_refuses_what_the_schema_refuses() -> None:
+    """The typed view must not be looser than the boundary that produced
+    it: a field the schema forbids must not become reachable by
+    constructing the model directly."""
+    with pytest.raises(ValidationError):
+        IssueRef.model_validate(
+            {
+                "number": 1,
+                "title": "t",
+                "state": "open",
+                "url": "u",
+                "author": "a",
+                "labels": [],
+                "smuggled": True,
+            }
+        )
+
+
+def test_a_local_status_field_the_schema_requires_has_no_default() -> None:
+    """All five `local_status` fields are `required`, so a default here
+    would be a consumer answer standing in for a producer fact —
+    `error: None` in particular reads as "the clone was read and was
+    fine", which is what `pull-local-status-error` exists to distinguish."""
+    with pytest.raises(ValidationError):
+        LocalStatus.model_validate({"dirty": False})
+    read = _ingest_action("pull-local-status-error", 1)
+    assert read.local is not None
+    assert read.local.error is not None, "the fixture must carry a real error"
+
+
+def test_every_vendored_fixture_agrees_with_the_typed_models() -> None:
+    """Typing tightened the consumer: the nested models forbid unknown
+    keys and `LocalStatus` now requires what the schema requires. If a
+    model and the vendored schema ever disagree, `model_validate` raises
+    `ValidationError` — and that is deliberately *not* wrapped into
+    `ContractViolation`, for the same reason an unloadable schema is not:
+    it is a consumer fault, and dressing it as a producer violation would
+    blame the producer for a broken consumer. Which makes the agreement
+    itself the thing to pin, over the whole normative surface rather than
+    the handful of fixtures the tests above happen to use."""
+    fixtures = sorted((VENDORED_ROOT / "fixtures").glob("*.json"))
+    assert len(fixtures) == 34, "the sweep must cover the whole surface"
+    for path in fixtures:
+        payload = json.loads(path.read_text())
+        expected_exit = (
+            0 if (payload["result_kind"] == "action" and payload["ok"]) else 1
+        )
+        ingest(path.read_text(), returncode=expected_exit)
