@@ -40,6 +40,26 @@ _PROBE = (
 )
 
 
+_MAX_PROBE_STDERR = 400
+
+
+def _tail(stderr: str) -> str:
+    """The end of the probe's stderr, bounded.
+
+    The end, not the start: a Python traceback puts the sentence that names
+    the failure on its last line. This is our own interpreter's output, not
+    the producer's payload — the non-disclosure rule at the ingestion
+    boundary does not apply here — but an unbounded traceback inside an
+    assertion message still buries the thing the reader came for.
+    """
+    text = stderr.strip()
+    if not text:
+        return "(it said nothing on stderr)"
+    if len(text) <= _MAX_PROBE_STDERR:
+        return text
+    return f"…{text[-_MAX_PROBE_STDERR:]}"
+
+
 class ProducerBinaryProblem(AssertionError):
     """The binary on PATH is absent, unidentifiable, or the wrong commit.
 
@@ -90,13 +110,22 @@ def installed_commit(binary: Path) -> str:
             "be read; install github-checker into a virtualenv and put that "
             "virtualenv's bin on PATH"
         )
-    probe = subprocess.run(
-        [str(interpreter), "-c", _PROBE], capture_output=True, text=True
-    )
+    try:
+        probe = subprocess.run(
+            [str(interpreter), "-c", _PROBE], capture_output=True, text=True
+        )
+    except OSError as exc:
+        # Present but not executable, wrong architecture, a dangling symlink.
+        # Letting this out as a bare OSError would read as "the harness
+        # broke" when the true statement is "the binary is unidentifiable".
+        raise ProducerBinaryProblem(
+            f"{interpreter} could not be run, so github-checker's install "
+            f"metadata is unreadable: {exc}"
+        ) from None
     if probe.returncode != 0:
         raise ProducerBinaryProblem(
             f"{interpreter} could not report github-checker's install metadata "
-            f"(exit {probe.returncode})"
+            f"(exit {probe.returncode}): {_tail(probe.stderr)}"
         )
     return commit_of_direct_url(probe.stdout)
 

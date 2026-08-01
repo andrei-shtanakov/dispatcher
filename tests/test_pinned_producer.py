@@ -140,6 +140,53 @@ class TestPinnedProducerBinary:
         monkeypatch.setenv("PATH", f"{binary}{os.pathsep}{os.environ['PATH']}")
         assert pinned_producer_binary() == (binary / "github-checker").resolve()
 
+    def test_an_unrunnable_interpreter_fails_as_this_check_not_as_an_OSError(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Fail-closed has to cover the instrument, not only its subject.
+
+        A `python` that exists but cannot be executed raises `PermissionError`
+        out of `subprocess.run`. Escaping as a bare `OSError` would make the
+        failure read as "the test harness broke", not "the binary could not be
+        identified" — and only the second is true.
+        """
+        binary = _fake_install(
+            tmp_path / "unrunnable",
+            {"url": "https://x", "vcs_info": {"vcs": "git", "commit_id": "2" * 40}},
+        )
+        (binary / "python").chmod(0o644)
+        monkeypatch.setenv("PATH", f"{binary}{os.pathsep}{os.environ['PATH']}")
+        with pytest.raises(ProducerBinaryProblem, match="could not be run"):
+            pinned_producer_binary()
+
+    def test_a_failing_probe_reports_what_the_interpreter_said(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """`(exit 1)` alone sends the reader to the CI log for nothing."""
+        binary = _fake_install(tmp_path / "noisy", None)
+        (binary / "python").write_text(
+            "#!/bin/sh\necho 'ModuleNotFoundError: github-checker' >&2\nexit 1\n"
+        )
+        (binary / "python").chmod(0o755)
+        monkeypatch.setenv("PATH", f"{binary}{os.pathsep}{os.environ['PATH']}")
+        with pytest.raises(ProducerBinaryProblem) as caught:
+            pinned_producer_binary()
+        assert "ModuleNotFoundError: github-checker" in str(caught.value)
+
+    def test_a_flood_of_probe_stderr_is_bounded(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A megabyte of traceback in an assertion message helps nobody."""
+        binary = _fake_install(tmp_path / "flood", None)
+        (binary / "python").write_text(
+            "#!/bin/sh\nawk 'BEGIN{while(i++<5000)printf \"x\"}' >&2\nexit 1\n"
+        )
+        (binary / "python").chmod(0o755)
+        monkeypatch.setenv("PATH", f"{binary}{os.pathsep}{os.environ['PATH']}")
+        with pytest.raises(ProducerBinaryProblem) as caught:
+            pinned_producer_binary()
+        assert len(str(caught.value)) < 1000
+
     def test_an_install_without_a_sibling_interpreter_fails(
         self, tmp_path: Path, monkeypatch
     ) -> None:
