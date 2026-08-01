@@ -95,9 +95,12 @@
 - [ ] Заморозить схемы MCP-тулзов (вендоринг пиненой копией по дисциплине ADR-ECO-003) @owner:andrei @trigger:"robin или Maestro начали вызывать dispatcher mcp" @id:freeze-mcp-tool-schemas
       Схемы 15 тулзов сознательно UNSTABLE: фиксировать контракт до первого потребителя
       значит заморозить угаданную форму.
-- [ ] Вендорить `contracts/actions/v1`, когда github-checker его опубликует @owner:andrei @blocked_by:github-checker#contracts-actions-v1 @trigger:"github-checker опубликовал контракт действий" @id:vendor-contracts-actions-v1
-      Принятый (не блокирующий) follow-up PR #40: сейчас контракт действий существует
-      только как поведение бинаря и проверяется live-смоуком.
+- [x] Вендорить `contracts/actions/v1`, когда github-checker его опубликует — PR #97 @owner:andrei @blocked_by:github-checker#contracts-actions-v1 @trigger:"github-checker опубликовал контракт действий" @id:vendor-contracts-actions-v1
+      Пиненая копия из `github-checker@ef03fef` (36 файлов поверхности: схема, README,
+      34 фикстуры; per-file sha256 + `tree_sha256` в `manifest.json`), извлечена из
+      git object database. Единственный вход — `ingest(raw, *, returncode)`; сошлись
+      все три parse-path'а. Контракт действий больше не «поведение бинаря»:
+      absent/`null`/`false` держатся через `model_fields_set`, а не через дефолты.
 
 ## Хвосты качества
 
