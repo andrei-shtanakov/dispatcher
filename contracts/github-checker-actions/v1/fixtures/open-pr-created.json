@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "result_kind": "action",
+  "action": "open-pr",
+  "dir": "/repos/widget",
+  "ok": true,
+  "error": null,
+  "detail": "pull request created",
+  "pr_url": "https://x/1",
+  "pr_state": "OPEN"
+}

@@ -1,0 +1,153 @@
+{
+  "contract": "github-checker-actions",
+  "contract_version": 1,
+  "producer_commit": "ef03fefcded37676b19ef1c6f88b956a09a26d3f",
+  "surface_note": "sha256 of every vendored file; excludes PINNED.txt and this manifest",
+  "tree_sha256": "39a8dc921a651206ab1f7dc1b3117f5ede424807dd77e2ef43e88502d1e6cff6",
+  "surface": [
+    {
+      "path": "README.md",
+      "sha256": "52d9bc82d03cd0dfdbea8d3a5727cfae9d32f08acab328bc797621b01cbb8efd"
+    },
+    {
+      "path": "actions.schema.json",
+      "sha256": "b45e1536a5ec216260c98eedd8ebba403b587cf73a7f71969763b77f2a6f3e06"
+    },
+    {
+      "path": "fixtures/cli-error-no-verb.json",
+      "sha256": "0ec9d0ac01950a53db2889c136f90da991c241b10eb7bfff72472061727baf29"
+    },
+    {
+      "path": "fixtures/cli-error.json",
+      "sha256": "a13c19e5409f764a7e7d063592d885c8edd38bf0814aae188257ae5a681b138f"
+    },
+    {
+      "path": "fixtures/contract-error.json",
+      "sha256": "3c03ea2df853e0790890615b0d099da9d8180fca5eeab17901105c6c542a0a92"
+    },
+    {
+      "path": "fixtures/issue-create-conflict.json",
+      "sha256": "0b8bbfe48c118f8eade2c6d58578f8a8337df574d3c6306dddd4ed05edc3de09"
+    },
+    {
+      "path": "fixtures/issue-create-created.json",
+      "sha256": "0ce0ff1ca539261e16a29ef740bd28e6e086c32f204d737b91b98f89d922c3bb"
+    },
+    {
+      "path": "fixtures/issue-create-no-readback.json",
+      "sha256": "2b7c5d3019b923d59cfe8ba8fb997fa701376253ef9107928057639942a75854"
+    },
+    {
+      "path": "fixtures/issue-create-refused.json",
+      "sha256": "ba44e1ce4941785529b05929b9056d377399796a8482fd4e7a58ddcb6cf36aee"
+    },
+    {
+      "path": "fixtures/issue-create-taken.json",
+      "sha256": "c3ac0ee12e37b67097f3094c0a827bb6dfbaa50825d2645e636417a4c7687497"
+    },
+    {
+      "path": "fixtures/issue-create-unknown.json",
+      "sha256": "3bad7614173e6af2ebb17e49d8e5f7ccff095ec7aa68575157672bd716050dea"
+    },
+    {
+      "path": "fixtures/issue-lookup-conflict.json",
+      "sha256": "e8f69800ffc78421c323be9effe9ca555f6bbbd4a803e897018f9cb2c8696316"
+    },
+    {
+      "path": "fixtures/issue-lookup-free.json",
+      "sha256": "41dc8e8421b7021e6cc4d1594a30f7b968caddb92c94844884a74d2d29caccca"
+    },
+    {
+      "path": "fixtures/issue-lookup-malformed.json",
+      "sha256": "def89a84e1a8fdbcfe36e05cd2b6284aa104366caddaeae17a44d0596f344240"
+    },
+    {
+      "path": "fixtures/issue-lookup-one.json",
+      "sha256": "c4fe6bef096ce5f291adfd8e47f708fcb6a885f38536eca39ed7275f3cab2325"
+    },
+    {
+      "path": "fixtures/issue-lookup-unread.json",
+      "sha256": "900cdecaffedbe6bddef9ef6ce72ebc6d06b56568fdf40073b3c58dc0a0ed57d"
+    },
+    {
+      "path": "fixtures/merge-gate-refused.json",
+      "sha256": "c7e1e680086be3e683e74a089b5db50e5ebd347cd1ad7e103aa44c7c8ebef2e0"
+    },
+    {
+      "path": "fixtures/merge-merged.json",
+      "sha256": "9b8bde992cb99510f7e561c0c7c8a3f4207f55d0b66f421b726246a699e332fd"
+    },
+    {
+      "path": "fixtures/merge-refusal-with-detail.json",
+      "sha256": "5a1abdf2f49ee9a924cbc8e108a5bb6281ef651fff5428b3ac68faeecd7a727e"
+    },
+    {
+      "path": "fixtures/merge-unknown.json",
+      "sha256": "f89c341d3239108bb219480bd6be747f68f4daf5834ae8964f92f1e91af325a7"
+    },
+    {
+      "path": "fixtures/open-pr-already-open.json",
+      "sha256": "bb98c69268915cb6261180bcb797bed4816a8b45e9f62dc54ca1ac75230777e8"
+    },
+    {
+      "path": "fixtures/open-pr-created.json",
+      "sha256": "f49c4f0406c21746a98d408289a42ecb392f8ae933b5675f10e20443d1fbea94"
+    },
+    {
+      "path": "fixtures/open-pr-no-url.json",
+      "sha256": "fef8fdb0d7b8aca2b8c57bb81006ae3589a911063e0e1053bf10a2fefcd9dbbd"
+    },
+    {
+      "path": "fixtures/post-merge-sync-failed.json",
+      "sha256": "f43363585f28490058b84df7294426d989737b3d0579090f575c61f125184ac0"
+    },
+    {
+      "path": "fixtures/post-merge-sync-no-clone.json",
+      "sha256": "abb1ef1ddae881b26d1fc63131b0df1bb806d873746791ea16356ef57c7460ea"
+    },
+    {
+      "path": "fixtures/post-merge-sync-ok-cleanup-unread.json",
+      "sha256": "e7789a76db0554c771c9856c37a63d5b8f202f87f2e18c163039b71ad2403a91"
+    },
+    {
+      "path": "fixtures/post-merge-sync-ok.json",
+      "sha256": "ad00c4c2cc247d8f41be800ec5b78ccd5b1f8258f5c01d624065e2ade630564e"
+    },
+    {
+      "path": "fixtures/pr-detail-full.json",
+      "sha256": "2c54bfbaeca9337400eaeaccd34172d29ef8d5098e914b804bca90d3c6dce67d"
+    },
+    {
+      "path": "fixtures/pr-detail-truncated.json",
+      "sha256": "6444d321229d93cb963638a9775911f0eb258834717c2e3c71379818d3171ce1"
+    },
+    {
+      "path": "fixtures/pr-detail-unavailable.json",
+      "sha256": "f3077c994bab52a49bd437eb5b19bf912a90c5b179ae7ab987650b7499196b48"
+    },
+    {
+      "path": "fixtures/propose-pr-created.json",
+      "sha256": "60eee9ae1d8cb006f68ca77f789fdcbf64c387a1e56a98ae7a584b5975539179"
+    },
+    {
+      "path": "fixtures/propose-pr-if-match.json",
+      "sha256": "e02418f7eb421b14098ee830bf35cc366ece1a26f33a8a81e9ebf3fec8773a0a"
+    },
+    {
+      "path": "fixtures/propose-pr-pushed-without-pr.json",
+      "sha256": "258e5bf2430077b380afbbc78210f729a7d7433ca28729ba33c5f5844b4cb0c7"
+    },
+    {
+      "path": "fixtures/pull-local-status-error.json",
+      "sha256": "6f59668df52bad0c47e11e51a6c2b05a71c98e5d671dbe54b48472b2f27d9e46"
+    },
+    {
+      "path": "fixtures/pull-not-a-repo.json",
+      "sha256": "2efe026d8985d9cdcbe92a6004e8347b7eeb71e96697bfb759bcab1e66ed61a8"
+    },
+    {
+      "path": "fixtures/pull-success.json",
+      "sha256": "31ffd4cbd4abfcdfab9efa667072eda1bcc6ee7ec81e021fafdd9c978b9f5c5c"
+    }
+  ]
+}

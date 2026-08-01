@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "result_kind": "action",
+  "action": "propose-pr",
+  "dir": "/repos/widget",
+  "ok": false,
+  "error": "--if-match did not match",
+  "detail": null,
+  "pr_url": null,
+  "pr_state": null,
+  "branch": null,
+  "base_branch": null,
+  "commit_sha": null,
+  "changed_paths": null
+}

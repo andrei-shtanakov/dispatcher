@@ -1,0 +1,6 @@
+source: github-checker contracts/actions/v1
+commit: ef03fefcded37676b19ef1c6f88b956a09a26d3f
+vendored: 2026-07-31
+note: pinned copy (repo-boundaries vendoring, ADR-ECO-003). Do not edit here —
+  re-vendor from the pin and refresh manifest.json. Nothing in shipped code
+  may read ../github-checker at run time.

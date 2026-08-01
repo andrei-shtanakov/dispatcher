@@ -28,7 +28,6 @@ classes are deliberately not merged; see that module's docstring.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import subprocess
@@ -39,8 +38,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
+from dispatcher.core.contract import (
+    ActionPayload,
+    ContractViolation,
+    Ingested,
+    ingest,
+)
 from dispatcher.core.discovery import DispatcherConfig
 
 _ACTION_TIMEOUT = 120
@@ -90,6 +95,194 @@ class ActionOutcome(BaseModel):
     # from being told apart by Python's exception hierarchy, which is the
     # inference that produced the created=False-on-a-completed-run bug.
     phase: str | None = None  # pre_launch | launched_unreadable | readable_result
+
+
+_PLAIN_PROJECTED = (
+    "detail",
+    "error",
+    "pr_url",
+    "branch",
+    "base_branch",
+    "commit_sha",
+    "changed_paths",
+    "merged",
+    "local_sync",
+    "gate_failed",
+    "created",
+)
+
+
+def project_outcome(ingested: Ingested, *, action: str, dir_name: str) -> ActionOutcome:
+    """The legacy HTTP DTO, projected from one typed producer answer.
+
+    `ActionOutcome` is the `response_model` of eight endpoints, so its
+    field set is the wire contract the SPA and the VS Code extension read.
+    It is therefore a *DTO*, not the canonical producer model, and this is
+    where the two are kept apart: `ingest` decides what to believe, and
+    nothing here re-decides it — no validation, no interpretation, no
+    second parse.
+
+    The rule that makes the projection faithful is that it copies only
+    fields the producer actually **set**. `.get(name)` returning `None` is
+    indistinguishable from the producer sending `null`, and that
+    distinction — absent means the verb has no such concept, `null` means
+    applicable but unknown — is the entire reason the producer workstream
+    happened. So absence stays absence, in this model's
+    ``model_fields_set`` too.
+
+    (What crosses the wire is a separate question with a separate answer:
+    no route sets ``response_model_exclude_unset``, so unset fields still
+    serialise as explicit nulls. Turning that on would be a wire change
+    for the SPA and the extension, so it is pinned by a golden test rather
+    than done here as a side effect.)
+    """
+    fields: dict[str, Any] = {
+        "action": action,  # the requested verb; the producer's is diagnostic
+        "dir": dir_name,
+        "ok": ingested.ok,
+        "phase": PHASE_READABLE,
+    }
+    sent = ingested.model_fields_set
+    if not isinstance(ingested, ActionPayload):
+        # cli_error / contract_error are not a ninth verb: they carry no
+        # verb payload, so only the shared diagnostic fields project.
+        if "error" in sent:
+            fields["error"] = ingested.error
+        return ActionOutcome(**fields)
+
+    for name in _PLAIN_PROJECTED:
+        if name in sent:
+            fields[name] = getattr(ingested, name)
+    for name in ("pr_detail", "issue"):
+        if name in sent:
+            nested = getattr(ingested, name)
+            # `exclude_unset` for the same reason as above, one level
+            # down: a full dump would refill the nested optionals the
+            # producer omitted, and this field used to reach the wire as
+            # the producer's own dict.
+            fields[name] = (
+                None if nested is None else nested.model_dump(exclude_unset=True)
+            )
+    for name in ("matches", "malformed"):
+        if name in sent:
+            # `exclude_unset` here is knowingly unpinned: `issue_ref`
+            # declares all six of its fields required, so today it can
+            # make no difference and no test can catch its removal. It
+            # stays for the same reason it is right above — the contract's
+            # own README blesses additive evolution within v1, and the
+            # first optional field added to `issue_ref` is the moment a
+            # full dump starts inventing nulls.
+            listed = getattr(ingested, name)
+            fields[name] = (
+                None
+                if listed is None
+                else [item.model_dump(exclude_unset=True) for item in listed]
+            )
+    if "local" in sent and ingested.local is not None and ingested.local.error is None:
+        # Two consumer columns over one producer fact. With no `local` on
+        # the wire there is no fact to project, and `local_behind=None`
+        # would read as "read, and not behind".
+        #
+        # `local.error` is the same distinction one column over: `dirty`
+        # is required by the schema, so a clone that could not be read
+        # still carries `dirty: false` — the field's floor, not a reading.
+        # Projecting it would turn "could not look" into "looked, and it
+        # is clean". The failure itself is not lost: it is the envelope's
+        # own `error` that describes it, and that field does project.
+        fields["local_behind"] = ingested.local.behind
+        fields["local_dirty"] = ingested.local.dirty
+    return ActionOutcome(**fields)
+
+
+def one_line(text: str | None) -> str | None:
+    """Collapse producer text to a single line for the audit log.
+
+    Public because both runners log producer-derived `detail`/`error`, and
+    the guarantee they state — one audit line per attempt — is a property
+    of the log as a whole, not of whichever module remembered to flatten.
+    """
+    return None if text is None else " ".join(text.split())
+
+
+def unusable_answer(reason: str) -> str:
+    """The error text for a producer answer that cannot be used."""
+    return f"github-checker returned an unusable answer: {reason}"
+
+
+def consumer_failure(err: BaseException) -> str:
+    """The error text for *our* failure to interpret a producer answer.
+
+    Named apart from :func:`unusable_answer` on purpose. A vendored
+    contract bump where the models and the schema disagree makes `ingest`
+    raise on every answer, and a headline sentence that says
+    "github-checker returned ..." sends triage to a producer repo that is
+    healthy while the broken consumer install is the last place looked.
+    """
+    return f"dispatcher could not interpret the answer: {type(err).__name__}"
+
+
+def audit_unusable(
+    logger: logging.Logger,
+    *,
+    verb: str,
+    repo_dir: str,
+    phase: str,
+    returncode: int | None,
+    stdout: bytes,
+    stderr: bytes,
+) -> None:
+    """Record that a producer answer could not be used — metadata only.
+
+    Neither stream's *content* is emitted, by construction rather than by
+    filtering. `git` echoes a failing remote verbatim, credential
+    included, so a producer's stderr can carry a token; the browser was
+    ruled out first because `ActionOutcome.error` is the `response_model`
+    of eight endpoints, and the local audit log went the same way for the
+    same reason at a slower tempo — logs are archived, indexed and copied
+    no less often than responses, so a token written here is a token on
+    disk.
+
+    What survives is enough to re-run the command by hand, which is the
+    operator's actual next step for an answer nobody could parse. A valid
+    producer answer still carries its own `detail`/`error` by contract;
+    this is only for the ones that are not.
+
+    Not `action=`: the audit line that counts attempts starts with that,
+    and this is a second line about the same attempt.
+    """
+    logger.info(
+        "github_checker_subprocess_failed verb=%s repo=%s phase=%s returncode=%s "
+        "stdout_bytes=%d stderr_bytes=%d",
+        verb,
+        repo_dir,
+        phase,
+        returncode,
+        len(stdout),
+        len(stderr),
+    )
+
+
+def verb_mismatch(ingested: Ingested, requested: str) -> str | None:
+    """Name the mismatch when the answer is about a different verb.
+
+    For ``result_kind: action`` the producer's ``action`` states which
+    verb actually ran — a fact, not a diagnostic — and nothing checked it
+    against the verb that was asked for. The projection then relabels the
+    answer with the requested verb, which makes a mismatch *invisible*
+    rather than merely unchecked.
+
+    `ingest` cannot make this check: it validates an envelope and knows
+    nothing about the request. So it belongs to the callers, which are the
+    only code holding both halves.
+
+    Not applied to ``cli_error``/``contract_error``: there ``action`` is
+    diagnostic by contract — it may name the attempted verb, an unknown
+    string, or ``"unknown"`` — and comparing it would refuse legitimate
+    refusals.
+    """
+    if isinstance(ingested, ActionPayload) and ingested.action != requested:
+        return f"answer is about {ingested.action!r}, not the requested {requested!r}"
+    return None
 
 
 class ActionBusyError(Exception):
@@ -232,8 +425,14 @@ class ActionRunner:
             repo_dir,
             outcome.ok,
             merge_fields,
-            outcome.detail,
-            outcome.error,
+            # Flattened: `detail` and `error` are producer text, and a
+            # vendored fixture (`pull-local-status-error`) carries an
+            # eight-newline `error`, which turned one accepted outcome into
+            # a nine-line audit record. "One audit line per attempt" was
+            # enforced on the refusal path and not on this one; a log a
+            # reader cannot count attempts in is not an audit log.
+            one_line(outcome.detail),
+            one_line(outcome.error),
         )
 
     def _invoke(
@@ -317,71 +516,60 @@ class ActionRunner:
             return refused(str(err))
         # PHASE 2 boundary: everything below happens with a completed child.
         try:
+            # stdout only: the answer lives there, and stderr's content
+            # never travels now — only its byte count does — so its
+            # encoding cannot make an answer unreadable.
             stdout = proc.stdout.decode("utf-8")
-            stderr = proc.stderr.decode("utf-8")
         except UnicodeDecodeError:
             return unreadable()
+
         # PHASE 3 — we hold a readable answer; every outcome below is a
         # statement about what github-checker actually said.
+        def unreadable_envelope(reason: str) -> ActionOutcome:
+            """PHASE 3 — the child ran and answered; we cannot use it."""
+            audit_unusable(
+                _audit,
+                verb=action,
+                repo_dir=target.name,
+                phase=PHASE_READABLE,
+                returncode=proc.returncode,
+                stdout=proc.stdout,
+                stderr=proc.stderr,
+            )
+            return ActionOutcome(
+                action=action,
+                dir=target.name,
+                ok=False,
+                phase=PHASE_READABLE,
+                error=reason,
+            )
+
+        # The one place a producer answer is judged. Everything this module
+        # used to do by hand here — its own `json.loads`, its own
+        # root-object check, `.get()` per field — is gone: a second parse
+        # path is a second set of rules about what to believe, and the two
+        # drift.
         try:
-            data = json.loads(stdout)
-        except json.JSONDecodeError:
-            return ActionOutcome(
-                action=action,
-                dir=target.name,
-                ok=False,
-                phase=PHASE_READABLE,
-                error=stderr.strip() or "github-checker returned no JSON",
-            )
-        if not isinstance(data, dict):
-            return ActionOutcome(
-                action=action,
-                dir=target.name,
-                ok=False,
-                phase=PHASE_READABLE,
-                error="github-checker returned JSON that is not an object",
-            )
-        local = data.get("local")
-        if not isinstance(local, dict):
-            local = {}
-        try:
-            return ActionOutcome(
-                action=action,
-                dir=target.name,
-                ok=bool(data.get("ok")),
-                detail=data.get("detail"),
-                error=data.get("error"),
-                pr_url=data.get("pr_url"),
-                local_behind=local.get("behind"),
-                local_dirty=local.get("dirty"),
-                merged=data.get("merged"),
-                local_sync=data.get("local_sync"),
-                gate_failed=data.get("gate_failed"),
-                pr_detail=data.get("pr_detail"),
-                matches=data.get("matches"),
-                malformed=data.get("malformed"),
-                created=data.get("created"),
-                issue=data.get("issue"),
-                phase=PHASE_READABLE,
-            )
-        except ValidationError as err:
-            # the pr_detail PAYLOAD is validated by the console; the envelope
-            # around it had no boundary at all — a wrong-typed field raised
-            # out of here, so a merge subprocess that genuinely ran left no
-            # audit line, breaking this module's stated guarantee
-            return ActionOutcome(
-                action=action,
-                dir=target.name,
-                ok=False,
-                phase=PHASE_READABLE,
-                error=(
-                    "github-checker returned an unparseable envelope: "
-                    # one audit line per attempt: pydantic's report is
-                    # multi-line, and its detail is what makes the drift
-                    # diagnosable, so flatten rather than truncate
-                    + " ".join(str(err).split())
-                ),
-            )
+            ingested = ingest(stdout, returncode=proc.returncode)
+        except ContractViolation as violation:
+            return unreadable_envelope(unusable_answer(str(violation)))
+        except Exception as err:  # noqa: BLE001 - see below
+            # `ingest` raises more than `ContractViolation`: a pydantic
+            # `ValidationError` when a model and the vendored schema
+            # disagree (deliberately unwrapped there), an `OSError` if the
+            # vendored schema cannot be read. `contract.py` lets those be
+            # loud because nothing has run yet at that point. Here
+            # something has: a merge subprocess that genuinely ran must not
+            # vanish from the audit log because the *consumer* was broken,
+            # which is the guarantee this module states and the hole a
+            # narrower guard here reopened. Named as a consumer fault, not
+            # a producer one, and audited either way.
+            return unreadable_envelope(consumer_failure(err))
+
+        mismatch = verb_mismatch(ingested, action)
+        if mismatch is not None:
+            return unreadable_envelope(unusable_answer(mismatch))
+        return project_outcome(ingested, action=action, dir_name=target.name)
 
     def merge_and_sync(self, repo_dir: str, pr: int, if_head: str) -> ActionOutcome:
         """Merge one PR and re-sync the clone, holding the repo lock throughout.

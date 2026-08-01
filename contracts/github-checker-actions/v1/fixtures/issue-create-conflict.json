@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "result_kind": "action",
+  "action": "issue-create",
+  "dir": "/repos/widget",
+  "ok": false,
+  "error": "2 inbox issues already claim this slug; ambiguous, not creating",
+  "detail": null,
+  "matches": [
+    {
+      "number": 12,
+      "title": "Add feature X",
+      "state": "closed",
+      "url": "https://github.com/acme/widget/issues/12",
+      "author": "someone",
+      "labels": [
+        "inbox"
+      ]
+    }
+  ],
+  "malformed": null,
+  "created": false,
+  "issue": null
+}

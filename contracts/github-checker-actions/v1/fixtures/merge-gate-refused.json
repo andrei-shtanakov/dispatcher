@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "result_kind": "action",
+  "action": "merge",
+  "dir": "/repos/widget",
+  "ok": false,
+  "error": "merge gate refused: checks-green, threads-resolved",
+  "detail": null,
+  "pr_url": null,
+  "merged": false,
+  "local_sync": "not_attempted",
+  "gate_failed": [
+    "checks-green",
+    "threads-resolved"
+  ],
+  "pr_detail": null
+}

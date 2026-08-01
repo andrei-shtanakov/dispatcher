@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "result_kind": "action",
+  "action": "issue-create",
+  "dir": "/repos/widget",
+  "ok": true,
+  "error": null,
+  "detail": "created, but reading it back failed",
+  "matches": null,
+  "malformed": null,
+  "created": true,
+  "issue": null
+}

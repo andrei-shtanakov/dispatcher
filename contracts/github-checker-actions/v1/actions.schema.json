@@ -1,0 +1,913 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/andrei-shtanakov/github-checker/contracts/actions/v1/actions.schema.json",
+  "title": "github-checker headless action result, v1",
+  "description": "One JSON object printed on stdout by every headless action verb. Wire semantics: a field ABSENT means the verb has no such concept; a field PRESENT and null means applicable but unknown; a field PRESENT and false means applicable and definitely negative. Collapsing absent with null is the failure this contract exists to prevent.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/action_result"
+    },
+    {
+      "$ref": "#/$defs/cli_error"
+    },
+    {
+      "$ref": "#/$defs/contract_error"
+    }
+  ],
+  "$defs": {
+    "local_status": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "branch",
+        "ahead",
+        "behind",
+        "dirty",
+        "error"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ahead": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "behind": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "dirty": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "issue_ref": {
+      "type": "object",
+      "required": [
+        "number",
+        "title",
+        "state",
+        "url",
+        "author",
+        "labels"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "number": {
+          "type": "integer"
+        },
+        "title": {
+          "type": "string"
+        },
+        "state": {
+          "description": "Normalised to lower case by the producer; `gh issue list` emits OPEN/CLOSED.",
+          "enum": [
+            "open",
+            "closed"
+          ]
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "author": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "check_run": {
+      "type": "object",
+      "required": [
+        "name",
+        "state"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        }
+      }
+    },
+    "changed_file": {
+      "type": "object",
+      "required": [
+        "path",
+        "additions",
+        "deletions"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "additions": {
+          "type": "integer"
+        },
+        "deletions": {
+          "type": "integer"
+        }
+      }
+    },
+    "review_thread": {
+      "type": "object",
+      "required": [
+        "id",
+        "is_resolved",
+        "is_outdated"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "is_resolved": {
+          "type": "boolean"
+        },
+        "is_outdated": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "author": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "excerpt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "pr_detail": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "number",
+        "title",
+        "url",
+        "state",
+        "is_draft",
+        "mergeable",
+        "head_branch",
+        "head_sha",
+        "base_branch",
+        "checks",
+        "checks_truncated",
+        "files",
+        "files_total",
+        "files_truncated",
+        "review_threads",
+        "threads_truncated",
+        "diff_truncated"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "number": {
+          "type": "integer"
+        },
+        "title": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "is_draft": {
+          "type": "boolean"
+        },
+        "mergeable": {
+          "type": "string"
+        },
+        "merge_state_status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "head_branch": {
+          "type": "string"
+        },
+        "head_sha": {
+          "type": "string"
+        },
+        "base_branch": {
+          "type": "string"
+        },
+        "review_decision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/check_run"
+          }
+        },
+        "checks_truncated": {
+          "description": "The rollup may be short; a green verdict over a truncated list is not a green verdict.",
+          "type": "boolean"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/changed_file"
+          }
+        },
+        "files_total": {
+          "type": "integer"
+        },
+        "files_truncated": {
+          "type": "boolean"
+        },
+        "review_threads": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/review_thread"
+          }
+        },
+        "threads_truncated": {
+          "type": "boolean"
+        },
+        "diff": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "diff_truncated": {
+          "type": "boolean"
+        },
+        "allows_squash": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    "action_result": {
+      "description": "result_kind=action: one of the eight verbs answered, and its own required fields apply.",
+      "type": "object",
+      "properties": {
+        "result_kind": {
+          "const": "action"
+        }
+      },
+      "required": [
+        "result_kind"
+      ],
+      "oneOf": [
+        {
+          "$ref": "#/$defs/verb_pull"
+        },
+        {
+          "$ref": "#/$defs/verb_open_pr"
+        },
+        {
+          "$ref": "#/$defs/verb_propose_pr"
+        },
+        {
+          "$ref": "#/$defs/verb_pr_detail"
+        },
+        {
+          "$ref": "#/$defs/verb_merge"
+        },
+        {
+          "$ref": "#/$defs/verb_post_merge_sync"
+        },
+        {
+          "$ref": "#/$defs/verb_issue_lookup"
+        },
+        {
+          "$ref": "#/$defs/verb_issue_create"
+        }
+      ]
+    },
+    "verb_pull": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "result_kind",
+        "action",
+        "dir",
+        "ok",
+        "error",
+        "detail",
+        "local"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "result_kind": {
+          "const": "action"
+        },
+        "action": {
+          "const": "pull"
+        },
+        "dir": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "local": {
+          "$ref": "#/$defs/local_status"
+        }
+      }
+    },
+    "verb_open_pr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "result_kind",
+        "action",
+        "dir",
+        "ok",
+        "error",
+        "detail",
+        "pr_url",
+        "pr_state"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "result_kind": {
+          "const": "action"
+        },
+        "action": {
+          "const": "open-pr"
+        },
+        "dir": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pr_url": {
+          "description": "null even on success is a real outcome: `gh pr create` can finish without returning a URL.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pr_state": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "OPEN",
+            null
+          ]
+        }
+      }
+    },
+    "verb_propose_pr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "result_kind",
+        "action",
+        "dir",
+        "ok",
+        "error",
+        "detail",
+        "pr_url",
+        "pr_state",
+        "branch",
+        "base_branch",
+        "commit_sha",
+        "changed_paths"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "result_kind": {
+          "const": "action"
+        },
+        "action": {
+          "const": "propose-pr"
+        },
+        "dir": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pr_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pr_state": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "OPEN",
+            null
+          ]
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base_branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit_sha": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "changed_paths": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "verb_pr_detail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "result_kind",
+        "action",
+        "dir",
+        "ok",
+        "error",
+        "pr_detail"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "result_kind": {
+          "const": "action"
+        },
+        "action": {
+          "const": "pr-detail"
+        },
+        "dir": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pr_detail": {
+          "$ref": "#/$defs/pr_detail"
+        }
+      }
+    },
+    "verb_merge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "result_kind",
+        "action",
+        "dir",
+        "ok",
+        "error",
+        "detail",
+        "pr_url",
+        "merged",
+        "local_sync",
+        "gate_failed",
+        "pr_detail"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "result_kind": {
+          "const": "action"
+        },
+        "action": {
+          "const": "merge"
+        },
+        "dir": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pr_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "merged": {
+          "description": "true merged; false definitely not merged, and only reachable BEFORE `gh pr merge` is launched; null unknown — the call was launched and its outcome could not be established. A consumer must never retry a merge on null.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "local_sync": {
+          "description": "`merge` never touches the local clone, so this is always not_attempted here; the field exists so a consumer never has to branch on a null it could mistake for known.",
+          "enum": [
+            "ok",
+            "failed",
+            "not_attempted",
+            "not_applicable",
+            null
+          ]
+        },
+        "gate_failed": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "pr_detail": {
+          "$ref": "#/$defs/pr_detail"
+        }
+      }
+    },
+    "verb_post_merge_sync": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "result_kind",
+        "action",
+        "dir",
+        "ok",
+        "error",
+        "detail",
+        "local",
+        "branch",
+        "local_sync"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "result_kind": {
+          "const": "action"
+        },
+        "action": {
+          "const": "post-merge-sync"
+        },
+        "dir": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "local": {
+          "$ref": "#/$defs/local_status"
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "local_sync": {
+          "enum": [
+            "ok",
+            "failed",
+            "not_attempted",
+            "not_applicable",
+            null
+          ]
+        }
+      }
+    },
+    "verb_issue_lookup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "result_kind",
+        "action",
+        "dir",
+        "ok",
+        "error",
+        "matches",
+        "malformed"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "result_kind": {
+          "const": "action"
+        },
+        "action": {
+          "const": "issue-lookup"
+        },
+        "dir": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "matches": {
+          "description": "[] means the inbox was read and holds nothing; null means it was NOT read exhaustively (the list cap was hit, or a candidate could not be mapped). Treating null as [] is how a taken slug reads as free.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/issue_ref"
+          }
+        },
+        "malformed": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/issue_ref"
+          }
+        }
+      }
+    },
+    "verb_issue_create": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "result_kind",
+        "action",
+        "dir",
+        "ok",
+        "error",
+        "detail",
+        "created",
+        "issue",
+        "matches",
+        "malformed"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "result_kind": {
+          "const": "action"
+        },
+        "action": {
+          "const": "issue-create"
+        },
+        "dir": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created": {
+          "description": "true definitely created; false definitely not created on this attempt (slug taken, or a refusal before any mutation); null unknown — the mutating call itself broke and may have landed. A consumer must look again on null, never create again.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "issue": {
+          "description": "null with created=true means the issue exists but reading it back failed.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/issue_ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "matches": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/issue_ref"
+          }
+        },
+        "malformed": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/issue_ref"
+          }
+        }
+      }
+    },
+    "cli_error": {
+      "description": "argv was refused before any verb ran, so nothing was attempted and no verb field has a value — not even an unknown one. `action` is DIAGNOSTIC ONLY: it may name the attempted verb, an unknown string, or 'unknown', and must never select an action-specific payload.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "result_kind",
+        "action",
+        "dir",
+        "ok",
+        "error"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "result_kind": {
+          "const": "cli_error"
+        },
+        "action": {
+          "type": "string"
+        },
+        "dir": {
+          "type": "string"
+        },
+        "ok": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      }
+    },
+    "contract_error": {
+      "description": "The producer detected its own wire drift and refused rather than shipping a payload whose shape contradicts this schema. NOT a ninth verb: `action` is diagnostic only and selects nothing. A consumer must treat this as a producer bug and fail closed.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "result_kind",
+        "action",
+        "dir",
+        "ok",
+        "error"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "result_kind": {
+          "const": "contract_error"
+        },
+        "action": {
+          "type": "string"
+        },
+        "dir": {
+          "type": "string"
+        },
+        "ok": {
+          "const": false
+        },
+        "error": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

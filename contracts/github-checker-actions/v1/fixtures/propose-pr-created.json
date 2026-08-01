@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "result_kind": "action",
+  "action": "propose-pr",
+  "dir": "/repos/widget",
+  "ok": true,
+  "error": null,
+  "detail": "pull request created",
+  "pr_url": "https://x/2",
+  "pr_state": "OPEN",
+  "branch": "propose/x",
+  "base_branch": "master",
+  "commit_sha": "deadbeef",
+  "changed_paths": [
+    "project.yaml"
+  ]
+}

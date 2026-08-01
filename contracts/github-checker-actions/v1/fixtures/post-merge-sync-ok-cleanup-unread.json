@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "result_kind": "action",
+  "action": "post-merge-sync",
+  "dir": "/repos/widget",
+  "ok": true,
+  "error": null,
+  "detail": "synced; merged-branch list could not be read",
+  "local": null,
+  "branch": "master",
+  "local_sync": "ok"
+}

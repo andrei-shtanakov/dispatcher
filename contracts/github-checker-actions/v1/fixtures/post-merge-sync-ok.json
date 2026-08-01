@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "result_kind": "action",
+  "action": "post-merge-sync",
+  "dir": "/repos/widget",
+  "ok": true,
+  "error": null,
+  "detail": "synced",
+  "local": {
+    "branch": "master",
+    "ahead": 0,
+    "behind": 0,
+    "dirty": false,
+    "error": null
+  },
+  "branch": "master",
+  "local_sync": "ok"
+}

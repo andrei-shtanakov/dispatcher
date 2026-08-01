@@ -23,7 +23,6 @@ return code, to tell a no-op apart from a real failure.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import re
 import subprocess
@@ -36,7 +35,19 @@ from typing import Any
 from pydantic import BaseModel
 from ruamel.yaml import YAML
 
-from dispatcher.core.actions import ActionOutcome
+from dispatcher.core.actions import (
+    PHASE_LAUNCHED_UNREADABLE,
+    PHASE_PRE_LAUNCH,
+    PHASE_READABLE,
+    ActionOutcome,
+    audit_unusable,
+    consumer_failure,
+    one_line,
+    project_outcome,
+    unusable_answer,
+    verb_mismatch,
+)
+from dispatcher.core.contract import ContractViolation, ingest
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.spec_runner_config import TYPED_DEFAULTS, TYPED_FIELDS
 from dispatcher.core.spec_runner_config_schema import (
@@ -232,10 +243,18 @@ class SpecRunnerConfigActionRunner:
             # Everything past the guards becomes a failed outcome: temp-dir
             # creation, decode, render, even unexpected bugs. The trailing
             # audit line covers this path.
+            #
+            # `pre_launch` is not a guess: `_invoke` now labels every one of
+            # its own exits, so anything reaching here happened before the
+            # fork — rendering the YAML, writing the temp file, resolving the
+            # target. Leaving the field unset made a pre-launch failure
+            # indistinguishable from a mutation whose outcome is unknown,
+            # which is the one inference `PHASE_*` exists to prevent.
             outcome = ActionOutcome(
                 action="update-spec-runner-config",
                 dir=repo_dir,
                 ok=False,
+                phase=PHASE_PRE_LAUNCH,
                 error=str(err),
             )
         finally:
@@ -245,8 +264,8 @@ class SpecRunnerConfigActionRunner:
             "action=update-spec-runner-config repo=%s ok=%s detail=%s error=%s",
             repo_dir,
             outcome.ok,
-            outcome.detail,
-            outcome.error,
+            one_line(outcome.detail),
+            one_line(outcome.error),
         )
         return outcome
 
@@ -270,34 +289,93 @@ class SpecRunnerConfigActionRunner:
             f"project.yaml={if_match_hex}",
         ]
         try:
-            proc = subprocess.run(
-                argv, capture_output=True, text=True, timeout=_ACTION_TIMEOUT
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired) as err:
+            # Bytes, NOT text=True — the same reason `core/actions.py` gives:
+            # decoding inside the call puts a POST-execution failure inside a
+            # pre-launch handler, and no ordering of handlers can undo that.
+            # `propose-pr` branches, commits, pushes and opens a PR before it
+            # writes a byte, so an undecodable answer is a mutation that
+            # happened, not a launch that did not.
+            proc = subprocess.run(argv, capture_output=True, timeout=_ACTION_TIMEOUT)
+        except FileNotFoundError as err:
+            # Deliberately narrow. The other pre-fork `OSError`s (EACCES on
+            # the binary, E2BIG from an oversized argv, ENOMEM) reach
+            # `run()`'s catch-all, which now stamps `pre_launch` itself — so
+            # widening here buys nothing observable, and an arm no test can
+            # distinguish is a claim no test can defend. `core/actions.py`
+            # needs its own `except OSError` (N-3) because it has no outer
+            # catch-all to fall back on.
             return ActionOutcome(
                 action="update-spec-runner-config",
                 dir=target.name,
                 ok=False,
+                phase=PHASE_PRE_LAUNCH,
                 error=str(err),
             )
-        try:
-            data = json.loads(proc.stdout)
-        except json.JSONDecodeError:
+        except subprocess.TimeoutExpired as err:
+            # The child started and was killed, so the PR may already
+            # exist. `phase` is what stops that from being read as "nothing
+            # happened"; it was left unset here while the success path set
+            # it, which is a half-populated field — worse than an absent
+            # one, because it looks answered.
             return ActionOutcome(
                 action="update-spec-runner-config",
                 dir=target.name,
                 ok=False,
-                error=proc.stderr.strip() or "github-checker returned no JSON",
+                phase=PHASE_LAUNCHED_UNREADABLE,
+                error=str(err),
             )
-        return ActionOutcome(
-            action="update-spec-runner-config",
-            dir=target.name,
-            ok=bool(data.get("ok")),
-            detail=data.get("detail"),
-            error=data.get("error"),
-            pr_url=data.get("pr_url"),
-            branch=data.get("branch"),
-            base_branch=data.get("base_branch"),
-            commit_sha=data.get("commit_sha"),
-            changed_paths=data.get("changed_paths"),
+
+        try:
+            # stdout only: the answer lives there, and stderr's content
+            # never travels now — only its byte count does — so its
+            # encoding cannot make an answer unreadable.
+            stdout = proc.stdout.decode("utf-8")
+        except UnicodeDecodeError as err:
+            # The child RAN: the PR may already exist. `phase` is what stops
+            # that being read as "nothing happened".
+            return ActionOutcome(
+                action="update-spec-runner-config",
+                dir=target.name,
+                ok=False,
+                phase=PHASE_LAUNCHED_UNREADABLE,
+                error=str(err),
+            )
+
+        def unusable(reason: str) -> ActionOutcome:
+            audit_unusable(
+                _audit,
+                verb="propose-pr",
+                repo_dir=target.name,
+                phase=PHASE_READABLE,
+                returncode=proc.returncode,
+                stdout=proc.stdout,
+                stderr=proc.stderr,
+            )
+            return ActionOutcome(
+                action="update-spec-runner-config",
+                dir=target.name,
+                ok=False,
+                phase=PHASE_READABLE,
+                error=reason,
+            )
+
+        # Same producer, same contract, same single ingestion path as
+        # `core/actions.py`. This module used to keep its own `json.loads`
+        # and its own `.get()` per field; two parse paths over one contract
+        # are two sets of rules about what to believe, and they drift.
+        try:
+            ingested = ingest(stdout, returncode=proc.returncode)
+        except ContractViolation as violation:
+            return unusable(unusable_answer(str(violation)))
+        except Exception as err:  # noqa: BLE001 - as in core/actions.py
+            return unusable(consumer_failure(err))
+
+        # The argv verb, not the DTO's label: this runner reports itself as
+        # `update-spec-runner-config` while asking github-checker for
+        # `propose-pr`, and it is the latter the answer must be about.
+        mismatch = verb_mismatch(ingested, "propose-pr")
+        if mismatch is not None:
+            return unusable(unusable_answer(mismatch))
+        return project_outcome(
+            ingested, action="update-spec-runner-config", dir_name=target.name
         )
