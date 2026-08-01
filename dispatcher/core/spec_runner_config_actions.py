@@ -35,7 +35,15 @@ from typing import Any
 from pydantic import BaseModel
 from ruamel.yaml import YAML
 
-from dispatcher.core.actions import ActionOutcome, project_outcome
+from dispatcher.core.actions import (
+    PHASE_LAUNCHED_UNREADABLE,
+    PHASE_PRE_LAUNCH,
+    PHASE_READABLE,
+    ActionOutcome,
+    project_outcome,
+    unusable_answer,
+    verb_mismatch,
+)
 from dispatcher.core.contract import ContractViolation, ingest
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.spec_runner_config import TYPED_DEFAULTS, TYPED_FIELDS
@@ -273,27 +281,55 @@ class SpecRunnerConfigActionRunner:
             proc = subprocess.run(
                 argv, capture_output=True, text=True, timeout=_ACTION_TIMEOUT
             )
-        except (FileNotFoundError, subprocess.TimeoutExpired) as err:
+        except FileNotFoundError as err:
+            # Nothing was executed: the binary is not there.
             return ActionOutcome(
                 action="update-spec-runner-config",
                 dir=target.name,
                 ok=False,
+                phase=PHASE_PRE_LAUNCH,
                 error=str(err),
             )
+        except subprocess.TimeoutExpired as err:
+            # The child started and was killed, so the PR may already
+            # exist. `phase` is what stops that from being read as "nothing
+            # happened"; it was left unset here while the success path set
+            # it, which is a half-populated field — worse than an absent
+            # one, because it looks answered.
+            return ActionOutcome(
+                action="update-spec-runner-config",
+                dir=target.name,
+                ok=False,
+                phase=PHASE_LAUNCHED_UNREADABLE,
+                error=str(err),
+            )
+
+        def unusable(reason: str) -> ActionOutcome:
+            return ActionOutcome(
+                action="update-spec-runner-config",
+                dir=target.name,
+                ok=False,
+                phase=PHASE_READABLE,
+                error=unusable_answer(reason, proc.stderr),
+            )
+
+        # Same producer, same contract, same single ingestion path as
+        # `core/actions.py`. This module used to keep its own `json.loads`
+        # and its own `.get()` per field; two parse paths over one contract
+        # are two sets of rules about what to believe, and they drift.
         try:
             ingested = ingest(proc.stdout, returncode=proc.returncode)
         except ContractViolation as violation:
-            # Same producer, same contract, same single ingestion path as
-            # `core/actions.py`. This module used to keep its own
-            # `json.loads` and its own `.get()` per field; two parse paths
-            # over one contract are two sets of rules about what to
-            # believe, and they drift.
-            return ActionOutcome(
-                action="update-spec-runner-config",
-                dir=target.name,
-                ok=False,
-                error=f"github-checker returned an unparseable envelope: {violation}",
-            )
+            return unusable(str(violation))
+        except Exception as err:  # noqa: BLE001 - as in core/actions.py
+            return unusable(f"consumer failure: {type(err).__name__}")
+
+        # The argv verb, not the DTO's label: this runner reports itself as
+        # `update-spec-runner-config` while asking github-checker for
+        # `propose-pr`, and it is the latter the answer must be about.
+        mismatch = verb_mismatch(ingested, "propose-pr")
+        if mismatch is not None:
+            return unusable(mismatch)
         return project_outcome(
             ingested, action="update-spec-runner-config", dir_name=target.name
         )

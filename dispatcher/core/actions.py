@@ -49,6 +49,7 @@ from dispatcher.core.contract import (
 from dispatcher.core.discovery import DispatcherConfig
 
 _ACTION_TIMEOUT = 120
+_MAX_STDERR_LEN = 200
 _SAFE_DIR_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")
 # C0 controls plus DEL. None of them belong in a value that becomes its own
 # argv element: NUL is the sharp case (`subprocess.run` refuses argv containing
@@ -165,19 +166,78 @@ def project_outcome(ingested: Ingested, *, action: str, dir_name: str) -> Action
             )
     for name in ("matches", "malformed"):
         if name in sent:
+            # `exclude_unset` here is knowingly unpinned: `issue_ref`
+            # declares all six of its fields required, so today it can
+            # make no difference and no test can catch its removal. It
+            # stays for the same reason it is right above — the contract's
+            # own README blesses additive evolution within v1, and the
+            # first optional field added to `issue_ref` is the moment a
+            # full dump starts inventing nulls.
             listed = getattr(ingested, name)
             fields[name] = (
                 None
                 if listed is None
                 else [item.model_dump(exclude_unset=True) for item in listed]
             )
-    if "local" in sent and ingested.local is not None:
+    if "local" in sent and ingested.local is not None and ingested.local.error is None:
         # Two consumer columns over one producer fact. With no `local` on
         # the wire there is no fact to project, and `local_behind=None`
         # would read as "read, and not behind".
+        #
+        # `local.error` is the same distinction one column over: `dirty`
+        # is required by the schema, so a clone that could not be read
+        # still carries `dirty: false` — the field's floor, not a reading.
+        # Projecting it would turn "could not look" into "looked, and it
+        # is clean". The failure itself is not lost: it is the envelope's
+        # own `error` that describes it, and that field does project.
         fields["local_behind"] = ingested.local.behind
         fields["local_dirty"] = ingested.local.dirty
     return ActionOutcome(**fields)
+
+
+def _one_line(text: str | None) -> str | None:
+    """Collapse producer text to a single line for the audit log."""
+    return None if text is None else " ".join(text.split())
+
+
+def unusable_answer(reason: str, stderr: str) -> str:
+    """The error text for a child that ran and whose answer cannot be used.
+
+    Keeps the producer's stderr, which the pre-Task-3 code surfaced and
+    the rewire silently dropped: "gh: could not authenticate: token
+    expired" is the sentence an operator needs, and a JSON-parser message
+    is not a substitute for it. Flattened and bounded, because it is
+    producer text going into an audit log that promises one line per
+    attempt.
+    """
+    detail = " ".join(stderr.split())
+    if len(detail) > _MAX_STDERR_LEN:
+        detail = detail[: _MAX_STDERR_LEN - 1] + "…"
+    tail = f" (stderr: {detail})" if detail else ""
+    return f"github-checker returned an unusable answer: {reason}{tail}"
+
+
+def verb_mismatch(ingested: Ingested, requested: str) -> str | None:
+    """Name the mismatch when the answer is about a different verb.
+
+    For ``result_kind: action`` the producer's ``action`` states which
+    verb actually ran — a fact, not a diagnostic — and nothing checked it
+    against the verb that was asked for. The projection then relabels the
+    answer with the requested verb, which makes a mismatch *invisible*
+    rather than merely unchecked.
+
+    `ingest` cannot make this check: it validates an envelope and knows
+    nothing about the request. So it belongs to the callers, which are the
+    only code holding both halves.
+
+    Not applied to ``cli_error``/``contract_error``: there ``action`` is
+    diagnostic by contract — it may name the attempted verb, an unknown
+    string, or ``"unknown"`` — and comparing it would refuse legitimate
+    refusals.
+    """
+    if isinstance(ingested, ActionPayload) and ingested.action != requested:
+        return f"answer is about {ingested.action!r}, not the requested {requested!r}"
+    return None
 
 
 class ActionBusyError(Exception):
@@ -320,8 +380,14 @@ class ActionRunner:
             repo_dir,
             outcome.ok,
             merge_fields,
-            outcome.detail,
-            outcome.error,
+            # Flattened: `detail` and `error` are producer text, and a
+            # vendored fixture (`pull-local-status-error`) carries an
+            # eight-newline `error`, which turned one accepted outcome into
+            # a nine-line audit record. "One audit line per attempt" was
+            # enforced on the refusal path and not on this one; a log a
+            # reader cannot count attempts in is not an audit log.
+            _one_line(outcome.detail),
+            _one_line(outcome.error),
         )
 
     def _invoke(
@@ -409,33 +475,44 @@ class ActionRunner:
             stderr = proc.stderr.decode("utf-8")
         except UnicodeDecodeError:
             return unreadable()
+
         # PHASE 3 — we hold a readable answer; every outcome below is a
         # statement about what github-checker actually said.
-        try:
-            ingested = ingest(stdout, returncode=proc.returncode)
-        except ContractViolation as violation:
-            # The one place a producer answer is judged. Everything this
-            # module used to do by hand here — its own `json.loads`, its
-            # own root-object check, `.get()` per field — is gone: a
-            # second parse path is a second set of rules about what to
-            # believe, and the two drift. A refusal is still an outcome
-            # with an audit line, never an exception out of the runner:
-            # a merge subprocess that genuinely ran must not vanish from
-            # the log because its answer was unreadable.
+        def unreadable_envelope(reason: str) -> ActionOutcome:
+            """PHASE 3 — the child ran and answered; we cannot use it."""
             return ActionOutcome(
                 action=action,
                 dir=target.name,
                 ok=False,
                 phase=PHASE_READABLE,
-                error=(
-                    "github-checker returned an unparseable envelope: "
-                    # one audit line per attempt; `ContractViolation`
-                    # messages are single-line and bounded by construction
-                    f"{violation}"
-                    if str(violation)
-                    else stderr.strip()
-                ),
+                error=unusable_answer(reason, stderr),
             )
+
+        # The one place a producer answer is judged. Everything this module
+        # used to do by hand here — its own `json.loads`, its own
+        # root-object check, `.get()` per field — is gone: a second parse
+        # path is a second set of rules about what to believe, and the two
+        # drift.
+        try:
+            ingested = ingest(stdout, returncode=proc.returncode)
+        except ContractViolation as violation:
+            return unreadable_envelope(str(violation))
+        except Exception as err:  # noqa: BLE001 - see below
+            # `ingest` raises more than `ContractViolation`: a pydantic
+            # `ValidationError` when a model and the vendored schema
+            # disagree (deliberately unwrapped there), an `OSError` if the
+            # vendored schema cannot be read. `contract.py` lets those be
+            # loud because nothing has run yet at that point. Here
+            # something has: a merge subprocess that genuinely ran must not
+            # vanish from the audit log because the *consumer* was broken,
+            # which is the guarantee this module states and the hole a
+            # narrower guard here reopened. Named as a consumer fault, not
+            # a producer one, and audited either way.
+            return unreadable_envelope(f"consumer failure: {type(err).__name__}")
+
+        mismatch = verb_mismatch(ingested, action)
+        if mismatch is not None:
+            return unreadable_envelope(mismatch)
         return project_outcome(ingested, action=action, dir_name=target.name)
 
     def merge_and_sync(self, repo_dir: str, pr: int, if_head: str) -> ActionOutcome:

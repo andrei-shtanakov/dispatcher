@@ -4,6 +4,10 @@ from pathlib import Path
 
 import pytest
 
+from dispatcher.core.actions import (
+    PHASE_LAUNCHED_UNREADABLE,
+    PHASE_READABLE,
+)
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.spec_runner_config_actions import (
     ConfigCandidate,
@@ -175,7 +179,21 @@ def test_run_delegates_to_propose_pr_live_tree_untouched(tmp_path: Path) -> None
 
 def test_noop_rc1_with_json_is_parsed_not_no_json(tmp_path: Path) -> None:
     repo = make_project(tmp_path, "alpha")
-    payload = {"ok": False, "detail": "no-op", "error": "no changes vs main"}
+    # A real no-op has nothing to point at: the overlay would otherwise
+    # leave `propose-pr-created`'s `pr_url`/`commit_sha`/`branch` on an
+    # answer that says no PR was opened, and the test would be asserting
+    # about an envelope the producer could never send.
+    payload = {
+        "ok": False,
+        "detail": "no-op",
+        "error": "no changes vs main",
+        "pr_url": None,
+        "pr_state": None,
+        "branch": None,
+        "base_branch": None,
+        "commit_sha": None,
+        "changed_paths": None,
+    }
     command, _ = fake_checker(tmp_path, payload, returncode=1)
     runner = SpecRunnerConfigActionRunner(
         DispatcherConfig(roots=(tmp_path,)), command=command
@@ -522,3 +540,86 @@ def test_the_config_runner_checks_the_exit_code_too(tmp_path: Path) -> None:
     assert outcome.ok is False
     assert outcome.error is not None
     assert "exit" in outcome.error
+
+
+def test_the_config_runner_survives_a_consumer_side_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The converged runners must degrade the same way. `ingest` raises
+    more than `ContractViolation`, and a narrower guard here would leave
+    a `propose-pr` that genuinely ran raising out of the runner — the same
+    hole `core/actions.py` states a guarantee against."""
+    import dispatcher.core.spec_runner_config_actions as module
+
+    def explode(raw: str, *, returncode: int) -> object:
+        raise RuntimeError("the consumer could not interpret its own schema")
+
+    monkeypatch.setattr(module, "ingest", explode)
+    repo = make_project(tmp_path, "alpha")
+    command, _ = fake_checker(tmp_path, {"ok": True, "detail": "created"})
+    runner = SpecRunnerConfigActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=command
+    )
+    outcome = runner.run("alpha", _candidate(repo))
+    assert outcome.ok is False
+    # `run()` has an outer catch-all ("degrade, never raise"), so asserting
+    # only `ok is False` cannot tell the two apart — the assertions below
+    # are about the shape only the inner, ingestion-level guard produces:
+    # the phase, and the wording that names it a readable answer we could
+    # not use rather than an unclassified explosion.
+    assert outcome.phase == PHASE_READABLE
+    assert outcome.error is not None
+    assert "unusable answer" in outcome.error
+
+
+def test_a_timed_out_propose_pr_is_not_reported_as_nothing_happened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The child started and was killed, so the PR may already exist.
+    `phase` is what stops that from reading as "nothing happened" — and it
+    was left unset on this path while the success path set it, which is
+    worse than absent: a half-populated field looks answered."""
+    import subprocess as _subprocess
+
+    def timeout(*args: object, **kwargs: object) -> object:
+        raise _subprocess.TimeoutExpired(cmd="github-checker", timeout=1)
+
+    repo = make_project(tmp_path, "alpha")
+    command, _ = fake_checker(tmp_path, {"ok": True, "detail": "created"})
+    runner = SpecRunnerConfigActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=command
+    )
+    # Patched last: the fixtures above shell out to git themselves, and a
+    # global stub would time those out instead.
+    monkeypatch.setattr(_subprocess, "run", timeout)
+    outcome = runner.run("alpha", _candidate(repo))
+    assert outcome.ok is False
+    assert outcome.phase == PHASE_LAUNCHED_UNREADABLE
+
+
+def test_the_config_runner_refuses_an_answer_about_another_verb(
+    tmp_path: Path,
+) -> None:
+    """It asks github-checker for `propose-pr` while reporting itself as
+    `update-spec-runner-config`, so the comparison is against the argv
+    verb, not the DTO's label."""
+    import json as _json
+
+    fixtures = (
+        Path(__file__).parent.parent
+        / "contracts"
+        / "github-checker-actions"
+        / "v1"
+        / "fixtures"
+    )
+    payload = _json.loads((fixtures / "open-pr-created.json").read_text())
+    repo = make_project(tmp_path, "alpha")
+    command, _ = fake_checker(tmp_path, payload)
+    runner = SpecRunnerConfigActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=command
+    )
+    outcome = runner.run("alpha", _candidate(repo))
+    assert outcome.ok is False
+    assert outcome.pr_url is None
+    assert outcome.error is not None
+    assert "propose-pr" in outcome.error and "open-pr" in outcome.error

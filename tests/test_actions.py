@@ -505,11 +505,11 @@ def test_malformed_envelope_is_a_failed_outcome_with_an_audit_line(
         outcome = runner.run("pull", "alpha")
     assert outcome.ok is False
     assert outcome.error is not None
-    assert "unparseable envelope" in outcome.error
+    assert "unusable answer" in outcome.error
     assert "$.detail" in outcome.error  # the offending field, not just "invalid"
     assert "\n" not in outcome.error  # one audit line per attempt
     assert any(
-        "action=pull" in r.getMessage() and "unparseable envelope" in r.getMessage()
+        "action=pull" in r.getMessage() and "unusable answer" in r.getMessage()
         for r in caplog.records
     )
 
@@ -1594,3 +1594,154 @@ def test_an_optional_nested_field_the_producer_omitted_stays_omitted(
     assert outcome.pr_detail is not None
     assert "allows_squash" not in outcome.pr_detail
     assert "diff_truncated" in outcome.pr_detail, "what was sent still arrives"
+
+
+def test_a_consumer_side_failure_still_leaves_an_audit_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    """`ingest` raises more than `ContractViolation` — a `ValidationError`
+    from a model/schema divergence is deliberately left unwrapped, and an
+    `OSError` reading the vendored schema is not wrapped either. Narrowing
+    this guard to `ContractViolation` re-opened the exact hole the guard
+    was written for: a merge subprocess that genuinely ran raises out of
+    the runner, the endpoint answers 500, and the attempt leaves no audit
+    line at all.
+
+    `contract.py` deliberately lets such failures be loud, because there
+    nothing has run yet. Here something has, and an unlogged mutation is
+    the worse failure — so it is caught, named as a consumer fault rather
+    than a producer one, and audited."""
+
+    def explode(raw: str, *, returncode: int) -> object:
+        raise RuntimeError("the consumer could not interpret its own schema")
+
+    monkeypatch.setattr(actions_module, "ingest", explode)
+    make_repo(tmp_path, "alpha")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)),
+        command=fake_checker(tmp_path, v1("pull", dir="alpha", ok=True)),
+    )
+    with caplog.at_level("INFO", logger="dispatcher.actions"):
+        outcome = runner.run("pull", "alpha")
+    assert outcome.ok is False
+    assert outcome.phase == PHASE_READABLE, "the child ran and was read"
+    assert outcome.error is not None
+    assert any("action=pull" in r.getMessage() for r in caplog.records)
+
+
+def test_the_producers_stderr_survives_an_unusable_answer(tmp_path: Path) -> None:
+    """ "gh: could not authenticate: token expired" is the sentence an
+    operator needs; a JSON-parser message is not a substitute for it. The
+    pre-Task-3 code surfaced stderr on this path and the rewire dropped
+    it — the fallback written to preserve it was unreachable, because
+    every `ContractViolation` carries a non-empty message."""
+    make_repo(tmp_path, "alpha")
+    script = tmp_path / "noisy.py"
+    script.write_text(
+        "import sys\n"
+        "sys.stderr.write('gh: could not authenticate: token expired\\n')\n"
+        "sys.stdout.write('not json at all')\n"
+    )
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
+    )
+    outcome = runner.run("pull", "alpha")
+    assert outcome.ok is False
+    assert outcome.error is not None
+    assert "token expired" in outcome.error
+    assert "\n" not in outcome.error, "still one audit line"
+
+
+def test_an_answer_about_a_different_verb_is_refused(tmp_path: Path) -> None:
+    """For `result_kind: action` the producer's `action` names the verb
+    that actually ran — a fact, not a diagnostic. Nothing checked it
+    against the verb dispatcher asked for, and the projection then
+    relabelled the answer with the requested verb, which makes the
+    mismatch invisible rather than merely unchecked: `/api/actions/pull`
+    could return an `open-pr` payload under `action: "pull"`.
+
+    `ingest` cannot make this check — it validates an envelope and knows
+    nothing about the request — so it belongs to the only code that knows
+    both."""
+    make_repo(tmp_path, "alpha")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)),
+        command=fake_checker(tmp_path, v1("open-pr", dir="alpha", ok=True)),
+    )
+    outcome = runner.run("pull", "alpha")
+    assert outcome.ok is False
+    assert outcome.pr_url is None, "nothing may be read out of a mismatched answer"
+    assert outcome.error is not None
+    assert "pull" in outcome.error and "open-pr" in outcome.error
+
+
+def test_a_clone_the_producer_could_not_read_is_not_reported_as_clean(
+    tmp_path: Path,
+) -> None:
+    """`local.error` says the clone could not be read, and `dirty: false`
+    beside it is not a reading — it is the field's floor. Projecting it
+    turns "could not look" into "looked, and it is clean", which is the
+    same collapse the three-state rule exists to prevent, one column
+    over."""
+    make_repo(tmp_path, "alpha")
+    payload = v1("pull", dir="alpha")
+    assert payload["local"]["error"] is None, "the base fixture reads cleanly"
+    unreadable = payload | {
+        "ok": False,
+        "local": local_status(error="fatal: not a git repository", dirty=False),
+    }
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, unreadable)
+    )
+    outcome = runner.run("pull", "alpha")
+    assert "local_dirty" not in outcome.model_fields_set
+    assert "local_behind" not in outcome.model_fields_set
+    assert outcome.local_dirty is None
+
+
+def test_the_audit_line_is_one_line_even_for_a_multi_line_producer_error(
+    tmp_path: Path, caplog
+) -> None:
+    """ "One audit line per attempt" was enforced on the refusal path and
+    not on the accepted one: `pull-local-status-error` — a vendored
+    fixture, so an answer the producer really sends — carries an eight-
+    newline `error`, and the accepted outcome logged nine lines. A log a
+    reader cannot count attempts in is not an audit log."""
+    make_repo(tmp_path, "alpha")
+    payload = v1("pull", dir="alpha")
+    assert "\n" in (_multiline := "first line\nsecond line\nthird line"), (
+        "the fixture of this test is itself multi-line"
+    )
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)),
+        command=fake_checker(tmp_path, payload | {"ok": False, "error": _multiline}),
+    )
+    with caplog.at_level("INFO", logger="dispatcher.actions"):
+        runner.run("pull", "alpha")
+    lines = [r.getMessage() for r in caplog.records if "action=pull" in r.getMessage()]
+    assert lines, "the attempt must be audited at all"
+    assert all("\n" not in line for line in lines), lines
+
+
+def test_every_producer_field_with_a_column_reaches_the_outcome(
+    tmp_path: Path,
+) -> None:
+    """A golden for the projection itself. The HTTP goldens pin the DTO's
+    field set, which is a property of the model — dropping a name from
+    `_PLAIN_PROJECTED` leaves them green, because the field still exists
+    and still serialises as null. What has to be pinned is that a producer
+    fact with a column actually arrives in it."""
+    make_repo(tmp_path, "alpha")
+    # `propose-pr`, not `open-pr`: it is the verb whose envelope carries
+    # branch/base_branch/commit_sha/changed_paths, i.e. the widest set of
+    # producer facts with a DTO column.
+    sent = v1("propose-pr", dir="alpha")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)),
+        command=fake_checker(tmp_path, sent),
+    )
+    outcome = runner._invoke("propose-pr", tmp_path / "alpha")
+    assert outcome.ok is True
+    for name in ("detail", "pr_url", "branch", "base_branch", "commit_sha"):
+        assert getattr(outcome, name) == sent[name], name
+    assert outcome.changed_paths == sent["changed_paths"]
