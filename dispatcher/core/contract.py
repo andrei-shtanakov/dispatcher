@@ -18,7 +18,7 @@ import re
 from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import jsonschema
 from pydantic import BaseModel
@@ -41,6 +41,7 @@ _KNOWN_RESULT_KINDS = frozenset(_VARIANT_DEFS)
 _MAX_SCHEMA_ERROR_LEN = 200
 _MAX_RULE_VALUE_LEN = 40
 _SCHEMA_ERROR_ARITY = 3
+_FIELD_NAMES_ARITY = 3
 _MAX_INT_DIGITS = 20
 # A discriminator this consumer does not know is still worth naming in the
 # log — but only when the value is shaped like an identifier: bounded, one
@@ -271,20 +272,18 @@ def _describe_schema_error(parsed: dict[str, Any], result_kind: str) -> str:
         for error in _diagnostic_validator(result_kind, verb_def).iter_errors(parsed)
         for leaf in _leaf_errors(error)
     ]
-    seen: set[tuple[str, str]] = set()
-    described: list[str] = []
-    for leaf in sorted(leaves, key=lambda e: (-len(e.absolute_path), e.json_path)):
-        key = (leaf.json_path, str(leaf.validator))
-        if key in seen:
-            continue
-        seen.add(key)
-        rendered = repr(leaf.validator_value)
-        rule = leaf.validator
-        if len(rendered) <= _MAX_RULE_VALUE_LEN:
-            rule = f"{rule}={rendered}"
-        described.append(f"{leaf.json_path}: failed {rule}")
-        if len(described) == _SCHEMA_ERROR_ARITY:
-            break
+    # Deepest first: a rule that failed on `local.dirty` says more than one
+    # that failed on the envelope around it. There is deliberately no
+    # de-duplication — with one branch selected the vendored schema cannot
+    # produce the same rule twice (`action_result` constrains only
+    # `result_kind`, so it shares no keyword with any verb), and a dedup
+    # step no input can reach is a claim no test can defend.
+    described = [
+        _describe_leaf(leaf)
+        for leaf in sorted(leaves, key=lambda e: (-len(e.absolute_path), e.json_path))[
+            :_SCHEMA_ERROR_ARITY
+        ]
+    ]
 
     if not described:
         # The root `oneOf` refused while the named variant alone accepts:
@@ -294,9 +293,88 @@ def _describe_schema_error(parsed: dict[str, Any], result_kind: str) -> str:
         return "no envelope variant matched uniquely"
 
     description = "; ".join(described).replace("\n", " ")
+    # A backstop no input reaches today, kept knowingly and named as such
+    # rather than left to read as a defended bound: with the arity, the
+    # rule-value bound and the field-name cap all enforced above, the
+    # longest message the vendored schema can produce is ~170 characters.
+    # The only instance-derived part left is an array index inside a
+    # `json_path`, and reaching 200 would take ~50-digit indices. No test
+    # can pin this without a synthetic schema, so no test claims to.
     if len(description) > _MAX_SCHEMA_ERROR_LEN:
         description = description[: _MAX_SCHEMA_ERROR_LEN - 1] + "…"
     return description
+
+
+def _safe_diagnosis(parsed: dict[str, Any]) -> str:
+    """The diagnosis, or a fixed string if producing it fails.
+
+    Fail-closed has to cover the instrument, and here the instrument is
+    strictly decoration: the refusal was already decided by the
+    authoritative root-`oneOf` check above. So its failure must not change
+    what the caller sees. Evaluated inline in the `ContractViolation(...)`
+    argument it would — the exception is never constructed, and a caller
+    written to this module's documented `Raises:` sees a foreign
+    exception instead, one whose own message can be the entire schema.
+
+    The authoritative check is deliberately *not* wrapped this way. A
+    vendored schema that cannot be loaded or referenced is a consumer
+    fault, not untrustworthy producer output, and mislabelling it as
+    `ContractViolation` would hide a broken install behind a message that
+    blames the producer.
+    """
+    try:
+        return _describe_schema_error(parsed, parsed["result_kind"])
+    except Exception:  # noqa: BLE001 - decoration must never mask the refusal
+        return "diagnosis unavailable"
+
+
+def _describe_leaf(leaf: jsonschema.ValidationError) -> str:
+    """One failed rule, named as specifically as disclosure allows.
+
+    `required` and `additionalProperties` are the two keywords that catch
+    the drift that actually happens — a producer adding or removing a
+    field — and reporting them as bare keyword names collapses every such
+    drift into one message. Both can be resolved to the field itself, from
+    different sides:
+
+    * `required` — the names live in the schema's own `required` array;
+      the instance is consulted only to ask which of those schema-declared
+      names are absent, so the answer is always a subset of the schema and
+      never producer text.
+    * `additionalProperties` — the offending keys come from the instance,
+      so they go through :func:`_describe_untrusted` like any other
+      producer value, and the list is capped: the producer decides how
+      many keys it sends, and must not thereby decide the message length.
+    """
+    path = leaf.json_path
+    if leaf.validator == "required":
+        # JSON Schema fixes these shapes: `required` is an array of names,
+        # and both keywords only ever apply to an object instance.
+        required = cast("list[str]", leaf.validator_value)
+        instance = cast("dict[str, Any]", leaf.instance)
+        missing = [name for name in required if name not in instance]
+        return f"{path}: missing required {_join_capped(repr(n) for n in missing)}"
+    if leaf.validator == "additionalProperties":
+        subschema = cast("dict[str, Any]", leaf.schema)
+        instance = cast("dict[str, Any]", leaf.instance)
+        declared = set(subschema.get("properties", ()))
+        foreign = (key for key in instance if key not in declared)
+        return f"{path}: unexpected {_join_capped(map(_describe_untrusted, foreign))}"
+    rendered = repr(leaf.validator_value)
+    rule = leaf.validator
+    if len(rendered) <= _MAX_RULE_VALUE_LEN:
+        rule = f"{rule}={rendered}"
+    return f"{path}: failed {rule}"
+
+
+def _join_capped(names: Iterator[str]) -> str:
+    """At most `_FIELD_NAMES_ARITY` names, then a count of what was cut."""
+    shown: list[str] = []
+    for extra, name in enumerate(names):
+        if extra >= _FIELD_NAMES_ARITY:
+            return f"{', '.join(shown)} and more"
+        shown.append(name)
+    return ", ".join(shown) if shown else "nothing nameable"
 
 
 def _describe_untrusted(value: object) -> str:
@@ -312,6 +390,13 @@ def _describe_untrusted(value: object) -> str:
     The diagnosis worth keeping is narrow: which version, or which
     unrecognised variant name. Both are small scalars, so echo exactly
     those shapes and describe everything else by type and size.
+
+    Accepted risk, named rather than discovered later: 32 characters of
+    ``[a-z0-9_-]`` is enough to carry a lowercase-hex API key verbatim.
+    Reaching it needs a producer to put the secret at ``schema_version``,
+    ``result_kind`` or ``action`` specifically, and narrowing the class
+    further would cost the one diagnosis an operator actually needs — so
+    the line is drawn here deliberately, not by accident of the pattern.
     """
     if value is None or type(value) is bool:
         return repr(value)
@@ -391,8 +476,7 @@ def ingest(raw: str, *, returncode: int) -> Ingested:
 
     if any(_validator().iter_errors(parsed)):
         raise ContractViolation(
-            "payload does not match actions/v1 schema: "
-            f"{_describe_schema_error(parsed, result_kind)}"
+            f"payload does not match actions/v1 schema: {_safe_diagnosis(parsed)}"
         )
 
     # The exit code is half the contract and is checked here, not left to

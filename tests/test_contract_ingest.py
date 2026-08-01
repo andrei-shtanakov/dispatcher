@@ -17,9 +17,11 @@ from typing import Any
 import pytest
 
 from dispatcher.core.contract import (
+    _VARIANT_DEFS,
     CliError,
     ContractError,
     ContractViolation,
+    _describe_untrusted,
     _schema,
     _verb_defs,
     ingest,
@@ -293,9 +295,139 @@ def test_structurally_different_schema_violations_diagnose_differently() -> None
     assert "$.local.dirty" in messages["nested-wrong-type"], messages[
         "nested-wrong-type"
     ]
-    assert "additionalProperties" in messages["foreign-field"], messages[
-        "foreign-field"
-    ]
+    assert "merged" in messages["foreign-field"], messages["foreign-field"]
+
+
+def test_a_missing_field_is_named_not_merely_counted() -> None:
+    """A field added or removed is by a wide margin the most common
+    producer drift, and `required` is the keyword that catches removals —
+    yet every removal, in every variant, produced the identical `$: failed
+    required`. That is verbatim the say-nothing message this diagnosis
+    replaced, still in place for the drift that actually happens.
+
+    The name costs no disclosure: it is a member of the schema's own
+    `required` array, so it is schema-side by construction — the instance
+    is consulted only to ask which schema-declared names are absent."""
+    base = _fixture("pull-success")
+    without_local = {k: v for k, v in base.items() if k != "local"}
+    without_detail = {k: v for k, v in base.items() if k != "detail"}
+
+    messages = []
+    for payload in (without_local, without_detail):
+        with pytest.raises(ContractViolation) as exc_info:
+            ingest(json.dumps(payload), returncode=0)
+        messages.append(str(exc_info.value))
+
+    assert "local" in messages[0], messages[0]
+    assert "detail" in messages[1], messages[1]
+    assert messages[0] != messages[1]
+
+
+def test_a_foreign_field_is_named_but_never_echoed_unbounded() -> None:
+    """The mirror of the above for `additionalProperties`. Unlike
+    `required`, the offending key comes from the *instance*, so it is
+    described by the same bounded rule as every other producer value."""
+    base = _fixture("pull-success")
+    with pytest.raises(ContractViolation) as exc_info:
+        ingest(json.dumps(base | {"merged": True}), returncode=0)
+    assert "merged" in str(exc_info.value), exc_info.value
+
+    smuggled = "ghp_" + "s" * 400
+    with pytest.raises(ContractViolation) as exc_info:
+        ingest(json.dumps(base | {smuggled: True}), returncode=0)
+    message = str(exc_info.value)
+    assert smuggled not in message
+    assert len(message) < 300
+
+    # The producer decides how many keys it sends; it must not thereby
+    # decide how long the message is. Unlike `required`, whose names come
+    # from the schema and are therefore bounded by it, this list is
+    # bounded only because the code bounds it.
+    many = base | {f"extra_{n}": True for n in range(500)}
+    with pytest.raises(ContractViolation) as exc_info:
+        ingest(json.dumps(many), returncode=0)
+    message = str(exc_info.value)
+    assert "and more" in message, message
+    assert len(message) < 300
+
+
+def test_the_variant_map_matches_the_schema_it_indexes() -> None:
+    """`_VARIANT_DEFS` is hand-maintained and became load-bearing when the
+    diagnosis started building `$ref` strings out of it. A re-vendor that
+    renames a `$defs` key — updating the root `oneOf` and re-hashing the
+    manifest, as the vendoring procedure requires — leaves the whole suite
+    green while that variant's *refusal* path starts raising a foreign
+    referencing error instead of `ContractViolation`. Pin it exactly as
+    `_verb_defs` is pinned."""
+    schema = json.loads((VENDORED_ROOT / "actions.schema.json").read_text())
+    from_schema = {branch["$ref"].rsplit("/", 1)[-1] for branch in schema["oneOf"]}
+    assert set(_VARIANT_DEFS.values()) == from_schema
+    for def_name in _VARIANT_DEFS.values():
+        assert def_name in schema["$defs"]
+
+
+def test_a_failing_diagnosis_still_refuses_as_a_contract_violation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fail-closed has to cover the instrument. The diagnosis is decoration
+    over a refusal that has *already* been decided authoritatively, so when
+    it raises, the refusal must survive unchanged — same type, still
+    bounded. Today the diagnosis is evaluated inside the argument to
+    `ContractViolation(...)`, so its failure means that exception is never
+    constructed and a caller writing the documented `except
+    ContractViolation` sees a foreign exception instead."""
+
+    def explode(*args: object, **kwargs: object) -> str:
+        raise RuntimeError("x" * 5000)
+
+    monkeypatch.setattr("dispatcher.core.contract._describe_schema_error", explode)
+    payload = _fixture("pull-success") | {"merged": True}
+    with pytest.raises(ContractViolation) as exc_info:
+        ingest(json.dumps(payload), returncode=0)
+    message = str(exc_info.value)
+    assert len(message) < 300, "an instrument failure must not blow the bound"
+    assert "x" * 100 not in message
+
+
+def test_the_identifier_allowlist_is_bounded_in_both_length_and_case() -> None:
+    """`_describe_untrusted` echoes identifier-shaped values verbatim, and
+    that allowlist is the only thing standing between a producer value and
+    the log. Both halves need pinning: the character class *and* the
+    length bound. Asserting through a secret that happens to contain an
+    uppercase letter tests only the first, and leaves the second free to
+    be relaxed to `{1,}` with the suite green."""
+    assert _describe_untrusted("a" * 32) == repr("a" * 32)
+    assert _describe_untrusted("a" * 33) == "<str, 33 chars>"
+    assert _describe_untrusted("A" * 8) == "<str, 8 chars>"
+    assert _describe_untrusted("has space") == "<str, 9 chars>"
+    assert _describe_untrusted("trailing\n") == "<str, 9 chars>"
+
+
+def test_both_shapes_of_an_ambiguous_oneOf_are_reported() -> None:
+    """`issue` is `oneOf(issue_ref, null)` and carries this contract's
+    central three-state invariant — null with `created=true` means the
+    issue exists but the read-back failed. A producer emitting `false`
+    there is exactly the absent/null/false confusion the contract exists
+    to prevent, and reporting only "must be an object" points the operator
+    at building an `issue_ref` instead of at the null-vs-false bug."""
+    payload = _fixture("issue-create-created") | {"issue": False}
+    with pytest.raises(ContractViolation) as exc_info:
+        ingest(json.dumps(payload), returncode=0)
+    message = str(exc_info.value)
+    assert "'object'" in message, message
+    assert "'null'" in message, message
+
+
+def test_the_number_of_reported_rules_is_bounded() -> None:
+    """Producer input decides how many rules fail; it must not decide how
+    long the message is."""
+    base = _fixture("propose-pr-created")
+    payload = base | {"changed_paths": [1] * 5000}
+    with pytest.raises(ContractViolation) as exc_info:
+        ingest(json.dumps(payload), returncode=0)
+    message = str(exc_info.value)
+    assert message.count("; ") <= 2, message
+    assert len(message) < 300
 
 
 def test_every_verb_in_the_schema_is_discoverable_for_diagnosis() -> None:
@@ -342,12 +474,19 @@ def test_a_combinator_nested_below_the_verb_is_still_descended_into() -> None:
     message = str(exc_info.value)
     assert "$.issue.number" in message, message
     assert "failed oneOf" not in message, message
+    # Deepest rule first: the leaf inside `issue` is the cause; the rule
+    # about `issue` itself is the frame around it.
+    assert message.index("$.issue.number") < message.index("$.issue: failed"), message
 
 
 def test_an_unknown_verb_is_named_only_when_it_is_identifier_shaped() -> None:
     """The verb reaches the message from unvalidated input, so it goes
     through the same bounded description as the other discriminators."""
-    secret = "ghp_" + "S" * 400
+    # Lowercase deliberately: an uppercase byte fails the allowlist's
+    # character class on its own, so a capitalised secret exercises only
+    # that half and leaves the length bound — the thing standing between
+    # this message and a 10 MB log record — pinned by nothing.
+    secret = "ghp_" + "s" * 400
     payload = _fixture("pull-success") | {"action": secret}
     with pytest.raises(ContractViolation) as exc_info:
         ingest(json.dumps(payload), returncode=0)
@@ -364,7 +503,11 @@ def test_a_precheck_message_never_echoes_producer_content(field: str) -> None:
     an unbounded one: a nested envelope or a 10 MB string lands verbatim
     in the message. Redacting one branch and not these two is redaction
     by coincidence of today's producer, not by construction."""
-    secret = "ghp_" + "S" * 400
+    # Lowercase deliberately: an uppercase byte fails the allowlist's
+    # character class on its own, so a capitalised secret exercises only
+    # that half and leaves the length bound — the thing standing between
+    # this message and a 10 MB log record — pinned by nothing.
+    secret = "ghp_" + "s" * 400
     payload = _fixture("pull-success") | {field: {"token": secret, "n": [1, 2]}}
     with pytest.raises(ContractViolation) as exc_info:
         ingest(json.dumps(payload), returncode=0)
