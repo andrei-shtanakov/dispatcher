@@ -40,7 +40,7 @@ from dispatcher.core.actions import (
     PHASE_PRE_LAUNCH,
     PHASE_READABLE,
     ActionOutcome,
-    audit_stderr,
+    audit_unusable,
     consumer_failure,
     one_line,
     project_outcome,
@@ -326,8 +326,10 @@ class SpecRunnerConfigActionRunner:
             )
 
         try:
+            # stdout only: the answer lives there, and stderr's content
+            # never travels now — only its byte count does — so its
+            # encoding cannot make an answer unreadable.
             stdout = proc.stdout.decode("utf-8")
-            stderr = proc.stderr.decode("utf-8")
         except UnicodeDecodeError as err:
             # The child RAN: the PR may already exist. `phase` is what stops
             # that being read as "nothing happened".
@@ -340,7 +342,15 @@ class SpecRunnerConfigActionRunner:
             )
 
         def unusable(reason: str) -> ActionOutcome:
-            audit_stderr(_audit, "propose-pr", target.name, stderr)
+            audit_unusable(
+                _audit,
+                verb="propose-pr",
+                repo_dir=target.name,
+                phase=PHASE_READABLE,
+                returncode=proc.returncode,
+                stdout=proc.stdout,
+                stderr=proc.stderr,
+            )
             return ActionOutcome(
                 action="update-spec-runner-config",
                 dir=target.name,

@@ -222,33 +222,45 @@ def consumer_failure(err: BaseException) -> str:
     return f"dispatcher could not interpret the answer: {type(err).__name__}"
 
 
-def audit_stderr(
-    logger: logging.Logger, action: str, repo_dir: str, stderr: str
+def audit_unusable(
+    logger: logging.Logger,
+    *,
+    verb: str,
+    repo_dir: str,
+    phase: str,
+    returncode: int | None,
+    stdout: bytes,
+    stderr: bytes,
 ) -> None:
-    """Put the producer's stderr in the operator's log — and only there.
+    """Record that a producer answer could not be used — metadata only.
 
-    "gh: could not authenticate: token expired" is the sentence an
-    operator needs, and the pre-contract code surfaced it. It cannot go
-    back into `ActionOutcome.error`: that is the `response_model` of eight
-    endpoints, so a `git` failure printing a remote with an embedded
-    credential (`https://x-access-token:ghs_…@github.com`, which `git`
-    echoes verbatim) would serve the token to the browser. `contract.py`
-    closed the adjacent channel on this very message and withdrew an
-    "identifier-shaped values are fine" allowlist while doing it; a token
-    *denylist* here would be weaker than the allowlist already judged too
-    weak.
+    Neither stream's *content* is emitted, by construction rather than by
+    filtering. `git` echoes a failing remote verbatim, credential
+    included, so a producer's stderr can carry a token; the browser was
+    ruled out first because `ActionOutcome.error` is the `response_model`
+    of eight endpoints, and the local audit log went the same way for the
+    same reason at a slower tempo — logs are archived, indexed and copied
+    no less often than responses, so a token written here is a token on
+    disk.
 
-    The audit log is a different exposure: local, operator-owned, and
-    already carrying the producer's own `detail`/`error`. Emitted under a
-    key that is not `action=`, so counting attempts in the log is
-    unaffected.
+    What survives is enough to re-run the command by hand, which is the
+    operator's actual next step for an answer nobody could parse. A valid
+    producer answer still carries its own `detail`/`error` by contract;
+    this is only for the ones that are not.
+
+    Not `action=`: the audit line that counts attempts starts with that,
+    and this is a second line about the same attempt.
     """
-    flattened = one_line(stderr) or ""
-    if not flattened:
-        return
-    if len(flattened) > _MAX_STDERR_LEN:
-        flattened = flattened[: _MAX_STDERR_LEN - 1] + "…"
-    logger.info("stderr-from=%s repo=%s: %s", action, repo_dir, flattened)
+    logger.info(
+        "github_checker_subprocess_failed verb=%s repo=%s phase=%s returncode=%s "
+        "stdout_bytes=%d stderr_bytes=%d",
+        verb,
+        repo_dir,
+        phase,
+        returncode,
+        len(stdout),
+        len(stderr),
+    )
 
 
 def verb_mismatch(ingested: Ingested, requested: str) -> str | None:
@@ -505,8 +517,10 @@ class ActionRunner:
             return refused(str(err))
         # PHASE 2 boundary: everything below happens with a completed child.
         try:
+            # stdout only: the answer lives there, and stderr's content
+            # never travels now — only its byte count does — so its
+            # encoding cannot make an answer unreadable.
             stdout = proc.stdout.decode("utf-8")
-            stderr = proc.stderr.decode("utf-8")
         except UnicodeDecodeError:
             return unreadable()
 
@@ -514,7 +528,15 @@ class ActionRunner:
         # statement about what github-checker actually said.
         def unreadable_envelope(reason: str) -> ActionOutcome:
             """PHASE 3 — the child ran and answered; we cannot use it."""
-            audit_stderr(_audit, action, target.name, stderr)
+            audit_unusable(
+                _audit,
+                verb=action,
+                repo_dir=target.name,
+                phase=PHASE_READABLE,
+                returncode=proc.returncode,
+                stdout=proc.stdout,
+                stderr=proc.stderr,
+            )
             return ActionOutcome(
                 action=action,
                 dir=target.name,

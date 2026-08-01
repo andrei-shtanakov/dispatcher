@@ -1629,34 +1629,6 @@ def test_a_consumer_side_failure_still_leaves_an_audit_line(
     assert any("action=pull" in r.getMessage() for r in caplog.records)
 
 
-def test_the_producers_stderr_survives_where_the_operator_reads_it(
-    tmp_path: Path, caplog
-) -> None:
-    """ "gh: could not authenticate: token expired" is the sentence an
-    operator needs; a JSON-parser message is not a substitute for it. The
-    pre-contract code surfaced stderr and the rewire dropped it. It is
-    back — in the audit log, not on the wire; see
-    `test_producer_stderr_reaches_the_audit_log_and_not_the_wire` for why
-    the distinction is the whole point."""
-    make_repo(tmp_path, "alpha")
-    script = tmp_path / "noisy.py"
-    script.write_text(
-        "import sys\n"
-        "sys.stderr.write('gh: could not authenticate: token expired\\n')\n"
-        "sys.stdout.write('not json at all')\n"
-    )
-    runner = ActionRunner(
-        DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
-    )
-    with caplog.at_level("INFO", logger="dispatcher.actions"):
-        outcome = runner.run("pull", "alpha")
-    assert outcome.ok is False
-    assert "token expired" in caplog.text
-    assert all("\n" not in r.getMessage() for r in caplog.records)
-    # attempts are still counted by `action=` lines; the stderr line is not one
-    assert len([r for r in caplog.records if r.getMessage().startswith("action=")]) == 1
-
-
 def test_an_answer_about_a_different_verb_is_refused(tmp_path: Path) -> None:
     """For `result_kind: action` the producer's `action` names the verb
     that actually ran — a fact, not a diagnostic. Nothing checked it
@@ -1752,41 +1724,6 @@ def test_every_producer_field_with_a_column_reaches_the_outcome(
     assert outcome.changed_paths == sent["changed_paths"]
 
 
-def test_producer_stderr_reaches_the_audit_log_and_not_the_wire(
-    tmp_path: Path, caplog
-) -> None:
-    """`git` prints a failing remote URL verbatim, credentials included:
-    `fatal: could not read Username for 'https://x-access-token:ghs_…@…'`.
-    `ActionOutcome.error` is the `response_model` of eight endpoints, so
-    putting raw producer stderr there serves that token to the browser.
-
-    `contract.py` closed the adjacent channel on this very message and
-    withdrew an "identifier-shaped values are fine" allowlist while doing
-    it — a token denylist here would be weaker than the allowlist that was
-    already judged too weak. So stderr stays where the operator needs it,
-    the local audit log (which already carries producer `detail`/`error`),
-    and off the wire."""
-    make_repo(tmp_path, "alpha")
-    secret = "https://x-access-token:ghs_S3CRETTOKEN0123456789@github.com"
-    script = tmp_path / "leaky.py"
-    script.write_text(
-        "import sys\n"
-        f"sys.stderr.write('fatal: could not read Username for {secret}\\n')\n"
-        "sys.stdout.write('not json at all')\n"
-    )
-    runner = ActionRunner(
-        DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
-    )
-    with caplog.at_level("INFO", logger="dispatcher.actions"):
-        outcome = runner.run("pull", "alpha")
-    assert outcome.ok is False
-    assert outcome.error is not None
-    assert "ghs_" not in outcome.error, "the wire must not carry it"
-    assert "stderr" not in outcome.error
-    assert "ghs_" in caplog.text, "the operator still gets the sentence"
-    assert all("\n" not in r.getMessage() for r in caplog.records)
-
-
 def test_a_consumer_failure_does_not_blame_the_producer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1831,3 +1768,53 @@ def test_a_refusal_about_another_verb_still_carries_the_producers_reason(
     outcome = runner.run("pull", "alpha")
     assert outcome.ok is False
     assert outcome.error == payload["error"], "the producer's own reason survives"
+
+
+def test_neither_stream_of_a_refused_answer_is_logged_or_served(
+    tmp_path: Path, caplog
+) -> None:
+    """A credential in a producer's stderr must reach no durable surface.
+
+    `git` echoes a failing remote verbatim, credential included, and
+    `ActionOutcome.error` is the `response_model` of eight endpoints — so
+    it cannot go there. The local audit log is not a safe second home
+    either: it is archived, indexed and copied no less often than a
+    browser response, so a token written there is a token on disk. The
+    operator gets metadata sufficient to re-run the command by hand and
+    nothing that has to be redacted afterwards.
+
+    Structural, not a denylist: no branch here emits stream *content*, so
+    there is no pattern for a future secret shape to slip past."""
+    make_repo(tmp_path, "alpha")
+    sentinel = "ghs_S3NT1NEL0123456789ABCDEF"
+    script = tmp_path / "leaky.py"
+    script.write_text(
+        "import sys\n"
+        "sys.stderr.write("
+        f"'fatal: could not read Username for https://x-access-token:{sentinel}@github.com\\n')\n"
+        f"sys.stdout.write('not json, and also {sentinel}')\n"
+        "sys.exit(1)\n"
+    )
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
+    )
+    with caplog.at_level("INFO", logger="dispatcher.actions"):
+        outcome = runner.run("pull", "alpha")
+
+    assert outcome.ok is False
+    assert outcome.error is not None
+    assert sentinel not in outcome.error, "not on the wire"
+    assert sentinel not in caplog.text, "and not on disk either"
+
+    diagnostics = [
+        r.getMessage()
+        for r in caplog.records
+        if "github_checker_subprocess_failed" in r.getMessage()
+    ]
+    assert len(diagnostics) == 1, caplog.text
+    line = diagnostics[0]
+    assert "verb=pull" in line, line
+    assert f"phase={PHASE_READABLE}" in line, line
+    assert "returncode=1" in line, line
+    assert "stdout_bytes=" in line and "stderr_bytes=" in line, line
+    assert "\n" not in line
