@@ -68,13 +68,27 @@ def _ingest_action(name: str, returncode: int) -> ActionPayload:
     return result
 
 
+def _mismatched_paths(root: Path) -> list[str]:
+    """Every vendored path whose bytes disagree with the stored sha256.
+
+    Shared with the tamper test on purpose. When each had its own copy of
+    the comparison, gutting *this* one left the tamper test green: it
+    proved that an sha256 comparison can reject something, not that the
+    pin check can. One implementation, two callers, and the tamper test
+    becomes evidence about the check that actually runs."""
+    manifest = json.loads((root / "manifest.json").read_text())
+    return [
+        entry["path"]
+        for entry in manifest["surface"]
+        if hashlib.sha256((root / entry["path"]).read_bytes()).hexdigest()
+        != entry["sha256"]
+    ]
+
+
 def test_the_vendored_surface_matches_its_manifest() -> None:
     """A pinned copy nobody re-hashes is a copy that drifted quietly."""
-    manifest = _load_manifest()
-    assert manifest["producer_commit"] == PRODUCER_COMMIT
-    for entry in manifest["surface"]:
-        blob = (VENDORED_ROOT / entry["path"]).read_bytes()
-        assert hashlib.sha256(blob).hexdigest() == entry["sha256"], entry["path"]
+    assert _load_manifest()["producer_commit"] == PRODUCER_COMMIT
+    assert _mismatched_paths(VENDORED_ROOT) == []
 
 
 def test_the_manifest_covers_every_vendored_file() -> None:
@@ -968,7 +982,54 @@ def test_a_local_status_field_the_schema_requires_has_no_default() -> None:
 # prove the consumer can actually consume them: a fixture that validates
 # but cannot be turned into a model is a contract this side does not have.
 
-VENDORED_FIXTURES = sorted((VENDORED_ROOT / "fixtures").glob("*.json"))
+# Derived from the manifest, not from a directory glob. A glob pins only
+# how many files are there: swapping one fixture for a copy of another,
+# keeping the count at 34 and re-hashing the manifest and its tree hash,
+# left every sweep green while a whole branch of the contract stopped
+# being exercised and another was ingested twice. The literal stem list
+# is the independent anchor — it cannot be satisfied by any other set of
+# thirty-four names.
+_FIXTURE_STEMS = [
+    "cli-error",
+    "cli-error-no-verb",
+    "contract-error",
+    "issue-create-conflict",
+    "issue-create-created",
+    "issue-create-no-readback",
+    "issue-create-refused",
+    "issue-create-taken",
+    "issue-create-unknown",
+    "issue-lookup-conflict",
+    "issue-lookup-free",
+    "issue-lookup-malformed",
+    "issue-lookup-one",
+    "issue-lookup-unread",
+    "merge-gate-refused",
+    "merge-merged",
+    "merge-refusal-with-detail",
+    "merge-unknown",
+    "open-pr-already-open",
+    "open-pr-created",
+    "open-pr-no-url",
+    "post-merge-sync-failed",
+    "post-merge-sync-no-clone",
+    "post-merge-sync-ok",
+    "post-merge-sync-ok-cleanup-unread",
+    "pr-detail-full",
+    "pr-detail-truncated",
+    "pr-detail-unavailable",
+    "propose-pr-created",
+    "propose-pr-if-match",
+    "propose-pr-pushed-without-pr",
+    "pull-local-status-error",
+    "pull-not-a-repo",
+    "pull-success",
+]
+VENDORED_FIXTURES = [
+    VENDORED_ROOT / entry["path"]
+    for entry in sorted(_load_manifest()["surface"], key=lambda e: e["path"])
+    if entry["path"].startswith("fixtures/")
+]
 
 
 def _expected_exit(payload: dict[str, Any]) -> int:
@@ -976,10 +1037,18 @@ def _expected_exit(payload: dict[str, Any]) -> int:
     return 0 if (payload["result_kind"] == "action" and payload["ok"]) else 1
 
 
-def test_the_sweep_covers_every_fixture() -> None:
-    """A glob that matched nothing would make every sweep below vacuous
-    and green — the failure mode a sweep cannot report about itself."""
+def test_the_sweep_covers_every_fixture_by_name() -> None:
+    """A sweep that matched nothing would be vacuous and green — the
+    failure mode a sweep cannot report about itself. Cardinality alone is
+    not enough: thirty-four is satisfied by the wrong thirty-four, so the
+    identities are pinned and cross-checked against what is on disk."""
     assert len(VENDORED_FIXTURES) == 34
+    # Sorted by stem, not by path: `fixtures/cli-error-no-verb.json` sorts
+    # before `fixtures/cli-error.json` ('-' < '.'), and the identity of the
+    # set is what is being pinned, not the manifest's ordering.
+    assert sorted(p.stem for p in VENDORED_FIXTURES) == _FIXTURE_STEMS
+    on_disk = sorted(p.stem for p in (VENDORED_ROOT / "fixtures").glob("*.json"))
+    assert on_disk == _FIXTURE_STEMS, "manifest and directory must agree"
 
 
 @pytest.mark.parametrize("path", VENDORED_FIXTURES, ids=lambda p: p.stem)
@@ -1013,8 +1082,27 @@ def test_every_nested_object_round_trips_key_for_key(path: Path) -> None:
         if isinstance(payload.get(key), dict):
             assert set(dumped[key]) == set(payload[key]), key
     for key in ("matches", "malformed"):
-        for sent, got in zip(payload.get(key) or [], dumped.get(key) or []):
+        sent_list = payload.get(key)
+        if not isinstance(sent_list, list):
+            continue
+        # Length first: `zip` stops at the shorter sequence, so a dumped
+        # list that lost items — or vanished entirely, via `or []` — was a
+        # silent pass. Same class as a sweep that swept nothing.
+        # `isinstance`, not `dumped.get(key) or []`: a key that vanished
+        # from the model made the loop body never run, so this test simply
+        # did not fire and the failure was caught only by its neighbour.
+        # `strict=True` then carries the length check itself — an explicit
+        # `len(...)` assertion beside it is redundant, and a redundant
+        # assertion is one no mutation can make speak.
+        assert isinstance(dumped.get(key), list), key
+        for sent, got in zip(sent_list, dumped[key], strict=True):
             assert set(got) == set(sent), key
+    detail = payload.get("pr_detail")
+    if isinstance(detail, dict):
+        for key in ("checks", "files", "review_threads"):
+            assert len(dumped["pr_detail"][key]) == len(detail[key]), key
+            for sent, got in zip(detail[key], dumped["pr_detail"][key], strict=True):
+                assert set(got) == set(sent), key
 
 
 # --- Step 3: the paths this consumer actually has ---------------------
@@ -1090,7 +1178,11 @@ def _drop(payload: dict[str, Any], key: str) -> dict[str, Any]:
 @pytest.mark.parametrize(
     "mutate, returncode, names_the_reason",
     [
-        (lambda p: p | {"schema_version": 2}, 0, "schema_version"),
+        # "schema_version" alone would also be produced by the schema's own
+        # `const: 1` if the precheck were deleted — a different refusal
+        # that happens to contain the same word. Match the precheck's
+        # own sentence.
+        (lambda p: p | {"schema_version": 2}, 0, "pinned to v1"),
         (lambda p: p | {"result_kind": "something_new"}, 0, "result_kind"),
         (lambda p: p | {"merged": True}, 0, "unexpected"),
         (lambda p: _drop(p, "local"), 0, "missing required"),
@@ -1134,11 +1226,76 @@ def test_a_tampered_vendored_file_is_caught_by_its_own_manifest(
     victim = tampered / "fixtures" / "pull-success.json"
     victim.write_text(victim.read_text().replace('"ok": true', '"ok": false'))
 
-    manifest = json.loads((tampered / "manifest.json").read_text())
-    mismatched = [
-        entry["path"]
-        for entry in manifest["surface"]
-        if hashlib.sha256((tampered / entry["path"]).read_bytes()).hexdigest()
-        != entry["sha256"]
-    ]
-    assert mismatched == ["fixtures/pull-success.json"]
+    assert _mismatched_paths(tampered) == ["fixtures/pull-success.json"]
+    assert _mismatched_paths(VENDORED_ROOT) == [], "the real tree is untouched"
+
+
+# --- Task 4 review: the round-trip cannot see an invented default ------
+#
+# `model_dump(exclude_unset=True)` emits only keys that were set, so its
+# key set is a subset of the payload's by construction and the round-trip
+# tests one direction: nothing was dropped. Everything about a field's
+# *default* is invisible to it — `local_sync: str = "not_attempted"`
+# passed the entire suite while manufacturing a producer fact that
+# reaches the audit line and the SPA. So the rule is asserted directly,
+# against the schema, for every model rather than for `LocalStatus` alone.
+
+_NESTED_MODELS = [
+    (LocalStatus, "local_status"),
+    (CheckRun, "check_run"),
+    (ChangedFile, "changed_file"),
+    (ReviewThread, "review_thread"),
+    (IssueRef, "issue_ref"),
+    (PrDetail, "pr_detail"),
+]
+
+
+def _schema_defs() -> dict[str, Any]:
+    return json.loads((VENDORED_ROOT / "actions.schema.json").read_text())["$defs"]
+
+
+@pytest.mark.parametrize(
+    "model, def_name", _NESTED_MODELS, ids=[m.__name__ for m, _ in _NESTED_MODELS]
+)
+def test_no_nested_model_defaults_a_producer_fact(
+    model: type[Any], def_name: str
+) -> None:
+    """Every schema-`required` property is declared without a default, and
+    every optional one defaults to `None`.
+
+    A non-`None` default is a consumer answer standing in for a producer
+    fact — `PrDetail.checks_truncated = False` would say "the check list
+    is complete" about an answer that never claimed it, and its own
+    docstring is that a green verdict over a truncated list is not a green
+    verdict. Unreachable through `ingest` today, since schema validation
+    runs first; reachable the moment the schema is re-vendored looser or a
+    model is built anywhere else."""
+    required = set(_schema_defs()[def_name]["required"])
+    for name, field in model.model_fields.items():
+        if name in required:
+            assert field.is_required(), f"{model.__name__}.{name}"
+        else:
+            assert field.get_default() is None, f"{model.__name__}.{name}"
+
+
+def test_the_action_payload_defaults_no_producer_fact_either() -> None:
+    """`ActionPayload` is the union across the eight verbs, so "required"
+    means required by *every* verb — the rest are per-verb optional and
+    must therefore be absent-able, i.e. default to `None`."""
+    defs = _schema_defs()
+    verbs = [name for name in defs if name.startswith("verb_")]
+    assert len(verbs) == 8
+    always_required = set.intersection(*(set(defs[v]["required"]) for v in verbs))
+    assert always_required == {
+        "schema_version",
+        "result_kind",
+        "action",
+        "dir",
+        "ok",
+        "error",
+    }
+    for name, field in ActionPayload.model_fields.items():
+        if name in always_required:
+            assert field.is_required(), name
+        else:
+            assert field.get_default() is None, name

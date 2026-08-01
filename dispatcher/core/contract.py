@@ -186,7 +186,11 @@ class ActionPayload(BaseModel):
     action: str
     dir: str
     ok: bool
-    error: str | None = None
+    # No default: the schema marks `error` required on all eight verbs, so
+    # the producer always states it — and a field that is always stated
+    # must not be defaultable, for the same reason `LocalStatus` has none.
+    # `detail` below is genuinely per-verb optional.
+    error: str | None
     detail: str | None = None
     local: LocalStatus | None = None
     pr_url: str | None = None
