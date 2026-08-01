@@ -21,6 +21,7 @@ from dispatcher.core.contract import (
     ContractError,
     ContractViolation,
     _schema,
+    _verb_defs,
     ingest,
 )
 
@@ -258,12 +259,166 @@ def test_a_schema_violation_message_never_echoes_producer_content() -> None:
     assert len(message) < 300
 
 
+def test_structurally_different_schema_violations_diagnose_differently() -> None:
+    """Redaction must not be achieved by saying nothing. The vendored
+    schema's root is a bare `oneOf` over the three envelope variants, so
+    `iter_errors` yields exactly one error — always at `$`, always
+    `oneOf`, always the same three `$ref`s. A message built from that
+    root error alone is a *constant*: an operator triaging a refused
+    merge cannot tell a foreign field from a mistyped `ok` from a bad
+    nested `local.dirty`, and the prefix already said "failed the
+    schema". The real rule lives in the sub-errors, which are schema-side
+    too — naming them costs no disclosure."""
+    base = _fixture("pull-success")
+    cases = {
+        "foreign-field": base | {"merged": True},
+        "wrong-type": base | {"ok": "yes"},
+        "nested-wrong-type": base | {"local": base["local"] | {"dirty": "nope"}},
+    }
+    messages: dict[str, str] = {}
+    for name, payload in cases.items():
+        with pytest.raises(ContractViolation) as exc_info:
+            ingest(json.dumps(payload), returncode=0)
+        messages[name] = str(exc_info.value)
+
+    assert len(set(messages.values())) == 3, messages
+    for name, message in messages.items():
+        # A message that leads with "$.action: failed const='open-pr'" is a
+        # confidently wrong one: `action` is correct in all three payloads,
+        # and that leaf is only the *other* verb branches failing to be
+        # selected. Diagnosis that misleads is worse than the constant it
+        # replaced, because it is followed.
+        assert "$.action: failed const" not in message, (name, message)
+    assert "$.ok" in messages["wrong-type"], messages["wrong-type"]
+    assert "$.local.dirty" in messages["nested-wrong-type"], messages[
+        "nested-wrong-type"
+    ]
+    assert "additionalProperties" in messages["foreign-field"], messages[
+        "foreign-field"
+    ]
+
+
+def test_every_verb_in_the_schema_is_discoverable_for_diagnosis() -> None:
+    """The verb map is derived from the vendored schema by naming
+    convention, so a re-vendor that renames the `$defs` keys would empty
+    it silently — and an empty map diagnoses *every* action payload as an
+    unknown verb while `ingest` still accepts them all, which reads as
+    working. Pin the count and the names against the schema itself."""
+    schema = json.loads((VENDORED_ROOT / "actions.schema.json").read_text())
+    from_schema = {
+        branch["$ref"].rsplit("/", 1)[-1]
+        for branch in schema["$defs"]["action_result"]["oneOf"]
+    }
+    assert set(_verb_defs().values()) == from_schema
+    assert len(_verb_defs()) == 8
+
+
+def test_an_unknown_verb_is_diagnosed_as_an_unknown_verb() -> None:
+    """`action_result` is itself a `oneOf` over the eight verbs, so the
+    same combinator problem recurs one level down: with an unrecognised
+    verb *every* branch fails, and the leaf rules they fail on describe
+    the branch that was never going to match — a payload carrying exactly
+    `pull`'s fields reads as "additionalProperties" against `open-pr`.
+    The honest diagnosis is the discriminator itself."""
+    payload = _fixture("pull-success") | {"action": "ninth_verb"}
+    with pytest.raises(ContractViolation, match="ninth_verb") as exc_info:
+        ingest(json.dumps(payload), returncode=0)
+    message = str(exc_info.value)
+    assert "additionalProperties" not in message, message
+    assert "$.action" in message, message
+
+
+def test_a_combinator_nested_below_the_verb_is_still_descended_into() -> None:
+    """Selecting the verb branch removes the two combinators above it, but
+    not every one: `verb_issue_create.properties.issue` is itself a
+    `oneOf` (an `issue_ref`, or `null` when the read-back failed). Without
+    descending, a malformed `issue` reports the combinator — `$.issue:
+    failed oneOf` — which is the same say-nothing message one level in."""
+    payload = _fixture("issue-create-created")
+    assert payload["issue"] is not None, "fixture must exercise the ref branch"
+    payload = payload | {"issue": payload["issue"] | {"number": "twelve"}}
+    with pytest.raises(ContractViolation) as exc_info:
+        ingest(json.dumps(payload), returncode=0)
+    message = str(exc_info.value)
+    assert "$.issue.number" in message, message
+    assert "failed oneOf" not in message, message
+
+
+def test_an_unknown_verb_is_named_only_when_it_is_identifier_shaped() -> None:
+    """The verb reaches the message from unvalidated input, so it goes
+    through the same bounded description as the other discriminators."""
+    secret = "ghp_" + "S" * 400
+    payload = _fixture("pull-success") | {"action": secret}
+    with pytest.raises(ContractViolation) as exc_info:
+        ingest(json.dumps(payload), returncode=0)
+    message = str(exc_info.value)
+    assert secret not in message
+    assert len(message) < 300
+
+
+@pytest.mark.parametrize("field", ["schema_version", "result_kind"])
+def test_a_precheck_message_never_echoes_producer_content(field: str) -> None:
+    """The two discriminator prechecks run *before* schema validation, on
+    a value that is whatever the producer put on the wire — so `!r` of it
+    is the same disclosure channel the schema branch was fixed for, and
+    an unbounded one: a nested envelope or a 10 MB string lands verbatim
+    in the message. Redacting one branch and not these two is redaction
+    by coincidence of today's producer, not by construction."""
+    secret = "ghp_" + "S" * 400
+    payload = _fixture("pull-success") | {field: {"token": secret, "n": [1, 2]}}
+    with pytest.raises(ContractViolation) as exc_info:
+        ingest(json.dumps(payload), returncode=0)
+    message = str(exc_info.value)
+    assert secret not in message
+    assert "\n" not in message
+    assert len(message) < 300
+
+
+def test_a_precheck_still_names_a_plausible_drift_value() -> None:
+    """Bounding the prechecks must not cost the diagnosis that matters:
+    the realistic drift is a producer bumping the version or adding a
+    fourth variant, and an operator needs to read *which* off the log."""
+    version_drift = _fixture("pull-success") | {"schema_version": 2}
+    with pytest.raises(ContractViolation, match=r"schema_version=2\b"):
+        ingest(json.dumps(version_drift), returncode=0)
+
+    kind_drift = _fixture("pull-success") | {"result_kind": "merge_and_sync"}
+    with pytest.raises(ContractViolation, match="merge_and_sync"):
+        ingest(json.dumps(kind_drift), returncode=0)
+
+
+def test_unparseable_stdout_is_not_retained_on_the_raised_exception() -> None:
+    """`raise ... from exc` keeps the `JSONDecodeError` reachable, and its
+    `.doc` attribute is the *entire* raw capture. `str()` and the default
+    traceback are clean, but any reporter that serialises exception
+    attributes (Sentry-style capture, a structured-logging dump of
+    `vars(...)`) recovers the payload — the exact artefact this boundary
+    keeps out of logs. `from None` is not enough: it only sets
+    `__suppress_context__`, leaving the object on `__context__`."""
+    secret = "ghp_" + "S" * 200
+    truncated = '{"schema_version": 1, "detail": "' + secret + '", '
+    with pytest.raises(ContractViolation) as exc_info:
+        ingest(truncated, returncode=1)
+    violation = exc_info.value
+    assert secret not in str(violation)
+    assert violation.__cause__ is None
+    assert violation.__context__ is None
+    assert "line 1" in str(violation), "position diagnosis must survive"
+
+
 def test_mutating_the_returned_schema_does_not_corrupt_future_validation() -> None:
     """`_schema()` must hand back a private copy each call: an in-place
     mutation by one caller must not corrupt the cached validator or any
-    later call to `_schema()` itself."""
+    later call to `_schema()` itself.
+
+    The second half asserts on an *invalid* payload deliberately: an
+    emptied schema accepts everything, so checking that a valid fixture
+    still ingests cannot distinguish a healthy validator from a destroyed
+    one, and passes incidentally under the very defect this names."""
     schema = _schema()
     schema.clear()
     assert _schema() != {}
     result = ingest(json.dumps(_fixture("pull-success")), returncode=0)
     assert result.action == "pull"
+    with pytest.raises(ContractViolation):
+        ingest(json.dumps(_fixture("pull-success") | {"merged": True}), returncode=0)

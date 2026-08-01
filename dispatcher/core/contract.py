@@ -14,6 +14,8 @@ referenced, at import time or otherwise.
 from __future__ import annotations
 
 import json
+import re
+from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
@@ -30,8 +32,20 @@ _SCHEMA_PATH = (
 )
 
 _SUPPORTED_SCHEMA_VERSION = 1
-_KNOWN_RESULT_KINDS = {"action", "cli_error", "contract_error"}
+_VARIANT_DEFS = {
+    "action": "action_result",
+    "cli_error": "cli_error",
+    "contract_error": "contract_error",
+}
+_KNOWN_RESULT_KINDS = frozenset(_VARIANT_DEFS)
 _MAX_SCHEMA_ERROR_LEN = 200
+_MAX_RULE_VALUE_LEN = 40
+_SCHEMA_ERROR_ARITY = 3
+_MAX_INT_DIGITS = 20
+# A discriminator this consumer does not know is still worth naming in the
+# log — but only when the value is shaped like an identifier: bounded, one
+# line, no structure. Anything else is described, never echoed.
+_IDENTIFIER = re.compile(r"\A[a-z0-9_-]{1,32}\Z")
 
 
 class ContractViolation(Exception):
@@ -145,6 +159,13 @@ def _schema() -> dict[str, Any]:
     cached `_validator()` included — and `_schema_text.cache_clear()`
     would not undo it, since existing references stay mutated. Re-parsing
     a cached string is cheap and always hands back a private object.
+
+    This buys *recoverability*, not immutability: the schema retained
+    inside the cached `_validator()` is still one shared mutable object,
+    and mutating it in place still weakens every later `ingest` in the
+    process. The difference is that `_validator.cache_clear()` now
+    rebuilds from an uncorrupted parse and undoes it, which it could not
+    do while both came from the same cached dict.
     """
     return json.loads(_schema_text())
 
@@ -154,25 +175,158 @@ def _validator() -> jsonschema.Draft202012Validator:
     return jsonschema.Draft202012Validator(_schema())
 
 
-def _describe_schema_error(error: jsonschema.ValidationError) -> str:
+@lru_cache(maxsize=1)
+def _verb_defs() -> dict[str, str]:
+    """Each verb name mapped to the `$defs` key that describes it."""
+    return {
+        definition["properties"]["action"]["const"]: name
+        for name, definition in _schema()["$defs"].items()
+        if name.startswith("verb_")
+    }
+
+
+@lru_cache(maxsize=len(_VARIANT_DEFS) + 8)
+def _diagnostic_validator(
+    result_kind: str, verb_def: str | None
+) -> jsonschema.Draft202012Validator:
+    """A validator for the one branch the discriminators named — for
+    *diagnosis only*.
+
+    Accept/reject stays with `_validator()` and the schema's root `oneOf`,
+    which is the contract: exactly one variant must match, and that is not
+    re-decided here. But a `oneOf` error names the combinator, not the
+    rule — see :func:`_describe_schema_error`. The discriminators have
+    already said which branch was meant, so validating against that branch
+    alone yields errors that point at the leaf that actually failed.
+
+    For `action` the same problem repeats one level down (`action_result`
+    is itself a `oneOf` over the eight verbs), so the verb's `$defs` entry
+    is `allOf`-ed with `action_result`'s own envelope-level constraints —
+    dropping its `oneOf` and nothing else, so no constraint is lost.
+    """
+    schema = _schema()
+    schema.pop("oneOf", None)
+    if verb_def is None:
+        schema["$ref"] = f"#/$defs/{_VARIANT_DEFS[result_kind]}"
+        return jsonschema.Draft202012Validator(schema)
+    envelope = dict(schema["$defs"][_VARIANT_DEFS[result_kind]])
+    envelope.pop("oneOf", None)
+    schema["allOf"] = [envelope, {"$ref": f"#/$defs/{verb_def}"}]
+    return jsonschema.Draft202012Validator(schema)
+
+
+def _leaf_errors(
+    error: jsonschema.ValidationError,
+) -> Iterator[jsonschema.ValidationError]:
+    """The sub-errors that name a real rule, not the combinator above them."""
+    if not error.context:
+        yield error
+        return
+    for sub in error.context:
+        yield from _leaf_errors(sub)
+
+
+def _describe_schema_error(parsed: dict[str, Any], result_kind: str) -> str:
     """Name *what* failed without ever echoing the producer's payload.
 
-    `error.message` interpolates the offending JSON instance verbatim —
-    for this schema's shape (one `oneOf` over the three envelope variants
-    at the root) a failing payload's top-level error message is the
-    *entire payload*, dumped as a Python repr. A producer's free-text
-    fields (`diff`, `error`, `detail`, …) can carry secrets or tokens; a
-    validation failure must not become a channel that copies them into a
-    log or a UI. `json_path`/`validator`/`validator_value` are schema-side
-    — where the check lives and what it demands — never the instance
-    being checked, so building the message from those instead is safe by
-    construction, not by choosing values that happen not to leak today.
+    Two constraints pull against each other here, and both are load-bearing.
+
+    *No disclosure.* `error.message` interpolates the offending JSON
+    instance verbatim; for this schema's root — a bare `oneOf` over the
+    three envelope variants — a failing payload's top-level message is the
+    *entire payload* as a Python repr. A producer's free-text fields
+    (`diff`, `error`, `detail`, …) can carry secrets, and a validation
+    failure must not become a channel that copies them into a log or a UI.
+    `json_path`/`validator`/`validator_value` are schema-side — where the
+    check lives and what it demands, never the instance — so a message
+    built only from those is safe by construction, not by today's values
+    happening not to leak.
+
+    *Actual diagnosis.* Redaction must not be achieved by saying nothing.
+    Built from the root error alone this message is a **constant**: path
+    always `$`, rule always `oneOf`, value always the same three `$ref`s.
+    A foreign field, a mistyped `ok` and a bad nested `local.dirty` all
+    read identically, and the prefix already said "failed the schema". So
+    descend: re-validate against the variant the discriminator named and
+    report the deepest distinct leaf rules. They are schema-side too, so
+    the first constraint is untouched.
     """
-    detail = f"{error.validator}={error.validator_value!r}"
-    description = f"{error.json_path}: failed {detail}".replace("\n", " ")
+    verb_def: str | None = None
+    if result_kind == "action":
+        action = parsed.get("action")
+        verb_def = _verb_defs().get(action) if type(action) is str else None
+        if verb_def is None:
+            # No verb branch was ever going to match, so every leaf rule
+            # they fail on describes a branch that was not meant: a payload
+            # carrying exactly `pull`'s fields reads as an
+            # `additionalProperties` violation against `open-pr`. The
+            # discriminator is the diagnosis.
+            return (
+                f"$.action: {_describe_untrusted(action)} is not one of the "
+                f"{len(_verb_defs())} verbs this contract defines"
+            )
+
+    leaves = [
+        leaf
+        for error in _diagnostic_validator(result_kind, verb_def).iter_errors(parsed)
+        for leaf in _leaf_errors(error)
+    ]
+    seen: set[tuple[str, str]] = set()
+    described: list[str] = []
+    for leaf in sorted(leaves, key=lambda e: (-len(e.absolute_path), e.json_path)):
+        key = (leaf.json_path, str(leaf.validator))
+        if key in seen:
+            continue
+        seen.add(key)
+        rendered = repr(leaf.validator_value)
+        rule = leaf.validator
+        if len(rendered) <= _MAX_RULE_VALUE_LEN:
+            rule = f"{rule}={rendered}"
+        described.append(f"{leaf.json_path}: failed {rule}")
+        if len(described) == _SCHEMA_ERROR_ARITY:
+            break
+
+    if not described:
+        # The root `oneOf` refused while the named variant alone accepts:
+        # the payload matched more than one variant. Impossible while the
+        # variants are discriminated by a `const` `result_kind`, but the
+        # message must not become a lie if that ever stops holding.
+        return "no envelope variant matched uniquely"
+
+    description = "; ".join(described).replace("\n", " ")
     if len(description) > _MAX_SCHEMA_ERROR_LEN:
         description = description[: _MAX_SCHEMA_ERROR_LEN - 1] + "…"
     return description
+
+
+def _describe_untrusted(value: object) -> str:
+    """Name a producer-supplied value without becoming a copy channel.
+
+    The two discriminator prechecks run *before* schema validation, so
+    what they report on is arbitrary: whatever JSON the producer put at
+    that key, of any size and shape. `!r` of that is the same disclosure
+    the schema branch is careful to avoid, and unbounded on top — a
+    nested envelope, or a 10 MB string, lands verbatim in the message and
+    from there in a log.
+
+    The diagnosis worth keeping is narrow: which version, or which
+    unrecognised variant name. Both are small scalars, so echo exactly
+    those shapes and describe everything else by type and size.
+    """
+    if value is None or type(value) is bool:
+        return repr(value)
+    if type(value) is int:
+        rendered = repr(value)
+        if len(rendered) <= _MAX_INT_DIGITS:
+            return rendered
+        return f"<int, {len(rendered)} digits>"
+    if type(value) is str:
+        if _IDENTIFIER.match(value):
+            return repr(value)
+        return f"<str, {len(value)} chars>"
+    if isinstance(value, (list, dict)):
+        return f"<{type(value).__name__}, {len(value)} items>"
+    return f"<{type(value).__name__}>"
 
 
 def ingest(raw: str, *, returncode: int) -> Ingested:
@@ -196,10 +350,20 @@ def ingest(raw: str, *, returncode: int) -> Ingested:
             exit code does not match the combination the contract defines
             for this envelope.
     """
+    # Raised *after* the handler and without `from`: `JSONDecodeError.doc`
+    # is the entire raw capture, so chaining hangs the payload — secrets
+    # included — off the exception this boundary raises. `str()` and the
+    # default traceback stay clean, but any reporter that serialises
+    # exception attributes recovers it. `from None` is not enough either:
+    # it only suppresses *display*, leaving the object on `__context__`.
+    parsed: Any = None
+    parse_failure: str | None = None
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise ContractViolation(f"stdout is not JSON: {exc}") from exc
+        parse_failure = f"{exc.msg}: line {exc.lineno} column {exc.colno}"
+    if parse_failure is not None:
+        raise ContractViolation(f"stdout is not JSON: {parse_failure}")
 
     if not isinstance(parsed, dict):
         raise ContractViolation(
@@ -213,23 +377,22 @@ def ingest(raw: str, *, returncode: int) -> Ingested:
     schema_version = parsed.get("schema_version")
     if type(schema_version) is not int or schema_version != _SUPPORTED_SCHEMA_VERSION:
         raise ContractViolation(
-            f"unknown schema_version={schema_version!r}; this consumer is "
-            f"pinned to v{_SUPPORTED_SCHEMA_VERSION} "
+            f"unknown schema_version={_describe_untrusted(schema_version)}; this "
+            f"consumer is pinned to v{_SUPPORTED_SCHEMA_VERSION} "
             "(contracts/github-checker-actions/v1/)"
         )
 
     result_kind = parsed.get("result_kind")
     if type(result_kind) is not str or result_kind not in _KNOWN_RESULT_KINDS:
         raise ContractViolation(
-            f"unknown result_kind={result_kind!r}; an envelope variant this "
-            "consumer cannot interpret is not an empty result"
+            f"unknown result_kind={_describe_untrusted(result_kind)}; an envelope "
+            "variant this consumer cannot interpret is not an empty result"
         )
 
-    errors = sorted(_validator().iter_errors(parsed), key=lambda e: list(e.path))
-    if errors:
+    if any(_validator().iter_errors(parsed)):
         raise ContractViolation(
             "payload does not match actions/v1 schema: "
-            f"{_describe_schema_error(errors[0])}"
+            f"{_describe_schema_error(parsed, result_kind)}"
         )
 
     # The exit code is half the contract and is checked here, not left to
