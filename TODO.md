@@ -104,10 +104,12 @@
 
 ## Хвосты качества
 
-- [ ] Прогнать live-смоук write-path с реальным `github-checker` на PATH @owner:andrei @id:live-smoke-write-path
-      Замер 2026-07-26: `test_write_path_live_smoke_real_binary` — **skipped**, бинаря на
-      PATH нет, то есть уровень 3 из DESIGN-405 на этой машине не проверяется. Именно
-      stub-маскировка однажды дала ложное «ok» и стоила гейта на write-path.
+- [x] Прогнать live-смоук write-path с реальным `github-checker` на PATH — PR #98 @owner:andrei @id:live-smoke-write-path
+      Выполнено 2026-08-01 локально: `test_write_path_live_smoke_real_binary` прошёл на
+      `dispatcher@b571cba` против бинаря, установленного из `github-checker@ef03fef`
+      (тот же коммит, на который запинен вендоренный контракт). Сюита — 650 passed,
+      0 skipped. Отдельно от этого пункта CI-сторона закрыта в
+      `@id:design-405-level-3-never-runs`.
 - [ ] Route-level тест сериализации `ok=True` для четырёх additive-полей `ActionOutcome` @owner:andrei @id:action-outcome-serialization-test
       Принятый follow-up PR #40.
 - [ ] ruamel: standalone-комментарий сразу после блока `spec_runner` теряется при ре-рендере `project.yaml` @owner:andrei @id:ruamel-standalone-comment-loss
@@ -184,14 +186,22 @@
       харнесс зависимым только от `node` на PATH; если объём/сложность DOM-стабов
       вырастет, `jsdom` стоит пересмотреть.
 
-- [ ] `DESIGN-405` уровень 3 (`test_write_path_live_smoke_real_binary`) не
-      выполняется нигде: `github-checker` не на PATH и CI его не ставит
+- [x] `DESIGN-405` уровень 3 (`test_write_path_live_smoke_real_binary`) теперь
+      выполняется в CI: `skipif` снят, бинарь ставится на пине — PR #98
       @owner:andrei @id:design-405-level-3-never-runs
-      Пробела в покрытии нет — путь записи проверяет уровень 2 против настоящего
-      git, — но ступень с настоящим бинарём сегодня декоративна. Её надо либо
-      включить в CI, либо снять: `skipped` в отчёте читается как «проверено».
-      Осознанный контраст с `tests/test_task_authoring_js.py`, который при
-      отсутствии `node` падает, а не скипается — там это единственное покрытие.
+      Закрыто 2026-08-01 по факту CI, а не по локальному прогону: в обоих джобах
+      `test (3.12)` и `test (3.13)` в логе есть
+      `installing github-checker @ ef03fefcded37676b19ef1c6f88b956a09a26d3f`, затем
+      `test_write_path_live_smoke_real_binary PASSED`. Скрипт
+      `scripts/install_pinned_checker.sh` берёт коммит из вендоренного манифеста,
+      так что ре-вендоринг двигает и бинарь; личность бинаря доказывается PEP 610
+      (`direct_url.json`), потому что у продюсера нет ни `--version`, ни коммита
+      в выводе. Отсутствие бинаря и чужой коммит краснят джоб — проверено
+      настоящей установкой `4532a8a`. Теперь совпадает с
+      `tests/test_task_authoring_js.py`, который тоже падает, а не скипается.
+      Осталась несвязанная ступень того же класса:
+      `test_pf6_drift.py::test_real_vendored_copy_is_in_sync_with_canon` скипается
+      в CI, потому что соседний canon-репо там не чекаутится.
 
 ## Наблюдения (работу не начинаем, пока не сработает триггер)
 
