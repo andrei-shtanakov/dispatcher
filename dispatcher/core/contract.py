@@ -14,6 +14,7 @@ referenced, at import time or otherwise.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
@@ -38,7 +39,7 @@ _VARIANT_DEFS = {
 }
 _KNOWN_RESULT_KINDS = frozenset(_VARIANT_DEFS)
 _MAX_SCHEMA_ERROR_LEN = 200
-_MAX_RULE_VALUE_LEN = 40
+_MAX_RULE_VALUE_LEN = 80
 _SCHEMA_ERROR_ARITY = 3
 _FIELD_NAMES_ARITY = 3
 
@@ -295,13 +296,15 @@ def _describe_schema_error(parsed: dict[str, Any], result_kind: str) -> str:
         return "no envelope variant matched uniquely"
 
     description = "; ".join(described).replace("\n", " ")
-    # A backstop no input reaches today, kept knowingly and named as such
-    # rather than left to read as a defended bound: with the arity, the
-    # rule-value bound and the field-name cap all enforced above, the
-    # longest message the vendored schema can produce is ~170 characters.
-    # The only instance-derived part left is an array index inside a
-    # `json_path`, and reaching 200 would take ~50-digit indices. No test
-    # can pin this without a synthetic schema, so no test claims to.
+    # Reached in practice, and pinned: three empty objects in
+    # `pr_detail.checks`/`files`/`review_threads` fail three different
+    # `required` rules whose schema-side names run past the bound. An
+    # earlier revision called this "a backstop no input reaches today" and
+    # was wrong on every count — it fires, the longest is 242 not ~170,
+    # and the reason it gave (long array indices) had been removed by the
+    # same commit that wrote it. Prose about reachability is not evidence
+    # of it; see `test_the_message_length_is_capped_on_a_payload_that_
+    # reaches_it`.
     if len(description) > _MAX_SCHEMA_ERROR_LEN:
         description = description[: _MAX_SCHEMA_ERROR_LEN - 1] + "…"
     return description
@@ -344,7 +347,7 @@ def _describe_leaf(leaf: jsonschema.ValidationError) -> str:
       names are absent, so the answer is always a subset of the schema and
       never producer text.
     * `additionalProperties` — the offending keys have no schema
-      provenance at all, so only how many there are travels. A key is a
+      provenance at all, so only their count and shape travel. A key is a
       value: `{"ghp_…": true}` puts the secret in the key.
     """
     path = _safe_path(leaf)
@@ -359,15 +362,38 @@ def _describe_leaf(leaf: jsonschema.ValidationError) -> str:
         subschema = cast("dict[str, Any]", leaf.schema)
         instance = cast("dict[str, Any]", leaf.instance)
         declared = set(subschema.get("properties", ()))
-        foreign = sum(1 for key in instance if key not in declared)
-        return (
-            f"{path}: {_count(foreign, 'unexpected property', 'unexpected properties')}"
+        shapes = Counter(
+            _describe_untrusted(key) for key in instance if key not in declared
         )
+        total = sum(shapes.values())
+        headline = _count(total, "unexpected property", "unexpected properties")
+        return f"{path}: {headline}: {_join_shapes(shapes, total)}"
     rendered = repr(leaf.validator_value)
     rule = leaf.validator
     if len(rendered) <= _MAX_RULE_VALUE_LEN:
         rule = f"{rule}={rendered}"
     return f"{path}: failed {rule}"
+
+
+def _join_shapes(shapes: Counter[str], total: int) -> str:
+    """Shapes of producer-chosen keys, grouped and bounded.
+
+    A key never travels, but its type and length may, and they carry the
+    little that can be carried: a six-character key is a plausible field
+    rename, a forty-character one is not. Identical shapes are aggregated
+    so that order within a group cannot encode anything, and groups are
+    ordered by count and then by the descriptor itself — both derived from
+    what is already printed, never from the key text. No hash, prefix or
+    suffix: each would rebuild the channel this exists to close.
+    """
+    groups = sorted(shapes.items(), key=lambda kv: (-kv[1], kv[0]))[:_FIELD_NAMES_ARITY]
+    rendered = ", ".join(
+        f"{count} × {shape}" if count > 1 else shape for shape, count in groups
+    )
+    covered = sum(count for _, count in groups)
+    if covered < total:
+        rendered = f"{rendered} and {total - covered} more"
+    return rendered
 
 
 def _join_capped(names: Iterator[str]) -> str:
@@ -406,7 +432,14 @@ def _describe_untrusted(value: object) -> str:
     if type(value) is bool:
         return "<bool>"
     if type(value) is int:
-        return f"<int, {_count(len(repr(value)), 'digit', 'digits')}>"
+        try:
+            digits = len(repr(value))
+        except ValueError:
+            # CPython's int-to-str conversion limit. Rendering a value to
+            # measure it is the one way this function can fail on the very
+            # input it exists to make safe to mention.
+            return "<int, past the conversion limit>"
+        return f"<int, {_count(digits, 'digit', 'digits')}>"
     if type(value) is float:
         return "<float>"
     if type(value) is str:
@@ -456,8 +489,16 @@ def _safe_path(leaf: jsonschema.ValidationError) -> str:
     It stays, and stays unpinned, deliberately — a schema using
     `patternProperties` or a non-`false` `additionalProperties` would put
     producer-chosen keys into paths, and the cost of guessing wrong about
-    reachability is a leak. This file has already been wrong once about
-    what no input can reach.
+    reachability is a leak. This file has been wrong twice about what no
+    input can reach.
+
+    What the check delivers, stated exactly: the lookup is global, so a
+    segment prints in full if it is declared *anywhere* in the schema, not
+    only at that position. Under the schema shapes above, a producer key
+    that happens to collide with one of the ~60 declared names would
+    therefore print. That discloses membership in a finite schema-side
+    set — categorically what `required` already does — and nothing more.
+    Scoping the lookup to the level being described would close even that.
     """
     parts = ["$"]
     for segment in leaf.absolute_path:
@@ -503,6 +544,14 @@ def ingest(raw: str, *, returncode: int) -> Ingested:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
         parse_failure = f"{exc.msg}: line {exc.lineno} column {exc.colno}"
+    except (ValueError, RecursionError) as exc:
+        # `JSONDecodeError` is not the decoder's only failure mode on
+        # untrusted text: an integer literal past CPython's 4300-digit
+        # conversion limit raises a bare `ValueError`, and deep nesting
+        # raises `RecursionError`. Catching only the former let both
+        # escape as themselves — the parser is an instrument too, and
+        # fail-closed has to cover it exactly as it covers the diagnosis.
+        parse_failure = f"the decoder refused it ({type(exc).__name__})"
     if parse_failure is not None:
         raise ContractViolation(f"stdout is not JSON: {parse_failure}")
 

@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from dispatcher.core.contract import (
+    _MAX_SCHEMA_ERROR_LEN,
     _VARIANT_DEFS,
     CliError,
     ContractError,
@@ -351,7 +352,7 @@ def test_a_foreign_field_is_counted_never_named() -> None:
         ingest(json.dumps(base | {"merged": True}), returncode=0)
     message = str(exc_info.value)
     assert "merged" not in message, message
-    assert "1 unexpected" in message, message
+    assert "1 unexpected property" in message, message
 
     smuggled = "ghp_" + "s" * 400
     with pytest.raises(ContractViolation) as exc_info:
@@ -501,16 +502,111 @@ def test_both_shapes_of_an_ambiguous_oneOf_are_reported() -> None:
     assert "'null'" in message, message
 
 
+def _many_distinct_rules() -> dict[str, Any]:
+    """A vendored-schema-legal payload that fails many *different* rules.
+
+    An earlier version of the test below used `changed_paths: [1] * 5000`,
+    which fails one rule five thousand times: array indices render as
+    `[]`, so all five thousand leaves render identically and the
+    de-duplication collapses them to one. The assertion held at any arity
+    and pinned nothing. Distinct paths are what exercises the bound."""
+    base = _fixture("pr-detail-full")
+    return base | {
+        "pr_detail": base["pr_detail"]
+        | {"checks": [{}], "files": [{}], "review_threads": [{}]}
+    }
+
+
 def test_the_number_of_reported_rules_is_bounded() -> None:
     """Producer input decides how many rules fail; it must not decide how
-    long the message is."""
-    base = _fixture("propose-pr-created")
-    payload = base | {"changed_paths": [1] * 5000}
+    many are printed.
+
+    The payload has five short failing rules on purpose. The obvious
+    choice — the long `pr_detail` one used for the length cap below —
+    cannot pin this: its rules are long enough that the 200-char cap
+    truncates the message before the arity is visible, so the cap masks
+    the bound under test and unbounding the arity changes nothing. Two
+    bounds that can each hide the other's absence need one payload each."""
+    base = _fixture("pull-success")
+    payload = base | {
+        "local": {"branch": 1, "ahead": "x", "behind": "y", "dirty": "z", "error": 5}
+    }
     with pytest.raises(ContractViolation) as exc_info:
         ingest(json.dumps(payload), returncode=0)
     message = str(exc_info.value)
-    assert message.count("; ") <= 2, message
+    assert message.count("; ") == 2, message
+    assert len(message) < _MAX_SCHEMA_ERROR_LEN, "the cap must not be what bounds it"
+
+
+def test_the_message_length_is_capped_on_a_payload_that_reaches_it() -> None:
+    """The cap was documented as a backstop no input reaches. It is
+    reached: three empty objects in `checks`/`files`/`review_threads` are
+    legal JSON against this schema's shape and fail three different
+    `required` rules, whose schema-side names are long enough together to
+    run past the bound. Documented-as-unreachable is not unreachable, and
+    the way to stop being wrong about it is a test, not a better comment."""
+    with pytest.raises(ContractViolation) as exc_info:
+        ingest(json.dumps(_many_distinct_rules()), returncode=0)
+    message = str(exc_info.value)
+    assert "…" in message, "the payload must actually reach the cap"
     assert len(message) < 300
+
+
+def test_a_schema_side_enum_names_its_legal_values() -> None:
+    """`enum` members come from the schema, so the rule permits them to
+    travel — and they are the diagnosis: an operator told only that
+    `local_sync` failed an enum has to open the schema to learn what the
+    legal values were. The per-rule value bound must not be tight enough
+    to suppress the longest one this schema actually declares."""
+    payload = _fixture("merge-merged") | {"local_sync": "bogus"}
+    with pytest.raises(ContractViolation) as exc_info:
+        ingest(json.dumps(payload), returncode=0)
+    message = str(exc_info.value)
+    assert "not_attempted" in message, message
+
+
+def test_unexpected_properties_are_described_by_shape_and_aggregated() -> None:
+    """A key is producer text, so the name never travels — but its type
+    and length may, and they carry the little that can be carried: a
+    six-character key is a plausible field rename, a forty-character one
+    is not. Identical shapes aggregate so the order within a group cannot
+    encode anything, and the ordering is by count and then by descriptor —
+    both derived from what is already printed, never from the key text."""
+    base = _fixture("pull-success")
+
+    with pytest.raises(ContractViolation) as exc_info:
+        ingest(json.dumps(base | {"merged": True}), returncode=0)
+    message = str(exc_info.value)
+    assert "1 unexpected property: <str, 6 chars>" in message, message
+    assert "merged" not in message, message
+
+    with pytest.raises(ContractViolation) as exc_info:
+        ingest(
+            json.dumps(base | {f"extra_{n}": True for n in range(500)}), returncode=0
+        )
+    message = str(exc_info.value)
+    assert "500 unexpected properties" in message, message
+    assert "extra_" not in message, message
+    assert len(message) < 300
+
+    mixed = base | {"ab": 1, "abcdefghijkl": 2, "mnopqrstuvwx": 3}
+    with pytest.raises(ContractViolation) as exc_info:
+        ingest(json.dumps(mixed), returncode=0)
+    message = str(exc_info.value)
+    assert "3 unexpected properties" in message, message
+    assert "2 × <str, 12 chars>" in message, message
+    assert "<str, 2 chars>" in message, message
+
+    # Five *distinct* shapes, not five keys: the count of groups is what
+    # the cap bounds, and a payload whose keys share lengths collapses to
+    # three groups on its own, leaving the bound undefended.
+    five_shapes = base | {"k" * n: True for n in (3, 4, 5, 6, 7)}
+    with pytest.raises(ContractViolation) as exc_info:
+        ingest(json.dumps(five_shapes), returncode=0)
+    message = str(exc_info.value)
+    assert "5 unexpected properties" in message, message
+    assert "and 2 more" in message, message
+    assert "<str, 7 chars>" not in message, message
 
 
 def test_every_verb_in_the_schema_is_discoverable_for_diagnosis() -> None:
@@ -630,6 +726,48 @@ def test_a_precheck_names_the_shape_of_a_drift_value_never_the_value() -> None:
     assert "merge_and_sync" not in message, message
 
 
+@pytest.mark.parametrize(
+    "raw, why",
+    [
+        ('{"schema_version": ' + "9" * 4301 + "}", "CPython's int-to-str digit limit"),
+        ("[" * 100_000 + "]" * 100_000, "the decoder recurses on nesting"),
+    ],
+    ids=["huge-int-literal", "deep-nesting"],
+)
+def test_stdout_that_breaks_the_parser_is_still_a_contract_violation(
+    raw: str, why: str
+) -> None:
+    """`json.loads` has failure modes beyond `JSONDecodeError` on
+    untrusted text: a `ValueError` from CPython's 4300-digit integer
+    conversion limit (added in 3.11 as a DoS mitigation, and it applies to
+    `json.loads`), and a `RecursionError` from deep nesting. Catching only
+    `JSONDecodeError` leaves both escaping as themselves, so a caller
+    written to this module's documented `Raises:` — the contract the whole
+    boundary is sold on — does not catch them, and a refusal stops being
+    distinguishable from a consumer crash.
+
+    This is the previous round's finding one statement earlier: that fix
+    covered the *diagnosis* instrument and left the *parser* instrument
+    uncovered."""
+    with pytest.raises(ContractViolation):
+        ingest(raw, returncode=1)
+
+
+def test_a_huge_integer_is_described_without_being_stringified() -> None:
+    """`_describe_untrusted` reports an int's size by rendering it, which
+    hits the same 4300-digit limit and raises out of a function whose
+    whole job is to make an untrusted value safe to mention. It is
+    unreachable through `ingest` today only because `json.loads` shares
+    the process-wide limit and fails first — safety resting on an accident
+    of an unrelated stdlib call, which is the standard this file refuses
+    everywhere else."""
+    # Built by arithmetic, not `int("9"*5000)` — the limit applies to
+    # parsing a literal too, so that would raise in the test itself.
+    described = _describe_untrusted(10**5000)
+    assert described.startswith("<int"), described
+    assert len(described) < 40, described
+
+
 def test_unparseable_stdout_is_not_retained_on_the_raised_exception() -> None:
     """`raise ... from exc` keeps the `JSONDecodeError` reachable, and its
     `.doc` attribute is the *entire* raw capture. `str()` and the default
@@ -637,7 +775,16 @@ def test_unparseable_stdout_is_not_retained_on_the_raised_exception() -> None:
     attributes (Sentry-style capture, a structured-logging dump of
     `vars(...)`) recovers the payload — the exact artefact this boundary
     keeps out of logs. `from None` is not enough: it only sets
-    `__suppress_context__`, leaving the object on `__context__`."""
+    `__suppress_context__`, leaving the object on `__context__`.
+
+    What this does NOT achieve, since the rationale above names a reporter
+    class it does not fully defeat: `exc.__traceback__.tb_frame.f_locals`
+    still holds `raw` and `parsed`, and Sentry's `include_local_variables`
+    defaults to `True`. That channel is a property of every Python frame
+    that has seen the capture — `ingest`'s caller included — so it cannot
+    be closed here; `del` before each raise would only clear this one
+    frame. Message, `args`, `__dict__`, `__cause__`, `__context__` and the
+    default traceback rendering are clean, and that is the claim."""
     secret = "ghp_" + "S" * 200
     truncated = '{"schema_version": 1, "detail": "' + secret + '", '
     with pytest.raises(ContractViolation) as exc_info:
