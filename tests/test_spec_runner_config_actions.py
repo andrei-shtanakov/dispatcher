@@ -6,6 +6,7 @@ import pytest
 
 from dispatcher.core.actions import (
     PHASE_LAUNCHED_UNREADABLE,
+    PHASE_PRE_LAUNCH,
     PHASE_READABLE,
 )
 from dispatcher.core.discovery import DispatcherConfig
@@ -569,7 +570,7 @@ def test_the_config_runner_survives_a_consumer_side_failure(
     # not use rather than an unclassified explosion.
     assert outcome.phase == PHASE_READABLE
     assert outcome.error is not None
-    assert "unusable answer" in outcome.error
+    assert outcome.error.startswith("dispatcher could not interpret")
 
 
 def test_a_timed_out_propose_pr_is_not_reported_as_nothing_happened(
@@ -659,3 +660,68 @@ def test_the_config_runners_audit_line_is_one_line_too(tmp_path: Path, caplog) -
     ]
     assert lines, "the attempt must be audited at all"
     assert all("\n" not in line for line in lines), lines
+
+
+def test_an_undecodable_answer_from_a_child_that_ran_keeps_its_phase(
+    tmp_path: Path,
+) -> None:
+    """`core/actions.py` captures **bytes** and decodes them itself, with a
+    comment saying the phase boundary has to be a boundary in the CODE.
+    This runner still passed `text=True`, so the decode happens inside
+    `subprocess.run` — after the child branched, committed, pushed and
+    opened a PR — and a `UnicodeDecodeError` escapes `_invoke` into
+    `run()`'s catch-all, which builds an outcome with no `phase` at all.
+
+    `phase=None` is indistinguishable from a pre-launch refusal, so the
+    operator reads "nothing happened" for an attempt that opened a PR:
+    exactly the inference `PHASE_*` exists to prevent."""
+    repo = make_project(tmp_path, "alpha")
+    script = tmp_path / "undecodable.py"
+    script.write_text("import sys; sys.stdout.buffer.write(b'\\xff\\xfe not utf-8')\n")
+    runner = SpecRunnerConfigActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
+    )
+    outcome = runner.run("alpha", _candidate(repo))
+    assert outcome.ok is False
+    assert outcome.phase == PHASE_LAUNCHED_UNREADABLE
+
+
+def test_a_failure_before_the_fork_says_so(tmp_path: Path) -> None:
+    """The mirror: an `OSError` that is not `FileNotFoundError` (EACCES on
+    the binary, E2BIG from an oversized argv, ENOMEM) happens before any
+    child exists, so it must not read as "a mutation whose outcome is
+    unknown". It reaches `run()`'s catch-all rather than an arm of its
+    own — which is fine now that the catch-all labels itself, and is why
+    this asserts the property rather than the arm."""
+    repo = make_project(tmp_path, "alpha")
+    not_executable = tmp_path / "not_executable"
+    not_executable.write_text("#!/bin/sh\necho hi\n")
+    not_executable.chmod(0o644)
+    runner = SpecRunnerConfigActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=(str(not_executable),)
+    )
+    outcome = runner.run("alpha", _candidate(repo))
+    assert outcome.ok is False
+    assert outcome.phase == PHASE_PRE_LAUNCH
+
+
+def test_the_catch_all_labels_itself_pre_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Everything `run()`'s catch-all can catch happens before the fork —
+    rendering the YAML, writing the temp file, resolving the target — so
+    it can say so instead of leaving the field unanswered."""
+    import dispatcher.core.spec_runner_config_actions as module
+
+    def boom(base_text: object, cand: object) -> str:
+        raise RuntimeError("yaml render exploded")
+
+    monkeypatch.setattr(module, "build_new_yaml_text", boom)
+    repo = make_project(tmp_path, "alpha")
+    command, _ = fake_checker(tmp_path, {"ok": True, "detail": "created"})
+    runner = SpecRunnerConfigActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=command
+    )
+    outcome = runner.run("alpha", _candidate(repo))
+    assert outcome.ok is False
+    assert outcome.phase == PHASE_PRE_LAUNCH

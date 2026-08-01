@@ -40,6 +40,8 @@ from dispatcher.core.actions import (
     PHASE_PRE_LAUNCH,
     PHASE_READABLE,
     ActionOutcome,
+    audit_stderr,
+    consumer_failure,
     one_line,
     project_outcome,
     unusable_answer,
@@ -241,10 +243,18 @@ class SpecRunnerConfigActionRunner:
             # Everything past the guards becomes a failed outcome: temp-dir
             # creation, decode, render, even unexpected bugs. The trailing
             # audit line covers this path.
+            #
+            # `pre_launch` is not a guess: `_invoke` now labels every one of
+            # its own exits, so anything reaching here happened before the
+            # fork — rendering the YAML, writing the temp file, resolving the
+            # target. Leaving the field unset made a pre-launch failure
+            # indistinguishable from a mutation whose outcome is unknown,
+            # which is the one inference `PHASE_*` exists to prevent.
             outcome = ActionOutcome(
                 action="update-spec-runner-config",
                 dir=repo_dir,
                 ok=False,
+                phase=PHASE_PRE_LAUNCH,
                 error=str(err),
             )
         finally:
@@ -279,11 +289,21 @@ class SpecRunnerConfigActionRunner:
             f"project.yaml={if_match_hex}",
         ]
         try:
-            proc = subprocess.run(
-                argv, capture_output=True, text=True, timeout=_ACTION_TIMEOUT
-            )
+            # Bytes, NOT text=True — the same reason `core/actions.py` gives:
+            # decoding inside the call puts a POST-execution failure inside a
+            # pre-launch handler, and no ordering of handlers can undo that.
+            # `propose-pr` branches, commits, pushes and opens a PR before it
+            # writes a byte, so an undecodable answer is a mutation that
+            # happened, not a launch that did not.
+            proc = subprocess.run(argv, capture_output=True, timeout=_ACTION_TIMEOUT)
         except FileNotFoundError as err:
-            # Nothing was executed: the binary is not there.
+            # Deliberately narrow. The other pre-fork `OSError`s (EACCES on
+            # the binary, E2BIG from an oversized argv, ENOMEM) reach
+            # `run()`'s catch-all, which now stamps `pre_launch` itself — so
+            # widening here buys nothing observable, and an arm no test can
+            # distinguish is a claim no test can defend. `core/actions.py`
+            # needs its own `except OSError` (N-3) because it has no outer
+            # catch-all to fall back on.
             return ActionOutcome(
                 action="update-spec-runner-config",
                 dir=target.name,
@@ -305,13 +325,28 @@ class SpecRunnerConfigActionRunner:
                 error=str(err),
             )
 
+        try:
+            stdout = proc.stdout.decode("utf-8")
+            stderr = proc.stderr.decode("utf-8")
+        except UnicodeDecodeError as err:
+            # The child RAN: the PR may already exist. `phase` is what stops
+            # that being read as "nothing happened".
+            return ActionOutcome(
+                action="update-spec-runner-config",
+                dir=target.name,
+                ok=False,
+                phase=PHASE_LAUNCHED_UNREADABLE,
+                error=str(err),
+            )
+
         def unusable(reason: str) -> ActionOutcome:
+            audit_stderr(_audit, "propose-pr", target.name, stderr)
             return ActionOutcome(
                 action="update-spec-runner-config",
                 dir=target.name,
                 ok=False,
                 phase=PHASE_READABLE,
-                error=unusable_answer(reason, proc.stderr),
+                error=reason,
             )
 
         # Same producer, same contract, same single ingestion path as
@@ -319,18 +354,18 @@ class SpecRunnerConfigActionRunner:
         # and its own `.get()` per field; two parse paths over one contract
         # are two sets of rules about what to believe, and they drift.
         try:
-            ingested = ingest(proc.stdout, returncode=proc.returncode)
+            ingested = ingest(stdout, returncode=proc.returncode)
         except ContractViolation as violation:
-            return unusable(str(violation))
+            return unusable(unusable_answer(str(violation)))
         except Exception as err:  # noqa: BLE001 - as in core/actions.py
-            return unusable(f"consumer failure: {type(err).__name__}")
+            return unusable(consumer_failure(err))
 
         # The argv verb, not the DTO's label: this runner reports itself as
         # `update-spec-runner-config` while asking github-checker for
         # `propose-pr`, and it is the latter the answer must be about.
         mismatch = verb_mismatch(ingested, "propose-pr")
         if mismatch is not None:
-            return unusable(mismatch)
+            return unusable(unusable_answer(mismatch))
         return project_outcome(
             ingested, action="update-spec-runner-config", dir_name=target.name
         )

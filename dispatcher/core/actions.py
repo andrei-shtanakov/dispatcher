@@ -205,21 +205,50 @@ def one_line(text: str | None) -> str | None:
     return None if text is None else " ".join(text.split())
 
 
-def unusable_answer(reason: str, stderr: str) -> str:
-    """The error text for a child that ran and whose answer cannot be used.
+def unusable_answer(reason: str) -> str:
+    """The error text for a producer answer that cannot be used."""
+    return f"github-checker returned an unusable answer: {reason}"
 
-    Keeps the producer's stderr, which the pre-Task-3 code surfaced and
-    the rewire silently dropped: "gh: could not authenticate: token
-    expired" is the sentence an operator needs, and a JSON-parser message
-    is not a substitute for it. Flattened and bounded, because it is
-    producer text going into an audit log that promises one line per
-    attempt.
+
+def consumer_failure(err: BaseException) -> str:
+    """The error text for *our* failure to interpret a producer answer.
+
+    Named apart from :func:`unusable_answer` on purpose. A vendored
+    contract bump where the models and the schema disagree makes `ingest`
+    raise on every answer, and a headline sentence that says
+    "github-checker returned ..." sends triage to a producer repo that is
+    healthy while the broken consumer install is the last place looked.
     """
-    detail = " ".join(stderr.split())
-    if len(detail) > _MAX_STDERR_LEN:
-        detail = detail[: _MAX_STDERR_LEN - 1] + "…"
-    tail = f" (stderr: {detail})" if detail else ""
-    return f"github-checker returned an unusable answer: {reason}{tail}"
+    return f"dispatcher could not interpret the answer: {type(err).__name__}"
+
+
+def audit_stderr(
+    logger: logging.Logger, action: str, repo_dir: str, stderr: str
+) -> None:
+    """Put the producer's stderr in the operator's log — and only there.
+
+    "gh: could not authenticate: token expired" is the sentence an
+    operator needs, and the pre-contract code surfaced it. It cannot go
+    back into `ActionOutcome.error`: that is the `response_model` of eight
+    endpoints, so a `git` failure printing a remote with an embedded
+    credential (`https://x-access-token:ghs_…@github.com`, which `git`
+    echoes verbatim) would serve the token to the browser. `contract.py`
+    closed the adjacent channel on this very message and withdrew an
+    "identifier-shaped values are fine" allowlist while doing it; a token
+    *denylist* here would be weaker than the allowlist already judged too
+    weak.
+
+    The audit log is a different exposure: local, operator-owned, and
+    already carrying the producer's own `detail`/`error`. Emitted under a
+    key that is not `action=`, so counting attempts in the log is
+    unaffected.
+    """
+    flattened = one_line(stderr) or ""
+    if not flattened:
+        return
+    if len(flattened) > _MAX_STDERR_LEN:
+        flattened = flattened[: _MAX_STDERR_LEN - 1] + "…"
+    logger.info("stderr-from=%s repo=%s: %s", action, repo_dir, flattened)
 
 
 def verb_mismatch(ingested: Ingested, requested: str) -> str | None:
@@ -485,12 +514,13 @@ class ActionRunner:
         # statement about what github-checker actually said.
         def unreadable_envelope(reason: str) -> ActionOutcome:
             """PHASE 3 — the child ran and answered; we cannot use it."""
+            audit_stderr(_audit, action, target.name, stderr)
             return ActionOutcome(
                 action=action,
                 dir=target.name,
                 ok=False,
                 phase=PHASE_READABLE,
-                error=unusable_answer(reason, stderr),
+                error=reason,
             )
 
         # The one place a producer answer is judged. Everything this module
@@ -501,7 +531,7 @@ class ActionRunner:
         try:
             ingested = ingest(stdout, returncode=proc.returncode)
         except ContractViolation as violation:
-            return unreadable_envelope(str(violation))
+            return unreadable_envelope(unusable_answer(str(violation)))
         except Exception as err:  # noqa: BLE001 - see below
             # `ingest` raises more than `ContractViolation`: a pydantic
             # `ValidationError` when a model and the vendored schema
@@ -513,11 +543,11 @@ class ActionRunner:
             # which is the guarantee this module states and the hole a
             # narrower guard here reopened. Named as a consumer fault, not
             # a producer one, and audited either way.
-            return unreadable_envelope(f"consumer failure: {type(err).__name__}")
+            return unreadable_envelope(consumer_failure(err))
 
         mismatch = verb_mismatch(ingested, action)
         if mismatch is not None:
-            return unreadable_envelope(mismatch)
+            return unreadable_envelope(unusable_answer(mismatch))
         return project_outcome(ingested, action=action, dir_name=target.name)
 
     def merge_and_sync(self, repo_dir: str, pr: int, if_head: str) -> ActionOutcome:

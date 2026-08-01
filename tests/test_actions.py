@@ -1629,12 +1629,15 @@ def test_a_consumer_side_failure_still_leaves_an_audit_line(
     assert any("action=pull" in r.getMessage() for r in caplog.records)
 
 
-def test_the_producers_stderr_survives_an_unusable_answer(tmp_path: Path) -> None:
+def test_the_producers_stderr_survives_where_the_operator_reads_it(
+    tmp_path: Path, caplog
+) -> None:
     """ "gh: could not authenticate: token expired" is the sentence an
     operator needs; a JSON-parser message is not a substitute for it. The
-    pre-Task-3 code surfaced stderr on this path and the rewire dropped
-    it — the fallback written to preserve it was unreachable, because
-    every `ContractViolation` carries a non-empty message."""
+    pre-contract code surfaced stderr and the rewire dropped it. It is
+    back — in the audit log, not on the wire; see
+    `test_producer_stderr_reaches_the_audit_log_and_not_the_wire` for why
+    the distinction is the whole point."""
     make_repo(tmp_path, "alpha")
     script = tmp_path / "noisy.py"
     script.write_text(
@@ -1645,11 +1648,13 @@ def test_the_producers_stderr_survives_an_unusable_answer(tmp_path: Path) -> Non
     runner = ActionRunner(
         DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
     )
-    outcome = runner.run("pull", "alpha")
+    with caplog.at_level("INFO", logger="dispatcher.actions"):
+        outcome = runner.run("pull", "alpha")
     assert outcome.ok is False
-    assert outcome.error is not None
-    assert "token expired" in outcome.error
-    assert "\n" not in outcome.error, "still one audit line"
+    assert "token expired" in caplog.text
+    assert all("\n" not in r.getMessage() for r in caplog.records)
+    # attempts are still counted by `action=` lines; the stderr line is not one
+    assert len([r for r in caplog.records if r.getMessage().startswith("action=")]) == 1
 
 
 def test_an_answer_about_a_different_verb_is_refused(tmp_path: Path) -> None:
@@ -1745,3 +1750,84 @@ def test_every_producer_field_with_a_column_reaches_the_outcome(
     for name in ("detail", "pr_url", "branch", "base_branch", "commit_sha"):
         assert getattr(outcome, name) == sent[name], name
     assert outcome.changed_paths == sent["changed_paths"]
+
+
+def test_producer_stderr_reaches_the_audit_log_and_not_the_wire(
+    tmp_path: Path, caplog
+) -> None:
+    """`git` prints a failing remote URL verbatim, credentials included:
+    `fatal: could not read Username for 'https://x-access-token:ghs_…@…'`.
+    `ActionOutcome.error` is the `response_model` of eight endpoints, so
+    putting raw producer stderr there serves that token to the browser.
+
+    `contract.py` closed the adjacent channel on this very message and
+    withdrew an "identifier-shaped values are fine" allowlist while doing
+    it — a token denylist here would be weaker than the allowlist that was
+    already judged too weak. So stderr stays where the operator needs it,
+    the local audit log (which already carries producer `detail`/`error`),
+    and off the wire."""
+    make_repo(tmp_path, "alpha")
+    secret = "https://x-access-token:ghs_S3CRETTOKEN0123456789@github.com"
+    script = tmp_path / "leaky.py"
+    script.write_text(
+        "import sys\n"
+        f"sys.stderr.write('fatal: could not read Username for {secret}\\n')\n"
+        "sys.stdout.write('not json at all')\n"
+    )
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=("python3", str(script))
+    )
+    with caplog.at_level("INFO", logger="dispatcher.actions"):
+        outcome = runner.run("pull", "alpha")
+    assert outcome.ok is False
+    assert outcome.error is not None
+    assert "ghs_" not in outcome.error, "the wire must not carry it"
+    assert "stderr" not in outcome.error
+    assert "ghs_" in caplog.text, "the operator still gets the sentence"
+    assert all("\n" not in r.getMessage() for r in caplog.records)
+
+
+def test_a_consumer_failure_does_not_blame_the_producer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A vendored-contract bump where the models and the schema disagree
+    makes `ingest` raise on *every* answer, and every action in the
+    dashboard then reads "github-checker returned ...". Triage goes to the
+    producer repo, which is healthy, and the broken consumer install is
+    the last place looked. The headline sentence has to name the right
+    side."""
+
+    def explode(raw: str, *, returncode: int) -> object:
+        raise RuntimeError("models and schema disagree")
+
+    monkeypatch.setattr(actions_module, "ingest", explode)
+    make_repo(tmp_path, "alpha")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)),
+        command=fake_checker(tmp_path, v1("pull", dir="alpha", ok=True)),
+    )
+    outcome = runner.run("pull", "alpha")
+    assert outcome.error is not None
+    assert outcome.error.startswith("dispatcher could not interpret")
+    assert "github-checker returned" not in outcome.error
+
+
+def test_a_refusal_about_another_verb_still_carries_the_producers_reason(
+    tmp_path: Path,
+) -> None:
+    """`cli_error`'s `action` is diagnostic by contract — it may name the
+    attempted verb, an unknown string, or `"unknown"`. Applying the verb
+    check to it would replace the producer's own `error`, the sentence
+    saying *why* argv was refused, with a mismatch complaint about a field
+    that was never authoritative."""
+    import json as _json
+
+    payload = _json.loads((VENDORED_FIXTURES / "cli-error-no-verb.json").read_text())
+    assert payload["action"] == "unknown", "the fixture must exercise the exemption"
+    make_repo(tmp_path, "alpha")
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=fake_checker(tmp_path, payload)
+    )
+    outcome = runner.run("pull", "alpha")
+    assert outcome.ok is False
+    assert outcome.error == payload["error"], "the producer's own reason survives"
