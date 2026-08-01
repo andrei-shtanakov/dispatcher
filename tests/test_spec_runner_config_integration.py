@@ -4,14 +4,16 @@ The gate this feature replaces existed because {"ok": true} stubs masked a
 broken contract. Here the fake github-checker performs propose-pr's
 observable contract with real git: branch off origin/<default> in a temp
 worktree, apply the --edit content, commit, push to a real bare origin.
-Level 3 (live smoke with the real binary) is at the bottom, skipif.
+Level 3 (live smoke with the real pinned binary) is at the bottom. It no
+longer skips: the binary is installed by `scripts/install_pinned_checker.sh`
+at the commit the vendored contract names, and its absence or a wrong commit
+fails the run.
 """
 
-import shutil
 import subprocess
 from pathlib import Path
 
-import pytest
+from pinned_producer import pinned_producer_binary
 
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.spec_runner_config import TYPED_DEFAULTS
@@ -158,12 +160,18 @@ def test_write_path_end_to_end_real_git(tmp_path: Path) -> None:
     assert (clone / "project.yaml").read_bytes() == live_before
 
 
-@pytest.mark.skipif(
-    shutil.which("github-checker") is None,
-    reason="live smoke: real github-checker binary not on PATH",
-)
 def test_write_path_live_smoke_real_binary(tmp_path: Path, monkeypatch) -> None:
-    """DESIGN-405 level 3: the REAL binary + a fake gh on PATH."""
+    """DESIGN-405 level 3: the REAL pinned binary + a fake gh on PATH.
+
+    No skipif. An absent or wrong-commit binary fails this test, because a
+    `skipped` line in the report reads as `verified` — which is how level 3
+    came to be decorative in the first place.
+
+    The runner is handed the *verified* path rather than left to resolve
+    `github-checker` off PATH a second time: checking one binary and running
+    another would prove nothing.
+    """
+    binary = pinned_producer_binary()
     origin, workspace = _workspace_with_origin(tmp_path)
     clone = workspace / "alpha"
     live_before = (clone / "project.yaml").read_bytes()
@@ -183,7 +191,9 @@ def test_write_path_live_smoke_real_binary(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setenv("PATH", f"{fake_gh_dir}:{os.environ['PATH']}")
 
-    runner = SpecRunnerConfigActionRunner(DispatcherConfig(roots=(workspace,)))
+    runner = SpecRunnerConfigActionRunner(
+        DispatcherConfig(roots=(workspace,)), command=(str(binary),)
+    )
     candidate = ConfigCandidate(
         typed={**TYPED_DEFAULTS, "max_retries": 9},
         base_mtime=(clone / "project.yaml").stat().st_mtime,

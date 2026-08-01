@@ -46,6 +46,16 @@ jobs:
         with:
           node-version: "22"
       - run: uv sync
+      # DESIGN-405 level 3 exercises the REAL github-checker, and its skipif is
+      # gone: the step below is now the only thing standing between the suite
+      # and a red job. That is deliberate — while the test skipped, a `skipped`
+      # line read as `verified` and the whole level was decorative.
+      # The commit comes from the vendored manifest, so re-vendoring the
+      # contract moves the installed binary with it; nothing here is pinned by
+      # hand. The producer is installed into its own virtualenv (it drags in a
+      # TUI stack) and only its bin joins PATH.
+      - name: install the pinned producer binary (DESIGN-405 level 3)
+        run: scripts/install_pinned_checker.sh >> "$GITHUB_PATH"
       - run: uv run pytest tests/ -v
 
   plan-fields:
