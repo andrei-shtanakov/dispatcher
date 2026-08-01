@@ -49,7 +49,6 @@ from dispatcher.core.contract import (
 from dispatcher.core.discovery import DispatcherConfig
 
 _ACTION_TIMEOUT = 120
-_MAX_STDERR_LEN = 200
 _SAFE_DIR_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")
 # C0 controls plus DEL. None of them belong in a value that becomes its own
 # argv element: NUL is the sharp case (`subprocess.run` refuses argv containing
