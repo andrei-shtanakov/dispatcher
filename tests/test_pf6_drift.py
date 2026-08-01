@@ -349,3 +349,25 @@ def test_the_real_vendored_copy_matches_its_own_manifest_and_pin() -> None:
     row = _integrity(results)
     assert row.in_sync is True, row.detail
     assert _drift(results).in_sync is None
+
+
+def test_an_unreadable_vendored_file_says_so_not_hash_mismatch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """ "Differs from its fingerprint" would send a reviewer hunting a phantom.
+
+    A file that cannot be read has no hash to disagree with; the two failures
+    need different sentences because they need different fixes.
+    """
+    from dispatcher.core import contracts as mod
+
+    vdir = _write_vendored(tmp_path / "self", _SURFACE, pin=_pin_text())
+    real = mod._sha256
+    monkeypatch.setattr(
+        mod, "_sha256", lambda p: None if p.name == "schema.json" else real(p)
+    )
+    row = _integrity(check_contracts(_projects(tmp_path, with_vault=False)))
+    assert row.in_sync is False
+    assert "unreadable" in (row.detail or "")
+    assert "schema.json" in (row.detail or "")
+    assert vdir.exists()

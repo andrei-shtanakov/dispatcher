@@ -190,6 +190,11 @@ def _pf_vendored_integrity(vendored_dir: Path) -> ContractStatus:
             f"(unfingerprinted={unlisted}, missing={absent})",
         )
     for rel, digest in sorted(live.items()):
+        if digest is None:
+            # No hash exists to disagree with. Calling this a fingerprint
+            # mismatch sends a reviewer hunting a difference that is not there;
+            # the fix is a permissions problem, not a re-vendor.
+            return status(False, f"vendored file is unreadable: {rel}")
         if digest != listed[rel]:
             return status(False, f"vendored file differs from its fingerprint: {rel}")
     pin = _pin_problem(vendored_dir)

@@ -112,8 +112,36 @@ def compare(canon_dir: Path, vendored_dir: Path, provenance: dict[str, str]) -> 
             ],
         )
 
+    if not vendored_dir.is_dir():
+        return report(
+            UNAVAILABLE,
+            [
+                "## Vendored copy unavailable",
+                "",
+                f"No vendored contract at `{vendored_dir}`. A broken local "
+                "checkout is not upstream moving — nothing was compared.",
+            ],
+        )
+
     canon = _live_surface(canon_dir)
     vendored = _live_surface(vendored_dir)
+    # A hash that could not be computed is not a value. Left in, `None` would
+    # compare equal to `None` on the other side and turn "we read nothing"
+    # into "no drift" — the fail-open this report exists to avoid.
+    unreadable = sorted(
+        {f"canon:{rel}" for rel, digest in canon.items() if digest is None}
+        | {f"vendored:{rel}" for rel, digest in vendored.items() if digest is None}
+    )
+    if unreadable:
+        return report(
+            UNAVAILABLE,
+            [
+                "## Files could not be read",
+                "",
+                f"Unhashable: {', '.join(f'`{u}`' for u in unreadable)}. "
+                "Nothing was compared — this is unknown, not “no drift”.",
+            ],
+        )
     canon_tree = _tree_sha256(canon)
     vendored_tree = _tree_sha256(vendored)
     provenance_lines.append(f"- canon tree_sha256 (recomputed): `{canon_tree}`")

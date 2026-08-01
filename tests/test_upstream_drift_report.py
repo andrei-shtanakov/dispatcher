@@ -133,3 +133,34 @@ def test_the_summary_never_tells_the_reader_to_edit_the_hash(
     summary = compare(canon, vendored, _PROVENANCE).summary.lower()
     assert "re-vendor" in summary
     assert "update the expected" not in summary
+
+
+def test_an_unreadable_file_is_unavailable_not_no_drift(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A hash that could not be computed must not compare equal to itself.
+
+    If the same file is unreadable on both sides, hashing `None` on both
+    makes the trees agree and the run reports "no drift" — having compared
+    nothing at all. Fail-open, and invisible.
+    """
+    import upstream_drift_report as mod
+
+    canon, vendored = _both(tmp_path, _FILES, _FILES)
+    real = mod._sha256
+    monkeypatch.setattr(
+        mod, "_sha256", lambda p: None if p.name == "schema.json" else real(p)
+    )
+    result = compare(canon, vendored, _PROVENANCE)
+    assert result.outcome == UNAVAILABLE
+    assert "schema.json" in result.summary
+
+
+def test_a_missing_vendored_copy_is_unavailable_not_drift(tmp_path: Path) -> None:
+    """Our own copy being absent is a broken checkout, not upstream moving.
+
+    Reporting it as drift would send a reader to read someone else's commits.
+    """
+    canon = _write(tmp_path / "canon", _FILES, manifest=_manifest(_FILES))
+    result = compare(canon, tmp_path / "nowhere", _PROVENANCE)
+    assert result.outcome == UNAVAILABLE
