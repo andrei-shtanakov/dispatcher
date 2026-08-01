@@ -12,6 +12,8 @@ import pytest
 
 from dispatcher.core import actions as actions_module
 from dispatcher.core.actions import (
+    PHASE_LAUNCHED_UNREADABLE,
+    PHASE_PRE_LAUNCH,
     PHASE_READABLE,
     ActionBusyError,
     ActionOutcome,
@@ -1818,3 +1820,130 @@ def test_neither_stream_of_a_refused_answer_is_logged_or_served(
     assert "returncode=1" in line, line
     assert "stdout_bytes=" in line and "stderr_bytes=" in line, line
     assert "\n" not in line
+
+
+# --------------------------------------------------------------------------
+# The per-attempt audit guarantee, as a property rather than case by case
+# --------------------------------------------------------------------------
+
+
+def _sleeping_checker(tmp_path: Path) -> tuple[str, ...]:
+    """Starts, then outlives the timeout: a child that RAN and said nothing."""
+    script = tmp_path / "slow.py"
+    script.write_text("import time; time.sleep(30)")
+    return ("python3", str(script))
+
+
+def _mute_checker(tmp_path: Path) -> tuple[str, ...]:
+    """Runs to completion and prints an envelope the contract refuses."""
+    script = tmp_path / "mute.py"
+    script.write_text("print('{}')")
+    return ("python3", str(script))
+
+
+def _audit_case(name: str, tmp_path: Path, monkeypatch):
+    """One way `_invoke` can fail, induced for real wherever possible.
+
+    Returns the call. The phase it must end in is declared in
+    `_AUDIT_CASES`, not here. Every case must leave an audit line: the
+    line is written by the caller from the returned outcome, so an exit that
+    raises instead of returning takes the whole audit with it — which is the
+    failure this sweep exists to catch, twice already in this module's history.
+    """
+    make_repo(tmp_path, "alpha")
+    cfg = DispatcherConfig(roots=(tmp_path,))
+    ok = {"action": "issue-lookup", "dir": "alpha", "ok": True, "matches": []}
+
+    if name == "binary_missing":
+        runner = ActionRunner(cfg, command=(str(tmp_path / "nope"),))
+        return lambda: runner.issue_lookup("alpha", "wanted")
+    if name == "exec_argument_list_too_long":
+        runner = ActionRunner(cfg, command=("python3", "-c", "pass"))
+        return lambda: runner.merge_and_sync("alpha", 1, "d" * 2_000_000)
+    if name == "timeout":
+        monkeypatch.setattr(actions_module, "_ACTION_TIMEOUT", 0.3)
+        runner = ActionRunner(cfg, command=_sleeping_checker(tmp_path))
+        return lambda: runner.issue_lookup("alpha", "wanted")
+    if name == "undecodable_stdout":
+        runner = ActionRunner(cfg, command=_undecodable_checker(tmp_path))
+        return lambda: runner.issue_lookup("alpha", "wanted")
+    if name == "contract_violation":
+        runner = ActionRunner(cfg, command=_mute_checker(tmp_path))
+        return lambda: runner.issue_lookup("alpha", "wanted")
+    if name == "ingest_raises_something_else":
+        # The only case with no natural inducer: `ingest` is documented to
+        # raise more than ContractViolation (ValidationError, OSError reading
+        # the vendored schema). The catch-all behind it is unobservable
+        # otherwise, and an unpinned guard is one someone deletes.
+        runner = ActionRunner(cfg, command=fake_checker(tmp_path, ok))
+
+        def explode(*_args, **_kwargs):
+            raise RuntimeError("schema store unavailable (simulated)")
+
+        monkeypatch.setattr(actions_module, "ingest", explode)
+        return lambda: runner.issue_lookup("alpha", "wanted")
+    raise AssertionError(f"unknown case {name}")
+
+
+# The single source of truth for what each case is expected to prove. Both
+# the sweep and the span check read it; a second copy of this mapping could
+# drift from the inducers and keep passing while classifying them wrongly.
+_AUDIT_CASES = {
+    "binary_missing": PHASE_PRE_LAUNCH,
+    "exec_argument_list_too_long": PHASE_PRE_LAUNCH,
+    "timeout": PHASE_LAUNCHED_UNREADABLE,
+    "undecodable_stdout": PHASE_LAUNCHED_UNREADABLE,
+    "contract_violation": PHASE_READABLE,
+    "ingest_raises_something_else": PHASE_READABLE,
+}
+
+
+@pytest.mark.parametrize("case", _AUDIT_CASES)
+def test_every_failing_exit_of_invoke_still_leaves_an_audit_line(
+    case: str, tmp_path: Path, caplog, monkeypatch
+) -> None:
+    """No attempt vanishes from the log, whichever way `_invoke` gives up.
+
+    Deliberately not "exactly one line": a composite verb audits its inner
+    step and then itself, and pinning arity here would encode the shape of
+    merge-and-sync into a guarantee that is not about arity.
+
+    Each exit already has a test of its own. This asserts the *guarantee*
+    instead: an exit added later that raises rather than returns, or returns
+    without a phase, fails here even though nobody wrote a test for it. Two
+    escapes have gone unnoticed this way before (a non-FileNotFoundError
+    OSError from exec, and a post-run decode failure), each surfacing as an
+    HTTP 500 with zero audit lines.
+    """
+    call = _audit_case(case, tmp_path, monkeypatch)
+    expected_phase = _AUDIT_CASES[case]
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
+        outcome = call()  # must RETURN: an exception here takes the audit too
+
+    assert outcome.ok is False
+    assert outcome.phase == expected_phase
+    lines = [r for r in caplog.records if r.name == "dispatcher.actions"]
+    attempt = [r.getMessage() for r in lines if "action=" in r.getMessage()]
+    # At least one — the point is that none VANISHES. A composite verb audits
+    # its inner step and itself, so pinning an exact count would encode the
+    # arity of merge-and-sync into a guarantee that is not about arity.
+    assert attempt, "the attempt left no audit line at all"
+    # every line names the side of the fork it is talking about …
+    assert all("phase=" in line for line in attempt), attempt
+    # … and the outcome the caller received is the last word in the log
+    assert f"phase={expected_phase}" in attempt[-1]
+    assert all("\n" not in line for line in attempt)  # no pasted traceback
+
+
+def test_the_audit_sweep_spans_every_phase() -> None:
+    """Non-vacuity: the sweep would still pass if it only ever exercised the
+    pre-launch arm, which is the easy half and not where the escapes were.
+
+    Read off `_AUDIT_CASES` rather than restated: a check that keeps its own
+    copy of the classification can go on passing while the copy is wrong.
+    """
+    assert set(_AUDIT_CASES.values()) == {
+        PHASE_PRE_LAUNCH,
+        PHASE_LAUNCHED_UNREADABLE,
+        PHASE_READABLE,
+    }
