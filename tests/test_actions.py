@@ -1844,7 +1844,8 @@ def _mute_checker(tmp_path: Path) -> tuple[str, ...]:
 def _audit_case(name: str, tmp_path: Path, monkeypatch):
     """One way `_invoke` can fail, induced for real wherever possible.
 
-    Returns (call, expected_phase). Every case must leave an audit line: the
+    Returns the call. The phase it must end in is declared in
+    `_AUDIT_CASES`, not here. Every case must leave an audit line: the
     line is written by the caller from the returned outcome, so an exit that
     raises instead of returning takes the whole audit with it — which is the
     failure this sweep exists to catch, twice already in this module's history.
@@ -1855,29 +1856,20 @@ def _audit_case(name: str, tmp_path: Path, monkeypatch):
 
     if name == "binary_missing":
         runner = ActionRunner(cfg, command=(str(tmp_path / "nope"),))
-        return lambda: runner.issue_lookup("alpha", "wanted"), PHASE_PRE_LAUNCH
+        return lambda: runner.issue_lookup("alpha", "wanted")
     if name == "exec_argument_list_too_long":
         runner = ActionRunner(cfg, command=("python3", "-c", "pass"))
-        return (
-            lambda: runner.merge_and_sync("alpha", 1, "d" * 2_000_000),
-            PHASE_PRE_LAUNCH,
-        )
+        return lambda: runner.merge_and_sync("alpha", 1, "d" * 2_000_000)
     if name == "timeout":
         monkeypatch.setattr(actions_module, "_ACTION_TIMEOUT", 0.3)
         runner = ActionRunner(cfg, command=_sleeping_checker(tmp_path))
-        return (
-            lambda: runner.issue_lookup("alpha", "wanted"),
-            PHASE_LAUNCHED_UNREADABLE,
-        )
+        return lambda: runner.issue_lookup("alpha", "wanted")
     if name == "undecodable_stdout":
         runner = ActionRunner(cfg, command=_undecodable_checker(tmp_path))
-        return (
-            lambda: runner.issue_lookup("alpha", "wanted"),
-            PHASE_LAUNCHED_UNREADABLE,
-        )
+        return lambda: runner.issue_lookup("alpha", "wanted")
     if name == "contract_violation":
         runner = ActionRunner(cfg, command=_mute_checker(tmp_path))
-        return lambda: runner.issue_lookup("alpha", "wanted"), PHASE_READABLE
+        return lambda: runner.issue_lookup("alpha", "wanted")
     if name == "ingest_raises_something_else":
         # The only case with no natural inducer: `ingest` is documented to
         # raise more than ContractViolation (ValidationError, OSError reading
@@ -1889,25 +1881,32 @@ def _audit_case(name: str, tmp_path: Path, monkeypatch):
             raise RuntimeError("schema store unavailable (simulated)")
 
         monkeypatch.setattr(actions_module, "ingest", explode)
-        return lambda: runner.issue_lookup("alpha", "wanted"), PHASE_READABLE
+        return lambda: runner.issue_lookup("alpha", "wanted")
     raise AssertionError(f"unknown case {name}")
 
 
-_AUDIT_CASES = [
-    "binary_missing",
-    "exec_argument_list_too_long",
-    "timeout",
-    "undecodable_stdout",
-    "contract_violation",
-    "ingest_raises_something_else",
-]
+# The single source of truth for what each case is expected to prove. Both
+# the sweep and the span check read it; a second copy of this mapping could
+# drift from the inducers and keep passing while classifying them wrongly.
+_AUDIT_CASES = {
+    "binary_missing": PHASE_PRE_LAUNCH,
+    "exec_argument_list_too_long": PHASE_PRE_LAUNCH,
+    "timeout": PHASE_LAUNCHED_UNREADABLE,
+    "undecodable_stdout": PHASE_LAUNCHED_UNREADABLE,
+    "contract_violation": PHASE_READABLE,
+    "ingest_raises_something_else": PHASE_READABLE,
+}
 
 
 @pytest.mark.parametrize("case", _AUDIT_CASES)
 def test_every_failing_exit_of_invoke_still_leaves_an_audit_line(
     case: str, tmp_path: Path, caplog, monkeypatch
 ) -> None:
-    """One attempt, one audit line — whichever way `_invoke` gives up.
+    """No attempt vanishes from the log, whichever way `_invoke` gives up.
+
+    Deliberately not "exactly one line": a composite verb audits its inner
+    step and then itself, and pinning arity here would encode the shape of
+    merge-and-sync into a guarantee that is not about arity.
 
     Each exit already has a test of its own. This asserts the *guarantee*
     instead: an exit added later that raises rather than returns, or returns
@@ -1916,7 +1915,8 @@ def test_every_failing_exit_of_invoke_still_leaves_an_audit_line(
     OSError from exec, and a post-run decode failure), each surfacing as an
     HTTP 500 with zero audit lines.
     """
-    call, expected_phase = _audit_case(case, tmp_path, monkeypatch)
+    call = _audit_case(case, tmp_path, monkeypatch)
+    expected_phase = _AUDIT_CASES[case]
     with caplog.at_level(logging.INFO, logger="dispatcher.actions"):
         outcome = call()  # must RETURN: an exception here takes the audit too
 
@@ -1937,13 +1937,13 @@ def test_every_failing_exit_of_invoke_still_leaves_an_audit_line(
 
 def test_the_audit_sweep_spans_every_phase() -> None:
     """Non-vacuity: the sweep would still pass if it only ever exercised the
-    pre-launch arm, which is the easy half and not where the escapes were."""
-    seen = set()
-    for case in _AUDIT_CASES:
-        if case in ("binary_missing", "exec_argument_list_too_long"):
-            seen.add(PHASE_PRE_LAUNCH)
-        elif case in ("timeout", "undecodable_stdout"):
-            seen.add(PHASE_LAUNCHED_UNREADABLE)
-        else:
-            seen.add(PHASE_READABLE)
-    assert seen == {PHASE_PRE_LAUNCH, PHASE_LAUNCHED_UNREADABLE, PHASE_READABLE}
+    pre-launch arm, which is the easy half and not where the escapes were.
+
+    Read off `_AUDIT_CASES` rather than restated: a check that keeps its own
+    copy of the classification can go on passing while the copy is wrong.
+    """
+    assert set(_AUDIT_CASES.values()) == {
+        PHASE_PRE_LAUNCH,
+        PHASE_LAUNCHED_UNREADABLE,
+        PHASE_READABLE,
+    }
