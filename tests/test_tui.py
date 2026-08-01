@@ -165,7 +165,10 @@ async def test_contracts_table_shows_drift(tmp_path: Path) -> None:
         table = app.query_one("#contracts-table", DataTable)
         rows = [table.get_row_at(i) for i in range(table.row_count)]
         catalog = next(r for r in rows if str(r[0]) == "agents-catalog")
-        assert "✗ drift" in str(catalog[3])
+        # name | check | canon | vendored | sync — `check` names which
+        # question the row answers, since two rows can share one contract name
+        assert str(catalog[1]) == "upstream_drift"
+        assert "✗ drift" in str(catalog[4])
 
 
 def test_truncate_web_parity() -> None:

@@ -212,7 +212,7 @@ class DispatcherApp(App[None]):
             "project", "model", "harness", "role", "vendor", "status"
         )
         self.query_one("#contracts-table", DataTable).add_columns(
-            "name", "canon", "vendored", "sync"
+            "name", "check", "canon", "vendored", "sync"
         )
         self.query_one("#roadmap-table", DataTable).add_columns(
             "phase",
@@ -490,7 +490,17 @@ class DispatcherApp(App[None]):
                 sync = Text("✓ in sync", style="green")
             else:
                 sync = Text("✗ drift", style="bold red")
-            table.add_row(c.name, c.canonical_path, c.vendored_path or "—", sync)
+            # `check` is not decoration: two rows share the name plan-fields-v1
+            # and answer different questions, so a table without it would show
+            # "n/a" and "✓ in sync" side by side with no way to tell which is
+            # the integrity verdict and which the upstream observation.
+            table.add_row(
+                c.name,
+                c.kind,
+                c.canonical_path or "—",
+                c.vendored_path or "—",
+                sync,
+            )
 
     def _render_roadmap(self) -> None:
         self._render_summary()
@@ -498,7 +508,9 @@ class DispatcherApp(App[None]):
         table.clear()
         if self._roadmap is None:
             return
-        sync_by_name = contract_sync_by_name(self._contracts)
+        # the roadmap view asks whether upstream moved; integrity rows answer
+        # a different question and are folded separately (see the docstring).
+        sync_by_name = contract_sync_by_name(self._contracts, kind="upstream_drift")
         for item in self._roadmap.items:
             passed = sum(1 for e in item.evidence if e.passed)
             total = len(item.evidence)

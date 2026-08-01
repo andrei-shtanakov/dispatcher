@@ -210,15 +210,28 @@ def build_roadmap(
 
 def contract_sync_by_name(
     contracts: list[ContractStatus],
+    *,
+    kind: str,
 ) -> dict[str, bool | None]:
-    """Fold per-copy checker rows into one verdict per contract name.
+    """Fold per-copy checker rows of ONE kind into a verdict per contract name.
 
     `check_contracts` emits one row per vendored copy: any out-of-sync
     copy drifts the whole contract; any not-comparable copy blocks an
     in-sync verdict.
+
+    `kind` is required and never defaulted, because two callers want opposite
+    things and folding them together is the defect this split removes:
+
+    - the drift *view* asks "has upstream moved?" → `upstream_drift`;
+    - roadmap *evidence* asks "is our copy intact?" → `vendored_integrity`,
+      the only one available offline. Folding an observation into evidence
+      would drag every ordinary run to not-comparable and report less than
+      the checker actually knows.
     """
     folded: dict[str, bool | None] = {}
     for c in contracts:
+        if c.kind != kind:
+            continue
         if c.name not in folded:
             folded[c.name] = c.in_sync
         elif c.in_sync is False or folded[c.name] is False:
@@ -236,7 +249,8 @@ def build_drift(
     Pure re-aggregation of already-computed data — no second checker
     (ADR-R5). Items without `target_contract` are not part of the view.
     """
-    sync_by_name = contract_sync_by_name(contracts)
+    # the drift VIEW is about upstream: "has canon moved away from our copy?"
+    sync_by_name = contract_sync_by_name(contracts, kind="upstream_drift")
     details: dict[str, list[str]] = {}
     for c in contracts:
         if c.detail:
@@ -403,9 +417,8 @@ class _EvidenceContext:
         self.snapshots = {s.name: s for s in snapshots}
         self._vault_roots = vault_roots
         self._chains: dict[str, int] | None = None
-        self._contracts: dict[str, bool | None] | None = (
-            None if contracts is None else contract_sync_by_name(contracts)
-        )
+        self._rows: list[ContractStatus] | None = contracts
+        self._folded: dict[str, dict[str, bool | None]] = {}
 
     def chain_links(self, work_item_id: str) -> int:
         if self._chains is None:
@@ -413,15 +426,27 @@ class _EvidenceContext:
             self._chains = {c.work_item_id: len(c.links) for c in result.items}
         return self._chains.get(work_item_id, 0)
 
-    def contract_in_sync(self, name: str) -> bool | None:
-        if self._contracts is None:
-            projects = {
-                s.name: Path(s.path)
-                for s in self.snapshots.values()
-                if s.detected and s.path
-            }
-            self._contracts = contract_sync_by_name(check_contracts(projects))
-        return self._contracts.get(name)
+    def _by_kind(self, kind: str) -> dict[str, bool | None]:
+        if kind not in self._folded:
+            if self._rows is None:
+                projects = {
+                    s.name: Path(s.path)
+                    for s in self.snapshots.values()
+                    if s.detected and s.path
+                }
+                self._rows = check_contracts(projects)
+            self._folded[kind] = contract_sync_by_name(self._rows, kind=kind)
+        return self._folded[kind]
+
+    def contract_verified(self, name: str) -> bool | None:
+        """EVIDENCE: is OUR copy intact? Offline, so a roadmap item's
+        verification never depends on which siblings happen to be cloned."""
+        return self._by_kind("vendored_integrity").get(name)
+
+    def contract_upstream_in_sync(self, name: str) -> bool | None:
+        """VIEW: has canon moved away from our copy? An observation —
+        `None` when no canon checkout was available to look at."""
+        return self._by_kind("upstream_drift").get(name)
 
     def project_path(self, name: str) -> Path | None:
         if name == "dispatcher":
@@ -553,7 +578,8 @@ def _apply_drift(views: dict[str, RoadmapItemView], ctx: _EvidenceContext) -> No
     for view in views.values():
         if view.target_contract is None:
             continue
-        if ctx.contract_in_sync(view.target_contract) is False:
+        # a status projection, so it reports the upstream observation
+        if ctx.contract_upstream_in_sync(view.target_contract) is False:
             view.computed_status = "drift"
 
 
@@ -652,7 +678,7 @@ def _rule_sqlite_has_row(rule: dict, ctx: _EvidenceContext) -> _RuleOutcome:
 
 def _rule_contract_in_sync(rule: dict, ctx: _EvidenceContext) -> _RuleOutcome:
     name = str(rule.get("name", ""))
-    state = ctx.contract_in_sync(name)
+    state = ctx.contract_verified(name)
     if state is True:
         return True, f"contract {name} in sync", None
     if state is None:

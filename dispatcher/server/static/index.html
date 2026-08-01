@@ -230,7 +230,8 @@
 
 <section><h2>Contracts</h2>
   <div class="tablewrap"><table id="contracts">
-    <thead><tr><th>Name</th><th>Canon</th><th>Vendored</th><th>Sync</th>
+    <thead><tr><th>Name</th><th>Check</th><th>Canon</th><th>Vendored</th>
+      <th>Sync</th>
       </tr></thead><tbody></tbody></table></div></section>
 
 <section><h2>Roadmap <span id="roadmap-names" class="sub"></span></h2>
@@ -533,7 +534,8 @@ async function refresh() {
       <td>${esc(m.vendor ?? "—")}</td><td>${esc(m.status ?? "—")}</td></tr>`)
       .join("");
     document.querySelector("#contracts tbody").innerHTML = contracts.map(c => `
-      <tr><td>${esc(c.name)}</td><td>${esc(c.canonical_path)}</td>
+      <tr><td>${esc(c.name)}</td><td>${esc(c.kind)}</td>
+      <td>${esc(c.canonical_path || "—")}</td>
       <td>${esc(c.vendored_path || "—")}</td>
       <td class="${c.in_sync === false ? "err" : "ok"}">
         ${c.in_sync === null ? esc(c.detail ?? "n/a")
@@ -543,8 +545,11 @@ async function refresh() {
     // Fold per-copy checker rows: any drifted copy drifts the contract,
     // any not-comparable copy blocks an in-sync verdict (parity with
     // contract_sync_by_name in dispatcher/core/roadmap.py).
+    // Only upstream_drift rows: this view asks whether canon moved. Folding
+    // vendored_integrity in would answer a different question in the same cell.
     const syncByName = new Map();
     for (const c of contracts) {
+      if (c.kind !== "upstream_drift") continue;
       const prev = syncByName.has(c.name) ? syncByName.get(c.name) : c.in_sync;
       syncByName.set(c.name,
         prev === false || c.in_sync === false ? false

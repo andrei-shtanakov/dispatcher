@@ -103,8 +103,14 @@ def build_server(
 
     @mcp.tool
     def contracts() -> list[dict[str, Any]]:
-        """Cross-repo contract sync state: canonical file vs each vendored
-        copy, in_sync true/false/null (null = cannot compare)."""
+        """Cross-repo contract check results, one row per check.
+
+        `kind` says which question a row answers, and the two must not be
+        read as one: `vendored_integrity` = our vendored copy matches the
+        manifest travelling with it (offline, always available);
+        `upstream_drift` = canon differs, or does not, from that copy — an
+        observation whose `in_sync=null` means NO canon was available to
+        compare, i.e. unknown, not in sync. `listing` is not a comparison."""
         return [c.model_dump(mode="json") for c in read_api.contracts(cache)]
 
     @mcp.tool

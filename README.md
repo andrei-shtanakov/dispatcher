@@ -246,6 +246,47 @@ macOS launchd: a `LaunchAgent` with `StartInterval` 1800 running the
 same command works; staleness beyond 1 h renders the host's panel as
 `stale` on the Sync screen rather than failing anything.
 
+## Two contract guarantees, never one verdict
+
+`/api/contracts` answers two different questions and labels each row with the
+one it answers. They must not be read as a single "in sync", because a green
+answer to one says nothing about the other.
+
+| `kind` | Question | Where it runs | `in_sync=null` means |
+|---|---|---|---|
+| `vendored_integrity` | Does our vendored copy still match the manifest that travels with it? | ordinary `pytest`, every PR, offline | — (never null; a broken copy is `false`) |
+| `upstream_drift` | Has canon moved away from that copy? | the `upstream-drift` workflow, on a schedule | no canon was available to compare — **unknown, not in sync** |
+
+**Integrity is consumer-owned.** It reads only
+`packages/plan-fields/src/plan_fields/contract/`, checks per-file hashes, that
+the file set and the manifest cover each other exactly, that `tree_sha256`
+fingerprints the surface it ships with, and that `PINNED.txt` states a
+provenance a reviewer can follow. No network, no sibling repositories, no skip.
+
+What it proves is exactly that: the vendored surface is internally consistent
+with its manifest. The link from that manifest to the vault commit named in
+`PINNED.txt` is **reviewable provenance, not a cryptographic attestation** —
+proving it would need a signature or a checkout of that commit.
+
+**Drift is an observation about someone else's repository.** It runs in
+`.github/workflows/upstream-drift.yml` (schedule + manual), checks out the
+public vault at its *moving* default branch, records the resolved commit, the
+remote and the recomputed tree hash, and compares. It is not a required check
+and never runs on a dispatcher PR: a commit next door must not redden this
+repo's gate. A red run means a human owes a deliberate re-vendor PR — the fix
+is never to edit the expected hash.
+
+Governance follows the same split: roadmap **evidence**
+(`rule: contract_in_sync`) reads integrity, so an item's verification is
+reproducible on any machine; the drift **view** reads the observation.
+
+To run the drift comparison by hand against a canon checkout:
+
+```
+uv run python scripts/upstream_drift_report.py <canon-dir> --upstream-root <vault-repo>
+# exit 0 no drift · 1 drift · 2 canon unavailable
+```
+
 ## API
 
 `/api/overview`, `/api/projects/{name}`, `/api/errors?limit=N`,
