@@ -338,7 +338,14 @@ def test_contract_in_sync_rule_carries_no_last_seen(tmp_path: Path) -> None:
     d = tmp_path / "roadmaps"
     d.mkdir()
     (d / "cr.yaml").write_text(_CONTRACT_RULE_ROADMAP)
-    in_sync = [ContractStatus(name="agents-catalog", canonical_path="c", in_sync=True)]
+    in_sync = [
+        ContractStatus(
+            name="agents-catalog",
+            canonical_path="c",
+            kind="vendored_integrity",
+            in_sync=True,
+        )
+    ]
     item = build_roadmap((d,), [], in_sync).items[0]
     ev = item.evidence[0]
     assert ev.rule == "contract_in_sync"
@@ -455,31 +462,79 @@ def test_build_drift_join(tmp_path: Path) -> None:
 def test_build_roadmap_uses_provided_contracts(tmp_path: Path) -> None:
     """Injected checker results are reused — no second checker run."""
     snaps = _contract_snapshots(tmp_path)  # real vendored copy IS drifted
-    in_sync = [ContractStatus(name="agents-catalog", canonical_path="c", in_sync=True)]
+    in_sync = [
+        ContractStatus(
+            name="agents-catalog",
+            canonical_path="c",
+            kind="vendored_integrity",
+            in_sync=True,
+        )
+    ]
     roadmap = build_roadmap((_write_drift_roadmap(tmp_path),), snaps, in_sync)
     status = {i.id: i.computed_status for i in roadmap.items}
     assert status["RD-TC"] == "implemented"
 
 
-def test_contract_sync_fold_any_drifted_copy_wins(tmp_path: Path) -> None:
+def _row(kind: str, in_sync: bool | None) -> ContractStatus:
+    return ContractStatus(
+        name="agents-catalog", canonical_path="c", kind=kind, in_sync=in_sync
+    )
+
+
+@pytest.mark.parametrize("kind", ["vendored_integrity", "upstream_drift"])
+def test_contract_sync_fold_any_drifted_copy_wins(kind: str) -> None:
     """The checker emits one row per vendored copy, all same-named: one
     drifted copy drifts the contract regardless of row order, and a
-    not-comparable copy blocks an in-sync verdict."""
+    not-comparable copy blocks an in-sync verdict.
 
-    def row(in_sync: bool | None) -> ContractStatus:
-        return ContractStatus(
-            name="agents-catalog", canonical_path="c", in_sync=in_sync
-        )
+    The rule is the same for both kinds; what differs is who asks.
+    """
+    rows = [_row(kind, False), _row(kind, True)]
+    assert contract_sync_by_name(rows, kind=kind) == {"agents-catalog": False}
+    mixed = [_row(kind, True), _row(kind, None)]
+    assert contract_sync_by_name(mixed, kind=kind) == {"agents-catalog": None}
 
-    assert contract_sync_by_name([row(False), row(True)]) == {"agents-catalog": False}
-    assert contract_sync_by_name([row(True), row(None)]) == {"agents-catalog": None}
+
+def test_the_fold_ignores_the_kind_it_was_not_asked_for() -> None:
+    """Non-vacuity for the filter: rows of the other kind must not leak in.
+
+    Without this, a fold that ignored `kind` entirely would pass every
+    assertion above.
+    """
+    rows = [_row("vendored_integrity", True), _row("upstream_drift", False)]
+    assert contract_sync_by_name(rows, kind="vendored_integrity") == {
+        "agents-catalog": True
+    }
+    assert contract_sync_by_name(rows, kind="upstream_drift") == {
+        "agents-catalog": False
+    }
+
+
+def test_the_two_verdicts_reach_two_different_readers(tmp_path: Path) -> None:
+    """One set of rows, two answers, and neither borrows the other's.
+
+    Feed the checker contradictory rows — our copy intact, upstream moved —
+    and the split is visible in one shot: the drift *view* and the item's
+    `drift` status report upstream, while the `contract_in_sync` evidence
+    rule reports the offline integrity verdict. A single fold could not
+    produce both.
+    """
+    d = tmp_path / "rule-roadmaps"
+    d.mkdir()
+    (d / "cr.yaml").write_text(_CONTRACT_RULE_ROADMAP)
+    contracts = [
+        _row("vendored_integrity", True),  # our copy is intact …
+        _row("upstream_drift", False),  # … and canon has moved away from it
+    ]
+    item = build_roadmap((d,), [], contracts).items[0]
+    assert item.evidence[0].rule == "contract_in_sync"
+    assert item.evidence[0].passed  # EVIDENCE followed integrity
+
     snaps = _contract_snapshots(tmp_path)
-    contracts = [row(True), row(False)]
     roadmap = build_roadmap((_write_drift_roadmap(tmp_path),), snaps, contracts)
     assert {i.id: i.computed_status for i in roadmap.items}["RD-TC"] == "drift"
-    drift = build_drift(roadmap, contracts)
-    entry = next(e for e in drift.items if e.id == "RD-TC")
-    assert entry.contract_in_sync is False
+    entry = next(e for e in build_drift(roadmap, contracts).items if e.id == "RD-TC")
+    assert entry.contract_in_sync is False  # the VIEW followed upstream
 
 
 async def test_roadmap_endpoint(tmp_path: Path) -> None:
@@ -762,8 +817,19 @@ def test_build_summary_contract_drift_flag() -> None:
         ]
     )
     contracts = [
-        ContractStatus(name="obs", canonical_path="x", in_sync=False, detail="drift"),
-        ContractStatus(name="snap", canonical_path="y", in_sync=True),
+        ContractStatus(
+            name="obs",
+            canonical_path="x",
+            kind="upstream_drift",
+            in_sync=False,
+            detail="drift",
+        ),
+        ContractStatus(
+            name="snap",
+            canonical_path="y",
+            kind="upstream_drift",
+            in_sync=True,
+        ),
     ]
     summary = build_summary(roadmap, contracts)
     by_name = {p.project: p for p in summary.projects}
@@ -785,7 +851,14 @@ def test_build_summary_contract_unknown_is_not_drift() -> None:
     roadmap = _summary_roadmap(
         [_view_for_summary("A-1", "alpha", "planned", target_contract="obs")]
     )
-    contracts = [ContractStatus(name="obs", canonical_path="x", in_sync=None)]
+    contracts = [
+        ContractStatus(
+            name="obs",
+            canonical_path="x",
+            kind="upstream_drift",
+            in_sync=None,
+        )
+    ]
     summary = build_summary(roadmap, contracts)
     assert not summary.projects[0].contract_drift
 

@@ -2,10 +2,16 @@
 
 import json
 import sqlite3
+import sys
 import time
 import warnings
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+# `scripts/` holds CI tooling that is not part of the shipped package but must
+# still be tested — an untested reporter that decides whether a workflow goes
+# red is an instrument nobody checked.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 # fastmcp's jwt module imports authlib.jose, and authlib.deprecate
 # self-inserts simplefilter("always", AuthlibDeprecationWarning) DURING that

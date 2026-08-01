@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from dispatcher.core.models import ContractStatus
@@ -34,6 +35,11 @@ _PF_VENDORED_REL = Path("packages/plan-fields/src/plan_fields/contract")
 # excluded from the fingerprinted surface (parity with the vault generator):
 # drift-control meta + the vendor-only pin marker.
 _PF_META = {"manifest.json", "drift-control.md", "PINNED.txt"}
+_KIND_INTEGRITY = "vendored_integrity"
+_KIND_DRIFT = "upstream_drift"
+_KIND_LISTING = "listing"
+_PIN_COMMIT_RE = re.compile(r"^commit:\s*[0-9a-f]{40}\s*$", re.M)
+_PIN_SOURCE_RE = re.compile(r"^source:\s*\S.*$", re.M)
 
 
 def _sha256(path: Path) -> str | None:
@@ -47,7 +53,7 @@ def check_contracts(projects: dict[str, Path]) -> list[ContractStatus]:
     """Build contract statuses for the detected projects."""
     results: list[ContractStatus] = []
     results.extend(_catalog_drift(projects))
-    results.extend(_plan_fields_drift(projects))
+    results.extend(_plan_fields_rows(projects))
     results.extend(_schema_listing(projects))
     return results
 
@@ -104,43 +110,144 @@ def _canon_stale(canon_dir: Path, surface: list[dict]) -> str | None:
     return None
 
 
-def _plan_fields_drift(projects: dict[str, Path]) -> list[ContractStatus]:
-    """One `contract_in_sync` verdict for the plan-fields contract (PF-6).
+def _tree_sha256(surface: list[dict]) -> str:
+    """The fingerprint of a surface list — same recipe as the vault generator."""
+    digest = hashlib.sha256()
+    for entry in surface:
+        digest.update(f"{entry['path']}\0{entry['sha256']}\n".encode())
+    return digest.hexdigest()
 
-    Compares the vendored contract surface against the canonical
-    `manifest.json` fingerprint. A stale manifest (canon files changed but the
-    fingerprint was not regenerated) is an immediate error, per
-    `drift-control.md` — the guard must never certify a fingerprint it no longer
-    matches.
+
+def _live_surface(root: Path) -> dict[str, str | None]:
+    """Every non-meta file under `root`, by relative path, hashed."""
+    return {
+        p.relative_to(root).as_posix(): _sha256(p)
+        for p in root.rglob("*")
+        if p.is_file() and p.relative_to(root).as_posix() not in _PF_META
+    }
+
+
+def _pin_problem(vendored_dir: Path) -> str | None:
+    """Why `PINNED.txt` fails to state a reviewable provenance, else None.
+
+    This is provenance a reviewer can follow, not an attestation: it says
+    which vault commit the copy claims to come from. Nothing here proves the
+    claim — proving it needs a signature or a checkout of that commit — but a
+    copy that names no revision cannot even be checked by hand.
     """
-    vault = projects.get(_PF_CANON_PROJECT) or (_REPO_ROOT.parent / _PF_CANON_PROJECT)
-    self_root = projects.get("dispatcher") or _REPO_ROOT
-    manifest_path = vault / _PF_MANIFEST_REL
-    vendored_dir = self_root / _PF_VENDORED_REL
+    try:
+        pin = (vendored_dir / "PINNED.txt").read_text(encoding="utf-8")
+    except OSError:
+        return "PINNED.txt is absent, so the copy states no provenance"
+    if not _PIN_SOURCE_RE.search(pin):
+        return "PINNED.txt names no `source:` upstream"
+    if not _PIN_COMMIT_RE.search(pin):
+        return "PINNED.txt states no `commit:` as a full 40-hex sha"
+    return None
+
+
+def _pf_vendored_integrity(vendored_dir: Path) -> ContractStatus:
+    """A: the vendored surface matches the manifest travelling with it.
+
+    Reads nothing outside dispatcher and never returns "cannot compare": the
+    copy is ours, so an unreadable manifest is a broken copy, not an unknown.
+    `None` here would be the old skip wearing a new hat.
+    """
+    manifest_path = vendored_dir / "manifest.json"
 
     def status(in_sync: bool | None, detail: str | None) -> ContractStatus:
         return ContractStatus(
             name=_PF_CONTRACT_NAME,
             canonical_path=str(manifest_path),
             vendored_path=str(vendored_dir),
+            kind=_KIND_INTEGRITY,
             in_sync=in_sync,
             detail=detail,
         )
 
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return [status(None, "canonical manifest not available")]
+    except OSError:
+        return status(False, "vendored manifest.json is absent")
+    except json.JSONDecodeError as exc:
+        return status(False, f"vendored manifest.json is unreadable: {exc.msg}")
     surface = manifest.get("surface", [])
     if not _valid_surface(surface):
-        return [status(None, "malformed manifest surface")]
+        return status(False, "vendored manifest surface is malformed")
+    recorded = manifest.get("tree_sha256")
+    if not isinstance(recorded, str) or _tree_sha256(surface) != recorded:
+        return status(
+            False, "manifest tree_sha256 does not fingerprint its own surface"
+        )
+    live = _live_surface(vendored_dir)
+    listed = {str(e["path"]): str(e["sha256"]) for e in surface}
+    if set(live) != set(listed):
+        unlisted = sorted(set(live) - set(listed))
+        absent = sorted(set(listed) - set(live))
+        return status(
+            False,
+            f"surface set differs from the manifest "
+            f"(unfingerprinted={unlisted}, missing={absent})",
+        )
+    for rel, digest in sorted(live.items()):
+        if digest is None:
+            # No hash exists to disagree with. Calling this a fingerprint
+            # mismatch sends a reviewer hunting a difference that is not there;
+            # the fix is a permissions problem, not a re-vendor.
+            return status(False, f"vendored file is unreadable: {rel}")
+        if digest != listed[rel]:
+            return status(False, f"vendored file differs from its fingerprint: {rel}")
+    pin = _pin_problem(vendored_dir)
+    if pin is not None:
+        return status(False, pin)
+    return status(True, None)
+
+
+def _pf_upstream_drift(vault: Path | None, vendored_dir: Path) -> ContractStatus:
+    """B: an observation about canon, never a fallback to a sibling on disk.
+
+    Only answers when a canon checkout is handed over explicitly. Reaching for
+    `../prograph-vault` is what made the same dispatcher commit answer
+    differently on two machines and vanish into a skip on CI.
+    """
+    manifest_path = None if vault is None else vault / _PF_MANIFEST_REL
+
+    def status(in_sync: bool | None, detail: str | None) -> ContractStatus:
+        return ContractStatus(
+            name=_PF_CONTRACT_NAME,
+            canonical_path="" if manifest_path is None else str(manifest_path),
+            vendored_path=str(vendored_dir),
+            kind=_KIND_DRIFT,
+            in_sync=in_sync,
+            detail=detail,
+        )
+
+    if vault is None or manifest_path is None:
+        return status(None, "no canon checkout provided; upstream drift unknown")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return status(None, "canonical manifest not available")
+    surface = manifest.get("surface", [])
+    if not _valid_surface(surface):
+        return status(None, "malformed manifest surface")
     stale = _canon_stale(vault / _PF_CANON_DIR_REL, surface)
     if stale is not None:
-        return [status(False, f"canonical manifest stale: {stale}")]
+        return status(False, f"canonical manifest stale: {stale}")
     drifted = _surface_drift(vendored_dir, surface)
     if drifted is not None:
-        return [status(False, f"vendored copy drifts at {drifted}")]
-    return [status(True, None)]
+        return status(False, f"vendored copy drifts at {drifted}")
+    return status(True, None)
+
+
+def _plan_fields_rows(projects: dict[str, Path]) -> list[ContractStatus]:
+    """Both PF-6 verdicts, side by side and never folded together."""
+    self_root = projects.get("dispatcher") or _REPO_ROOT
+    vendored_dir = self_root / _PF_VENDORED_REL
+    return [
+        _pf_vendored_integrity(vendored_dir),
+        _pf_upstream_drift(projects.get(_PF_CANON_PROJECT), vendored_dir),
+    ]
 
 
 def _catalog_drift(projects: dict[str, Path]) -> list[ContractStatus]:
@@ -167,6 +274,7 @@ def _catalog_drift(projects: dict[str, Path]) -> list[ContractStatus]:
         results.append(
             ContractStatus(
                 name="agents-catalog",
+                kind=_KIND_DRIFT,
                 canonical_path="" if canon is None else str(canon),
                 vendored_path=str(vendored),
                 in_sync=in_sync,
@@ -187,6 +295,7 @@ def _schema_listing(projects: dict[str, Path]) -> list[ContractStatus]:
         ContractStatus(
             name=f.name,
             canonical_path=str(f),
+            kind=_KIND_LISTING,
             detail="published schema",
         )
         for f in sorted(schema_dir.glob("*.json"))

@@ -52,7 +52,10 @@ project-includes = [
 ]
 # packages/* are standalone nested projects (own pyproject + search-path + CI job).
 project-excludes = ["packages/**"]
-search-path = [".", "tests"]
+# `scripts` alongside `tests`: CI tooling there is imported by the suite (see
+# the sys.path note in tests/conftest.py) and must be type-checked like the
+# rest — it decides whether a workflow goes red.
+search-path = [".", "tests", "scripts"]
 
 [tool.prograph]
 # File-based reads by dispatcher/core/collectors/*.py — invisible to

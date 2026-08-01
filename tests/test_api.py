@@ -187,6 +187,39 @@ async def test_models_and_contracts(tmp_path: Path) -> None:
     assert catalog["in_sync"] is False  # fixture vendored copy differs
 
 
+async def test_the_contract_row_wire_shape_is_pinned(tmp_path: Path) -> None:
+    """`/api/contracts` is consumed by the SPA and the VS Code extension.
+
+    `kind` is part of the shape, not a detail: two rows can share one contract
+    name while answering different questions, so a client that drops the field
+    cannot tell an integrity verdict from an upstream observation — and would
+    render "n/a" beside "in sync" for the same contract with no explanation.
+    """
+    async with _client(tmp_path) as client:
+        contracts = (await client.get("/api/contracts")).json()
+    assert set(contracts[0]) == {
+        "name",
+        "canonical_path",
+        "vendored_path",
+        "kind",
+        "in_sync",
+        "detail",
+    }
+    assert {c["kind"] for c in contracts} <= {
+        "vendored_integrity",
+        "upstream_drift",
+        "listing",
+    }
+    plan_fields = [c for c in contracts if c["name"] == "plan-fields-v1"]
+    by_kind = {c["kind"]: c for c in plan_fields}
+    # both verdicts are served, side by side and separately labelled
+    assert set(by_kind) == {"vendored_integrity", "upstream_drift"}
+    assert by_kind["vendored_integrity"]["in_sync"] is True
+    # no canon checkout in this fixture: unknown, and it says so
+    assert by_kind["upstream_drift"]["in_sync"] is None
+    assert "no canon" in by_kind["upstream_drift"]["detail"]
+
+
 async def test_index_served(tmp_path: Path) -> None:
     async with _client(tmp_path) as client:
         resp = await client.get("/")

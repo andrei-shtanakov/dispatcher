@@ -62,11 +62,28 @@ class TestRunSummary(BaseModel):
 
 
 class ContractStatus(BaseModel):
-    """Sync status of a cross-repo contract (canon vs vendored copy)."""
+    """One contract check result.
+
+    `kind` says which question the row answers, because two of them exist and
+    a single `in_sync` cannot carry both:
+
+    - `vendored_integrity` — the vendored copy matches the manifest that
+      travels with it. Consumer-owned, offline, always available.
+    - `upstream_drift` — canon differs, or does not, from that copy. An
+      observation: `in_sync=None` means no canon was handed over, i.e.
+      unknown, NOT in sync.
+    - `listing` — not a comparison at all (published schema inventory).
+
+    `kind` carries no default on purpose. Governance folds integrity rows and
+    ignores observations, so a forgotten default would silently drop a row out
+    of the evidence — or silently drag one in. Either way the mistake would be
+    invisible, which is the failure mode this whole split exists to remove.
+    """
 
     name: str
     canonical_path: str
     vendored_path: str = ""
+    kind: str
     in_sync: bool | None = None  # None: cannot compare (file missing / listing)
     detail: str | None = None
 
