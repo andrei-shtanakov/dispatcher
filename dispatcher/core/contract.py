@@ -31,6 +31,7 @@ _SCHEMA_PATH = (
 
 _SUPPORTED_SCHEMA_VERSION = 1
 _KNOWN_RESULT_KINDS = {"action", "cli_error", "contract_error"}
+_MAX_SCHEMA_ERROR_LEN = 200
 
 
 class ContractViolation(Exception):
@@ -131,13 +132,47 @@ Ingested = ActionPayload | CliError | ContractError
 
 
 @lru_cache(maxsize=1)
+def _schema_text() -> str:
+    return _SCHEMA_PATH.read_text()
+
+
 def _schema() -> dict[str, Any]:
-    return json.loads(_SCHEMA_PATH.read_text())
+    """A fresh copy of the vendored schema, parsed from a cached string.
+
+    Not itself cached: a `dict` returned from an `lru_cache`-wrapped
+    function is the *same object* on every call, so an in-place mutation
+    by one caller (a test, say) would corrupt every later caller — the
+    cached `_validator()` included — and `_schema_text.cache_clear()`
+    would not undo it, since existing references stay mutated. Re-parsing
+    a cached string is cheap and always hands back a private object.
+    """
+    return json.loads(_schema_text())
 
 
 @lru_cache(maxsize=1)
 def _validator() -> jsonschema.Draft202012Validator:
     return jsonschema.Draft202012Validator(_schema())
+
+
+def _describe_schema_error(error: jsonschema.ValidationError) -> str:
+    """Name *what* failed without ever echoing the producer's payload.
+
+    `error.message` interpolates the offending JSON instance verbatim —
+    for this schema's shape (one `oneOf` over the three envelope variants
+    at the root) a failing payload's top-level error message is the
+    *entire payload*, dumped as a Python repr. A producer's free-text
+    fields (`diff`, `error`, `detail`, …) can carry secrets or tokens; a
+    validation failure must not become a channel that copies them into a
+    log or a UI. `json_path`/`validator`/`validator_value` are schema-side
+    — where the check lives and what it demands — never the instance
+    being checked, so building the message from those instead is safe by
+    construction, not by choosing values that happen not to leak today.
+    """
+    detail = f"{error.validator}={error.validator_value!r}"
+    description = f"{error.json_path}: failed {detail}".replace("\n", " ")
+    if len(description) > _MAX_SCHEMA_ERROR_LEN:
+        description = description[: _MAX_SCHEMA_ERROR_LEN - 1] + "…"
+    return description
 
 
 def ingest(raw: str, *, returncode: int) -> Ingested:
@@ -192,10 +227,9 @@ def ingest(raw: str, *, returncode: int) -> Ingested:
 
     errors = sorted(_validator().iter_errors(parsed), key=lambda e: list(e.path))
     if errors:
-        first = errors[0]
-        at = ".".join(str(part) for part in first.path) or "<root>"
         raise ContractViolation(
-            f"payload does not match actions/v1 schema at {at}: {first.message}"
+            "payload does not match actions/v1 schema: "
+            f"{_describe_schema_error(errors[0])}"
         )
 
     # The exit code is half the contract and is checked here, not left to

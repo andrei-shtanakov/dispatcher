@@ -16,7 +16,13 @@ from typing import Any
 
 import pytest
 
-from dispatcher.core.contract import CliError, ContractViolation, ingest
+from dispatcher.core.contract import (
+    CliError,
+    ContractError,
+    ContractViolation,
+    _schema,
+    ingest,
+)
 
 VENDORED_ROOT = (
     Path(__file__).parent.parent / "contracts" / "github-checker-actions" / "v1"
@@ -138,14 +144,32 @@ def test_the_prechecks_are_type_strict(raw: str, why: str) -> None:
 
 @pytest.mark.parametrize(
     "fixture, returncode",
-    [("pull-success", 1), ("pull-not-a-repo", 0), ("cli-error", 0)],
-    ids=["ok-true-exit-1", "ok-false-exit-0", "cli-error-exit-0"],
+    [
+        ("pull-success", 1),
+        ("pull-not-a-repo", 0),
+        ("cli-error", 0),
+        ("contract-error", 0),
+    ],
+    ids=[
+        "ok-true-exit-1",
+        "ok-false-exit-0",
+        "cli-error-exit-0",
+        "contract-error-exit-0",
+    ],
 )
 def test_a_mismatched_exit_code_is_refused(fixture: str, returncode: int) -> None:
     """The exit code is contract: a producer that answers correctly and
     exits wrongly must not be accepted."""
     with pytest.raises(ContractViolation, match="exit"):
         ingest(json.dumps(_fixture(fixture)), returncode=returncode)
+
+
+def test_a_contract_error_ingests_end_to_end() -> None:
+    """`contract-error.json` was otherwise vendored but never ingested —
+    the one variant of the three with no end-to-end coverage."""
+    result = ingest(json.dumps(_fixture("contract-error")), returncode=1)
+    assert isinstance(result, ContractError)
+    assert result.action == "merge", "kept for diagnosis, never for routing"
 
 
 def test_a_payload_with_a_foreign_field_is_refused() -> None:
@@ -198,3 +222,48 @@ def test_an_unknown_result_kind_names_itself_an_unrecognised_variant() -> None:
     payload = _fixture("pull-success") | {"result_kind": "something_new"}
     with pytest.raises(ContractViolation, match="cannot interpret"):
         ingest(json.dumps(payload), returncode=1)
+
+
+def test_the_bool_version_precheck_diagnosis_is_specific_not_generic() -> None:
+    """`test_the_prechecks_are_type_strict[bool-version]` only proves that
+    *something* refuses `schema_version: true`: the vendored schema's own
+    `const: 1` on every leaf already rejects it independently (jsonschema's
+    instance equality is JSON-Schema-typed, so it never has Python's
+    `True == 1` problem), so a value-loose `schema_version != 1` mutation
+    of the precheck — the exact trap the brief warns about — would still
+    raise `ContractViolation` via the schema-validation fallback and leave
+    that test green. This asserts the precheck's own distinctive wording
+    on a payload that is otherwise fully schema-valid, which only the
+    Python-level type check itself can produce; the generic schema
+    fallback never says it. See task-2-report.md for the mutation proof
+    (this test reddens under the `!= 1` mutation; the array/scalar/
+    bool-version/null-kind test above does not)."""
+    payload = _fixture("pull-success") | {"schema_version": True}
+    with pytest.raises(ContractViolation, match="this consumer is pinned to v1"):
+        ingest(json.dumps(payload), returncode=1)
+
+
+def test_a_schema_violation_message_never_echoes_producer_content() -> None:
+    """A validation failure must not become a channel that copies a
+    producer's free-text field content (which can carry secrets or
+    tokens) into a log or a UI. The message must name what failed, stay
+    single-line, and stay bounded — never reproduce the offending value."""
+    secret = "ghp_" + "A" * 200
+    payload = _fixture("pull-success") | {"detail": secret, "merged": True}
+    with pytest.raises(ContractViolation) as exc_info:
+        ingest(json.dumps(payload), returncode=1)
+    message = str(exc_info.value)
+    assert secret not in message
+    assert "\n" not in message
+    assert len(message) < 300
+
+
+def test_mutating_the_returned_schema_does_not_corrupt_future_validation() -> None:
+    """`_schema()` must hand back a private copy each call: an in-place
+    mutation by one caller must not corrupt the cached validator or any
+    later call to `_schema()` itself."""
+    schema = _schema()
+    schema.clear()
+    assert _schema() != {}
+    result = ingest(json.dumps(_fixture("pull-success")), returncode=0)
+    assert result.action == "pull"
