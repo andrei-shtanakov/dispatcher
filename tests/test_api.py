@@ -1542,3 +1542,96 @@ async def test_request_task_with_a_nul_title_is_refused_and_audited(
     assert resp.status_code == 422
     assert "action=request-task" in caplog.text
     assert "created=False" in caplog.text
+
+
+# --- ActionOutcome wire shape (golden) --------------------------------
+#
+# `ActionOutcome` is the `response_model` of eight endpoints, so its field
+# set *is* the HTTP contract the SPA and the VS Code extension read. Task
+# 3 rewires what fills it — subprocess → `ingest` → typed `Ingested` →
+# explicit legacy projection — and the point of that shape is that none
+# of it reaches the wire. These pin the wire so the refactor has to prove
+# it, rather than being believed.
+
+_ACTION_OUTCOME_WIRE_KEYS = sorted(
+    [
+        "action",
+        "dir",
+        "ok",
+        "detail",
+        "error",
+        "pr_url",
+        "local_behind",
+        "local_dirty",
+        "branch",
+        "base_branch",
+        "commit_sha",
+        "changed_paths",
+        "merged",
+        "local_sync",
+        "gate_failed",
+        "pr_detail",
+        "matches",
+        "malformed",
+        "created",
+        "issue",
+        "phase",
+    ]
+)
+
+
+async def test_the_action_outcome_wire_shape_is_pinned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exact JSON an action endpoint emits, including the nulls.
+
+    Unset optional fields serialise as `null` because no route sets
+    `response_model_exclude_unset=True`. That is the current contract, and
+    turning it on would be a wire change for the SPA and the extension —
+    so it is pinned here rather than left as an implementation detail that
+    a later "cleanup" could flip silently."""
+    from dispatcher.core.actions import ActionOutcome, ActionRunner
+
+    def fake_pr_detail(self: ActionRunner, repo_dir: str, pr: int) -> ActionOutcome:
+        return ActionOutcome(action="pr-detail", dir=repo_dir, ok=True)
+
+    monkeypatch.setattr(ActionRunner, "pr_detail", fake_pr_detail)
+    async with _client(tmp_path) as client:
+        resp = await client.get("/api/pr-detail", params={"dir": "alpha", "pr": 7})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert sorted(body) == _ACTION_OUTCOME_WIRE_KEYS
+    assert body["action"] == "pr-detail"
+    assert body["ok"] is True
+    # every field the outcome did not set comes back as an explicit null
+    for key in _ACTION_OUTCOME_WIRE_KEYS:
+        if key not in {"action", "dir", "ok"}:
+            assert body[key] is None, key
+
+
+def test_every_action_endpoint_shares_one_response_model(tmp_path: Path) -> None:
+    """Eight routes declare `response_model=ActionOutcome`. Asserting it
+    off the route table rather than by calling each one is what catches a
+    single route drifting to a different model — the failure a per-route
+    golden would miss, because it would simply pin the drift."""
+    from fastapi.routing import APIRoute
+
+    from dispatcher.core.actions import ActionOutcome
+
+    make_atp(tmp_path)
+    config = DispatcherConfig(roots=(tmp_path,), maestro_db=make_maestro_home(tmp_path))
+    paths = {
+        route.path
+        for route in create_app(config).routes
+        if isinstance(route, APIRoute) and route.response_model is ActionOutcome
+    }
+    assert paths == {
+        "/api/actions/pull",
+        "/api/actions/create-pr",
+        "/api/pr-detail",
+        "/api/actions/merge-and-sync",
+        "/api/actions/post-merge-sync",
+        "/api/issue-lookup",
+        "/api/actions/request-task",
+        "/api/actions/update-spec-runner-config",
+    }
