@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -295,7 +296,8 @@ def test_structurally_different_schema_violations_diagnose_differently() -> None
     assert "$.local.dirty" in messages["nested-wrong-type"], messages[
         "nested-wrong-type"
     ]
-    assert "merged" in messages["foreign-field"], messages["foreign-field"]
+    assert "unexpected" in messages["foreign-field"], messages["foreign-field"]
+    assert "merged" not in messages["foreign-field"], messages["foreign-field"]
 
 
 def test_a_missing_field_is_named_not_merely_counted() -> None:
@@ -322,15 +324,34 @@ def test_a_missing_field_is_named_not_merely_counted() -> None:
     assert "detail" in messages[1], messages[1]
     assert messages[0] != messages[1]
 
+    # Schema-side names are bounded by the schema, but a verb declaring
+    # fifteen required fields would still put fifteen of them in one line.
+    dropped = {"dir", "ok", "error", "detail"}
+    with pytest.raises(ContractViolation) as exc_info:
+        ingest(
+            json.dumps({k: v for k, v in base.items() if k not in dropped}),
+            returncode=0,
+        )
+    message = str(exc_info.value)
+    assert "and more" in message, message
+    # `required` emits one error per missing property and each renders the
+    # whole missing set, so without de-duplication the arity budget goes
+    # on printing one sentence three times.
+    assert message.count("missing required") == 1, message
 
-def test_a_foreign_field_is_named_but_never_echoed_unbounded() -> None:
-    """The mirror of the above for `additionalProperties`. Unlike
-    `required`, the offending key comes from the *instance*, so it is
-    described by the same bounded rule as every other producer value."""
+
+def test_a_foreign_field_is_counted_never_named() -> None:
+    """The mirror of the above, and its opposite. A *missing* name is
+    schema-side — it is a member of the schema's own `required` array — so
+    it can be printed. An *unexpected* key is producer text with no schema
+    provenance at all: the key itself is the thing that must not travel,
+    however innocuous it looks. A key is a value here."""
     base = _fixture("pull-success")
     with pytest.raises(ContractViolation) as exc_info:
         ingest(json.dumps(base | {"merged": True}), returncode=0)
-    assert "merged" in str(exc_info.value), exc_info.value
+    message = str(exc_info.value)
+    assert "merged" not in message, message
+    assert "1 unexpected" in message, message
 
     smuggled = "ghp_" + "s" * 400
     with pytest.raises(ContractViolation) as exc_info:
@@ -340,15 +361,27 @@ def test_a_foreign_field_is_named_but_never_echoed_unbounded() -> None:
     assert len(message) < 300
 
     # The producer decides how many keys it sends; it must not thereby
-    # decide how long the message is. Unlike `required`, whose names come
-    # from the schema and are therefore bounded by it, this list is
-    # bounded only because the code bounds it.
+    # decide how long the message is.
     many = base | {f"extra_{n}": True for n in range(500)}
     with pytest.raises(ContractViolation) as exc_info:
         ingest(json.dumps(many), returncode=0)
     message = str(exc_info.value)
-    assert "and more" in message, message
+    assert "500 unexpected" in message, message
     assert len(message) < 300
+
+
+def test_an_array_index_is_a_position_the_producer_chose() -> None:
+    """A `json_path` is safe only where every segment is schema-declared.
+    Property names in these paths are — they come from the schema's
+    `properties` — but an array index is chosen by the producer, so it is
+    instance-derived and does not travel either."""
+    base = _fixture("propose-pr-created")
+    payload = base | {"changed_paths": ["ok"] * 40000 + [7]}
+    with pytest.raises(ContractViolation) as exc_info:
+        ingest(json.dumps(payload), returncode=0)
+    message = str(exc_info.value)
+    assert "$.changed_paths[]" in message, message
+    assert "40000" not in message, message
 
 
 def test_the_variant_map_matches_the_schema_it_indexes() -> None:
@@ -389,18 +422,68 @@ def test_a_failing_diagnosis_still_refuses_as_a_contract_violation(
     assert "x" * 100 not in message
 
 
-def test_the_identifier_allowlist_is_bounded_in_both_length_and_case() -> None:
-    """`_describe_untrusted` echoes identifier-shaped values verbatim, and
-    that allowlist is the only thing standing between a producer value and
-    the log. Both halves need pinning: the character class *and* the
-    length bound. Asserting through a secret that happens to contain an
-    uppercase letter tests only the first, and leaves the second free to
-    be relaxed to `{1,}` with the suite green."""
-    assert _describe_untrusted("a" * 32) == repr("a" * 32)
-    assert _describe_untrusted("a" * 33) == "<str, 33 chars>"
-    assert _describe_untrusted("A" * 8) == "<str, 8 chars>"
-    assert _describe_untrusted("has space") == "<str, 9 chars>"
-    assert _describe_untrusted("trailing\n") == "<str, 9 chars>"
+@pytest.mark.parametrize(
+    "value",
+    [
+        "deadbeefcafebabe0123456789abcdef",
+        "sk-proj_abcdefghijklmnop_qrstuv",
+        "merge_and_sync",
+        "a",
+        "",
+        2,
+        1234567890123456,
+        3.5,
+        True,
+        None,
+        ["secret"],
+        {"token": "secret"},
+    ],
+    ids=lambda v: type(v).__name__ + "-" + str(v)[:12],
+)
+def test_no_instance_value_is_ever_echoed_verbatim(value: object) -> None:
+    """The strong form of the rule, stated so that it is checkable by
+    reading the function rather than by enumerating attacks: no branch of
+    `_describe_untrusted` returns producer bytes. What comes out is the
+    type and a size — never content, at any length, in any character
+    class. An allowlist can only ever be as safe as the values that
+    happen to be tried against it."""
+    # The vocabulary is written here, not derived from the module: any
+    # producer text reaching the message introduces a word outside it.
+    shape_words = {
+        "null",
+        "bool",
+        "int",
+        "float",
+        "str",
+        "list",
+        "object",
+        "digit",
+        "digits",
+        "char",
+        "chars",
+        "item",
+        "items",
+        "key",
+        "keys",
+    }
+    described = _describe_untrusted(value)
+    assert described.startswith("<") and described.endswith(">"), described
+    assert set(re.findall(r"[A-Za-z]+", described)) <= shape_words, described
+    if isinstance(value, str) and len(value) >= 4:
+        assert value not in described
+    if isinstance(value, int) and not isinstance(value, bool):
+        assert str(value) not in described or len(str(value)) < 3
+    assert len(described) < 40
+
+
+def test_the_shape_description_still_separates_the_cases() -> None:
+    """Refusing to echo must not collapse every value into one word: type
+    and size are the diagnosis now, so they have to actually differ."""
+    described = {
+        _describe_untrusted(v)
+        for v in ("abc", "abcd", 2, 22, 3.5, True, None, [1], {"a": 1})
+    }
+    assert len(described) == 9, described
 
 
 def test_both_shapes_of_an_ambiguous_oneOf_are_reported() -> None:
@@ -453,11 +536,15 @@ def test_an_unknown_verb_is_diagnosed_as_an_unknown_verb() -> None:
     `pull`'s fields reads as "additionalProperties" against `open-pr`.
     The honest diagnosis is the discriminator itself."""
     payload = _fixture("pull-success") | {"action": "ninth_verb"}
-    with pytest.raises(ContractViolation, match="ninth_verb") as exc_info:
+    with pytest.raises(ContractViolation) as exc_info:
         ingest(json.dumps(payload), returncode=0)
     message = str(exc_info.value)
-    assert "additionalProperties" not in message, message
+    assert "unexpected" not in message, message
     assert "$.action" in message, message
+    # The discriminator is the diagnosis, but the verb name is producer
+    # text like any other — the *shape* is what travels.
+    assert "<str, 10 chars>" in message, message
+    assert "ninth_verb" not in message, message
 
 
 def test_a_combinator_nested_below_the_verb_is_still_descended_into() -> None:
@@ -517,17 +604,30 @@ def test_a_precheck_message_never_echoes_producer_content(field: str) -> None:
     assert len(message) < 300
 
 
-def test_a_precheck_still_names_a_plausible_drift_value() -> None:
-    """Bounding the prechecks must not cost the diagnosis that matters:
-    the realistic drift is a producer bumping the version or adding a
-    fourth variant, and an operator needs to read *which* off the log."""
+def test_a_precheck_names_the_shape_of_a_drift_value_never_the_value() -> None:
+    """An earlier design echoed identifier-shaped values so an operator
+    could read the drifted version or variant name off the log, and
+    recorded the residual capacity — 32 characters of `[a-z0-9_-]` is an
+    API-key shape — as an accepted risk.
+
+    That trade is withdrawn deliberately: documenting a leak does not make
+    it acceptable on a trust boundary, and an allowlist wide enough to be
+    useful is wide enough to carry a credential. The diagnosis is now the
+    *shape* only. Do not restore the echo to recover the diagnosis; the
+    cost was weighed and paid."""
     version_drift = _fixture("pull-success") | {"schema_version": 2}
-    with pytest.raises(ContractViolation, match=r"schema_version=2\b"):
+    with pytest.raises(ContractViolation) as exc_info:
         ingest(json.dumps(version_drift), returncode=0)
+    message = str(exc_info.value)
+    assert "<int, 1 digit" in message, message
+    assert "=2" not in message, message
 
     kind_drift = _fixture("pull-success") | {"result_kind": "merge_and_sync"}
-    with pytest.raises(ContractViolation, match="merge_and_sync"):
+    with pytest.raises(ContractViolation) as exc_info:
         ingest(json.dumps(kind_drift), returncode=0)
+    message = str(exc_info.value)
+    assert "<str, 14 chars>" in message, message
+    assert "merge_and_sync" not in message, message
 
 
 def test_unparseable_stdout_is_not_retained_on_the_raised_exception() -> None:

@@ -14,7 +14,6 @@ referenced, at import time or otherwise.
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
@@ -42,11 +41,6 @@ _MAX_SCHEMA_ERROR_LEN = 200
 _MAX_RULE_VALUE_LEN = 40
 _SCHEMA_ERROR_ARITY = 3
 _FIELD_NAMES_ARITY = 3
-_MAX_INT_DIGITS = 20
-# A discriminator this consumer does not know is still worth naming in the
-# log — but only when the value is shaped like an identifier: bounded, one
-# line, no structure. Anything else is described, never echoed.
-_IDENTIFIER = re.compile(r"\A[a-z0-9_-]{1,32}\Z")
 
 
 class ContractViolation(Exception):
@@ -273,17 +267,25 @@ def _describe_schema_error(parsed: dict[str, Any], result_kind: str) -> str:
         for leaf in _leaf_errors(error)
     ]
     # Deepest first: a rule that failed on `local.dirty` says more than one
-    # that failed on the envelope around it. There is deliberately no
-    # de-duplication — with one branch selected the vendored schema cannot
-    # produce the same rule twice (`action_result` constrains only
-    # `result_kind`, so it shares no keyword with any verb), and a dedup
-    # step no input can reach is a claim no test can defend.
-    described = [
-        _describe_leaf(leaf)
-        for leaf in sorted(leaves, key=lambda e: (-len(e.absolute_path), e.json_path))[
-            :_SCHEMA_ERROR_ARITY
-        ]
-    ]
+    # that failed on the envelope around it.
+    #
+    # De-duplicated on the rendered text, because `required` emits one
+    # error per missing property while this renders the whole missing set
+    # from each of them — four dropped fields otherwise spend the entire
+    # arity budget printing one sentence three times. (An earlier revision
+    # removed this step as unreachable, on the strength of a survey that
+    # only ever dropped a single field. Unreachable-by-the-cases-I-tried
+    # is not unreachable.)
+    seen: set[str] = set()
+    described: list[str] = []
+    for leaf in sorted(leaves, key=lambda e: (-len(e.absolute_path), e.json_path)):
+        rendered = _describe_leaf(leaf)
+        if rendered in seen:
+            continue
+        seen.add(rendered)
+        described.append(rendered)
+        if len(described) == _SCHEMA_ERROR_ARITY:
+            break
 
     if not described:
         # The root `oneOf` refused while the named variant alone accepts:
@@ -341,12 +343,11 @@ def _describe_leaf(leaf: jsonschema.ValidationError) -> str:
       the instance is consulted only to ask which of those schema-declared
       names are absent, so the answer is always a subset of the schema and
       never producer text.
-    * `additionalProperties` — the offending keys come from the instance,
-      so they go through :func:`_describe_untrusted` like any other
-      producer value, and the list is capped: the producer decides how
-      many keys it sends, and must not thereby decide the message length.
+    * `additionalProperties` — the offending keys have no schema
+      provenance at all, so only how many there are travels. A key is a
+      value: `{"ghp_…": true}` puts the secret in the key.
     """
-    path = leaf.json_path
+    path = _safe_path(leaf)
     if leaf.validator == "required":
         # JSON Schema fixes these shapes: `required` is an array of names,
         # and both keywords only ever apply to an object instance.
@@ -358,8 +359,10 @@ def _describe_leaf(leaf: jsonschema.ValidationError) -> str:
         subschema = cast("dict[str, Any]", leaf.schema)
         instance = cast("dict[str, Any]", leaf.instance)
         declared = set(subschema.get("properties", ()))
-        foreign = (key for key in instance if key not in declared)
-        return f"{path}: unexpected {_join_capped(map(_describe_untrusted, foreign))}"
+        foreign = sum(1 for key in instance if key not in declared)
+        return (
+            f"{path}: {_count(foreign, 'unexpected property', 'unexpected properties')}"
+        )
     rendered = repr(leaf.validator_value)
     rule = leaf.validator
     if len(rendered) <= _MAX_RULE_VALUE_LEN:
@@ -378,40 +381,93 @@ def _join_capped(names: Iterator[str]) -> str:
 
 
 def _describe_untrusted(value: object) -> str:
-    """Name a producer-supplied value without becoming a copy channel.
+    """The shape of a producer-supplied value. Never its content.
 
-    The two discriminator prechecks run *before* schema validation, so
-    what they report on is arbitrary: whatever JSON the producer put at
-    that key, of any size and shape. `!r` of that is the same disclosure
-    the schema branch is careful to avoid, and unbounded on top — a
-    nested envelope, or a 10 MB string, lands verbatim in the message and
-    from there in a log.
+    The discriminator prechecks run *before* schema validation, so what
+    they report on is arbitrary: whatever JSON the producer put at that
+    key, of any size and shape. An earlier design echoed values that
+    looked like identifiers, so that an operator could read a drifted
+    version or variant name off the log, and recorded the residual
+    capacity as an accepted risk.
 
-    The diagnosis worth keeping is narrow: which version, or which
-    unrecognised variant name. Both are small scalars, so echo exactly
-    those shapes and describe everything else by type and size.
+    That trade is withdrawn. Thirty-two characters of ``[a-z0-9_-]``
+    is exactly the shape of a lowercase-hex API key, and documenting a
+    leak does not make it acceptable on a trust boundary. An allowlist is
+    only ever as safe as the values someone thought to try against it.
 
-    Accepted risk, named rather than discovered later: 32 characters of
-    ``[a-z0-9_-]`` is enough to carry a lowercase-hex API key verbatim.
-    Reaching it needs a producer to put the secret at ``schema_version``,
-    ``result_kind`` or ``action`` specifically, and narrowing the class
-    further would cost the one diagnosis an operator actually needs — so
-    the line is drawn here deliberately, not by accident of the pattern.
+    So: no branch here returns producer bytes. That is checkable by
+    reading the function rather than by enumerating attacks, which is the
+    only form of "safe by construction" worth the name. The diagnosis
+    that survives — type, and a size — is enough to tell a version bump
+    from a fourth variant from a nested envelope.
     """
-    if value is None or type(value) is bool:
-        return repr(value)
+    if value is None:
+        return "<null>"
+    if type(value) is bool:
+        return "<bool>"
     if type(value) is int:
-        rendered = repr(value)
-        if len(rendered) <= _MAX_INT_DIGITS:
-            return rendered
-        return f"<int, {len(rendered)} digits>"
+        return f"<int, {_count(len(repr(value)), 'digit', 'digits')}>"
+    if type(value) is float:
+        return "<float>"
     if type(value) is str:
-        if _IDENTIFIER.match(value):
-            return repr(value)
-        return f"<str, {len(value)} chars>"
-    if isinstance(value, (list, dict)):
-        return f"<{type(value).__name__}, {len(value)} items>"
+        return f"<str, {_count(len(value), 'char', 'chars')}>"
+    if isinstance(value, list):
+        return f"<list, {_count(len(value), 'item', 'items')}>"
+    if isinstance(value, dict):
+        return f"<object, {_count(len(value), 'key', 'keys')}>"
     return f"<{type(value).__name__}>"
+
+
+def _count(n: int, singular: str, plural: str) -> str:
+    return f"{n} {singular if n == 1 else plural}"
+
+
+@lru_cache(maxsize=1)
+def _declared_names() -> frozenset[str]:
+    """Every property name the vendored schema declares, anywhere."""
+    names: set[str] = set()
+    stack: list[Any] = [_schema()]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            declared = node.get("properties")
+            if isinstance(declared, dict):
+                names.update(declared)
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return frozenset(names)
+
+
+def _safe_path(leaf: jsonschema.ValidationError) -> str:
+    """`json_path`, with every instance-derived segment removed.
+
+    A path reads as structure rather than content, which makes it easy to
+    forget that only *some* of it is schema-side. Property names are —
+    they come from the schema's `properties`, and a key that is not
+    declared there cannot be reached by a rule that quotes it. Array
+    indices are not: the producer chose the position, and a path like
+    `$.matches[41]` reports a fact about the payload's contents. Both are
+    resolved here so no caller has to remember the distinction.
+
+    The `_declared_names()` check is a guard no vendored-schema shape can
+    currently exercise: every object here sets `additionalProperties:
+    false`, so a key that is not declared cannot appear in a path at all.
+    It stays, and stays unpinned, deliberately — a schema using
+    `patternProperties` or a non-`false` `additionalProperties` would put
+    producer-chosen keys into paths, and the cost of guessing wrong about
+    reachability is a leak. This file has already been wrong once about
+    what no input can reach.
+    """
+    parts = ["$"]
+    for segment in leaf.absolute_path:
+        if isinstance(segment, int):
+            parts.append("[]")
+        elif segment in _declared_names():
+            parts.append(f".{segment}")
+        else:
+            parts.append(".<key>")
+    return "".join(parts)
 
 
 def ingest(raw: str, *, returncode: int) -> Ingested:
