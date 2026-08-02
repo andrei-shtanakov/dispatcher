@@ -91,7 +91,7 @@
       `<repo>/.steward/gate_verdicts.jsonl` + git-факты и только
       классифицирует (ARCH-C1/C3): pass | blocked | no-data | unreadable |
       stale | unresolvable. Панель — WS-C, отдельная inbox-issue после.
-- [ ] WS-005 WS-C: governance-панель — read-only UI поверх collect_governance @owner:andrei @id:ws005-governance-panel
+- [x] WS-005 WS-C: governance-панель — read-only UI поверх collect_governance — PR #109 @owner:andrei @id:ws005-governance-panel
       Принятие inbox-issue #108 (ADR-ECO-006, from: steward). Панель потребляет
       только read model `dispatcher/core/governance.py` (ARCH-C4 — файл
       `.steward/gate_verdicts.jsonl` напрямую не читает), маршруты — только GET
