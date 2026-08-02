@@ -9,6 +9,8 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+import pytest
+
 from dispatcher.core.governance import (
     VERDICTS_REL_PATH,
     BundleFreshness,
@@ -197,3 +199,73 @@ def test_real_git_facts_outside_a_repo_are_unknown(tmp_path: Path) -> None:
     plain = tmp_path / "plain"
     plain.mkdir()
     assert git_bundle_freshness(plain, "spec", "ab" * 20).fresh is None
+
+
+_OS_ERRORS = [
+    PermissionError("denied"),
+    IsADirectoryError("is a dir"),
+    InterruptedError("interrupted"),
+    TimeoutError("timed out"),
+    BlockingIOError("would block"),
+    OSError("generic I/O failure"),
+]
+
+
+@pytest.mark.parametrize("err", _OS_ERRORS, ids=lambda e: type(e).__name__)
+def test_every_io_error_class_is_unreadable_never_pass_never_silent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, err: OSError
+) -> None:
+    """NFR-02 stated as a sweep, not examples: no OSError class (beyond the
+    one no-data case below) may reach pass or vanish without a reason."""
+    repo = repo_with(tmp_path, "clean.jsonl")
+
+    def boom(_self: Path) -> bytes:
+        raise err
+
+    monkeypatch.setattr(Path, "read_bytes", boom)
+    result = collect_governance(repo, git_facts=fresh)
+    assert result.state == "unreadable"
+    assert result.reason is not None and type(err).__name__ in result.reason
+
+
+def test_file_vanishing_between_listing_and_read_is_no_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FileNotFoundError is the one OSError that means no-data, and the
+    collector must reach that via the read attempt itself — no exists()
+    pre-check, no TOCTOU window."""
+    repo = repo_with(tmp_path, "clean.jsonl")
+
+    def gone(_self: Path) -> bytes:
+        raise FileNotFoundError("vanished")
+
+    monkeypatch.setattr(Path, "read_bytes", gone)
+    assert collect_governance(repo, git_facts=fresh).state == "no-data"
+
+
+def test_non_utf8_bytes_are_unreadable(tmp_path: Path) -> None:
+    repo = tmp_path / "observed"
+    (repo / VERDICTS_REL_PATH).parent.mkdir(parents=True)
+    (repo / VERDICTS_REL_PATH).write_bytes(b"\xff\xfe{ not utf8")
+    result = collect_governance(repo, git_facts=fresh)
+    assert result.state == "unreadable"
+
+
+def test_truncated_last_line_is_unreadable(tmp_path: Path) -> None:
+    repo = repo_with(tmp_path, "clean.jsonl")
+    full = (repo / VERDICTS_REL_PATH).read_text()
+    (repo / VERDICTS_REL_PATH).write_text(full[:-20])  # cut mid-record
+    result = collect_governance(repo, git_facts=fresh)
+    assert result.state == "unreadable"
+
+
+def test_dispatcher_never_imports_steward() -> None:
+    """ARCH-C1, stated structurally (the import-detector obligation)."""
+    package_root = Path(__file__).parent.parent / "dispatcher"
+    offenders = [
+        str(p)
+        for p in package_root.rglob("*.py")
+        for line in p.read_text().splitlines()
+        if line.strip().startswith(("import steward", "from steward"))
+    ]
+    assert offenders == []
