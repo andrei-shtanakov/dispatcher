@@ -1,7 +1,7 @@
 {
   "report": {
     "current_host": "host-a",
-    "top_line": "pull-first",
+    "top_line": "sync-first",
     "top_reason": "alpha: 2 commits behind",
     "hosts": [
       {
@@ -15,7 +15,7 @@
         "verdicts": [
           {
             "repo": "alpha",
-            "verdict": "pull-first",
+            "verdict": "sync-first",
             "reason": "2 commits behind",
             "branch": "main",
             "ahead": 2,
@@ -35,7 +35,7 @@
           },
           {
             "repo": "gamma",
-            "verdict": "pull-first",
+            "verdict": "sync-first",
             "reason": "unknown ahead count",
             "branch": null,
             "ahead": null,

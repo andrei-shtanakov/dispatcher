@@ -372,12 +372,14 @@ const recheckButtons = env =>
 // `/api/sync` payload, force a re-render, and read the actual buttons out of
 // the actual DOM the whole page script produced.
 
-/** One `/api/sync` envelope with a single live-or-kb host and given verdicts. */
-function syncFixture(verdicts, source = 'live') {
+/** One `/api/sync` envelope with a single live-or-kb host and given verdicts.
+ * `topLine` defaults to 'sync-first' (unchanged for existing callers) but is
+ * overridable so the top-line badge's CSS class can be pinned per value. */
+function syncFixture(verdicts, source = 'live', topLine = 'sync-first') {
   return ok({
     fetch_in_flight: false,
     report: {
-      top_line: 'pull-first', top_reason: null, proposals: [],
+      top_line: topLine, top_reason: null, proposals: [],
       hosts: [{
         host: 'h1', source, age_seconds: 5, stale: false,
         gh_error: null, error: null, verdicts,
@@ -393,10 +395,20 @@ function syncFixture(verdicts, source = 'live') {
  * dispatch here, so it is called directly, exactly as the browser's own
  * timer would.
  */
-async function refreshSync(env, verdicts, source = 'live') {
-  env.route(u => u.startsWith('/api/sync'), () => syncFixture(verdicts, source));
+async function refreshSync(env, verdicts, source = 'live', topLine = 'sync-first') {
+  env.route(u => u.startsWith('/api/sync'), () => syncFixture(verdicts, source, topLine));
   env.read('refresh()');
   await drain();
+}
+
+/** The Verdict cell element for one repo row (the SECOND `<td>` — repo,
+ * verdict, message, ...) — same rendered DOM a person reads the "warn"/"ok"/
+ * "dim" styling off of via `verdictCls`. */
+function syncVerdictCell(env, repo) {
+  const row = env.el('sync-hosts').querySelectorAll('tr')
+    .find(r => r.textContent.includes(repo));
+  if (!row) throw new Error(`no rendered sync row for repo ${repo}`);
+  return row.querySelectorAll('td')[1];
 }
 
 /** The Actions cell element for one repo row (the LAST `<td>`, same one a
@@ -426,7 +438,7 @@ function syncActionsCellText(env, repo) {
 }
 
 const syncVerdict = (overrides) => ({
-  repo: 'alpha', verdict: 'pull-first', reason: 'x', branch: 'main',
+  repo: 'alpha', verdict: 'sync-first', reason: 'x', branch: 'main',
   ahead: null, behind: null, dirty: false, is_kb: false, ...overrides,
 });
 
@@ -1929,7 +1941,7 @@ const CASES = [
   },
   // --- sync screen: the Actions cell offers only the button that helps ------
   //
-  // dispatcher/core/sync.py's pull-first verdict fires on ANY of behind /
+  // dispatcher/core/sync.py's sync-first verdict fires on ANY of behind /
   // ahead / dirty, but a pull only helps a `behind` row: pull runs
   // `git pull --ff-only` and would truthfully say "already up to date" on a
   // dirty-only or ahead-only row, leaving the operator with a yellow row and
@@ -1962,7 +1974,7 @@ const CASES = [
     name: '55. [sync] ahead-only (behind falsy): open PR only, no pull '
       + 'button — the fourth combination a pull cannot help — and the cell '
       + 'does not start with a stray separator space left over from the '
-      + 'old always-pull-first template',
+      + 'old always-render-pull-button-first template',
     async run(env) {
       await refreshSync(env, [syncVerdict({ahead: 3, behind: 0})]);
       const cell = syncActionsCell(env, 'alpha');
@@ -2030,7 +2042,7 @@ const CASES = [
     expect: {'buttons offered': '', 'actions cell': '—'},
   },
   {
-    name: '60. [sync] a non-pull-first verdict (ok) offers neither button '
+    name: '60. [sync] a non-sync-first verdict (ok) offers neither button '
       + 'even on a live host',
     async run(env) {
       await refreshSync(env, [
@@ -2042,6 +2054,57 @@ const CASES = [
       };
     },
     expect: {'buttons offered': '', 'actions cell': '—'},
+  },
+  // --- sync screen: verdict-cell and top-line badge CSS class -----------
+  //
+  // Neither `verdictCls` nor the top-line badge's class expression is called
+  // from anywhere but `renderSync` — there is no exported function to pin
+  // directly (unlike `syncItemContext` in vscode-ext or `_can_pull` in the
+  // TUI), so these two cases read the class back off the actual rendered
+  // `<td>`/badge, the same way cases 54-60 read the Actions cell. Before
+  // these existed, reverting `verdictCls` AND the top-line badge class back
+  // to the old `"pull-first"` string left the whole harness green.
+  {
+    name: '61. [sync] verdict cell renders the CSS class for its own '
+      + 'verdict, not a stale one — ok/warn/dim pinned per row',
+    async run(env) {
+      await refreshSync(env, [
+        syncVerdict({repo: 'alpha', verdict: 'ok', reason: null}),
+        syncVerdict({repo: 'beta', verdict: 'sync-first', behind: 2}),
+        syncVerdict({repo: 'gamma', verdict: 'unknown', reason: 'stale'}),
+      ]);
+      return {
+        'alpha (ok) class': syncVerdictCell(env, 'alpha').className,
+        'beta (sync-first) class': syncVerdictCell(env, 'beta').className,
+        'gamma (unknown) class': syncVerdictCell(env, 'gamma').className,
+      };
+    },
+    expect: {
+      'alpha (ok) class': 'ok',
+      'beta (sync-first) class': 'warn',
+      'gamma (unknown) class': 'dim',
+    },
+  },
+  {
+    name: '62. [sync] top-line badge renders the CSS class for its own '
+      + 'top_line, not a stale one — ok/warn/dim pinned per value',
+    async run(env) {
+      const classFor = async topLine => {
+        await refreshSync(env, [syncVerdict({verdict: 'ok', reason: null})],
+          'live', topLine);
+        return env.el('sync-topline').className;
+      };
+      return {
+        'top_line=ok': await classFor('ok'),
+        'top_line=sync-first': await classFor('sync-first'),
+        'top_line=unknown': await classFor('unknown'),
+      };
+    },
+    expect: {
+      'top_line=ok': 'badge ok',
+      'top_line=sync-first': 'badge warn',
+      'top_line=unknown': 'badge dim',
+    },
   },
 ];
 
@@ -2086,6 +2149,8 @@ const REQUIRED_CASE_IDS = [
   '53',    // nor by a lookup for a slug retyped mid-flight
   '54',    // sync: pull ⇔ behind — the exact button-vs-verdict defect fixed here
   '57',    // sync: dirty-only offers neither button, falls back to "—"
+  '61',    // sync: verdict cell's CSS class, not just its text, is pinned
+  '62',    // sync: top-line badge's CSS class, not just its text, is pinned
 ];
 
 /** The stable id is the leading number in the case name (e.g. "38.1"). */

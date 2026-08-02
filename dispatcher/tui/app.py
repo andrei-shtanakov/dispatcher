@@ -79,8 +79,8 @@ def _age_cell(seconds: float | None, stale: bool) -> Text | str:
 def _verdict_cell(verdict: str) -> Text | str:
     if verdict == "ok":
         return Text("ok", style="green")
-    if verdict == "pull-first":
-        return Text("pull-first", style="bold yellow")
+    if verdict == "sync-first":
+        return Text("sync-first", style="bold yellow")
     return Text(verdict, style="dim")
 
 
@@ -111,27 +111,27 @@ class SyncRow:
     behind: int | None = None
 
 
-def _is_actionable_pull_first(row: SyncRow) -> bool:
-    """Shared precondition for both sync remedies: a live pull-first row.
+def _is_actionable_sync_first(row: SyncRow) -> bool:
+    """Shared precondition for both sync remedies: a live sync-first row.
 
     Neither `_can_pull` nor `_can_open_pr` implies the other from here on —
     each additionally checks the specific condition its button remedies.
     """
-    return row.kind == "verdict" and row.live and row.verdict == "pull-first"
+    return row.kind == "verdict" and row.live and row.verdict == "sync-first"
 
 
 def _can_pull(row: SyncRow) -> bool:
-    """Web parity: the pull button exists ⇔ live pull-first row that is
+    """Web parity: the pull button exists ⇔ live sync-first row that is
     actually behind (truthy `behind`). A dirty-only or ahead-only row has
     nothing a fast-forward pull can fix; offering the button there just
     tells the operator "already up to date" with no explanation."""
-    return _is_actionable_pull_first(row) and bool(row.behind)
+    return _is_actionable_sync_first(row) and bool(row.behind)
 
 
 def _can_open_pr(row: SyncRow) -> bool:
-    """Web parity: open PR exists ⇔ live pull-first row with truthy ahead
+    """Web parity: open PR exists ⇔ live sync-first row with truthy ahead
     (`v.ahead ?`) — independent of whether pull also applies."""
-    return _is_actionable_pull_first(row) and bool(row.ahead)
+    return _is_actionable_sync_first(row) and bool(row.ahead)
 
 
 class DispatcherApp(App[None]):
@@ -629,7 +629,7 @@ class DispatcherApp(App[None]):
             return
         if not _can_pull(row):
             self.notify(
-                "pull: needs a live pull-first row that is behind (behind > 0)",
+                "pull: needs a live sync-first row that is behind (behind > 0)",
                 severity="warning",
             )
             return
@@ -641,7 +641,7 @@ class DispatcherApp(App[None]):
             return
         if not _can_open_pr(row):
             self.notify(
-                "open PR: needs a live pull-first row with ahead > 0",
+                "open PR: needs a live sync-first row with ahead > 0",
                 severity="warning",
             )
             return

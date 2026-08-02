@@ -83,7 +83,7 @@ describe("manifest", () => {
     // which is the failure mode this whole fix was about.
     const base: RepoVerdict = {
       repo: "a",
-      verdict: "pull-first",
+      verdict: "sync-first",
       reason: null,
       branch: null,
       ahead: null,

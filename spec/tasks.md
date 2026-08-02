@@ -177,7 +177,7 @@ fixtures) into `contracts/github-checker-snapshot/v1/` with a pin header
 🔴 P0 | ✅ DONE | Est: 1.5d
 
 **Description:**
-Verdict per `(repo, host)`: `ok | pull-first | no-data | unknown(reason)`
+Verdict per `(repo, host)`: `ok | sync-first | no-data | unknown(reason)`
 from the local live snapshot (`github-checker snapshot --local-only`, no
 network) plus KB host snapshots (`prograph-vault/derived/snapshots/*.json`)
 with `generated_at` age. KB repo (`prograph-vault`) is a pinned first-class
@@ -189,7 +189,7 @@ repos. `gh_error` degrades only PR fields; `local.error`, stale (> 1 h) and
 - [x] Live local-only ingestion via `github-checker snapshot` subprocess (`run_live_snapshot`, command override for tests)
 - [x] KB host snapshots ingestion + age computation (`load_kb_snapshots`; stale > 1 h → panel amber, verdicts unknown)
 - [x] Verdict table per DESIGN-202 incl. degradation matrix §4; unit tests per row (`tests/test_sync.py`, 16)
-- [x] Top-line verdict (pull-first > unknown > ok) + KB-repo pinned first row
+- [x] Top-line verdict (sync-first > unknown > ok) + KB-repo pinned first row
 
 **Traces to:** [DESIGN-202], brief FR-01/G-03, CON-03/CON-04, engineer AP-02
 **Depends on:** [TASK-201]

@@ -102,7 +102,7 @@ export function verdictText(sync: SyncStatusResponse | null): string {
   const icon =
     sync.report.top_line === "ok"
       ? "$(check)"
-      : sync.report.top_line === "pull-first"
+      : sync.report.top_line === "sync-first"
         ? "$(warning)"
         : "$(question)";
   const spin = sync.fetch_in_flight ? " $(sync~spin)" : "";
@@ -110,16 +110,16 @@ export function verdictText(sync: SyncStatusResponse | null): string {
 }
 
 /** Finite contextValue for a sync verdict row — web/TUI visibility parity:
- * pull ⇔ live pull-first row with truthy `behind` (a dirty-only or
+ * pull ⇔ live sync-first row with truthy `behind` (a dirty-only or
  * ahead-only row has nothing a fast-forward pull can fix); open PR ⇔ live
- * pull-first row with truthy `ahead`, independent of whether pull also
+ * sync-first row with truthy `ahead`, independent of whether pull also
  * applies. Four outcomes: both, pull-only, PR-only, neither (→ null, same
  * as a non-actionable row). */
 export function syncItemContext(
   v: RepoVerdict,
   live: boolean,
 ): string | null {
-  if (!live || v.verdict !== "pull-first") {
+  if (!live || v.verdict !== "sync-first") {
     return null;
   }
   const canPull = Boolean(v.behind);
@@ -180,11 +180,11 @@ export function roadmapStatusIcon(status: string, attested = false): StatusIcon 
 
 const SYNC_VERDICT_ICONS: Record<string, StatusIcon> = {
   ok: { icon: "check", color: "testing.iconPassed" },
-  "pull-first": { icon: "warning", color: "list.warningForeground" },
+  "sync-first": { icon: "warning", color: "list.warningForeground" },
 };
 const SYNC_VERDICT_DEFAULT: StatusIcon = { icon: "circle-outline", color: null };
 
-/** Sync verdict icon — ok/pull-first/other, mirrors the projects-provider
+/** Sync verdict icon — ok/sync-first/other, mirrors the projects-provider
  * (passed/warn/dim) icon pattern used for detected-project health. */
 export function syncVerdictIcon(verdict: string): StatusIcon {
   return SYNC_VERDICT_ICONS[verdict] ?? SYNC_VERDICT_DEFAULT;

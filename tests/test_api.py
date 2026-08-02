@@ -341,7 +341,7 @@ async def test_sync_endpoint_shape(tmp_path: Path, monkeypatch) -> None:
         resp = await client.get("/api/sync")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["report"]["top_line"] in ("ok", "pull-first", "no-data", "unknown")
+    assert data["report"]["top_line"] in ("ok", "sync-first", "no-data", "unknown")
     assert isinstance(data["fetch_in_flight"], bool)
     assert "report_generated_at" in data
     assert isinstance(data["report"]["hosts"], list)
@@ -380,7 +380,7 @@ async def test_sync_hosts_reads_published_kb_snapshot(tmp_path: Path) -> None:
     assert panel["source"] == "kb"
     assert panel["age_seconds"] is not None
     verdict = next(v for v in panel["verdicts"] if v["repo"] == "alpha")
-    assert verdict["verdict"] in ("pull-first", "unknown")  # unknown если stale
+    assert verdict["verdict"] in ("sync-first", "unknown")  # unknown если stale
 
 
 async def test_web_page_wires_sync_and_summary(tmp_path: Path) -> None:

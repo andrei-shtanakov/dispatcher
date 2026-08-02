@@ -24,6 +24,7 @@ from dispatcher.tui.app import (
     _can_open_pr,
     _can_pull,
     _contract_cell,
+    _verdict_cell,
     truncate,
 )
 from dispatcher.tui.detail import ErrorMessageScreen, ProjectDetailScreen
@@ -183,6 +184,28 @@ def test_contract_cell_states() -> None:
     assert "b ✗ drift" in str(_contract_cell("b", sync))
     assert _contract_cell("c", sync) == "c n/a"  # not comparable
     assert _contract_cell("missing", sync) == "missing n/a"  # unknown name
+
+
+def test_verdict_cell_styling_pinned_per_verdict() -> None:
+    """Was unguarded before this test: reverting `_verdict_cell`'s
+    sync-first branch back to checking the old "pull-first" string left
+    the full suite green (mutation-verified). Pins the rendered text and
+    style directly against the function, independent of table wiring."""
+    from rich.text import Text
+
+    ok = _verdict_cell("ok")
+    assert isinstance(ok, Text) and str(ok) == "ok" and ok.style == "green"
+
+    sync_first = _verdict_cell("sync-first")
+    assert isinstance(sync_first, Text)
+    assert str(sync_first) == "sync-first"
+    assert sync_first.style == "bold yellow"
+
+    for verdict in ("no-data", "unknown"):
+        cell = _verdict_cell(verdict)
+        assert isinstance(cell, Text)
+        assert str(cell) == verdict
+        assert cell.style == "dim"
 
 
 async def test_errors_tab_lists_and_counts(tmp_path: Path) -> None:
@@ -533,7 +556,7 @@ async def test_roadmap_attested_status_is_amber_and_marked(tmp_path: Path) -> No
 def _sync_status() -> SyncStatus:
     report = SyncReport(
         current_host="mac-a",
-        top_line="pull-first",
+        top_line="sync-first",
         top_reason="alpha: behind 2",
         hosts=[
             HostPanel(
@@ -545,7 +568,7 @@ def _sync_status() -> SyncStatus:
                     RepoVerdict(repo="prograph-vault", verdict="ok", is_kb=True),
                     RepoVerdict(
                         repo="alpha",
-                        verdict="pull-first",
+                        verdict="sync-first",
                         reason="behind 2",
                         branch="master",
                         ahead=0,
@@ -590,7 +613,7 @@ async def test_sync_tab_renders_verdicts_and_topline(
         stale_row = [str(c) for c in table.get_row_at(2)]
         assert "stale" in stale_row[1]
         label = str(app.query_one(TabbedContent).get_tab("tab-sync").label)
-        assert "pull-first" in label
+        assert "sync-first" in label
         assert "⚙ fetching" in app.sub_title  # индикатор фонового fetch
 
 
@@ -665,7 +688,7 @@ class _FakeActionRunner:
 def _sync_with_rows() -> SyncStatus:
     report = SyncReport(
         current_host="h1",
-        top_line="pull-first",
+        top_line="sync-first",
         hosts=[
             HostPanel(
                 host="h1",
@@ -673,15 +696,15 @@ def _sync_with_rows() -> SyncStatus:
                 verdicts=[
                     # behind=2 too: alpha needs both buttons live (pull AND
                     # open PR) across the existing key-handler tests below.
-                    RepoVerdict(repo="alpha", verdict="pull-first", ahead=2, behind=2),
+                    RepoVerdict(repo="alpha", verdict="sync-first", ahead=2, behind=2),
                     RepoVerdict(repo="beta", verdict="ok"),
-                    RepoVerdict(repo="gamma", verdict="pull-first", ahead=None),
+                    RepoVerdict(repo="gamma", verdict="sync-first", ahead=None),
                 ],
             ),
             HostPanel(
                 host="h2",
                 source="kb",
-                verdicts=[RepoVerdict(repo="alpha", verdict="pull-first", ahead=1)],
+                verdicts=[RepoVerdict(repo="alpha", verdict="sync-first", ahead=1)],
             ),
         ],
     )
@@ -724,7 +747,7 @@ def _move_sync_cursor(app: DispatcherApp, repo: str, live: bool) -> None:
     table.move_cursor(row=idx)
 
 
-async def test_pull_key_runs_action_on_live_pull_first(
+async def test_pull_key_runs_action_on_live_sync_first(
     tmp_path: Path, monkeypatch
 ) -> None:
     runner = _FakeActionRunner()
@@ -763,7 +786,7 @@ async def test_open_pr_key_requires_ahead(tmp_path: Path, monkeypatch) -> None:
         await _settled(app, pilot)
         app.query_one(TabbedContent).active = "tab-sync"
         await pilot.pause()
-        _move_sync_cursor(app, "gamma", live=True)  # pull-first, ahead=None
+        _move_sync_cursor(app, "gamma", live=True)  # sync-first, ahead=None
         await pilot.press("o")
         await _settled(app, pilot)
         assert runner.calls == []
@@ -787,12 +810,12 @@ async def test_action_keys_ignore_other_tabs_and_empty_table(
         assert runner.calls == []
 
 
-def _pf_row(
+def _verdict_row(
     *,
     behind: int | None,
     ahead: int | None,
     live: bool = True,
-    verdict: str = "pull-first",
+    verdict: str = "sync-first",
 ) -> SyncRow:
     """A verdict row, overridable — the shared shape every case below
     starts from before poking at behind/ahead/live/verdict."""
@@ -808,66 +831,66 @@ def _pf_row(
 
 def test_sync_action_visibility_matches_web() -> None:
     """Web parity (dispatcher/server/static/index.html, the `actions`
-    helper): pull ⇔ live pull-first row with truthy `behind`; open PR ⇔ live
-    pull-first row with truthy `ahead`, independent of pull. Every
+    helper): pull ⇔ live sync-first row with truthy `behind`; open PR ⇔ live
+    sync-first row with truthy `ahead`, independent of pull. Every
     combination of (behind, ahead) is pinned, plus the gates that stay
     unconditional on either button: live, verdict, and row kind."""
     # behind-only: pull, no PR — the exact defect this fix closes (a dirty-
     # or ahead-only row must not offer a pull that cannot help).
-    behind_only = _pf_row(behind=2, ahead=None)
+    behind_only = _verdict_row(behind=2, ahead=None)
     assert _can_pull(behind_only)
     assert not _can_open_pr(behind_only)
 
     # ahead-only: PR, no pull — the fourth combination this fix introduces.
-    ahead_only = _pf_row(behind=0, ahead=2)
+    ahead_only = _verdict_row(behind=0, ahead=2)
     assert not _can_pull(ahead_only)
     assert _can_open_pr(ahead_only)
 
     # both: pull AND PR.
-    both = _pf_row(behind=1, ahead=1)
+    both = _verdict_row(behind=1, ahead=1)
     assert _can_pull(both)
     assert _can_open_pr(both)
 
     # neither (e.g. dirty-only, or a verdict with no numbers at all): no
     # button offered by either predicate.
-    neither = _pf_row(behind=0, ahead=0)
+    neither = _verdict_row(behind=0, ahead=0)
     assert not _can_pull(neither)
     assert not _can_open_pr(neither)
 
     # behind/ahead unknown (None) must NOT read as "behind" or "ahead" —
     # an unknown is not evidence of either condition.
-    unknown = _pf_row(behind=None, ahead=None)
+    unknown = _verdict_row(behind=None, ahead=None)
     assert not _can_pull(unknown)
     assert not _can_open_pr(unknown)
 
     # non-live host: neither button, even with both numbers truthy.
-    not_live = _pf_row(live=False, behind=2, ahead=2)
+    not_live = _verdict_row(live=False, behind=2, ahead=2)
     assert not _can_pull(not_live)
     assert not _can_open_pr(not_live)
 
-    # non-pull-first verdict: neither button, even with both numbers truthy
+    # non-sync-first verdict: neither button, even with both numbers truthy
     # (an "ok" row does not carry live behind/ahead in practice, but the
     # verdict gate must hold regardless of what the numbers say).
-    not_pull_first = _pf_row(verdict="ok", behind=2, ahead=2)
-    assert not _can_pull(not_pull_first)
-    assert not _can_open_pr(not_pull_first)
+    not_sync_first = _verdict_row(verdict="ok", behind=2, ahead=2)
+    assert not _can_pull(not_sync_first)
+    assert not _can_open_pr(not_sync_first)
 
     # non-verdict row kinds (proposal/error/empty): neither button, even
-    # with a pull-first verdict and both numbers truthy.
+    # with a sync-first verdict and both numbers truthy.
     for row in (
         SyncRow(
             kind="proposal",
             repo="a",
             live=True,
-            verdict="pull-first",
+            verdict="sync-first",
             behind=2,
             ahead=2,
         ),
         SyncRow(
-            kind="error", repo="a", live=True, verdict="pull-first", behind=2, ahead=2
+            kind="error", repo="a", live=True, verdict="sync-first", behind=2, ahead=2
         ),
         SyncRow(
-            kind="empty", repo="a", live=True, verdict="pull-first", behind=2, ahead=2
+            kind="empty", repo="a", live=True, verdict="sync-first", behind=2, ahead=2
         ),
     ):
         assert not _can_pull(row)
