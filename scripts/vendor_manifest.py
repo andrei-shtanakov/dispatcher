@@ -1,26 +1,37 @@
-"""Regenerate manifest.json for the vendored github-checker actions/v1 pin.
+"""Regenerate manifest.json for a vendored github-checker actions/v1 copy.
 
-Dev tool, not shipped runtime. Run after re-vendoring
-``contracts/github-checker-actions/v1`` from a new producer commit:
+Dev tool, not shipped runtime. Normally invoked by
+``scripts/revendor_github_checker_actions.sh``, which passes the commit it
+extracted from and the staging directory it extracted into:
 
-    uv run python scripts/vendor_manifest.py
+    python3 scripts/vendor_manifest.py --producer-commit <sha> --root <dir>
 
-It hashes every file under the vendored root (excluding the manifest itself
-and PINNED.txt), writes a per-file sha256 plus a tree_sha256 computed over
-the sorted (path, sha256) pairs, and pins the producer commit inline so the
-consumer's tests can assert on it without touching the network.
+The pin is an argument and has no default. It used to be a literal in this
+file, which made it one of three copies a human had to edit in step — and
+three literals changed together prove only that they agree with each other,
+never that the files on disk came from the commit they name.
+
+It hashes every file under the root (excluding the manifest itself and
+PINNED.txt), writes a per-file sha256 plus a tree_sha256 computed over the
+sorted (path, sha256) pairs, and records the given producer commit so the
+consumer's offline tests can assert on it without touching the network.
+
+Stdlib only, on purpose: the re-vendor script runs it as plain ``python3``,
+outside any uv project.
 """
 
+from __future__ import annotations
+
+import argparse
 import hashlib
 import json
 import pathlib
 
 ROOT = pathlib.Path("contracts/github-checker-actions/v1")
-PRODUCER_COMMIT = "ef03fefcded37676b19ef1c6f88b956a09a26d3f"
 EXCLUDED_NAMES = {"PINNED.txt", "manifest.json"}
 
 
-def build_manifest(root: pathlib.Path) -> dict[str, object]:
+def build_manifest(root: pathlib.Path, producer_commit: str) -> dict[str, object]:
     """Compute the per-file and tree-level hashes for the vendored surface.
 
     The tree hash is derived from the same sorted (path, sha256) pairs
@@ -43,7 +54,7 @@ def build_manifest(root: pathlib.Path) -> dict[str, object]:
     return {
         "contract": "github-checker-actions",
         "contract_version": 1,
-        "producer_commit": PRODUCER_COMMIT,
+        "producer_commit": producer_commit,
         "surface_note": (
             "sha256 of every vendored file; excludes PINNED.txt and this manifest"
         ),
@@ -53,9 +64,22 @@ def build_manifest(root: pathlib.Path) -> dict[str, object]:
 
 
 def main() -> None:
-    """Write manifest.json for the vendored actions/v1 pin."""
-    manifest = build_manifest(ROOT)
-    (ROOT / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    """Write manifest.json for the vendored actions/v1 copy at a given pin."""
+    parser = argparse.ArgumentParser(description="regenerate manifest.json")
+    parser.add_argument(
+        "--producer-commit",
+        required=True,
+        help="the github-checker commit the vendored bytes were extracted from",
+    )
+    parser.add_argument(
+        "--root",
+        type=pathlib.Path,
+        default=ROOT,
+        help="directory holding the vendored copy (default: the in-tree one)",
+    )
+    args = parser.parse_args()
+    manifest = build_manifest(args.root, args.producer_commit)
+    (args.root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 
 if __name__ == "__main__":
