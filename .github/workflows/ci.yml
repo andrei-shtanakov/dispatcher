@@ -56,6 +56,11 @@ jobs:
       # TUI stack) and only its bin joins PATH.
       - name: install the pinned producer binary (DESIGN-405 level 3)
         run: scripts/install_pinned_checker.sh >> "$GITHUB_PATH"
+      # Same discipline for the governance live smoke (WS-005 WS-C): the real
+      # gate-check at the commit the vendored gate-verdicts manifest names.
+      # tests/test_governance_live_smoke.py FAILS without it, never skips.
+      - name: install the pinned steward binary (governance live smoke)
+        run: scripts/install_pinned_steward.sh >> "$GITHUB_PATH"
       - run: uv run pytest tests/ -v
 
   plan-fields:

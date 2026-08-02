@@ -38,6 +38,5 @@ def test_governance_panel_js_suite_passes() -> None:
         text=True,
     )
     assert result.returncode == 0, (
-        f"governance harness failed\nstdout:\n{result.stdout}\n"
-        f"stderr:\n{result.stderr}"
+        f"governance harness failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
