@@ -364,6 +364,72 @@ async function strandAnOutcome(env, {slug, from = 0, to = 0}) {
 const recheckButtons = env =>
   env.el('ta-outcomes').querySelectorAll('button[data-ta-recheck]');
 
+// ---- sync-screen actions cell ----------------------------------------------
+//
+// `renderSync`'s `actions` closure is not module-scope (unlike `syncItemContext`
+// in the vscode-ext / `_can_pull` in the TUI), so there is no function to call
+// directly — it is reached the same way an operator reaches it: fixture a
+// `/api/sync` payload, force a re-render, and read the actual buttons out of
+// the actual DOM the whole page script produced.
+
+/** One `/api/sync` envelope with a single live-or-kb host and given verdicts. */
+function syncFixture(verdicts, source = 'live') {
+  return ok({
+    fetch_in_flight: false,
+    report: {
+      top_line: 'pull-first', top_reason: null, proposals: [],
+      hosts: [{
+        host: 'h1', source, age_seconds: 5, stale: false,
+        gh_error: null, error: null, verdicts,
+      }],
+    },
+  });
+}
+
+/**
+ * Re-render the sync table against a fresh `/api/sync` fixture. `refresh()`
+ * is only ever invoked by the page itself (on load and its 10s timer, which
+ * the harness's fake `setInterval` never fires) — there is no user event to
+ * dispatch here, so it is called directly, exactly as the browser's own
+ * timer would.
+ */
+async function refreshSync(env, verdicts, source = 'live') {
+  env.route(u => u.startsWith('/api/sync'), () => syncFixture(verdicts, source));
+  env.read('refresh()');
+  await drain();
+}
+
+/** The Actions cell element for one repo row (the LAST `<td>`, same one a
+ * person reads) — never assumed from the verdict, always read back from the
+ * rendered DOM. */
+function syncActionsCell(env, repo) {
+  const row = env.el('sync-hosts').querySelectorAll('tr')
+    .find(r => r.textContent.includes(repo));
+  if (!row) throw new Error(`no rendered sync row for repo ${repo}`);
+  const cells = row.querySelectorAll('td');
+  return cells[cells.length - 1];
+}
+
+/** The Actions cell's real buttons for one repo row, `data-act` values IN
+ * RENDER ORDER (deliberately NOT sorted — the page emits pull before open
+ * PR, and a swapped render order should fail a case that claims to pin it). */
+function syncActionActs(env, repo) {
+  return env.el('sync-hosts')
+    .querySelectorAll(`button.act[data-dir="${repo}"]`)
+    .map(b => b.dataset.act);
+}
+
+/** The Actions cell's fallback text when no button applies (dirty-only, or
+ * the row is not actionable at all) — the same table cell a person reads. */
+function syncActionsCellText(env, repo) {
+  return syncActionsCell(env, repo).textContent.trim();
+}
+
+const syncVerdict = (overrides) => ({
+  repo: 'alpha', verdict: 'pull-first', reason: 'x', branch: 'main',
+  ahead: null, behind: null, dirty: false, is_kb: false, ...overrides,
+});
+
 // ---- cases -----------------------------------------------------------------
 
 const CASES = [
@@ -1861,6 +1927,122 @@ const CASES = [
       'Create disabled': true,
     },
   },
+  // --- sync screen: the Actions cell offers only the button that helps ------
+  //
+  // dispatcher/core/sync.py's pull-first verdict fires on ANY of behind /
+  // ahead / dirty, but a pull only helps a `behind` row: pull runs
+  // `git pull --ff-only` and would truthfully say "already up to date" on a
+  // dirty-only or ahead-only row, leaving the operator with a yellow row and
+  // a button that lied about being a remedy. Each button below is pinned
+  // against the actual rendered DOM, not the source text.
+  {
+    name: '54. [sync] behind-only: pull only, no open-PR button, and pull '
+      + 'actually runs the pull action when clicked',
+    async run(env) {
+      await refreshSync(env, [syncVerdict({behind: 2})]);
+      env.route(u => u.startsWith('/api/actions/pull'),
+        () => ok({ok: true, detail: 'fast-forwarded'}));
+      const btn = env.el('sync-hosts')
+        .querySelector('button.act[data-act="pull"][data-dir="alpha"]');
+      await env.fireNode(btn, 'click');
+      return {
+        'buttons offered': syncActionActs(env, 'alpha').join(','),
+        'pull request issued': env.urls('/api/actions/pull').length,
+        'result shown': env.el('sync-hosts')
+          .querySelector('.act-result[data-for="alpha"]').textContent,
+      };
+    },
+    expect: {
+      'buttons offered': 'pull',
+      'pull request issued': 1,
+      'result shown': '✓ fast-forwarded',
+    },
+  },
+  {
+    name: '55. [sync] ahead-only (behind falsy): open PR only, no pull '
+      + 'button — the fourth combination a pull cannot help — and the cell '
+      + 'does not start with a stray separator space left over from the '
+      + 'old always-pull-first template',
+    async run(env) {
+      await refreshSync(env, [syncVerdict({ahead: 3, behind: 0})]);
+      const cell = syncActionsCell(env, 'alpha');
+      return {
+        'buttons offered': syncActionActs(env, 'alpha').join(','),
+        // A leading space would render as a TEXT node before the button;
+        // `.trim()`-based cell-text assertions elsewhere in this file would
+        // hide that, so this checks the actual first child's node type.
+        'cell\'s first child is the button, not a leading text node':
+          cell.childNodes[0].nodeType === 1
+            && cell.childNodes[0].tagName === 'BUTTON',
+      };
+    },
+    expect: {
+      'buttons offered': 'create-pr',
+      'cell\'s first child is the button, not a leading text node': true,
+    },
+  },
+  {
+    name: '56. [sync] both behind and ahead: both buttons offered, pull '
+      + 'rendered before open PR (render order, not sorted)',
+    async run(env) {
+      await refreshSync(env, [syncVerdict({ahead: 1, behind: 4})]);
+      return {'buttons offered': syncActionActs(env, 'alpha').join(',')};
+    },
+    expect: {'buttons offered': 'pull,create-pr'},
+  },
+  {
+    name: '57. [sync] dirty-only (behind and ahead both falsy): neither '
+      + 'button — the exact defect this fix closes — falls back to the same '
+      + '"—" a non-actionable row already shows',
+    async run(env) {
+      await refreshSync(env, [
+        syncVerdict({behind: 0, ahead: 0, dirty: true, reason: 'dirty worktree'}),
+      ]);
+      return {
+        'buttons offered': syncActionActs(env, 'alpha').join(','),
+        'actions cell': syncActionsCellText(env, 'alpha'),
+      };
+    },
+    expect: {'buttons offered': '', 'actions cell': '—'},
+  },
+  {
+    name: '58. [sync] behind/ahead null (unknown): no pull, no PR — an '
+      + 'unknown is not a "behind"',
+    async run(env) {
+      await refreshSync(env, [syncVerdict({behind: null, ahead: null})]);
+      return {
+        'buttons offered': syncActionActs(env, 'alpha').join(','),
+        'actions cell': syncActionsCellText(env, 'alpha'),
+      };
+    },
+    expect: {'buttons offered': '', 'actions cell': '—'},
+  },
+  {
+    name: '59. [sync] a non-live (kb) host offers neither button even when '
+      + 'both behind and ahead are set — live-only, unchanged by this fix',
+    async run(env) {
+      await refreshSync(env, [syncVerdict({ahead: 1, behind: 1})], 'kb');
+      return {
+        'buttons offered': syncActionActs(env, 'alpha').join(','),
+        'actions cell': syncActionsCellText(env, 'alpha'),
+      };
+    },
+    expect: {'buttons offered': '', 'actions cell': '—'},
+  },
+  {
+    name: '60. [sync] a non-pull-first verdict (ok) offers neither button '
+      + 'even on a live host',
+    async run(env) {
+      await refreshSync(env, [
+        syncVerdict({verdict: 'ok', behind: 0, ahead: 0, reason: null}),
+      ]);
+      return {
+        'buttons offered': syncActionActs(env, 'alpha').join(','),
+        'actions cell': syncActionsCellText(env, 'alpha'),
+      };
+    },
+    expect: {'buttons offered': '', 'actions cell': '—'},
+  },
 ];
 
 // ---- the gate's floor ------------------------------------------------------
@@ -1902,6 +2084,8 @@ const REQUIRED_CASE_IDS = [
   '51',    // a control the operator cannot see cannot be operated
   '52',    // one entry's re-check is not resolved by a neighbour's answer
   '53',    // nor by a lookup for a slug retyped mid-flight
+  '54',    // sync: pull ⇔ behind — the exact button-vs-verdict defect fixed here
+  '57',    // sync: dirty-only offers neither button, falls back to "—"
 ];
 
 /** The stable id is the leading number in the case name (e.g. "38.1"). */

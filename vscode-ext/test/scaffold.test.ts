@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import type { RepoVerdict } from "../src/api";
+import { syncItemContext } from "../src/model";
 
 describe("manifest", () => {
   const manifest = JSON.parse(
@@ -72,5 +74,47 @@ describe("manifest", () => {
           m.when === "view == dispatcherProjects && viewItem == dispatcherProject",
       ),
     ).toBe(true);
+  });
+
+  it("every contextValue syncItemContext can return is wired into a view/item/context entry", () => {
+    // Sweep the (behind, ahead) input space and collect what the function
+    // ACTUALLY returns, rather than hard-coding the expected contextValue
+    // strings beside it — a hard-coded list is a second thing to forget,
+    // which is the failure mode this whole fix was about.
+    const base: RepoVerdict = {
+      repo: "a",
+      verdict: "pull-first",
+      reason: null,
+      branch: null,
+      ahead: null,
+      behind: null,
+      dirty: false,
+      is_kb: false,
+    };
+    const sample = [null, 0, 1, 2];
+    const observed = new Set<string>();
+    for (const behind of sample) {
+      for (const ahead of sample) {
+        const ctx = syncItemContext({ ...base, behind, ahead }, true);
+        if (ctx !== null) observed.add(ctx);
+      }
+    }
+    // The sweep itself must have found something, or the assertion below
+    // would pass vacuously over an empty set.
+    expect(observed.size).toBeGreaterThan(0);
+
+    const syncCtxEntries = (
+      manifest.contributes.menus["view/item/context"] as Array<{
+        command: string;
+        when: string;
+      }>
+    ).filter((m) => m.when.includes("view == dispatcherSync"));
+
+    for (const value of observed) {
+      expect(
+        syncCtxEntries.some((m) => m.when.includes(`viewItem == ${value}`)),
+        `no view/item/context entry for contextValue "${value}"`,
+      ).toBe(true);
+    }
   });
 });

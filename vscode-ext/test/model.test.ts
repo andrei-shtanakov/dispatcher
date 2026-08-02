@@ -169,6 +169,11 @@ describe("verdictText", () => {
 });
 
 describe("syncItemContext (web/TUI parity)", () => {
+  // pull ⇔ live pull-first row with truthy `behind` (a dirty-only or
+  // ahead-only row has nothing a fast-forward pull can fix); open PR ⇔ live
+  // pull-first row with truthy `ahead`, independent of pull. Every
+  // combination of (behind, ahead) is pinned below, plus the gates that stay
+  // unconditional on either button: live and verdict.
   const v = (o: Partial<RepoVerdict>): RepoVerdict => ({
     repo: "a",
     verdict: "ok",
@@ -181,24 +186,58 @@ describe("syncItemContext (web/TUI parity)", () => {
     ...o,
   });
 
-  it("pull-first + live + ahead -> pullPr (both actions)", () => {
-    expect(syncItemContext(v({ verdict: "pull-first", ahead: 2 }), true)).toBe(
-      "dispatcherSyncVerdict.pullPr",
-    );
+  it("behind-only -> pull only", () => {
+    expect(
+      syncItemContext(
+        v({ verdict: "pull-first", behind: 2, ahead: null }),
+        true,
+      ),
+    ).toBe("dispatcherSyncVerdict.pull");
+    expect(
+      syncItemContext(v({ verdict: "pull-first", behind: 2, ahead: 0 }), true),
+    ).toBe("dispatcherSyncVerdict.pull");
   });
-  it("pull-first + live without ahead -> pull only (None and 0 both)", () => {
-    expect(syncItemContext(v({ verdict: "pull-first" }), true)).toBe(
-      "dispatcherSyncVerdict.pull",
-    );
-    expect(syncItemContext(v({ verdict: "pull-first", ahead: 0 }), true)).toBe(
-      "dispatcherSyncVerdict.pull",
-    );
+  it("ahead-only -> PR only, no pull — the fourth combination", () => {
+    expect(
+      syncItemContext(
+        v({ verdict: "pull-first", behind: null, ahead: 2 }),
+        true,
+      ),
+    ).toBe("dispatcherSyncVerdict.pr");
+    expect(
+      syncItemContext(v({ verdict: "pull-first", behind: 0, ahead: 2 }), true),
+    ).toBe("dispatcherSyncVerdict.pr");
   });
-  it("non-live or non-pull-first -> null", () => {
-    expect(syncItemContext(v({ verdict: "pull-first", ahead: 2 }), false)).toBe(
-      null,
-    );
-    expect(syncItemContext(v({ verdict: "ok" }), true)).toBe(null);
+  it("both behind and ahead -> pullPr (both actions)", () => {
+    expect(
+      syncItemContext(v({ verdict: "pull-first", behind: 1, ahead: 2 }), true),
+    ).toBe("dispatcherSyncVerdict.pullPr");
+  });
+  it("neither behind nor ahead (e.g. dirty-only) -> null", () => {
+    expect(
+      syncItemContext(v({ verdict: "pull-first", behind: 0, ahead: 0 }), true),
+    ).toBe(null);
+  });
+  it("behind/ahead unknown (null) -> null — unknown is not \"behind\"", () => {
+    expect(
+      syncItemContext(
+        v({ verdict: "pull-first", behind: null, ahead: null }),
+        true,
+      ),
+    ).toBe(null);
+  });
+  it("non-live -> null even with both numbers truthy", () => {
+    expect(
+      syncItemContext(
+        v({ verdict: "pull-first", behind: 2, ahead: 2 }),
+        false,
+      ),
+    ).toBe(null);
+  });
+  it("non-pull-first verdict -> null even with both numbers truthy", () => {
+    expect(
+      syncItemContext(v({ verdict: "ok", behind: 2, ahead: 2 }), true),
+    ).toBe(null);
   });
 });
 

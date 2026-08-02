@@ -119,6 +119,11 @@
           "group": "inline"
         },
         {
+          "command": "dispatcher.openPr",
+          "when": "view == dispatcherSync && viewItem == dispatcherSyncVerdict.pr",
+          "group": "inline"
+        },
+        {
           "command": "dispatcher.track",
           "when": "view == dispatcherSync && viewItem == dispatcherSyncProposal",
           "group": "inline"

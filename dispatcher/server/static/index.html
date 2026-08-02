@@ -378,13 +378,24 @@ function renderSync(sync) {
       <button data-track="${esc(dir)}" data-action="track">track</button>
       <button data-track="${esc(dir)}" data-action="ignore">ignore</button>
     </div>`).join("");
-  // живые whitelist-действия (M2/TASK-210): только явный клик, только live-хост
+  // живые whitelist-действия (M2/TASK-210): только явный клик, только live-хост.
+  // Each button is independently gated on the condition it actually remedies:
+  // pull ⇔ truthy `behind` (a dirty-only or ahead-only row has nothing a
+  // fast-forward pull can fix — offering the button there just tells the
+  // operator "already up to date" with no explanation); open PR ⇔ truthy
+  // `ahead`, regardless of whether pull also applies. Neither → "—", same
+  // fallback non-actionable rows already show.
   const actions = (v, live) => {
     if (v.verdict !== "pull-first" || !live) return "—";
-    const pr = v.ahead ? ` <button class="act" data-act="create-pr"
+    const pull = v.behind ? `<button class="act" data-act="pull"
+      data-dir="${esc(v.repo)}">pull</button>` : "";
+    const pr = v.ahead ? `<button class="act" data-act="create-pr"
       data-dir="${esc(v.repo)}">open PR</button>` : "";
-    return `<button class="act" data-act="pull"
-      data-dir="${esc(v.repo)}">pull</button>${pr}
+    if (!pull && !pr) return "—";
+    // Separator only when BOTH buttons render — a PR-only (or pull-only)
+    // cell must not start with a stray space.
+    const sep = pull && pr ? " " : "";
+    return `${pull}${sep}${pr}
       <span class="act-result" data-for="${esc(v.repo)}"></span>`;
   };
   document.getElementById("sync-hosts").innerHTML =
