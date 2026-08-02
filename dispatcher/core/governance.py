@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import functools
 import json
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
@@ -260,6 +261,19 @@ def collect_governance(
     return BundleGovernance(state="pass", header=header, artifacts=artifacts)
 
 
+def _git(repo_root: Path, *args: str) -> str | None:
+    """One git query; ``None`` on nonzero exit or an unrunnable binary."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), *args],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
 def git_bundle_freshness(
     repo_root: Path, bundle: str, source_commit: str
 ) -> BundleFreshness:
@@ -267,5 +281,31 @@ def git_bundle_freshness(
 
     Reads git only; unknown is reported as ``fresh=None``, never as
     ``fresh=True`` — the caller classifies unknown as stale-grade (NFR-02).
+    A commit or bundle git *does* know about but that does not match is
+    ``fresh=False``: that is a determined mismatch, not an unknown.
     """
-    raise NotImplementedError  # implemented with the stale classification task
+    head = _git(repo_root, "rev-parse", "HEAD")
+    if head is None:
+        return BundleFreshness(
+            fresh=None, detail="not a git repository (or HEAD unreadable)"
+        )
+    if _git(repo_root, "rev-parse", "--verify", f"{source_commit}^{{commit}}") is None:
+        return BundleFreshness(
+            fresh=False,
+            current_commit=head,
+            detail="source commit unknown to this clone",
+        )
+    source_tree = _git(repo_root, "rev-parse", f"{source_commit}:{bundle}")
+    current_tree = _git(repo_root, "rev-parse", f"HEAD:{bundle}")
+    if source_tree is None or current_tree is None or source_tree != current_tree:
+        return BundleFreshness(
+            fresh=False, current_commit=head, detail="bundle tree differs"
+        )
+    porcelain = _git(repo_root, "status", "--porcelain", "--", bundle)
+    if porcelain is None or porcelain:
+        return BundleFreshness(
+            fresh=False,
+            current_commit=head,
+            detail="uncommitted changes under the bundle",
+        )
+    return BundleFreshness(fresh=True, current_commit=head)
