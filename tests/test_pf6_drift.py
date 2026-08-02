@@ -522,9 +522,7 @@ class TestManifestIdentity:
 
     def _with_manifest(self, tmp_path: Path, **changes: object) -> None:
         manifest = {**_manifest_for(_SURFACE), **changes}
-        _write_vendored(
-            tmp_path / "self", _SURFACE, manifest=manifest, pin=_pin_text()
-        )
+        _write_vendored(tmp_path / "self", _SURFACE, manifest=manifest, pin=_pin_text())
 
     def test_a_manifest_declaring_another_contract_is_refused(
         self, tmp_path: Path
@@ -534,9 +532,7 @@ class TestManifestIdentity:
         assert row.in_sync is False
         assert "plan-fields" in (row.detail or "")
 
-    def test_a_manifest_with_no_contract_name_is_refused(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_manifest_with_no_contract_name_is_refused(self, tmp_path: Path) -> None:
         """Not merely "the cross-check is skipped": a missing declaration is
         the case that made the cross-check meaningless rather than absent."""
         self._with_manifest(tmp_path, contract=None)
