@@ -42,12 +42,19 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --from)
       [ $# -ge 2 ] || die 1 "--from needs a path"
+      [ -z "$FROM" ] || die 1 "--from may only be given once"
+      case "$2" in
+        -*) die 1 "--from wants a path, not an option: $2" ;;
+      esac
       FROM="$2"
       shift 2
       ;;
     -h | --help)
-      sed -n '2,25p' "${BASH_SOURCE[0]}" >&2
-      exit 1
+      # Print the header comment (lines 2..the line before `set -euo
+      # pipefail`), bounded by a sentinel rather than a line number so the
+      # printed table can never drift from the header it is quoting again.
+      awk 'NR>1{if (/^set -euo pipefail/) exit; print}' "${BASH_SOURCE[0]}" >&2
+      exit 0
       ;;
     -*) die 1 "unknown option: $1" ;;
     *)
@@ -108,6 +115,13 @@ command -v python3 > /dev/null 2>&1 || die 4 "python3 not found on PATH"
 # certified by the manifest we are about to generate.
 rm -rf "$STAGING"
 mkdir -p "$STAGING"
+# --strip-components=3 is coupled to SRC_SUBDIR having exactly 3 path
+# segments ("contracts/actions/v1"); it is not derived from it. A future
+# SRC_SUBDIR at a different depth must update this number to match. Left
+# uncoupled on purpose (Minor 4 of the 2026-08-02 review): a mismatch is
+# fail-closed — either the file-set check below (exit 3) or `tar` itself
+# (exit 2) catches it — so a computed depth would add a moving part for no
+# extra guarantee.
 git -C "$STORE" archive "$NEW_PIN" "$SRC_SUBDIR" | tar -x --strip-components=3 -C "$STAGING" ||
   die 2 "$NEW_PIN has no $SRC_SUBDIR to extract"
 
@@ -126,7 +140,7 @@ verify_provenance() {
     die 3 "could not read the tree of $NEW_PIN from $STORE"
   (cd "$STAGING" && find . -type f | sed 's|^\./||' | LC_ALL=C sort) > "$WORK/got.txt"
   if [ "$mode" = "with-meta" ]; then
-    grep -vx -e 'PINNED.txt' -e 'manifest.json' "$WORK/got.txt" > "$WORK/got.meta" || true
+    grep -vxF -e 'PINNED.txt' -e 'manifest.json' "$WORK/got.txt" > "$WORK/got.meta" || true
     mv "$WORK/got.meta" "$WORK/got.txt"
   fi
   diff "$WORK/want.txt" "$WORK/got.txt" >&2 ||
@@ -158,12 +172,34 @@ python3 "$REPO_ROOT/scripts/vendor_manifest.py" \
   --producer-commit "$NEW_PIN" --root "$STAGING" ||
   die 4 "manifest generation failed"
 
-if ! python3 - "$STAGING/manifest.json" "$NEW_PIN" << 'PY'
-import json, sys
-sys.exit(0 if json.load(open(sys.argv[1]))["producer_commit"] == sys.argv[2] else 1)
+# Checks the manifest's own claims, not merely that it parses: the pin it
+# records, that it lists at least one file (a generator emitting
+# {"producer_commit": <pin>, "surface": []} would otherwise pass this and
+# the second verification pass below, since that pass only checks the files
+# the manifest DOES list), and that its file list is exactly the staged set.
+if ! python3 - "$STAGING/manifest.json" "$NEW_PIN" "$STAGING" << 'PY'
+import json
+import pathlib
+import sys
+
+manifest_path, pin, root = sys.argv[1], sys.argv[2], pathlib.Path(sys.argv[3])
+manifest = json.load(open(manifest_path))
+if manifest.get("producer_commit") != pin:
+    sys.exit(1)
+surface = manifest.get("surface") or []
+if not surface:
+    sys.exit(1)
+excluded = {"PINNED.txt", "manifest.json"}
+on_disk = {
+    str(p.relative_to(root))
+    for p in root.rglob("*")
+    if p.is_file() and p.name not in excluded
+}
+listed = {entry["path"] for entry in surface}
+sys.exit(0 if listed == on_disk else 1)
 PY
 then
-  die 4 "the generated manifest does not record the pin it was given"
+  die 4 "the generated manifest does not record the pin it was given, is empty, or its surface does not match the staged files"
 fi
 
 # Second pass: the generator writes into the staging directory, so it is in a

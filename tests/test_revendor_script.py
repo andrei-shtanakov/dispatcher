@@ -140,19 +140,30 @@ def test_an_abbreviated_sha_is_refused(
 def test_an_unknown_commit_leaves_the_working_copy_alone(
     skeleton: Path, producer: dict[str, object]
 ) -> None:
+    """Pins the explicit `cat-file -e ...^{commit}` guard specifically, by
+    its message: an unknown commit would also die 2 later, from `git
+    archive` failing during extraction, but with a different message — so
+    asserting on the text is what proves *this* guard fired, not the other
+    one that happens to share its exit code."""
     result = _run(skeleton, "0" * 40, "--from", str(producer["path"]))
     assert result.returncode == 2
+    assert "is not a commit in" in result.stderr
     _assert_untouched(skeleton)
 
 
 def test_a_from_path_that_is_not_a_repository_is_refused(
     skeleton: Path, producer: dict[str, object], tmp_path: Path
 ) -> None:
+    """Pins the explicit `rev-parse --git-dir` guard specifically, by its
+    message: a non-repository path would also die 2 later, from the
+    `cat-file -e` commit check failing against a non-repo, but with a
+    different message."""
     (tmp_path / "not-a-repo").mkdir()
     result = _run(
         skeleton, str(producer["second"]), "--from", str(tmp_path / "not-a-repo")
     )
     assert result.returncode == 2
+    assert "is not a git repository" in result.stderr
     _assert_untouched(skeleton)
 
 
@@ -239,15 +250,22 @@ def test_a_generator_that_corrupts_the_surface_is_caught(
     skeleton: Path, producer: dict[str, object]
 ) -> None:
     """The second verification pass, tested by making the step between the
-    two passes misbehave: the generator writes a valid manifest and also
-    flips a byte it had no business touching."""
+    two passes misbehave: the generator writes a manifest whose `surface`
+    lists the real on-disk file set (so the read-back's own surface check
+    lets it through) and also flips a byte it had no business touching."""
     (skeleton / "scripts" / "vendor_manifest.py").write_text(
         "import json, pathlib, sys\n"
         "root = pathlib.Path(sys.argv[sys.argv.index('--root') + 1])\n"
         "pin = sys.argv[sys.argv.index('--producer-commit') + 1]\n"
         "(root / 'README.md').write_text('tampered\\n')\n"
+        "excluded = {'PINNED.txt', 'manifest.json'}\n"
+        "surface = [\n"
+        "    {'path': str(p.relative_to(root)), 'sha256': 'x'}\n"
+        "    for p in sorted(root.rglob('*'))\n"
+        "    if p.is_file() and p.name not in excluded\n"
+        "]\n"
         "(root / 'manifest.json').write_text(\n"
-        "    json.dumps({'producer_commit': pin, 'surface': []}) + '\\n'\n"
+        "    json.dumps({'producer_commit': pin, 'surface': surface}) + '\\n'\n"
         ")\n"
     )
     result = _run(skeleton, str(producer["second"]), "--from", str(producer["path"]))
@@ -264,6 +282,28 @@ def test_a_manifest_recording_the_wrong_pin_is_caught(
         "root = pathlib.Path(sys.argv[sys.argv.index('--root') + 1])\n"
         "(root / 'manifest.json').write_text(\n"
         "    json.dumps({'producer_commit': '0' * 40, 'surface': []}) + '\\n'\n"
+        ")\n"
+    )
+    result = _run(skeleton, str(producer["second"]), "--from", str(producer["path"]))
+
+    assert result.returncode == 4
+    _assert_untouched(skeleton)
+
+
+def test_a_hollow_manifest_is_caught(
+    skeleton: Path, producer: dict[str, object]
+) -> None:
+    """A generator that records the right pin but lists no files would pass
+    both the old read-back (pin-only) and the second verification pass (it
+    only checks the files the manifest DOES list) and land with exit 0. The
+    read-back must catch this on its own, not delegate to a downstream
+    consumer test to notice later."""
+    (skeleton / "scripts" / "vendor_manifest.py").write_text(
+        "import json, pathlib, sys\n"
+        "root = pathlib.Path(sys.argv[sys.argv.index('--root') + 1])\n"
+        "pin = sys.argv[sys.argv.index('--producer-commit') + 1]\n"
+        "(root / 'manifest.json').write_text(\n"
+        "    json.dumps({'producer_commit': pin, 'surface': []}) + '\\n'\n"
         ")\n"
     )
     result = _run(skeleton, str(producer["second"]), "--from", str(producer["path"]))
@@ -328,7 +368,14 @@ def test_a_missing_python3_interpreter_exits_4_not_127(
     by hand-picking, onto a bare PATH, exactly the binaries the script
     calls before and during that check — deliberately leaving every
     python3 off it. Every other tool must stay reachable, or a failure here
-    would prove nothing about python3 specifically."""
+    would prove nothing about python3 specifically.
+
+    Exit 4 alone does not pin this particular guard: with it removed, the
+    first real `python3 ...` invocation would fail with the shell's own
+    "command not found" (127), which the script's own `|| die 4 "manifest
+    generation failed"` also turns into exit 4 — same code, different
+    message. Asserting on the message is what proves the early check, not
+    that fallback, produced this result."""
     tool_names = (
         "bash",
         "sh",
@@ -375,6 +422,50 @@ def test_a_missing_python3_interpreter_exits_4_not_127(
     )
 
     assert result.returncode == 4, (result.stdout, result.stderr)
+    assert "python3 not found on PATH" in result.stderr
+    _assert_untouched(skeleton)
+
+
+def test_help_prints_the_full_exit_code_table_and_exits_0(skeleton: Path) -> None:
+    """`--help` used to exit 1 — the code the published table reserves for a
+    usage error — even though asking for help is not one. It also used to
+    print a header slice bounded by a hardcoded line number, which a later
+    commit made stale: this pins both the exit code and that the two lines
+    describing "any other nonzero status" (the ones that were being cut)
+    are present in the output."""
+    result = _run(skeleton, "--help")
+    assert result.returncode == 0
+    assert "5 internal failure (working copy left as it was found)" in result.stderr
+    assert "unexpected internal" in result.stderr
+    assert "trap below has still restored the tree" in result.stderr
+    _assert_untouched(skeleton)
+
+
+def test_a_repeated_from_is_a_usage_error(
+    skeleton: Path, producer: dict[str, object], tmp_path: Path
+) -> None:
+    """A second `--from` used to silently overwrite the first, which
+    mislabels a usage mistake as if it were the operator's intent."""
+    other = tmp_path / "not-a-repo"
+    other.mkdir()
+    result = _run(
+        skeleton,
+        str(producer["second"]),
+        "--from",
+        str(producer["path"]),
+        "--from",
+        str(other),
+    )
+    assert result.returncode == 1
+    _assert_untouched(skeleton)
+
+
+def test_a_from_value_beginning_with_dash_is_a_usage_error(skeleton: Path) -> None:
+    """`--from -x` used to take `-x` as the path and fail with exit 2
+    ("source or commit unavailable") — the wrong code for what is really a
+    missing argument to `--from`."""
+    result = _run(skeleton, "--from", "-x")
+    assert result.returncode == 1
     _assert_untouched(skeleton)
 
 

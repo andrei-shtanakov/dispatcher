@@ -57,8 +57,27 @@ against the commit's blobs and the file set in both directions, writes
 manifest records that SHA, verifies the staged bytes a second time, and only
 then swaps staging into place.
 
-Until that last step the working copy is untouched. Any failure — including
-a kill signal between the two renames — leaves it exactly as it was.
+Until that last step the working copy is untouched. Every ordinary failure —
+a bad or unknown commit, a failed provenance check, a corrupted or hollow
+manifest, `Ctrl-C` (`INT`), `TERM`, `HUP` — runs the restoring trap and
+leaves the working copy exactly as it was. This is verified, not assumed:
+signal delivery was tested directly, not simulated.
+
+The one case the trap cannot cover is `SIGKILL` (`kill -9`) landing in the
+narrow window between the two renames at the very end of the swap. A trap
+does not run on `SIGKILL`, so a kill in that exact window can leave the
+vendored directory absent from the working copy with its real contents
+parked, untouched, in an untracked sibling directory. If `git status` ever
+shows `contracts/github-checker-actions/v1/` missing alongside an untracked
+`contracts/github-checker-actions/v1.prev/`, that is what happened, and the
+recovery is one command:
+
+```bash
+mv contracts/github-checker-actions/v1.prev contracts/github-checker-actions/v1
+```
+
+The window is two renames wide and `SIGKILL` in it is rare, but it is the
+one failure this procedure cannot restore automatically.
 
 **Offline variant.** `--from <git-repo>` reads the commit out of a local
 repository's object database instead:
@@ -83,7 +102,7 @@ A `3` means the staged bytes are not the commit's. Do not re-run hoping for
 a different answer, and never adjust an expected value to match: something
 between the object store and the disk is wrong, and that is the finding.
 
-### 3. Update the independent literal
+### 3. Update the independent literal — and, if the surface changed, what goes with it
 
 `tests/test_contract_ingest.py` holds its own copy of the pin:
 
@@ -93,8 +112,28 @@ PRODUCER_COMMIT = "…"
 
 This one stays a hand edit **on purpose**. It is the independent assertion
 about what the manifest should say, and a test that reads the value it
-checks proves nothing. The suite goes red here until you change it — that
-red is the last checklist item, not an obstacle.
+checks proves nothing.
+
+For a **same-surface** re-vendor — the fixture files, the schema's `$defs`,
+and the action verbs are unchanged from the previous pin — this literal is
+the only edit this step requires. The suite goes red here until you change
+it; that red is the last checklist item, not an obstacle.
+
+A re-vendor that also changes the surface reddens more than the pin literal,
+because a few counts in this repo are hand-maintained by design rather than
+derived from the vendored copy, and they move independently of it:
+
+- `tests/test_contract_ingest.py:107` — `test_all_thirty_four_fixtures_are_present`
+  asserts the fixture count (and says so in its own name)
+- `tests/test_contract_ingest.py:661` — `assert len(_verb_defs()) == 8`
+- `_VARIANT_DEFS` in `dispatcher/core/contract.py` — the suite itself
+  describes it as "hand-maintained and load-bearing"
+
+Update these **deliberately**, to match what actually changed upstream —
+never to silence a red you have not accounted for. An operator following
+this runbook who hits an unexpected red on a *vendoring* run naturally reads
+it as "the script is broken"; it usually means the surface moved and one of
+these three still names the old shape.
 
 ### 4. Run the full gate with the matching binary
 

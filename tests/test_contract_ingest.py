@@ -1,10 +1,11 @@
 """Pin verification for the vendored github-checker actions/v1 contract.
 
 This is offline-only: it reads the vendored copy under `contracts/` and
-never touches `../github-checker`. The vendoring *procedure* (documented in
-`scripts/vendor_manifest.py` and re-run to produce this copy) is what must
-provably extract the pinned commit's blobs; these tests only guard against
-the copy quietly drifting from its own recorded manifest afterward.
+never touches `../github-checker`. The vendoring *procedure* — documented in
+`docs/revendor-github-checker-actions.md`, of which `scripts/vendor_manifest.py`
+is one step — is what must provably extract the pinned commit's blobs; these
+tests only guard against the copy quietly drifting from its own recorded
+manifest afterward.
 """
 
 from __future__ import annotations
