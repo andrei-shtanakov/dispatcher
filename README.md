@@ -288,9 +288,27 @@ uv run python scripts/upstream_drift_report.py <canon-dir> --upstream-root <vaul
 ```
 
 The other vendored contract, `contracts/github-checker-actions/v1`, is pinned
-to a producer commit rather than a canon tree, and has no drift watcher of its
-own — nothing announces that github-checker moved. Moving its pin is a manual,
-single-input procedure: `docs/revendor-github-checker-actions.md`.
+to a producer commit rather than a canon tree, so it has its own guarantee B
+— but, unlike the table above, it has no `/api/contracts` row: this
+observation lives only in the workflow below, per the owner's scope ruling.
+`.github/workflows/actions-upstream-drift.yml` (schedule + manual) checks out
+`github-checker` at its moving default branch and runs
+`scripts/actions_drift_report.py`, which recomputes upstream's tree hash with
+the same algorithm the vendored copy was built with
+(`vendor_manifest.build_manifest`) and compares it against the `tree_sha256`
+already in `manifest.json` — upstream publishes no manifest of its own for
+this contract, so there is nothing else to compare against. Same rules as its
+sibling: advisory only, never a required check, never runs on a dispatcher
+PR. Drift (exit 1) means a human owes a deliberate re-vendor PR via
+`scripts/revendor_github_checker_actions.sh`, never a hand-edited hash;
+unavailable (exit 2) means nothing was compared, and the owed action is to
+repair the observation, not to re-vendor. Moving the pin is otherwise a
+manual, single-input procedure: `docs/revendor-github-checker-actions.md`.
+
+```
+uv run python scripts/actions_drift_report.py <upstream-contract-dir> --upstream-root <github-checker-repo>
+# exit 0 no drift · 1 drift · 2 upstream unavailable
+```
 
 ## API
 

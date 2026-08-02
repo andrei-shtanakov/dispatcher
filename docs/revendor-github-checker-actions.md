@@ -7,18 +7,46 @@ records how the copy was first created and is not maintained.
 
 ## When this runs
 
-**Manually, after a change to `contracts/actions/v1` in github-checker has
-been accepted there. There is no automatic drift signal for this contract.**
+**Manually, after a red run of the advisory drift watcher, or after you have
+otherwise learned that `contracts/actions/v1` changed in github-checker.**
 
-That is a real gap, not an omission in this document. The `plan-fields`
-contract has two guarantees — offline integrity in every PR, plus a
-scheduled `upstream-drift.yml` that watches canon — while actions/v1 has
-only the first. Nothing will tell you the producer moved; someone has to
-notice. The debt is tracked in `TODO.md` as `actions-v1-no-drift-signal`.
+The `plan-fields` contract has two guarantees — offline integrity in every
+PR, plus a scheduled `upstream-drift.yml` that watches canon — and actions/v1
+now has both too. `.github/workflows/actions-upstream-drift.yml` runs
+`scripts/actions_drift_report.py` on a schedule (and on demand via
+`workflow_dispatch`): it checks out `github-checker` at its moving default
+branch, recomputes upstream's tree hash with the same algorithm the vendored
+copy was built with (`vendor_manifest.build_manifest` — upstream publishes no
+manifest of its own for this contract, so there is nothing else to compare
+against), and compares it against the `tree_sha256` already recorded in
+`contracts/github-checker-actions/v1/manifest.json`. It also lists, when the
+pin is still present in the checkout, the commits that touched
+`contracts/actions/v1` since the pin — a different question from whether the
+content actually changed (a reverted edit produces commits with no drift).
+
+This is **advisory, like its plan-fields sibling: it never blocks a
+dispatcher pull request**, because a commit in a neighbouring repository
+must not be able to redden this repo's gate. The two red outcomes call for
+different actions, and confusing them is exactly the failure this workstream
+exists to prevent:
+
+- **Exit 1, drift** — upstream was read and differs. A human owes a
+  deliberate re-vendor PR: read what changed upstream, decide whether to
+  take it, and run the procedure below. **The fix is never to hand-edit
+  `manifest.json`'s `tree_sha256`; the hash is the signal, and editing it
+  deletes the only thing the watcher produces.**
+- **Exit 2, unavailable** — *nothing was compared* (upstream unreadable, the
+  vendored copy broken, or the reporter itself failed). There is nothing to
+  read about yet, and re-vendoring at a commit nobody could read would be the
+  wrong action. The owed action is to repair the observation — the summary
+  names what could not be read (a moved repository, a renamed path, a failed
+  checkout, an unreadable file) — and only re-vendor once a real drift run
+  says to.
 
 Do not start from a green test suite as evidence that the pin is current:
 the suite proves the vendored copy matches its own manifest, which stays
-true forever no matter how far upstream travels.
+true forever no matter how far upstream travels. That is exactly the
+guarantee the drift watcher exists to complement, not replace.
 
 ## The guarantee
 
