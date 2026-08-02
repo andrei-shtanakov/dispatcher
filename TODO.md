@@ -101,7 +101,7 @@
       git object database. Единственный вход — `ingest(raw, *, returncode)`; сошлись
       все три parse-path'а. Контракт действий больше не «поведение бинаря»:
       absent/`null`/`false` держатся через `model_fields_set`, а не через дефолты.
-- [ ] Ре-вендоринг actions/v1 — воспроизводимая процедура: runbook + скрипт с одним входом @owner:andrei @id:revendor-actions-runbook
+- [x] Ре-вендоринг actions/v1 — воспроизводимая процедура: runbook + скрипт с одним входом — PR #102 @owner:andrei @id:revendor-actions-runbook
       Процедура жила только в историческом плане `2026-07-31-vendor-actions-v1.md`,
       а пин правился руками в трёх местах: согласованная правка всех трёх
       оставляла сьют зелёным, заверяя новые байты старым коммитом.
