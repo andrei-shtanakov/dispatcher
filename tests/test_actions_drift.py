@@ -180,7 +180,7 @@ def test_a_vendored_manifest_missing_required_keys_is_unavailable(
     assert result.exit_code == 2
 
 
-def test_a_vendored_manifest_with_malshaped_surface_entries_is_unavailable(
+def test_a_vendored_manifest_with_malformed_surface_entries_is_unavailable(
     tmp_path: Path,
 ) -> None:
     upstream = _write_upstream(tmp_path, _FILES)
