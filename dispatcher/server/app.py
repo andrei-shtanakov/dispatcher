@@ -21,6 +21,7 @@ from dispatcher.core.actions import (
 )
 from dispatcher.core.correlation import WorkItemsResponse
 from dispatcher.core.discovery import DispatcherConfig
+from dispatcher.core.governance import BundleGovernance
 from dispatcher.core.models import (
     ContractStatus,
     ErrorEvent,
@@ -247,6 +248,14 @@ def create_app(
         """FR-04: описание + позиция в roadmap + предстоящие задачи."""
         try:
             return read_api.onboarding(cache, roadmap_dirs, name)
+        except read_api.ReadLookupError as err:
+            raise HTTPException(status_code=404, detail=str(err)) from err
+
+    @app.get("/api/projects/{name}/governance", response_model=BundleGovernance)
+    def project_governance(name: str) -> BundleGovernance:
+        """WS-005 WS-C: read-only bundle state (ARCH-C2: GET only)."""
+        try:
+            return read_api.governance(cache, name)
         except read_api.ReadLookupError as err:
             raise HTTPException(status_code=404, detail=str(err)) from err
 

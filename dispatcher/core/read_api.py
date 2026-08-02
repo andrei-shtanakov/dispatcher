@@ -13,6 +13,7 @@ from pathlib import Path
 from dispatcher.core.contracts import check_contracts
 from dispatcher.core.correlation import WorkItemsResponse, build_work_items
 from dispatcher.core.discovery import DispatcherConfig
+from dispatcher.core.governance import BundleGovernance, collect_governance
 from dispatcher.core.models import (
     ContractStatus,
     ErrorEvent,
@@ -76,6 +77,16 @@ def project(cache: SnapshotService, name: str) -> ProjectSnapshot:
         if snap.name == name:
             return snap
     raise ReadLookupError(f"unknown project: {name}")
+
+
+def governance(cache: SnapshotService, name: str) -> BundleGovernance:
+    """WS-005 WS-C: governance-bundle state for one project.
+
+    A pass-through of the WS-B read model (ARCH-C4): this layer neither
+    reads the verdicts file nor re-classifies — `collect_governance` does.
+    """
+    snap = project(cache, name)
+    return collect_governance(Path(snap.path))
 
 
 def errors(
