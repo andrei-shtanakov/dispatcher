@@ -168,6 +168,10 @@ function defaultRoutes(project) {
       () => ok({available: false, detail: 'n/a'})],
     [u => u.endsWith('/onboarding'), () => ok(ONBOARDING)],
     [u => u.endsWith('/spec-runner-config'), () => resp(404, {detail: 'none'})],
+    [u => u.endsWith('/governance'), () => ok({
+      state: 'no-data', reason: 'no gate_verdicts.jsonl', header: null,
+      artifacts: [], findings: [], unresolvable_findings: [],
+    })],
   ];
 }
 
