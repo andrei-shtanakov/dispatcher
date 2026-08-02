@@ -88,3 +88,20 @@ def test_the_two_meta_files_stay_out_of_the_surface(
     surface = manifest["surface"]
     assert isinstance(surface, list)
     assert [e["path"] for e in surface] == ["a.txt"]
+
+
+def test_build_manifest_records_the_contract_it_was_given(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("x")
+    manifest = vendor_manifest.build_manifest(
+        tmp_path, "0" * 40, contract="steward-gate-verdicts", contract_version=1
+    )
+    assert manifest["contract"] == "steward-gate-verdicts"
+    assert manifest["contract_version"] == 1
+
+
+def test_contract_name_defaults_to_the_original_consumer(tmp_path: Path) -> None:
+    """Existing callers pass no name; their manifests must not change shape."""
+    (tmp_path / "a.txt").write_text("x")
+    manifest = vendor_manifest.build_manifest(tmp_path, "0" * 40)
+    assert manifest["contract"] == "github-checker-actions"
+    assert manifest["contract_version"] == 1

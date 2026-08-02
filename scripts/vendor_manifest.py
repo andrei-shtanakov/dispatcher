@@ -4,7 +4,8 @@ Dev tool, not shipped runtime. Normally invoked by
 ``scripts/revendor_github_checker_actions.sh``, which passes the commit it
 extracted from and the staging directory it extracted into:
 
-    python3 scripts/vendor_manifest.py --producer-commit <sha> --root <dir>
+    python3 scripts/vendor_manifest.py --producer-commit <sha> --root <dir> \
+        [--contract <name>] [--contract-version <N>]
 
 The pin is an argument and has no default. It used to be a literal in this
 file, which made it one of three copies a human had to edit in step — and
@@ -31,7 +32,12 @@ ROOT = pathlib.Path("contracts/github-checker-actions/v1")
 EXCLUDED_NAMES = {"PINNED.txt", "manifest.json"}
 
 
-def build_manifest(root: pathlib.Path, producer_commit: str) -> dict[str, object]:
+def build_manifest(
+    root: pathlib.Path,
+    producer_commit: str,
+    contract: str = "github-checker-actions",
+    contract_version: int = 1,
+) -> dict[str, object]:
     """Compute the per-file and tree-level hashes for the vendored surface.
 
     The tree hash is derived from the same sorted (path, sha256) pairs
@@ -52,8 +58,8 @@ def build_manifest(root: pathlib.Path, producer_commit: str) -> dict[str, object
         "".join(f"{e['path']}:{e['sha256']}\n" for e in entries).encode()
     ).hexdigest()
     return {
-        "contract": "github-checker-actions",
-        "contract_version": 1,
+        "contract": contract,
+        "contract_version": contract_version,
         "producer_commit": producer_commit,
         "surface_note": (
             "sha256 of every vendored file; excludes PINNED.txt and this manifest"
@@ -77,8 +83,21 @@ def main() -> None:
         default=ROOT,
         help="directory holding the vendored copy (default: the in-tree one)",
     )
+    parser.add_argument(
+        "--contract",
+        default="github-checker-actions",
+        help="contract name recorded in the manifest",
+    )
+    parser.add_argument(
+        "--contract-version",
+        type=int,
+        default=1,
+        help="contract major version recorded in the manifest",
+    )
     args = parser.parse_args()
-    manifest = build_manifest(args.root, args.producer_commit)
+    manifest = build_manifest(
+        args.root, args.producer_commit, args.contract, args.contract_version
+    )
     (args.root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 

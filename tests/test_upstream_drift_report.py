@@ -100,6 +100,18 @@ def test_an_unreadable_canon_manifest_is_unavailable(tmp_path: Path) -> None:
     assert result.outcome == UNAVAILABLE
 
 
+def test_a_manifestless_canon_is_compared_via_its_probe_file(
+    tmp_path: Path,
+) -> None:
+    """steward's gate-verdicts canon ships no manifest.json; the probe names
+    the schema instead, and an absent probe stays unavailable, not drift."""
+    canon = _write(tmp_path / "canon", _FILES, manifest=None)
+    vendored = _write(tmp_path / "vendored", _FILES, manifest=_manifest(_FILES))
+    assert compare(canon, vendored, _PROVENANCE).outcome == UNAVAILABLE
+    result = compare(canon, vendored, _PROVENANCE, probe="schema.json")
+    assert result.outcome == NO_DRIFT
+
+
 def test_a_stale_canon_manifest_is_drift_not_silence(tmp_path: Path) -> None:
     """Upstream changed a file and did not regenerate its fingerprint.
 

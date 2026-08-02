@@ -1,0 +1,3 @@
+{"kind": "header", "schema_version": "1", "source_commit": "abababababababababababababababababababab", "dirty": false, "generated_at": "2026-08-02T12:00:00+00:00", "profile": "team-exp", "bundle": "workstreams/WS-005-gate-verdicts/spec"}
+{"kind": "artifact", "path": "10-requirements.md", "node_id": "requirements", "status": "approved", "owner_roles": ["product", "architects"]}
+{"kind": "finding", "gate_id": "GC-COMPLETENESS", "verdict": "fail", "artifact": "99-ghost.md", "message": "finding references an artifact absent from the inventory"}

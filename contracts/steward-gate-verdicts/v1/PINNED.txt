@@ -1,0 +1,8 @@
+source: steward contracts/gate-verdicts/v1
+commit: 4836345a4250735ebce9de7616a4a42b463da654
+vendored: 2026-08-02
+note: pinned copy (repo-boundaries vendoring, ADR-ECO-003). Do not edit here —
+  re-vendor with scripts/revendor_steward_gate_verdicts.sh, which derives every
+  value in this directory from the one commit it is given. Procedure:
+  docs/revendor-steward-gate-verdicts.md. Nothing in shipped code may read
+  ../steward at run time.
