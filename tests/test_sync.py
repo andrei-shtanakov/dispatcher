@@ -69,13 +69,15 @@ def verdict_of(rep, host: str, repo: str):
 
 
 def test_verdict_set_and_severity_ladder_are_exactly_the_engines_constants() -> None:
-    """DESIGN-202 wire contract, producer side: the module's own VERDICT_*
-    constants — not a list retyped beside this assertion — are the sole
-    source of truth for what the engine can emit. Pinning the derived set
-    against the literal below is what makes an add/remove/rename of a
-    verdict fail here; cross-checking `_SEVERITY`'s keys against the same
-    derived set (not the literal a second time) is what stops the ladder
-    from silently drifting out of step with the constants it ranks."""
+    """DESIGN-202 wire contract, producer side: derives the verdict set from
+    the module's own VERDICT_* constants — not a list retyped beside this
+    assertion — and pins that derived set against the literal below, so an
+    add/remove/rename of a constant fails here. Also cross-checks
+    `_SEVERITY`'s keys against the same derived set (not the literal a
+    second time), so the ladder can't silently drift out of step with the
+    constants it ranks. This does not by itself guarantee every assignment
+    site in the engine goes through a constant rather than a bare literal —
+    the per-row degradation-matrix tests below are what pin that."""
     verdict_names = [name for name in vars(sync_module) if name.startswith("VERDICT_")]
     assert verdict_names, "no VERDICT_* constants found — did sync.py move?"
     verdicts = {getattr(sync_module, name) for name in verdict_names}

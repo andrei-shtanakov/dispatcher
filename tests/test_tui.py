@@ -24,6 +24,7 @@ from dispatcher.tui.app import (
     _can_open_pr,
     _can_pull,
     _contract_cell,
+    _verdict_cell,
     truncate,
 )
 from dispatcher.tui.detail import ErrorMessageScreen, ProjectDetailScreen
@@ -183,6 +184,28 @@ def test_contract_cell_states() -> None:
     assert "b ✗ drift" in str(_contract_cell("b", sync))
     assert _contract_cell("c", sync) == "c n/a"  # not comparable
     assert _contract_cell("missing", sync) == "missing n/a"  # unknown name
+
+
+def test_verdict_cell_styling_pinned_per_verdict() -> None:
+    """Was unguarded before this test: reverting `_verdict_cell`'s
+    sync-first branch back to checking the old "pull-first" string left
+    the full suite green (mutation-verified). Pins the rendered text and
+    style directly against the function, independent of table wiring."""
+    from rich.text import Text
+
+    ok = _verdict_cell("ok")
+    assert isinstance(ok, Text) and str(ok) == "ok" and ok.style == "green"
+
+    sync_first = _verdict_cell("sync-first")
+    assert isinstance(sync_first, Text)
+    assert str(sync_first) == "sync-first"
+    assert sync_first.style == "bold yellow"
+
+    for verdict in ("no-data", "unknown"):
+        cell = _verdict_cell(verdict)
+        assert isinstance(cell, Text)
+        assert str(cell) == verdict
+        assert cell.style == "dim"
 
 
 async def test_errors_tab_lists_and_counts(tmp_path: Path) -> None:
@@ -787,7 +810,7 @@ async def test_action_keys_ignore_other_tabs_and_empty_table(
         assert runner.calls == []
 
 
-def _pf_row(
+def _verdict_row(
     *,
     behind: int | None,
     ahead: int | None,
@@ -814,41 +837,41 @@ def test_sync_action_visibility_matches_web() -> None:
     unconditional on either button: live, verdict, and row kind."""
     # behind-only: pull, no PR — the exact defect this fix closes (a dirty-
     # or ahead-only row must not offer a pull that cannot help).
-    behind_only = _pf_row(behind=2, ahead=None)
+    behind_only = _verdict_row(behind=2, ahead=None)
     assert _can_pull(behind_only)
     assert not _can_open_pr(behind_only)
 
     # ahead-only: PR, no pull — the fourth combination this fix introduces.
-    ahead_only = _pf_row(behind=0, ahead=2)
+    ahead_only = _verdict_row(behind=0, ahead=2)
     assert not _can_pull(ahead_only)
     assert _can_open_pr(ahead_only)
 
     # both: pull AND PR.
-    both = _pf_row(behind=1, ahead=1)
+    both = _verdict_row(behind=1, ahead=1)
     assert _can_pull(both)
     assert _can_open_pr(both)
 
     # neither (e.g. dirty-only, or a verdict with no numbers at all): no
     # button offered by either predicate.
-    neither = _pf_row(behind=0, ahead=0)
+    neither = _verdict_row(behind=0, ahead=0)
     assert not _can_pull(neither)
     assert not _can_open_pr(neither)
 
     # behind/ahead unknown (None) must NOT read as "behind" or "ahead" —
     # an unknown is not evidence of either condition.
-    unknown = _pf_row(behind=None, ahead=None)
+    unknown = _verdict_row(behind=None, ahead=None)
     assert not _can_pull(unknown)
     assert not _can_open_pr(unknown)
 
     # non-live host: neither button, even with both numbers truthy.
-    not_live = _pf_row(live=False, behind=2, ahead=2)
+    not_live = _verdict_row(live=False, behind=2, ahead=2)
     assert not _can_pull(not_live)
     assert not _can_open_pr(not_live)
 
     # non-sync-first verdict: neither button, even with both numbers truthy
     # (an "ok" row does not carry live behind/ahead in practice, but the
     # verdict gate must hold regardless of what the numbers say).
-    not_sync_first = _pf_row(verdict="ok", behind=2, ahead=2)
+    not_sync_first = _verdict_row(verdict="ok", behind=2, ahead=2)
     assert not _can_pull(not_sync_first)
     assert not _can_open_pr(not_sync_first)
 

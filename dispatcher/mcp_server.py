@@ -176,8 +176,11 @@ def build_server(
     @mcp.tool
     def sync_status() -> dict[str, Any]:
         """Machine sync verdicts per host/repo (ok / sync-first / no-data
-        / unknown) with snapshot ages and discovery proposals. Never
-        triggers a network fetch — reports the cached state."""
+        / unknown) with snapshot ages and discovery proposals. sync-first
+        names a state, not a remedy: work should not start until local
+        changes and upstream divergence are reconciled — check the row's
+        `reason` for which of behind/ahead/dirty applies. Never triggers
+        a network fetch — reports the cached state."""
         return read_api.sync_status(sync_cache, start_fetch=False).model_dump(
             mode="json"
         )
