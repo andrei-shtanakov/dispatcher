@@ -110,7 +110,11 @@ export function verdictText(sync: SyncStatusResponse | null): string {
 }
 
 /** Finite contextValue for a sync verdict row — web/TUI visibility parity:
- * pull ⇔ live && pull-first; open PR additionally needs truthy ahead. */
+ * pull ⇔ live pull-first row with truthy `behind` (a dirty-only or
+ * ahead-only row has nothing a fast-forward pull can fix); open PR ⇔ live
+ * pull-first row with truthy `ahead`, independent of whether pull also
+ * applies. Four outcomes: both, pull-only, PR-only, neither (→ null, same
+ * as a non-actionable row). */
 export function syncItemContext(
   v: RepoVerdict,
   live: boolean,
@@ -118,7 +122,18 @@ export function syncItemContext(
   if (!live || v.verdict !== "pull-first") {
     return null;
   }
-  return v.ahead ? "dispatcherSyncVerdict.pullPr" : "dispatcherSyncVerdict.pull";
+  const canPull = Boolean(v.behind);
+  const canOpenPr = Boolean(v.ahead);
+  if (canPull && canOpenPr) {
+    return "dispatcherSyncVerdict.pullPr";
+  }
+  if (canPull) {
+    return "dispatcherSyncVerdict.pull";
+  }
+  if (canOpenPr) {
+    return "dispatcherSyncVerdict.pr";
+  }
+  return null;
 }
 
 /** Host-panel age label, ported from the TUI's `_age_cell` thresholds

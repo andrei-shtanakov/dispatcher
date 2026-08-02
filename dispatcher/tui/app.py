@@ -108,16 +108,30 @@ class SyncRow:
     live: bool = False
     verdict: str = ""
     ahead: int | None = None
+    behind: int | None = None
 
 
-def _can_pull(row: SyncRow) -> bool:
-    """Web parity: the pull button exists ⇔ live host && pull-first."""
+def _is_actionable_pull_first(row: SyncRow) -> bool:
+    """Shared precondition for both sync remedies: a live pull-first row.
+
+    Neither `_can_pull` nor `_can_open_pr` implies the other from here on —
+    each additionally checks the specific condition its button remedies.
+    """
     return row.kind == "verdict" and row.live and row.verdict == "pull-first"
 
 
+def _can_pull(row: SyncRow) -> bool:
+    """Web parity: the pull button exists ⇔ live pull-first row that is
+    actually behind (truthy `behind`). A dirty-only or ahead-only row has
+    nothing a fast-forward pull can fix; offering the button there just
+    tells the operator "already up to date" with no explanation."""
+    return _is_actionable_pull_first(row) and bool(row.behind)
+
+
 def _can_open_pr(row: SyncRow) -> bool:
-    """Web parity: open PR additionally needs truthy ahead (`v.ahead ?`)."""
-    return _can_pull(row) and bool(row.ahead)
+    """Web parity: open PR exists ⇔ live pull-first row with truthy ahead
+    (`v.ahead ?`) — independent of whether pull also applies."""
+    return _is_actionable_pull_first(row) and bool(row.ahead)
 
 
 class DispatcherApp(App[None]):
@@ -349,6 +363,7 @@ class DispatcherApp(App[None]):
                         live=panel.source == "live",
                         verdict=v.verdict,
                         ahead=v.ahead,
+                        behind=v.behind,
                     )
                 )
                 first = False
@@ -613,7 +628,10 @@ class DispatcherApp(App[None]):
         if row is None:
             return
         if not _can_pull(row):
-            self.notify("pull: needs a live pull-first row", severity="warning")
+            self.notify(
+                "pull: needs a live pull-first row that is behind (behind > 0)",
+                severity="warning",
+            )
             return
         self._run_sync_action("pull", row.repo)
 

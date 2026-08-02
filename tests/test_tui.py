@@ -671,7 +671,9 @@ def _sync_with_rows() -> SyncStatus:
                 host="h1",
                 source="live",
                 verdicts=[
-                    RepoVerdict(repo="alpha", verdict="pull-first", ahead=2),
+                    # behind=2 too: alpha needs both buttons live (pull AND
+                    # open PR) across the existing key-handler tests below.
+                    RepoVerdict(repo="alpha", verdict="pull-first", ahead=2, behind=2),
                     RepoVerdict(repo="beta", verdict="ok"),
                     RepoVerdict(repo="gamma", verdict="pull-first", ahead=None),
                 ],
@@ -785,20 +787,91 @@ async def test_action_keys_ignore_other_tabs_and_empty_table(
         assert runner.calls == []
 
 
+def _pf_row(
+    *,
+    behind: int | None,
+    ahead: int | None,
+    live: bool = True,
+    verdict: str = "pull-first",
+) -> SyncRow:
+    """A verdict row, overridable — the shared shape every case below
+    starts from before poking at behind/ahead/live/verdict."""
+    return SyncRow(
+        kind="verdict",
+        repo="a",
+        live=live,
+        verdict=verdict,
+        ahead=ahead,
+        behind=behind,
+    )
+
+
 def test_sync_action_visibility_matches_web() -> None:
-    """Web: pull ⇔ live && pull-first; open PR ⇔ additionally truthy ahead
-    (dispatcher/server/static/index.html, the `actions` helper)."""
-    live_pf = SyncRow(kind="verdict", repo="a", live=True, verdict="pull-first")
-    assert _can_pull(live_pf)
-    assert not _can_open_pr(live_pf)  # ahead None → falsy, web hides the button
-    assert _can_open_pr(
-        SyncRow(kind="verdict", repo="a", live=True, verdict="pull-first", ahead=2)
-    )
-    assert not _can_pull(
-        SyncRow(kind="verdict", repo="a", live=False, verdict="pull-first", ahead=2)
-    )
-    assert not _can_pull(SyncRow(kind="verdict", repo="a", live=True, verdict="ok"))
-    assert not _can_pull(SyncRow(kind="proposal", repo="a"))
+    """Web parity (dispatcher/server/static/index.html, the `actions`
+    helper): pull ⇔ live pull-first row with truthy `behind`; open PR ⇔ live
+    pull-first row with truthy `ahead`, independent of pull. Every
+    combination of (behind, ahead) is pinned, plus the gates that stay
+    unconditional on either button: live, verdict, and row kind."""
+    # behind-only: pull, no PR — the exact defect this fix closes (a dirty-
+    # or ahead-only row must not offer a pull that cannot help).
+    behind_only = _pf_row(behind=2, ahead=None)
+    assert _can_pull(behind_only)
+    assert not _can_open_pr(behind_only)
+
+    # ahead-only: PR, no pull — the fourth combination this fix introduces.
+    ahead_only = _pf_row(behind=0, ahead=2)
+    assert not _can_pull(ahead_only)
+    assert _can_open_pr(ahead_only)
+
+    # both: pull AND PR.
+    both = _pf_row(behind=1, ahead=1)
+    assert _can_pull(both)
+    assert _can_open_pr(both)
+
+    # neither (e.g. dirty-only, or a verdict with no numbers at all): no
+    # button offered by either predicate.
+    neither = _pf_row(behind=0, ahead=0)
+    assert not _can_pull(neither)
+    assert not _can_open_pr(neither)
+
+    # behind/ahead unknown (None) must NOT read as "behind" or "ahead" —
+    # an unknown is not evidence of either condition.
+    unknown = _pf_row(behind=None, ahead=None)
+    assert not _can_pull(unknown)
+    assert not _can_open_pr(unknown)
+
+    # non-live host: neither button, even with both numbers truthy.
+    not_live = _pf_row(live=False, behind=2, ahead=2)
+    assert not _can_pull(not_live)
+    assert not _can_open_pr(not_live)
+
+    # non-pull-first verdict: neither button, even with both numbers truthy
+    # (an "ok" row does not carry live behind/ahead in practice, but the
+    # verdict gate must hold regardless of what the numbers say).
+    not_pull_first = _pf_row(verdict="ok", behind=2, ahead=2)
+    assert not _can_pull(not_pull_first)
+    assert not _can_open_pr(not_pull_first)
+
+    # non-verdict row kinds (proposal/error/empty): neither button, even
+    # with a pull-first verdict and both numbers truthy.
+    for row in (
+        SyncRow(
+            kind="proposal",
+            repo="a",
+            live=True,
+            verdict="pull-first",
+            behind=2,
+            ahead=2,
+        ),
+        SyncRow(
+            kind="error", repo="a", live=True, verdict="pull-first", behind=2, ahead=2
+        ),
+        SyncRow(
+            kind="empty", repo="a", live=True, verdict="pull-first", behind=2, ahead=2
+        ),
+    ):
+        assert not _can_pull(row)
+        assert not _can_open_pr(row)
 
 
 def _sync_with_proposal() -> SyncStatus:
