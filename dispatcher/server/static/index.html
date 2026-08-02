@@ -152,6 +152,8 @@
 <section id="detail-section" hidden>
   <h2>Project detail <span id="detail-name"></span></h2>
   <div id="detail">click a project card…</div>
+  <h3 id="governance-title" hidden>Governance bundle</h3>
+  <div id="governance"></div>
   <div id="merge-gate-open"><label>PR #
     <input id="mg-pr-input" type="number" min="1" inputmode="numeric"></label>
     <button id="mg-open-gate" type="button">Open merge gate</button>
@@ -680,6 +682,42 @@ function renderOnboarding(ob) {
   return desc + position + next + live + warn;
 }
 
+// WS-005 WS-C (inbox #108): read-only rendering of the governance-bundle
+// state the collector classified. This layer neither reads the verdicts
+// file nor re-classifies (ARCH-C4) — it only shows BundleGovernance.
+function governanceBadge(state) {
+  // Non-pass classes MUST NOT read as pass (M-01): one badge per state,
+  // "✅ pass" is the only green word this panel can produce.
+  const marks = {
+    "pass": "✅ pass", "blocked": "⛔ blocked", "no-data": "∅ no-data",
+    "unreadable": "✖ unreadable", "stale": "⌛ stale",
+    "unresolvable": "❓ unresolvable",
+  };
+  return marks[state] || `✖ ${state}`;
+}
+
+function renderGovernance(g) {
+  const badge = `<p><b>${esc(governanceBadge(g.state))}</b>${
+    g.reason ? ` <span class="dim">${esc(g.reason)}</span>` : ""}</p>`;
+  const provenance = g.header ? `<p class="dim">emitted ${
+    esc(g.header.generated_at)} @ ${esc(g.header.source_commit.slice(0, 12))}
+    · profile ${esc(g.header.profile)} · bundle ${esc(g.header.bundle)}</p>` : "";
+  const blockedPaths = new Set((g.findings || []).map(f => f.artifact));
+  const artifacts = (g.artifacts || []).length ? `
+    <ul>${g.artifacts.map(a => `
+      <li>${blockedPaths.has(a.path) ? "⛔" : "·"} ${esc(a.path)}
+        · ${esc(a.status)}${a.node_id ? ` · ${esc(a.node_id)}` : ""}</li>`
+    ).join("")}</ul>` : "";
+  const findings = (g.findings || []).length ? `
+    <ul>${g.findings.map(f => `
+      <li>${esc(f.gate_id)} [${esc(f.verdict)}] ${esc(f.artifact)}:
+        ${esc(f.message)}${
+        (g.unresolvable_findings || []).some(u => u.artifact === f.artifact)
+          ? " <b>(outside the inventory)</b>" : ""}</li>`
+    ).join("")}</ul>` : "";
+  return badge + provenance + artifacts + findings;
+}
+
 async function detail(name, dirName) {
   const section = document.getElementById("detail-section");
   section.hidden = false;
@@ -721,6 +759,21 @@ async function detail(name, dirName) {
     }
   } catch {
     // no project.yaml for this project — leave the panel hidden
+  }
+
+  const gvTitle = document.getElementById("governance-title");
+  const gvPanel = document.getElementById("governance");
+  gvTitle.hidden = true;
+  gvPanel.textContent = "";
+  try {
+    const gv = await get(
+      "/api/projects/" + encodeURIComponent(name) + "/governance"
+    );
+    gvTitle.hidden = false;
+    gvPanel.innerHTML = renderGovernance(gv);
+  } catch {
+    // unknown project is already surfaced by the onboarding block above;
+    // an unreachable endpoint must not take the rest of the panel down
   }
   section.scrollIntoView({behavior: "smooth", block: "nearest"});
 }
