@@ -36,11 +36,19 @@ jobs:
       # be seen against where upstream actually is now. The resolved SHA is
       # recorded by the reporter, so the run still says exactly what it
       # looked at.
+      # fetch-depth: 0 — a default `--depth 1` clone gives this checkout only
+      # its own HEAD, so `_commits_since_pin()`'s `git cat-file -e <pin>`
+      # fails for any pin that is not literally HEAD, and "Commits since the
+      # pin" degrades to "likely a shallow clone" every single run: the
+      # moment upstream moves past the pin is the only moment this section
+      # would have anything to say. Do not "optimise" this back to a shallow
+      # clone — it silences the one thing the section exists to answer.
       - uses: actions/checkout@v6
         with:
           repository: andrei-shtanakov/github-checker
           ref: master
           path: _upstream/github-checker
+          fetch-depth: 0
 
       - uses: astral-sh/setup-uv@v8.1.0
       - run: uv sync

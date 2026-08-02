@@ -188,11 +188,28 @@ def compare(
     # vendored copy itself was built). That is drift in itself, and hiding it
     # behind a hash comparison that never saw the file would be exactly the
     # quiet fail-open this reporter exists to avoid.
-    collisions = sorted(
-        p.relative_to(upstream_dir).as_posix()
-        for p in upstream_dir.rglob("*")
-        if p.is_file() and p.name in EXCLUDED_NAMES
-    )
+    #
+    # The walk itself can raise (a directory we cannot enter) — caught here so
+    # an unreadable upstream is reported as UNAVAILABLE, never as DRIFT. An
+    # uncaught exception here would otherwise escape to `main()`, and Python
+    # exits 1 on an uncaught exception — the same code as DRIFT — which would
+    # turn "we could not look" into a positive claim about upstream's content.
+    try:
+        collisions = sorted(
+            p.relative_to(upstream_dir).as_posix()
+            for p in upstream_dir.rglob("*")
+            if p.is_file() and p.name in EXCLUDED_NAMES
+        )
+    except OSError as exc:
+        return report(
+            UNAVAILABLE,
+            [
+                "## Upstream unreadable",
+                "",
+                f"Could not walk `{upstream_dir}` looking for excluded-name "
+                f"collisions (`{type(exc).__name__}`). Nothing was compared.",
+            ],
+        )
     if collisions:
         return report(
             DRIFT,
@@ -217,12 +234,32 @@ def compare(
             pin=pinned_commit,
         )
 
-    upstream_manifest = build_manifest(
-        upstream_dir,
-        provenance.get("commit", "?"),
-        contract="github-checker-actions",
-        contract_version=1,
-    )
+    # `build_manifest` calls `read_bytes()` on every file under `upstream_dir`
+    # with no guard of its own (it is a shared tool, also used by the
+    # re-vendor script against a checkout it just verified). A file that
+    # vanished or lost read permission between the collision walk and here
+    # must not turn into an uncaught exception: Python exits 1 on those, the
+    # same code as DRIFT, which would make "we could not read it" look like a
+    # positive claim about upstream's content.
+    try:
+        upstream_manifest = build_manifest(
+            upstream_dir,
+            provenance.get("commit", "?"),
+            contract="github-checker-actions",
+            contract_version=1,
+        )
+    except OSError as exc:
+        offending = getattr(exc, "filename", None)
+        named = f" `{offending}`" if offending else ""
+        return report(
+            UNAVAILABLE,
+            [
+                "## Upstream unreadable",
+                "",
+                f"Could not read upstream file{named} while recomputing the "
+                f"tree hash (`{type(exc).__name__}`). Nothing was compared.",
+            ],
+        )
     upstream_tree = str(upstream_manifest["tree_sha256"])
     upstream_hashes = _surface_dict(upstream_manifest["surface"])  # type: ignore[arg-type]
     provenance_lines.append(f"- upstream tree_sha256 (recomputed): `{upstream_tree}`")
@@ -241,6 +278,33 @@ def compare(
         for rel in set(upstream_hashes) & set(vendored_hashes)
         if upstream_hashes[rel] != vendored_hashes[rel]
     )
+
+    if not added and not removed and not changed:
+        # The per-file pairs agree on both sides, yet the tree hashes do not
+        # — the vendored `tree_sha256` does not fingerprint its own `surface`
+        # list. That is a guarantee-A break (checked by
+        # tests/test_contract_ingest.py on every PR), not evidence that
+        # upstream changed; reporting it as ordinary drift would name nothing
+        # and still tell the operator to re-vendor an upstream that is, by
+        # every file comparison available here, identical.
+        return report(
+            DRIFT,
+            [
+                "## Vendored manifest does not match its own fingerprint",
+                "",
+                "Every upstream file matches its vendored counterpart, but "
+                "the recorded `tree_sha256` disagrees with the recomputed "
+                "one anyway. This is not upstream drift — it means "
+                f"`{manifest_path}`'s `tree_sha256` does not fingerprint the "
+                "`surface` it ships with.",
+                "",
+                "**Next step:** fix guarantee A first — see "
+                "`tests/test_contract_ingest.py` and "
+                "`scripts/vendor_manifest.py` — then re-run this watcher.",
+            ],
+            pin=pinned_commit,
+        )
+
     body = ["## Upstream drift", ""]
     if added:
         body.append(f"- only upstream: {', '.join(f'`{r}`' for r in added)}")
@@ -342,7 +406,20 @@ def main(argv: list[str] | None = None) -> int:
         "remote": _git(root, "remote", "get-url", "origin"),
         "ref": args.ref,
     }
-    report = compare(args.upstream_dir, args.vendored, provenance)
+    try:
+        report = compare(args.upstream_dir, args.vendored, provenance)
+    except Exception as exc:  # noqa: BLE001 — last-resort net, see below
+        # `compare()` guards every OSError it can anticipate (I-1). This is
+        # the backstop for whatever it did not anticipate: an uncaught
+        # exception exits the interpreter with 1, the same code as DRIFT,
+        # which would dress an unhandled failure as a positive finding about
+        # upstream. Anything reaching here is UNAVAILABLE, never a finding.
+        report = Report(
+            UNAVAILABLE,
+            "## Reporter failed\n\n"
+            f"`{type(exc).__name__}: {exc}`. Nothing was compared — this is "
+            "unknown, not drift.",
+        )
     summary = report.summary
     if args.upstream_root is not None:
         summary += "\n\n" + _commits_since_pin(

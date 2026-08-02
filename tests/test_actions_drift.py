@@ -39,9 +39,18 @@ def _sha(text: str) -> str:
 
 def _tree_hash(files: dict[str, str]) -> str:
     """Reproduces `vendor_manifest.build_manifest`'s tree hash independently,
-    so these tests do not lean on the module under test to grade itself."""
-    entries = sorted((rel, _sha(files[rel])) for rel in files)
-    digest = "".join(f"{path}:{sha}\n" for path, sha in entries)
+    so these tests do not lean on the module under test to grade itself.
+
+    Sorted by `Path`, matching `build_manifest`'s own
+    `sorted(p for p in root.rglob("*") ...)` — a plain string sort would
+    order sibling names like `fixtures.json` vs `fixtures/x` differently
+    (`.` < `/` as characters, but `Path` compares by path parts, so the
+    directory entry sorts first). No such pair exists in `_FILES`, but the
+    oracle should disagree with the module under test for no reason other
+    than an actual bug.
+    """
+    entries = sorted((Path(rel), _sha(files[rel])) for rel in files)
+    digest = "".join(f"{path.as_posix()}:{sha}\n" for path, sha in entries)
     return hashlib.sha256(digest.encode()).hexdigest()
 
 
@@ -215,6 +224,92 @@ def test_a_nested_collision_file_is_still_caught(tmp_path: Path) -> None:
     result = compare(upstream, vendored, _PROVENANCE)
     assert result.outcome == DRIFT
     assert "fixtures/nested/manifest.json" in result.summary
+
+
+def test_an_unreadable_upstream_file_is_unavailable_not_drift(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """I-1: `build_manifest` calls `read_bytes()` with no guard of its own.
+
+    Before the fix, an `OSError` here escaped `compare()`/`main()` entirely;
+    Python exits 1 on an uncaught exception — the same code as DRIFT — which
+    dressed "we could not read this file" as a positive claim about
+    upstream's content. Monkeypatching `Path.read_bytes` reproduces the
+    `PermissionError` a real `chmod 000` fixture hits, portably.
+    """
+    upstream, vendored = _both(tmp_path, _FILES, _FILES)
+    real_read_bytes = Path.read_bytes
+
+    def flaky_read_bytes(self: Path) -> bytes:
+        if self.name == "README.md":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky_read_bytes)
+    result = compare(upstream, vendored, _PROVENANCE)
+    assert result.outcome == UNAVAILABLE
+    assert result.exit_code == 2
+    assert "README.md" in result.summary
+
+
+def test_an_unwalkable_upstream_directory_is_unavailable_not_drift(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """I-1's other half: the collision walk's own `rglob` can raise too (a
+    subdirectory we cannot enter), before any file is even hashed."""
+    import actions_drift_report as mod
+
+    upstream, vendored = _both(tmp_path, _FILES, _FILES)
+
+    def flaky_rglob(self: Path, pattern: str):
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(mod.Path, "rglob", flaky_rglob)
+    result = compare(upstream, vendored, _PROVENANCE)
+    assert result.outcome == UNAVAILABLE
+    assert result.exit_code == 2
+
+
+def test_main_never_lets_an_unexpected_exception_report_as_drift(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """I-1's backstop: whatever `compare()` did not anticipate must still
+    land on UNAVAILABLE in `main()`, not on the interpreter's default exit 1
+    for an uncaught exception (the same code DRIFT uses)."""
+    import actions_drift_report as mod
+
+    upstream, vendored = _both(tmp_path, _FILES, _FILES)
+
+    def boom(*args: object, **kwargs: object):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(mod, "compare", boom)
+    code = mod.main([str(upstream), "--vendored", str(vendored)])
+    assert code == 2
+
+
+def test_a_stale_vendored_fingerprint_is_not_blamed_on_upstream(
+    tmp_path: Path,
+) -> None:
+    """M-1: if the vendored manifest's `tree_sha256` does not fingerprint its
+    own `surface` (a guarantee-A break), the tree hashes differ while every
+    per-file pair matches. That must not render as ordinary "upstream
+    drift" naming nothing and recommending a re-vendor of an upstream that
+    is, by every file comparison available here, identical.
+    """
+    upstream = _write_upstream(tmp_path, _FILES)
+    manifest = _manifest(_FILES)
+    manifest["tree_sha256"] = "0" * 64  # correct per-file hashes, wrong tree
+    vendored = _write_vendored(tmp_path, _FILES, manifest=manifest)
+    result = compare(upstream, vendored, _PROVENANCE)
+    assert result.outcome == DRIFT  # still red — but the cause must be named
+    assert "does not fingerprint" in result.summary.lower()
+    assert "guarantee a" in result.summary.lower()
+    assert "test_contract_ingest" in result.summary
+    # not misdiagnosed as an ordinary upstream-content difference
+    assert "only upstream" not in result.summary
+    assert "only in the vendored copy" not in result.summary
+    assert "differing content" not in result.summary
 
 
 def test_the_summary_records_which_upstream_was_read(tmp_path: Path) -> None:

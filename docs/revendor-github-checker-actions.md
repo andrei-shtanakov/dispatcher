@@ -26,11 +26,22 @@ content actually changed (a reverted edit produces commits with no drift).
 
 This is **advisory, like its plan-fields sibling: it never blocks a
 dispatcher pull request**, because a commit in a neighbouring repository
-must not be able to redden this repo's gate. A red run (drift, or upstream
-unavailable) means a human owes a deliberate re-vendor PR — read what
-changed upstream, decide whether to take it, and run the procedure below.
-**The fix is never to hand-edit `manifest.json`'s `tree_sha256`; the hash is
-the signal, and editing it deletes the only thing the watcher produces.**
+must not be able to redden this repo's gate. The two red outcomes call for
+different actions, and confusing them is exactly the failure this workstream
+exists to prevent:
+
+- **Exit 1, drift** — upstream was read and differs. A human owes a
+  deliberate re-vendor PR: read what changed upstream, decide whether to
+  take it, and run the procedure below. **The fix is never to hand-edit
+  `manifest.json`'s `tree_sha256`; the hash is the signal, and editing it
+  deletes the only thing the watcher produces.**
+- **Exit 2, unavailable** — *nothing was compared* (upstream unreadable, the
+  vendored copy broken, or the reporter itself failed). There is nothing to
+  read about yet, and re-vendoring at a commit nobody could read would be the
+  wrong action. The owed action is to repair the observation — the summary
+  names what could not be read (a moved repository, a renamed path, a failed
+  checkout, an unreadable file) — and only re-vendor once a real drift run
+  says to.
 
 Do not start from a green test suite as evidence that the pin is current:
 the suite proves the vendored copy matches its own manifest, which stays
