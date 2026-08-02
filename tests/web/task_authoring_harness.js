@@ -399,23 +399,30 @@ async function refreshSync(env, verdicts, source = 'live') {
   await drain();
 }
 
-/** The Actions cell's real buttons for one repo row, `data-act` values only
- * (never assumed from the verdict — read back from the rendered DOM). */
+/** The Actions cell element for one repo row (the LAST `<td>`, same one a
+ * person reads) — never assumed from the verdict, always read back from the
+ * rendered DOM. */
+function syncActionsCell(env, repo) {
+  const row = env.el('sync-hosts').querySelectorAll('tr')
+    .find(r => r.textContent.includes(repo));
+  if (!row) throw new Error(`no rendered sync row for repo ${repo}`);
+  const cells = row.querySelectorAll('td');
+  return cells[cells.length - 1];
+}
+
+/** The Actions cell's real buttons for one repo row, `data-act` values IN
+ * RENDER ORDER (deliberately NOT sorted — the page emits pull before open
+ * PR, and a swapped render order should fail a case that claims to pin it). */
 function syncActionActs(env, repo) {
   return env.el('sync-hosts')
     .querySelectorAll(`button.act[data-dir="${repo}"]`)
-    .map(b => b.dataset.act)
-    .sort();
+    .map(b => b.dataset.act);
 }
 
 /** The Actions cell's fallback text when no button applies (dirty-only, or
  * the row is not actionable at all) — the same table cell a person reads. */
 function syncActionsCellText(env, repo) {
-  const row = env.el('sync-hosts').querySelectorAll('tr')
-    .find(r => r.textContent.includes(repo));
-  if (!row) throw new Error(`no rendered sync row for repo ${repo}`);
-  const cells = row.querySelectorAll('td');
-  return cells[cells.length - 1].textContent.trim();
+  return syncActionsCell(env, repo).textContent.trim();
 }
 
 const syncVerdict = (overrides) => ({
@@ -1953,20 +1960,35 @@ const CASES = [
   },
   {
     name: '55. [sync] ahead-only (behind falsy): open PR only, no pull '
-      + 'button — the fourth combination a pull cannot help',
+      + 'button — the fourth combination a pull cannot help — and the cell '
+      + 'does not start with a stray separator space left over from the '
+      + 'old always-pull-first template',
     async run(env) {
       await refreshSync(env, [syncVerdict({ahead: 3, behind: 0})]);
-      return {'buttons offered': syncActionActs(env, 'alpha').join(',')};
+      const cell = syncActionsCell(env, 'alpha');
+      return {
+        'buttons offered': syncActionActs(env, 'alpha').join(','),
+        // A leading space would render as a TEXT node before the button;
+        // `.trim()`-based cell-text assertions elsewhere in this file would
+        // hide that, so this checks the actual first child's node type.
+        'cell\'s first child is the button, not a leading text node':
+          cell.childNodes[0].nodeType === 1
+            && cell.childNodes[0].tagName === 'BUTTON',
+      };
     },
-    expect: {'buttons offered': 'create-pr'},
+    expect: {
+      'buttons offered': 'create-pr',
+      'cell\'s first child is the button, not a leading text node': true,
+    },
   },
   {
-    name: '56. [sync] both behind and ahead: both buttons offered',
+    name: '56. [sync] both behind and ahead: both buttons offered, pull '
+      + 'rendered before open PR (render order, not sorted)',
     async run(env) {
       await refreshSync(env, [syncVerdict({ahead: 1, behind: 4})]);
       return {'buttons offered': syncActionActs(env, 'alpha').join(',')};
     },
-    expect: {'buttons offered': 'create-pr,pull'},
+    expect: {'buttons offered': 'pull,create-pr'},
   },
   {
     name: '57. [sync] dirty-only (behind and ahead both falsy): neither '

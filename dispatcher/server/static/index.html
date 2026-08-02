@@ -389,10 +389,13 @@ function renderSync(sync) {
     if (v.verdict !== "pull-first" || !live) return "—";
     const pull = v.behind ? `<button class="act" data-act="pull"
       data-dir="${esc(v.repo)}">pull</button>` : "";
-    const pr = v.ahead ? ` <button class="act" data-act="create-pr"
+    const pr = v.ahead ? `<button class="act" data-act="create-pr"
       data-dir="${esc(v.repo)}">open PR</button>` : "";
     if (!pull && !pr) return "—";
-    return `${pull}${pr}
+    // Separator only when BOTH buttons render — a PR-only (or pull-only)
+    // cell must not start with a stray space.
+    const sep = pull && pr ? " " : "";
+    return `${pull}${sep}${pr}
       <span class="act-result" data-for="${esc(v.repo)}"></span>`;
   };
   document.getElementById("sync-hosts").innerHTML =
