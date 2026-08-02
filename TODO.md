@@ -101,6 +101,10 @@
       git object database. Единственный вход — `ingest(raw, *, returncode)`; сошлись
       все три parse-path'а. Контракт действий больше не «поведение бинаря»:
       absent/`null`/`false` держатся через `model_fields_set`, а не через дефолты.
+- [ ] Ре-вендоринг actions/v1 — воспроизводимая процедура: runbook + скрипт с одним входом @owner:andrei @id:revendor-actions-runbook
+      Процедура жила только в историческом плане `2026-07-31-vendor-actions-v1.md`,
+      а пин правился руками в трёх местах: согласованная правка всех трёх
+      оставляла сьют зелёным, заверяя новые байты старым коммитом.
 
 ## Хвосты качества
 
@@ -243,3 +247,12 @@
 - [ ] Handoff в arbiter по ошибке `agent_id` в `report_benchmark` @owner:andrei @id:arbiter-agent-id-handoff
       Дефект соседа, который dispatcher только показывает; наша часть — написать
       handoff/issue, править чужой репо нельзя.
+- [ ] Для `contracts/github-checker-actions/v1` нет drift-сигнала: о том, что продюсер уехал, узнаём только вручную @owner:andrei @trigger:"actions/v1 изменился в github-checker и это заметили постфактум" @id:actions-v1-no-drift-signal
+      У plan-fields две гарантии — offline integrity в PR-гейте и scheduled
+      `upstream-drift.yml`; у actions/v1 только первая, и она по построению
+      останется зелёной сколько угодно долго после того, как канон уехал.
+      Симметричный advisory-workflow против `github-checker/contracts/actions/v1`
+      — правильное решение, но это отдельная поверхность (расписание, права,
+      коды 0/1/2, поведение при недоступном upstream), и в документационный PR
+      она не входила осознанно. Процедура ре-вендоринга уже написана:
+      `docs/revendor-github-checker-actions.md`.
