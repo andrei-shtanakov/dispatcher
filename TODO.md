@@ -83,6 +83,14 @@
       `derived/governance/`, который на 2026-07-26 не существует. Сравнивать не с чем,
       поэтому пункт заблокирован, а не «в работе»: dispatcher здесь рендерер, не
       источник, и читать «на будущее» нечего.
+- [ ] WS-005 WS-B: вендор `gate-verdicts/v1` + governance-collector (6 состояний бандла) @owner:andrei @id:ws005-governance-collector
+      Принятие inbox-issue #106 от steward (ADR-ECO-006). Канон:
+      `steward/contracts/gate-verdicts/v1` @ `4836345`; копия —
+      `contracts/steward-gate-verdicts/v1/` с раздельными copy-integrity
+      (PR-гейт) и upstream-drift (scheduled). Collector читает
+      `<repo>/.steward/gate_verdicts.jsonl` + git-факты и только
+      классифицирует (ARCH-C1/C3): pass | blocked | no-data | unreadable |
+      stale | unresolvable. Панель — WS-C, отдельная inbox-issue после.
 
 ## Кросс-репные контракты
 
