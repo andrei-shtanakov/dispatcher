@@ -28,13 +28,40 @@ _SCHEMA_DIR = Path("schemas")
 # (overridable via the projects map, which keeps this hermetically testable).
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PF_CONTRACT_NAME = "plan-fields-v1"  # matches roadmap items' target_contract
+# What the vendored manifest must declare itself to be. Checked by the product,
+# not only by a test against the real file: the PINNED.txt cross-reference
+# takes its authority FROM the manifest, so a manifest that keeps a
+# self-consistent surface while declaring another contract — or none — would
+# disarm that cross-check without failing anything else.
+_PF_MANIFEST_CONTRACT = "plan-fields"
+_PF_MANIFEST_VERSION = 1
 _PF_CANON_PROJECT = "prograph-vault"
 _PF_CANON_DIR_REL = Path("authored/contracts/plan-fields/v1")
 _PF_MANIFEST_REL = _PF_CANON_DIR_REL / "manifest.json"
 _PF_VENDORED_REL = Path("packages/plan-fields/src/plan_fields/contract")
-# excluded from the fingerprinted surface (parity with the vault generator):
-# drift-control meta + the vendor-only pin marker.
-_PF_META = {"manifest.json", "drift-control.md", "PINNED.txt"}
+# Excluded from the fingerprinted surface (parity with the vault generator):
+# drift-control meta + the vendor-only pin marker. The exclusion is
+# legitimate — a manifest cannot hash itself, and policy/provenance are not
+# contract — but "excluded from the fingerprint" had quietly become "checked
+# by nothing", and that cost twice: a PINNED.txt naming a commit nobody
+# verified, and a drift-control.md describing the folded check #99 removed,
+# shipped inside the package while both guarantees stayed green.
+#
+# So every exclusion now declares how it IS checked, and `_PF_META` is derived
+# from those tables rather than written out — a fourth excluded file cannot
+# exist until someone says which check covers it.
+_PF_META_HASHES = {
+    # Recorded when vendored; a re-vendor that updates the file and forgets
+    # this line fails its own test rather than certifying a stale copy.
+    "drift-control.md": (
+        "7547f28ac446b7d56d1bf4c65295024b08b392d26ea77daa4e5b91b10b6f7f10"
+    ),
+}
+# Checked by shape and cross-reference instead of by hash: `manifest.json`
+# cannot contain its own digest, and `PINNED.txt` is provenance whose value is
+# whether it agrees with the manifest, not whether it is byte-frozen.
+_PF_META_STRUCTURAL = {"manifest.json", "PINNED.txt"}
+_PF_META = set(_PF_META_HASHES) | _PF_META_STRUCTURAL
 _KIND_INTEGRITY = "vendored_integrity"
 _KIND_DRIFT = "upstream_drift"
 _KIND_LISTING = "listing"
@@ -127,7 +154,7 @@ def _live_surface(root: Path) -> dict[str, str | None]:
     }
 
 
-def _pin_problem(vendored_dir: Path) -> str | None:
+def _pin_problem(vendored_dir: Path, contract: str) -> str | None:
     """Why `PINNED.txt` fails to state a reviewable provenance, else None.
 
     This is provenance a reviewer can follow, not an attestation: it says
@@ -139,8 +166,17 @@ def _pin_problem(vendored_dir: Path) -> str | None:
         pin = (vendored_dir / "PINNED.txt").read_text(encoding="utf-8")
     except OSError:
         return "PINNED.txt is absent, so the copy states no provenance"
-    if not _PIN_SOURCE_RE.search(pin):
+    source = _PIN_SOURCE_RE.search(pin)
+    if source is None:
         return "PINNED.txt names no `source:` upstream"
+    # Cross-reference, not shape: a well-formed pin pointing at some other
+    # contract is exactly as wrong as a missing one, and only the manifest
+    # knows which contract this copy is supposed to be.
+    if contract not in source.group(0):
+        return (
+            f"PINNED.txt `source:` does not name the contract the manifest "
+            f"declares ({contract})"
+        )
     if not _PIN_COMMIT_RE.search(pin):
         return "PINNED.txt states no `commit:` as a full 40-hex sha"
     return None
@@ -171,6 +207,20 @@ def _pf_vendored_integrity(vendored_dir: Path) -> ContractStatus:
         return status(False, "vendored manifest.json is absent")
     except json.JSONDecodeError as exc:
         return status(False, f"vendored manifest.json is unreadable: {exc.msg}")
+    declared = manifest.get("contract")
+    if declared != _PF_MANIFEST_CONTRACT:
+        return status(
+            False,
+            f"vendored manifest declares contract {declared!r}, "
+            f"not {_PF_MANIFEST_CONTRACT!r}",
+        )
+    version = manifest.get("contract_version")
+    if version != _PF_MANIFEST_VERSION:
+        return status(
+            False,
+            f"vendored manifest declares contract version {version!r}, "
+            f"not {_PF_MANIFEST_VERSION!r}",
+        )
     surface = manifest.get("surface", [])
     if not _valid_surface(surface):
         return status(False, "vendored manifest surface is malformed")
@@ -197,7 +247,13 @@ def _pf_vendored_integrity(vendored_dir: Path) -> ContractStatus:
             return status(False, f"vendored file is unreadable: {rel}")
         if digest != listed[rel]:
             return status(False, f"vendored file differs from its fingerprint: {rel}")
-    pin = _pin_problem(vendored_dir)
+    for name, expected in sorted(_PF_META_HASHES.items()):
+        actual = _sha256(vendored_dir / name)
+        if actual is None:
+            return status(False, f"excluded file is absent or unreadable: {name}")
+        if actual != expected:
+            return status(False, f"excluded file differs from its record: {name}")
+    pin = _pin_problem(vendored_dir, _PF_MANIFEST_CONTRACT)
     if pin is not None:
         return status(False, pin)
     return status(True, None)
