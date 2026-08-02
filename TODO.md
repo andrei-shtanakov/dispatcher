@@ -83,7 +83,7 @@
       `derived/governance/`, который на 2026-07-26 не существует. Сравнивать не с чем,
       поэтому пункт заблокирован, а не «в работе»: dispatcher здесь рендерер, не
       источник, и читать «на будущее» нечего.
-- [ ] WS-005 WS-B: вендор `gate-verdicts/v1` + governance-collector (6 состояний бандла) @owner:andrei @id:ws005-governance-collector
+- [x] WS-005 WS-B: вендор `gate-verdicts/v1` + governance-collector (6 состояний бандла) — PR #107 @owner:andrei @id:ws005-governance-collector
       Принятие inbox-issue #106 от steward (ADR-ECO-006). Канон:
       `steward/contracts/gate-verdicts/v1` @ `4836345`; копия —
       `contracts/steward-gate-verdicts/v1/` с раздельными copy-integrity
