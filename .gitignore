@@ -18,3 +18,9 @@ spec/.executor-state.db*
 spec/.executor-state.lock
 spec/.task-history.log
 .vscode/
+# per-machine sync tracking sidecar (core/tracking.py), written by the Sync
+# screen and POST /api/sync/track. Its contents are the repos that happen to
+# exist on THIS machine, so committing it would publish one host's workspace
+# as everyone's — and leave every host's tree dirty, which the sync verdict
+# reads as "do not start work here".
+dispatcher-sync.toml
