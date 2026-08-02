@@ -317,6 +317,18 @@ const WIDGET = {name: 'widget', path: '/repos/widget'};
 // the data-dir rule exists.
 const MAESTRO = {name: 'Maestro', path: '/home/dev/repos/maestro'};
 
+// A minimal ProjectSpecRunnerConfig (dispatcher/core/spec_runner_config.py),
+// used to make the spec-runner-config panel actually render instead of
+// hitting defaultRoutes' blanket 404 for '/spec-runner-config'.
+const MAESTRO_SPEC_CFG = {
+  project: 'maestro',
+  project_yaml_path: '/home/dev/repos/maestro/project.yaml',
+  base_mtime: 111,
+  typed: {max_retries: {value: 3, explicit: true}},
+  extra_executor_config: {},
+  extra_explicit: false,
+};
+
 /** Drive the real slug field through a lookup with the given wire answer. */
 async function lookup(env, slug, status, body) {
   env.route(u => u.startsWith('/api/issue-lookup'), () => resp(status, body));
@@ -2110,6 +2122,66 @@ const CASES = [
       'top_line=unknown': 'badge dim',
     },
   },
+  {
+    name: '63. [spec-runner-config] the GET is keyed on the data-dir, never '
+      + 'the display name — a project whose display name differs from its '
+      + 'clone directory must be queried by directory',
+    project: MAESTRO,
+    async run(env) {
+      env.route(u => u.endsWith('/spec-runner-config'),
+        () => ok(MAESTRO_SPEC_CFG));
+      await selectProject(env);
+      const req = env.requests.find(r => r.url.endsWith('/spec-runner-config'));
+      return {
+        'spec-runner-config GET URL': req && req.url,
+        'panel visible': env.visible('spec-runner-config'),
+      };
+    },
+    expect: {
+      'spec-runner-config GET URL': '/api/projects/maestro/spec-runner-config',
+      'panel visible': true,
+    },
+  },
+  {
+    name: '64. [spec-runner-config] the update mutation carries the '
+      + 'data-dir as `dir`, never the display name',
+    project: MAESTRO,
+    async run(env) {
+      env.route(u => u.endsWith('/spec-runner-config'),
+        () => ok(MAESTRO_SPEC_CFG));
+      await selectProject(env);
+      env.route(u => u.startsWith('/api/actions/update-spec-runner-config'),
+        () => ok({ok: true, pr_url: 'https://example.invalid/pr/1'}));
+      // First click computes the diff and arms the button; second confirms.
+      await env.fire('spec-runner-config-submit', 'click');
+      await env.fire('spec-runner-config-submit', 'click');
+      const post = env.requests.find(
+        r => r.url.startsWith('/api/actions/update-spec-runner-config'));
+      const body = post && JSON.parse(post.init.body);
+      return {'mutation POST body dir': body && body.dir};
+    },
+    expect: {'mutation POST body dir': 'maestro'},
+  },
+  {
+    name: '65. [spec-runner-config] a selected card with no usable clone '
+      + 'directory does not query spec-runner-config at all — it must not '
+      + 'fall back to the display name',
+    // Same "ghost" fixture as case 28: a detected project whose path yields
+    // no basename renders data-dir="", so detail() receives dirName=null.
+    project: {name: 'ghost', path: ''},
+    async run(env) {
+      await selectProject(env);
+      return {
+        'spec-runner-config GET issued':
+          env.requests.some(r => r.url.endsWith('/spec-runner-config')),
+        'panel hidden': env.el('spec-runner-config').hidden,
+      };
+    },
+    expect: {
+      'spec-runner-config GET issued': false,
+      'panel hidden': true,
+    },
+  },
 ];
 
 // ---- the gate's floor ------------------------------------------------------
@@ -2155,6 +2227,9 @@ const REQUIRED_CASE_IDS = [
   '57',    // sync: dirty-only offers neither button, falls back to "—"
   '61',    // sync: verdict cell's CSS class, not just its text, is pinned
   '62',    // sync: top-line badge's CSS class, not just its text, is pinned
+  '63',    // spec-runner-config GET is keyed on data-dir, not display name
+  '64',    // spec-runner-config mutation's dir is data-dir, not display name
+  '65',    // no usable dir → no query at all, never a fallback to the name
 ];
 
 /** The stable id is the leading number in the case name (e.g. "38.1"). */

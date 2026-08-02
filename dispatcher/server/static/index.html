@@ -748,17 +748,28 @@ async function detail(name, dirName) {
   const panel = document.getElementById("spec-runner-config");
   panel.hidden = true;
   currentSpecRunnerConfig = null;
-  try {
-    const resp = await fetch(
-      "/api/projects/" + encodeURIComponent(name) + "/spec-runner-config"
-    );
-    if (resp.ok) {
-      currentSpecRunnerConfig = await resp.json();
-      currentSpecRunnerConfig.repoDir = name;
-      renderSpecRunnerConfigForm(currentSpecRunnerConfig);
+  // I-6 parity: this endpoint and its mutation are directory-keyed (server
+  // matches Path(project_yaml_path).parent.name), NOT display-name-keyed —
+  // must use dirName, never `name`. When dirName is absent (an undetected
+  // project, or a detected one whose path yields no basename) there is no
+  // known directory to query; falling back to `name` would silently ask the
+  // wrong key (parent.name == name is a string compare, so it "succeeds" on
+  // no filesystem — the 404 it would otherwise produce is not a safety net).
+  // Leave the panel hidden without even attempting the request, same as the
+  // no-project.yaml case below.
+  if (dirName) {
+    try {
+      const resp = await fetch(
+        "/api/projects/" + encodeURIComponent(dirName) + "/spec-runner-config"
+      );
+      if (resp.ok) {
+        currentSpecRunnerConfig = await resp.json();
+        currentSpecRunnerConfig.repoDir = dirName;
+        renderSpecRunnerConfigForm(currentSpecRunnerConfig);
+      }
+    } catch {
+      // no project.yaml for this project — leave the panel hidden
     }
-  } catch {
-    // no project.yaml for this project — leave the panel hidden
   }
 
   const gvTitle = document.getElementById("governance-title");
