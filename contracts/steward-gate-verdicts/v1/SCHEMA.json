@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward:contracts/gate-verdicts/v1",
+  "title": "gate_verdicts.jsonl record (v1)",
+  "description": "One JSONL line of a gate-check verdicts file. Line 1 MUST be the header record; the reader treats an unknown schema_version, an unparseable line, or a missing header as 'unreadable' (never clean). 'kind' is required on every record — an optional kind silently merges record types (the dispatcher #99 lesson).",
+  "oneOf": [
+    {"$ref": "#/$defs/header"},
+    {"$ref": "#/$defs/artifact"},
+    {"$ref": "#/$defs/finding"}
+  ],
+  "$defs": {
+    "header": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "schema_version", "source_commit", "dirty", "generated_at", "profile", "bundle"],
+      "properties": {
+        "kind": {"const": "header"},
+        "schema_version": {"const": "1"},
+        "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "dirty": {
+          "type": "boolean",
+          "description": "True when the working tree had uncommitted changes at emit time. The reader classifies dirty=true as stale-grade provenance: the instrument itself must be covered by fail-closed."
+        },
+        "generated_at": {"type": "string", "format": "date-time"},
+        "profile": {"type": "string", "minLength": 1},
+        "bundle": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Bundle directory, POSIX path relative to the repo root."
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path", "node_id", "status", "owner_roles"],
+      "properties": {
+        "kind": {"const": "artifact"},
+        "path": {"type": "string", "minLength": 1},
+        "node_id": {
+          "type": ["string", "null"],
+          "description": "Profile node claimed by the artifact; null = managed but unknown to the profile."
+        },
+        "status": {"enum": ["draft", "approved", "stale", "in_review", "unknown"]},
+        "owner_roles": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+          "description": "DEC-007 role slugs (no '@'). A list because profile data still carries the legacy multi-role form; collapses to a single accountable slug when the DEC-007 migration lands."
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "gate_id", "verdict", "artifact", "message"],
+      "properties": {
+        "kind": {"const": "finding"},
+        "gate_id": {"type": "string", "pattern": "^GC-[A-Z0-9-]+$"},
+        "verdict": {"enum": ["fail", "warn"]},
+        "artifact": {"type": "string", "minLength": 1},
+        "message": {"type": "string", "minLength": 1},
+        "obligation": {
+          "type": ["string", "null"],
+          "description": "Reserved: filled when the gate-id catalog lands (TODO gate-id-catalog); vocabulary is the catalog's to define."
+        },
+        "tier": {"type": ["string", "null"], "description": "Reserved: risk-model tier (WS-006 integration)."},
+        "phase": {"type": ["string", "null"], "description": "Reserved: lifecycle phase policy (severity-by-stage, ADR open question 4)."},
+        "risk_model_version": {"type": ["string", "null"], "description": "Reserved: profiles/risk-model.yaml version in force."},
+        "waiver_ref": {"type": ["string", "null"], "description": "Reserved: SHA-bound waiver reference (steward waivers-check)."}
+      }
+    }
+  }
+}
