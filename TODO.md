@@ -263,12 +263,16 @@
 - [ ] Handoff в arbiter по ошибке `agent_id` в `report_benchmark` @owner:andrei @id:arbiter-agent-id-handoff
       Дефект соседа, который dispatcher только показывает; наша часть — написать
       handoff/issue, править чужой репо нельзя.
-- [ ] Для `contracts/github-checker-actions/v1` нет drift-сигнала: о том, что продюсер уехал, узнаём только вручную @owner:andrei @trigger:"actions/v1 изменился в github-checker и это заметили постфактум" @id:actions-v1-no-drift-signal
+- [x] Для `contracts/github-checker-actions/v1` нет drift-сигнала: о том, что продюсер уехал, узнаём только вручную — PR #110 @owner:andrei @id:actions-v1-no-drift-signal
       У plan-fields две гарантии — offline integrity в PR-гейте и scheduled
-      `upstream-drift.yml`; у actions/v1 только первая, и она по построению
+      `upstream-drift.yml`; у actions/v1 была только первая, и она по построению
       останется зелёной сколько угодно долго после того, как канон уехал.
-      Симметричный advisory-workflow против `github-checker/contracts/actions/v1`
-      — правильное решение, но это отдельная поверхность (расписание, права,
-      коды 0/1/2, поведение при недоступном upstream), и в документационный PR
-      она не входила осознанно. Процедура ре-вендоринга уже написана:
+      Закрыто симметричным advisory: `.github/workflows/actions-upstream-drift.yml`
+      + `scripts/actions_drift_report.py`. Сравнение не манифест-к-манифесту, как
+      у plan-fields, а пересчёт `tree_sha256` алгоритмом `build_manifest` — у
+      продюсера своего манифеста нет. Следствие закрыто явно: файл, добавленный
+      апстримом под именем из `EXCLUDED_NAMES`, ловится до пересчёта и даёт дрейф,
+      а не молчание. Коды `0/1/2`, причём `unavailable` ≠ «нет дрейфа» и требует
+      чинить наблюдение, а не вендорить с коммита, который никто не прочитал.
+      Не required и не на PR. Процедура ре-вендоринга:
       `docs/revendor-github-checker-actions.md`.
