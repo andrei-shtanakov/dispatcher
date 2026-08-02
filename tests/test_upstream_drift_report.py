@@ -23,6 +23,10 @@ from pathlib import Path
 from upstream_drift_report import DRIFT, NO_DRIFT, UNAVAILABLE, compare
 
 _FILES = {"schema.json": '{"x":1}', "fixtures/valid/basic.md": "- [x] a\n"}
+# Fabricated provenance for the synthetic canon/vendored pairs below. The
+# commit is arbitrary and intentionally not the live pin: these tests assert
+# that whatever provenance is handed in reaches the summary, not that any
+# particular commit is current.
 _PROVENANCE = {
     "commit": "db6c7a6fd646cfa48d1453b7cfe7f05c3df0ea00",
     "remote": "https://github.com/andrei-shtanakov/prograph-vault",
@@ -164,3 +168,18 @@ def test_a_missing_vendored_copy_is_unavailable_not_drift(tmp_path: Path) -> Non
     canon = _write(tmp_path / "canon", _FILES, manifest=_manifest(_FILES))
     result = compare(canon, tmp_path / "nowhere", _PROVENANCE)
     assert result.outcome == UNAVAILABLE
+
+
+def test_the_reporter_excludes_exactly_what_the_integrity_check_excludes() -> None:
+    """Two copies of the exclusion set is the defect this slice is closing.
+
+    The reporter keeps its own `_META` so it can run without importing the
+    dispatcher package. That is fine; the copies silently disagreeing is not —
+    a name excluded here but not there would be compared as contract, and the
+    reverse would hide a real difference.
+    """
+    import upstream_drift_report as mod
+
+    from dispatcher.core.contracts import _PF_META
+
+    assert mod._META == _PF_META

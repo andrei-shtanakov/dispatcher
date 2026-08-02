@@ -1,6 +1,8 @@
 source: prograph-vault authored/contracts/plan-fields/v1
-commit: db6c7a6fd646cfa48d1453b7cfe7f05c3df0ea00
-vendored: 2026-07-29
+commit: 14fdbb4f99da6d05d53129ba90166d9e8be0b61a
+vendored: 2026-08-02
 note: pinned copy (repo-boundaries vendoring). Do not edit here; re-vendor from
   the pin. manifest.json travels with this copy for offline drift-verify (PF-6);
-  drift-control policy is drift-control.md.
+  drift-control policy is drift-control.md. The three files excluded from the
+  fingerprinted surface each carry their own check — see _PF_META in
+  dispatcher/core/contracts.py and tests/test_pf6_drift.py.

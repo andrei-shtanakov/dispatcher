@@ -33,6 +33,11 @@ from dispatcher.core.roadmap import contract_sync_by_name
 
 _CANON_REL = "authored/contracts/plan-fields/v1"
 _VENDORED_REL = "packages/plan-fields/src/plan_fields/contract"
+# A synthetic pin for the fabricated copies below — deliberately NOT the
+# commit the real copy is vendored from (see PINNED.txt). These tests build
+# their own contract directories; using the live pin here would read as a
+# second copy of it and get "updated" on the next re-vendor, turning fixtures
+# into a duplicate of the thing they are supposed to be independent of.
 _PIN = "db6c7a6fd646cfa48d1453b7cfe7f05c3df0ea00"
 _SURFACE = {"schema.json": '{"x":1}', "fixtures/valid/basic.md": "- [x] a\n"}
 
@@ -78,6 +83,13 @@ def _write_canon(root: Path, files: dict[str, str]) -> None:
 
 
 _DERIVE = object()  # "generate it", as distinct from "do not write one"
+# The real file, not a stand-in: the recorded hash applies to every copy that
+# claims to be ours, so a synthetic copy carrying invented meta content would
+# be testing a directory the checker is right to reject.
+_REAL_CONTRACT = (
+    Path(__file__).parent.parent / "packages/plan-fields/src/plan_fields/contract"
+)
+_DEFAULT_META = {"drift-control.md": (_REAL_CONTRACT / "drift-control.md").read_text()}
 
 
 def _write_vendored(
@@ -86,8 +98,15 @@ def _write_vendored(
     *,
     manifest: object = _DERIVE,
     pin: str | None = None,
+    meta: dict[str, str] | None = None,
 ) -> Path:
-    """A consumer-side vendored copy carrying its OWN manifest and pin."""
+    """A consumer-side vendored copy carrying its OWN manifest and pin.
+
+    `meta` writes the files excluded from the fingerprinted surface. Default
+    is a realistic copy: a real vendored directory has a drift-control.md, and
+    a helper that omitted it would make every test agree that the absence is
+    fine.
+    """
     vdir = root / _VENDORED_REL
     _write_surface(vdir, files)
     body = _manifest_for(files) if manifest is _DERIVE else manifest
@@ -95,6 +114,8 @@ def _write_vendored(
         (vdir / "manifest.json").write_text(json.dumps(body))
     if pin is not None:
         (vdir / "PINNED.txt").write_text(pin)
+    for name, text in (_DEFAULT_META if meta is None else meta).items():
+        (vdir / name).write_text(text)
     return vdir
 
 
@@ -371,3 +392,120 @@ def test_an_unreadable_vendored_file_says_so_not_hash_mismatch(
     assert "unreadable" in (row.detail or "")
     assert "schema.json" in (row.detail or "")
     assert vdir.exists()
+
+
+# --------------------------------------------------------------------------
+# The files EXCLUDED from the fingerprinted surface still need a check
+# --------------------------------------------------------------------------
+#
+# The exclusion is legitimate — `manifest.json` cannot hash itself, and
+# `drift-control.md`/`PINNED.txt` are policy and provenance rather than
+# contract — but "excluded from the fingerprint" quietly became "checked by
+# nothing". It has now cost twice: `PINNED.txt` could name a commit no one
+# verified (closed in #99), and a `drift-control.md` describing the very
+# folded check #99 removed shipped inside the package for a day while both
+# guarantees stayed green, because neither can see it.
+
+
+def test_the_exclusion_set_cannot_grow_without_a_declared_check() -> None:
+    """Adding a fourth excluded file must be impossible to do silently.
+
+    `_PF_META` is derived from the policy tables rather than written out, so a
+    new exclusion has to be declared as either hash-checked or
+    structurally-checked before it can exist. This test pins the current
+    membership on top, so growing it is a deliberate edit here too.
+    """
+    from dispatcher.core import contracts as mod
+
+    assert mod._PF_META == {"manifest.json", "drift-control.md", "PINNED.txt"}
+    # every excluded name is covered by exactly one policy, none left over
+    assert mod._PF_META == set(mod._PF_META_HASHES) | mod._PF_META_STRUCTURAL
+    assert not set(mod._PF_META_HASHES) & mod._PF_META_STRUCTURAL
+
+
+def test_the_recorded_hash_matches_the_real_vendored_drift_control() -> None:
+    """A re-vendor that updates the file and forgets the pin fails here.
+
+    Without this the recorded hash drifts from the copy it describes and the
+    check certifies a file nobody compared — the same shape as a stale
+    manifest certifying a surface it no longer matches.
+    """
+    from dispatcher.core import contracts as mod
+
+    actual = hashlib.sha256(
+        (
+            Path(__file__).parent.parent
+            / "packages/plan-fields/src/plan_fields/contract/drift-control.md"
+        ).read_bytes()
+    ).hexdigest()
+    assert mod._PF_META_HASHES["drift-control.md"] == actual
+
+
+def test_a_tampered_excluded_file_breaks_integrity(tmp_path: Path) -> None:
+    """The fingerprint cannot see it, so the recorded hash has to."""
+    vdir = _write_vendored(tmp_path / "self", _SURFACE, pin=_pin_text())
+    (vdir / "drift-control.md").write_text("tampered\n")
+    row = _integrity(check_contracts(_projects(tmp_path, with_vault=False)))
+    assert row.in_sync is False
+    assert "drift-control.md" in (row.detail or "")
+
+
+def test_a_missing_excluded_file_breaks_integrity(tmp_path: Path) -> None:
+    _write_vendored(tmp_path / "self", _SURFACE, pin=_pin_text(), meta={})
+    row = _integrity(check_contracts(_projects(tmp_path, with_vault=False)))
+    assert row.in_sync is False
+    assert "drift-control.md" in (row.detail or "")
+
+
+def test_the_pin_must_name_the_contract_the_manifest_declares(
+    tmp_path: Path,
+) -> None:
+    """PINNED.txt is checked against the manifest's own provenance, not just
+    for shape: a 40-hex commit under a `source:` naming some other contract is
+    well-formed and still wrong."""
+    _write_vendored(
+        tmp_path / "self",
+        _SURFACE,
+        pin=(
+            "source: prograph-vault authored/contracts/SOMETHING-ELSE/v1\n"
+            f"commit: {_PIN}\n"
+        ),
+    )
+    row = _integrity(check_contracts(_projects(tmp_path, with_vault=False)))
+    assert row.in_sync is False
+    assert "plan-fields" in (row.detail or "")
+
+
+def test_the_manifest_shape_and_its_exclusion_note_are_pinned() -> None:
+    """`manifest.json` is the one file that cannot hash itself.
+
+    So its identity is asserted structurally instead: the contract it names,
+    the fingerprint it carries, and — the part that matters here — that its
+    own note still describes exactly the three exclusions the checker
+    implements. A canon that started excluding a fourth file would otherwise
+    pass silently while our policy table said three.
+    """
+    manifest = json.loads(
+        (
+            Path(__file__).parent.parent
+            / "packages/plan-fields/src/plan_fields/contract/manifest.json"
+        ).read_text()
+    )
+    assert set(manifest) == {
+        "contract",
+        "contract_version",
+        "schema_id",
+        "surface_note",
+        "tree_sha256",
+        "surface",
+    }
+    assert manifest["contract"] == "plan-fields"
+    assert manifest["contract_version"] == 1
+    # the normative surface must not have moved: this slice re-vendors meta
+    # only, and a changed fingerprint here means the scope slipped
+    assert manifest["tree_sha256"] == (
+        "5d606dbd3a610e471e40b54a0edbccb84e9e84b081d451853e8dcaae12779770"
+    )
+    note = manifest["surface_note"]
+    for excluded in ("manifest.json", "drift-control.md", "PINNED.txt"):
+        assert excluded in note, note

@@ -3,7 +3,7 @@ title: "plan-fields v1 — drift control"
 type: contract
 status: proposed
 owner: Andrei
-updated: 2026-07-28
+updated: 2026-08-02
 ---
 
 # plan-fields v1 — drift control (PF-6)
@@ -37,20 +37,32 @@ copy alongside `PINNED.txt`.
 
 ## How checkers consume this (executable half, code repos)
 
-Two comparison modes, both reading `manifest.json` — no bespoke per-consumer
-logic:
+Two comparisons, both reading `manifest.json` — no bespoke per-consumer logic.
+They answer **different questions** and must not be folded into one verdict
+(dispatcher#99):
 
-1. **Live compare (dispatcher).** Where the vault and the consumer are both
-   checked out (as in `dispatcher/core/contracts.py` `_catalog_drift` for the
-   agents-catalog), the checker recomputes the vendored surface hashes and
-   compares to the canonical `manifest.json`, emitting one `contract_in_sync`
-   verdict for the `plan-fields` contract. This is the PF-6 code companion and
-   the rule PF-6's verification eventually turns green on.
-2. **Offline verify (any consumer's own CI).** A consumer with only its own repo
-   recomputes the hashes of its vendored `contract/` surface and compares to the
-   `manifest.json` it vendored. No vault checkout required.
+1. **Integrity — guarantee A (required, offline).** A consumer recomputes the
+   hashes of its vendored `contract/` surface and compares them to the
+   `manifest.json` it vendored, checking the file set and the manifest against
+   each other in both directions. No vault checkout, no network — so it belongs
+   in a consumer's ordinary required CI. This is the comparison PF-6's
+   `contract_in_sync` evidence resolves. It proves the copy is intact; it proves
+   **nothing** about whether canon has moved.
+2. **Upstream drift — guarantee B (advisory, needs canon).** Where a canon
+   checkout is available, the checker recomputes canon's surface and compares it
+   to the vendored copy, recording the remote, the requested ref, the resolved
+   commit and both tree hashes — so a green run says no drift *from what*. This
+   is an **observation, not a gate**: run it on a schedule, never as a required
+   pull-request check, because a commit in one repository must not redden
+   another's PRs. "No canon was available" is **unknown**, never "in sync".
 
-Neither mode is defined here as code: this file is the contract they honor.
+Guarantee A's limit is worth stating: it proves the vendored surface is
+internally consistent with the manifest travelling beside it. The link from that
+manifest to the commit named in `PINNED.txt` is **reviewable provenance, not a
+cryptographic attestation** — proving it would need a signature or a checkout of
+that commit.
+
+Neither comparison is defined here as code: this file is the contract they honor.
 
 ## Compatibility policy
 
