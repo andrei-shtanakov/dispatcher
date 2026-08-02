@@ -3,11 +3,16 @@
 Inputs (DESIGN-202): a live git-only snapshot of this host's workspace
 (`github-checker snapshot --local-only`, requires github-checker on PATH) plus
 per-host snapshots published to the KB (`prograph-vault/derived/snapshots/`).
-Output: a verdict per (repo, host) — ``ok | pull-first | no-data | unknown`` —
+Output: a verdict per (repo, host) — ``ok | sync-first | no-data | unknown`` —
 and a worst-case top line for the current host. Degradation is honest by
 construction: absence, staleness, schema drift and local git errors all render
 as explicit non-``ok`` verdicts, never as an optimistic default; ``gh_error``
 alone degrades only PR data and does not poison the git-state verdict.
+
+``sync-first`` names a state, not a remedy: working on this machine should
+not start until local changes and upstream divergence are reconciled. Behind,
+ahead (unpushed) and a dirty worktree all resolve to this one verdict — the
+name intentionally does not prescribe which of the three to fix.
 """
 
 from __future__ import annotations
@@ -33,17 +38,17 @@ STALE_AFTER_SECONDS = 3600.0  # brief AP-02: publication freshness ≤ 1 h
 _SNAPSHOT_TIMEOUT = 120
 
 VERDICT_OK = "ok"
-VERDICT_PULL_FIRST = "pull-first"
+VERDICT_SYNC_FIRST = "sync-first"
 VERDICT_NO_DATA = "no-data"
 VERDICT_UNKNOWN = "unknown"
 
-# Top line = worst verdict on the current host: any pull-first beats any
+# Top line = worst verdict on the current host: any sync-first beats any
 # unknown ("надо синхронизироваться" is more actionable than "не знаю").
 _SEVERITY = {
     VERDICT_OK: 0,
     VERDICT_NO_DATA: 1,
     VERDICT_UNKNOWN: 2,
-    VERDICT_PULL_FIRST: 3,
+    VERDICT_SYNC_FIRST: 3,
 }
 
 
@@ -105,16 +110,16 @@ def _repo_verdict(repo: RepoSnapshotV1, *, stale: bool) -> RepoVerdict:
     if local.error:
         row.reason = f"local git error: {local.error}"
         return row
-    pull_reasons = []
+    sync_reasons = []
     if local.behind:
-        pull_reasons.append(f"behind {local.behind}")
+        sync_reasons.append(f"behind {local.behind}")
     if local.ahead:
-        pull_reasons.append(f"ahead {local.ahead} (unpushed)")
+        sync_reasons.append(f"ahead {local.ahead} (unpushed)")
     if local.dirty:
-        pull_reasons.append("dirty worktree")
-    if pull_reasons:
-        row.verdict = VERDICT_PULL_FIRST
-        row.reason = ", ".join(pull_reasons)
+        sync_reasons.append("dirty worktree")
+    if sync_reasons:
+        row.verdict = VERDICT_SYNC_FIRST
+        row.reason = ", ".join(sync_reasons)
         return row
     if local.ahead is None or local.behind is None:
         row.reason = "ahead/behind unknown (no upstream or never fetched)"

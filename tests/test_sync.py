@@ -4,6 +4,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from dispatcher.core import sync as sync_module
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.snapshot_contract import WorkspaceSnapshotV1
 from dispatcher.core.sync import (
@@ -64,6 +65,24 @@ def verdict_of(rep, host: str, repo: str):
     return next(v for v in panel.verdicts if v.repo == repo)
 
 
+# --- contract: the verdict vocabulary ----------------------------------------
+
+
+def test_verdict_set_and_severity_ladder_are_exactly_the_engines_constants() -> None:
+    """DESIGN-202 wire contract, producer side: the module's own VERDICT_*
+    constants — not a list retyped beside this assertion — are the sole
+    source of truth for what the engine can emit. Pinning the derived set
+    against the literal below is what makes an add/remove/rename of a
+    verdict fail here; cross-checking `_SEVERITY`'s keys against the same
+    derived set (not the literal a second time) is what stops the ladder
+    from silently drifting out of step with the constants it ranks."""
+    verdict_names = [name for name in vars(sync_module) if name.startswith("VERDICT_")]
+    assert verdict_names, "no VERDICT_* constants found — did sync.py move?"
+    verdicts = {getattr(sync_module, name) for name in verdict_names}
+    assert verdicts == {"ok", "sync-first", "no-data", "unknown"}
+    assert set(sync_module._SEVERITY.keys()) == verdicts
+
+
 # --- verdict table rows ------------------------------------------------------
 
 
@@ -74,7 +93,7 @@ def test_clean_repo_is_ok_and_topline_ok() -> None:
     assert rep.top_reason is None
 
 
-def test_behind_ahead_dirty_are_pull_first_with_reasons() -> None:
+def test_behind_ahead_dirty_are_sync_first_with_reasons() -> None:
     rep = report(
         snap(
             "mac-a",
@@ -89,7 +108,7 @@ def test_behind_ahead_dirty_are_pull_first_with_reasons() -> None:
     assert verdict_of(rep, "mac-a", "b").reason == "ahead 2 (unpushed)"
     assert verdict_of(rep, "mac-a", "c").reason == "dirty worktree"
     assert all(
-        verdict_of(rep, "mac-a", r).verdict == "pull-first" for r in ("a", "b", "c")
+        verdict_of(rep, "mac-a", r).verdict == "sync-first" for r in ("a", "b", "c")
     )
 
 
@@ -138,7 +157,7 @@ def test_fresh_kb_panel_keeps_verdicts() -> None:
             )
         ],
     )
-    assert verdict_of(rep, "mac-b", "a").verdict == "pull-first"
+    assert verdict_of(rep, "mac-b", "a").verdict == "sync-first"
 
 
 def test_missing_repo_on_host_is_no_data_never_ok() -> None:
@@ -163,7 +182,7 @@ def test_kb_contract_error_panel_and_warning() -> None:
 # --- top line and KB special-casing -----------------------------------------
 
 
-def test_topline_pull_first_beats_unknown() -> None:
+def test_topline_sync_first_beats_unknown() -> None:
     rep = report(
         snap(
             "mac-a",
@@ -173,7 +192,7 @@ def test_topline_pull_first_beats_unknown() -> None:
             ],
         )
     )
-    assert rep.top_line == "pull-first"
+    assert rep.top_line == "sync-first"
     assert "b:" in (rep.top_reason or "")
 
 

@@ -361,14 +361,14 @@ const fmtAge = s => s == null ? "—"
   : s < 90 ? `${Math.round(s)}s`
   : s < 5400 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`;
 const verdictCls = v => v === "ok" ? "ok"
-  : v === "pull-first" ? "warn" : "dim";
+  : v === "sync-first" ? "warn" : "dim";
 
 function renderSync(sync) {
   const rep = sync.report;
   const top = document.getElementById("sync-topline");
   top.textContent = rep.top_line;
   top.className = "badge " + (rep.top_line === "ok" ? "ok"
-    : rep.top_line === "pull-first" ? "warn" : "dim");
+    : rep.top_line === "sync-first" ? "warn" : "dim");
   document.getElementById("sync-reason").textContent =
     rep.top_reason ? "· " + rep.top_reason : "";
   document.getElementById("sync-fetch").hidden = !sync.fetch_in_flight;
@@ -386,7 +386,7 @@ function renderSync(sync) {
   // `ahead`, regardless of whether pull also applies. Neither → "—", same
   // fallback non-actionable rows already show.
   const actions = (v, live) => {
-    if (v.verdict !== "pull-first" || !live) return "—";
+    if (v.verdict !== "sync-first" || !live) return "—";
     const pull = v.behind ? `<button class="act" data-act="pull"
       data-dir="${esc(v.repo)}">pull</button>` : "";
     const pr = v.ahead ? `<button class="act" data-act="create-pr"

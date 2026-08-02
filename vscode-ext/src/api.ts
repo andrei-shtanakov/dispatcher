@@ -107,7 +107,7 @@ export interface HostPanel {
 
 export interface SyncReportSummary {
   current_host: string;
-  top_line: string; // ok | pull-first | no-data | unknown
+  top_line: string; // ok | sync-first | no-data | unknown
   top_reason: string | null;
   hosts: HostPanel[];
   proposals: string[];

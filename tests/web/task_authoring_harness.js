@@ -377,7 +377,7 @@ function syncFixture(verdicts, source = 'live') {
   return ok({
     fetch_in_flight: false,
     report: {
-      top_line: 'pull-first', top_reason: null, proposals: [],
+      top_line: 'sync-first', top_reason: null, proposals: [],
       hosts: [{
         host: 'h1', source, age_seconds: 5, stale: false,
         gh_error: null, error: null, verdicts,
@@ -426,7 +426,7 @@ function syncActionsCellText(env, repo) {
 }
 
 const syncVerdict = (overrides) => ({
-  repo: 'alpha', verdict: 'pull-first', reason: 'x', branch: 'main',
+  repo: 'alpha', verdict: 'sync-first', reason: 'x', branch: 'main',
   ahead: null, behind: null, dirty: false, is_kb: false, ...overrides,
 });
 
@@ -1929,7 +1929,7 @@ const CASES = [
   },
   // --- sync screen: the Actions cell offers only the button that helps ------
   //
-  // dispatcher/core/sync.py's pull-first verdict fires on ANY of behind /
+  // dispatcher/core/sync.py's sync-first verdict fires on ANY of behind /
   // ahead / dirty, but a pull only helps a `behind` row: pull runs
   // `git pull --ff-only` and would truthfully say "already up to date" on a
   // dirty-only or ahead-only row, leaving the operator with a yellow row and
@@ -2030,7 +2030,7 @@ const CASES = [
     expect: {'buttons offered': '', 'actions cell': '—'},
   },
   {
-    name: '60. [sync] a non-pull-first verdict (ok) offers neither button '
+    name: '60. [sync] a non-sync-first verdict (ok) offers neither button '
       + 'even on a live host',
     async run(env) {
       await refreshSync(env, [

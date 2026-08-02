@@ -5,6 +5,7 @@ import type {
   OverviewResponse,
   ProjectDetail,
   RepoVerdict,
+  SyncStatusResponse,
 } from "../src/api";
 import {
   detailLines,
@@ -16,6 +17,7 @@ import {
   statusText,
   syncAgeLabel,
   syncItemContext,
+  syncVerdictIcon,
   verdictText,
   truncate,
 } from "../src/model";
@@ -151,8 +153,8 @@ describe("verdictText", () => {
     expect(verdictText(sync("ok"))).toBe(" · $(check) ok");
   });
 
-  it("renders pull-first with a warning icon", () => {
-    expect(verdictText(sync("pull-first"))).toBe(" · $(warning) pull-first");
+  it("renders sync-first with a warning icon", () => {
+    expect(verdictText(sync("sync-first"))).toBe(" · $(warning) sync-first");
   });
 
   it("renders unknown with a question icon", () => {
@@ -169,9 +171,9 @@ describe("verdictText", () => {
 });
 
 describe("syncItemContext (web/TUI parity)", () => {
-  // pull ⇔ live pull-first row with truthy `behind` (a dirty-only or
+  // pull ⇔ live sync-first row with truthy `behind` (a dirty-only or
   // ahead-only row has nothing a fast-forward pull can fix); open PR ⇔ live
-  // pull-first row with truthy `ahead`, independent of pull. Every
+  // sync-first row with truthy `ahead`, independent of pull. Every
   // combination of (behind, ahead) is pinned below, plus the gates that stay
   // unconditional on either button: live and verdict.
   const v = (o: Partial<RepoVerdict>): RepoVerdict => ({
@@ -189,39 +191,39 @@ describe("syncItemContext (web/TUI parity)", () => {
   it("behind-only -> pull only", () => {
     expect(
       syncItemContext(
-        v({ verdict: "pull-first", behind: 2, ahead: null }),
+        v({ verdict: "sync-first", behind: 2, ahead: null }),
         true,
       ),
     ).toBe("dispatcherSyncVerdict.pull");
     expect(
-      syncItemContext(v({ verdict: "pull-first", behind: 2, ahead: 0 }), true),
+      syncItemContext(v({ verdict: "sync-first", behind: 2, ahead: 0 }), true),
     ).toBe("dispatcherSyncVerdict.pull");
   });
   it("ahead-only -> PR only, no pull — the fourth combination", () => {
     expect(
       syncItemContext(
-        v({ verdict: "pull-first", behind: null, ahead: 2 }),
+        v({ verdict: "sync-first", behind: null, ahead: 2 }),
         true,
       ),
     ).toBe("dispatcherSyncVerdict.pr");
     expect(
-      syncItemContext(v({ verdict: "pull-first", behind: 0, ahead: 2 }), true),
+      syncItemContext(v({ verdict: "sync-first", behind: 0, ahead: 2 }), true),
     ).toBe("dispatcherSyncVerdict.pr");
   });
   it("both behind and ahead -> pullPr (both actions)", () => {
     expect(
-      syncItemContext(v({ verdict: "pull-first", behind: 1, ahead: 2 }), true),
+      syncItemContext(v({ verdict: "sync-first", behind: 1, ahead: 2 }), true),
     ).toBe("dispatcherSyncVerdict.pullPr");
   });
   it("neither behind nor ahead (e.g. dirty-only) -> null", () => {
     expect(
-      syncItemContext(v({ verdict: "pull-first", behind: 0, ahead: 0 }), true),
+      syncItemContext(v({ verdict: "sync-first", behind: 0, ahead: 0 }), true),
     ).toBe(null);
   });
   it("behind/ahead unknown (null) -> null — unknown is not \"behind\"", () => {
     expect(
       syncItemContext(
-        v({ verdict: "pull-first", behind: null, ahead: null }),
+        v({ verdict: "sync-first", behind: null, ahead: null }),
         true,
       ),
     ).toBe(null);
@@ -229,15 +231,49 @@ describe("syncItemContext (web/TUI parity)", () => {
   it("non-live -> null even with both numbers truthy", () => {
     expect(
       syncItemContext(
-        v({ verdict: "pull-first", behind: 2, ahead: 2 }),
+        v({ verdict: "sync-first", behind: 2, ahead: 2 }),
         false,
       ),
     ).toBe(null);
   });
-  it("non-pull-first verdict -> null even with both numbers truthy", () => {
+  it("non-sync-first verdict -> null even with both numbers truthy", () => {
     expect(
       syncItemContext(v({ verdict: "ok", behind: 2, ahead: 2 }), true),
     ).toBe(null);
+  });
+});
+
+// DESIGN-202 wire contract, consumer side: the producer (dispatcher/core/
+// sync.py) can emit exactly ok | sync-first | no-data | unknown. This repo
+// has no shared enum to import, so the guard below is a fixture/icon-map
+// parity check instead — it fails the way this rename would have: a fixture
+// or map still saying the old string while the other side moved on, falling
+// back to a default icon silently rather than loudly.
+describe("sync verdict vocabulary (fixture / icon-map parity)", () => {
+  const CANONICAL_VERDICTS = ["ok", "sync-first", "no-data", "unknown"];
+
+  it("syncVerdictIcon has an explicit icon for ok and sync-first, and the "
+    + "same default fallback for no-data/unknown/anything unrecognized", () => {
+    const fallback = syncVerdictIcon("__no_such_verdict__");
+    for (const verdict of CANONICAL_VERDICTS) {
+      const icon = syncVerdictIcon(verdict);
+      if (verdict === "ok" || verdict === "sync-first") {
+        expect(icon).not.toEqual(fallback);
+      } else {
+        expect(icon).toEqual(fallback);
+      }
+    }
+  });
+
+  it("the sync_full fixture only uses verdicts from the canonical set", () => {
+    const sync = fixture<SyncStatusResponse>("sync_full.json");
+    const seen = new Set(
+      sync.report.hosts.flatMap((h) => h.verdicts.map((v) => v.verdict)),
+    );
+    seen.add(sync.report.top_line);
+    for (const verdict of seen) {
+      expect(CANONICAL_VERDICTS).toContain(verdict);
+    }
   });
 });
 

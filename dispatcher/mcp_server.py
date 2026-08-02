@@ -175,7 +175,7 @@ def build_server(
 
     @mcp.tool
     def sync_status() -> dict[str, Any]:
-        """Machine sync verdicts per host/repo (ok / pull-first / no-data
+        """Machine sync verdicts per host/repo (ok / sync-first / no-data
         / unknown) with snapshot ages and discovery proposals. Never
         triggers a network fetch — reports the cached state."""
         return read_api.sync_status(sync_cache, start_fetch=False).model_dump(
