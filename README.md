@@ -287,6 +287,11 @@ uv run python scripts/upstream_drift_report.py <canon-dir> --upstream-root <vaul
 # exit 0 no drift · 1 drift · 2 canon unavailable
 ```
 
+The other vendored contract, `contracts/github-checker-actions/v1`, is pinned
+to a producer commit rather than a canon tree, and has no drift watcher of its
+own — nothing announces that github-checker moved. Moving its pin is a manual,
+single-input procedure: `docs/revendor-github-checker-actions.md`.
+
 ## API
 
 `/api/overview`, `/api/projects/{name}`, `/api/errors?limit=N`,
