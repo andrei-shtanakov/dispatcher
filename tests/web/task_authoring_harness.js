@@ -2149,6 +2149,8 @@ const REQUIRED_CASE_IDS = [
   '53',    // nor by a lookup for a slug retyped mid-flight
   '54',    // sync: pull ⇔ behind — the exact button-vs-verdict defect fixed here
   '57',    // sync: dirty-only offers neither button, falls back to "—"
+  '61',    // sync: verdict cell's CSS class, not just its text, is pinned
+  '62',    // sync: top-line badge's CSS class, not just its text, is pinned
 ];
 
 /** The stable id is the leading number in the case name (e.g. "38.1"). */
