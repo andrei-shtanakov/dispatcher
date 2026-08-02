@@ -409,15 +409,21 @@ def create_app(
         return read_api.spec_runner_configs(config)
 
     @app.get(
-        "/api/projects/{name}/spec-runner-config",
+        "/api/projects/{dir_name}/spec-runner-config",
         response_model=ProjectSpecRunnerConfig,
     )
-    def spec_runner_config_view(name: str) -> ProjectSpecRunnerConfig:
+    def spec_runner_config_view(dir_name: str) -> ProjectSpecRunnerConfig:
+        # Directory-keyed (matches the ON-DISK clone dirname), unlike the
+        # sibling /api/projects/{name}/onboarding and /governance routes,
+        # which key on the collector's display name. The path parameter is
+        # named `dir_name` (not `name`) specifically so a caller can't
+        # mistake this for a display-name lookup — see the client-side
+        # data-dir comment in server/static/index.html's detail().
         configs, _ = discover_project_configs(config.roots)
         for cfg in configs:
-            if Path(cfg.project_yaml_path).parent.name == name:
+            if Path(cfg.project_yaml_path).parent.name == dir_name:
                 return cfg
-        raise HTTPException(status_code=404, detail=f"no project.yaml for: {name}")
+        raise HTTPException(status_code=404, detail=f"no project.yaml for: {dir_name}")
 
     @app.get(
         "/api/spec-runner-config/suggest-availability",
@@ -428,12 +434,12 @@ def create_app(
         return SuggestAvailability(available=detail is None, detail=detail)
 
     @app.post(
-        "/api/projects/{name}/spec-runner-config/suggest",
+        "/api/projects/{dir_name}/spec-runner-config/suggest",
         response_model=SuggestOutcome,
         response_model_exclude={"cli_version"},
     )
     def spec_runner_config_suggest(
-        name: str,
+        dir_name: str,
         request: SuggestRequest,
         x_action_token: str | None = Header(default=None),
     ) -> SuggestOutcome:
@@ -442,11 +448,13 @@ def create_app(
             raise HTTPException(status_code=403, detail="bad or missing action token")
         configs, _ = discover_project_configs(config.roots)
         target = next(
-            (c for c in configs if Path(c.project_yaml_path).parent.name == name),
+            (c for c in configs if Path(c.project_yaml_path).parent.name == dir_name),
             None,
         )
         if target is None:
-            raise HTTPException(status_code=404, detail=f"no project.yaml for: {name}")
+            raise HTTPException(
+                status_code=404, detail=f"no project.yaml for: {dir_name}"
+            )
         if target.base_mtime != request.base_mtime:
             raise HTTPException(
                 status_code=409, detail="config changed — reload the form"
@@ -458,26 +466,28 @@ def create_app(
         bundle = build_suggest_bundle(target, peers, snap)
         requested = set(bundle["requested_fields"])
         try:
-            outcome = suggest.run(name, bundle, requested)
+            outcome = suggest.run(dir_name, bundle, requested)
         except SuggestUnavailableError as err:
-            _suggest_audit.info("action=suggest project=%s outcome=unavailable", name)
+            _suggest_audit.info(
+                "action=suggest project=%s outcome=unavailable", dir_name
+            )
             raise HTTPException(status_code=503, detail=str(err)) from err
         except SuggestTimeoutError as err:
-            _suggest_audit.info("action=suggest project=%s outcome=timeout", name)
+            _suggest_audit.info("action=suggest project=%s outcome=timeout", dir_name)
             raise HTTPException(status_code=409, detail=str(err)) from err
         except SuggestCancelledError as err:
-            _suggest_audit.info("action=suggest project=%s outcome=cancelled", name)
+            _suggest_audit.info("action=suggest project=%s outcome=cancelled", dir_name)
             raise HTTPException(status_code=409, detail="cancelled") from err
         except SuggestInvalidError as err:
-            _suggest_audit.info("action=suggest project=%s outcome=invalid", name)
+            _suggest_audit.info("action=suggest project=%s outcome=invalid", dir_name)
             raise HTTPException(status_code=422, detail=str(err)) from err
         except SuggestRunnerBusyError as err:
-            _suggest_audit.info("action=suggest project=%s outcome=busy", name)
+            _suggest_audit.info("action=suggest project=%s outcome=busy", dir_name)
             raise HTTPException(status_code=409, detail=str(err)) from err
         _suggest_audit.info(
             "action=suggest project=%s outcome=ok duration=%.1fs fields=%s "
             "dropped=%s cost=%s cli=%s",
-            name,
+            dir_name,
             outcome.duration_s,
             sorted(outcome.suggestions),
             outcome.dropped,
@@ -487,17 +497,17 @@ def create_app(
         return outcome
 
     @app.post(
-        "/api/projects/{name}/spec-runner-config/suggest/cancel",
+        "/api/projects/{dir_name}/spec-runner-config/suggest/cancel",
         response_model=CancelResponse,
     )
     def spec_runner_config_suggest_cancel(
-        name: str,
+        dir_name: str,
         x_action_token: str | None = Header(default=None),
     ) -> CancelResponse:
         if x_action_token != action_token:
             raise HTTPException(status_code=403, detail="bad or missing action token")
         try:
-            return CancelResponse(cancelled=suggest.cancel(name))
+            return CancelResponse(cancelled=suggest.cancel(dir_name))
         except SuggestRunnerBusyError as err:
             raise HTTPException(status_code=409, detail=str(err)) from err
 

@@ -511,6 +511,41 @@ async def test_spec_runner_config_view_and_update(tmp_path: Path, monkeypatch) -
         assert bad_token.status_code == 403
 
 
+async def test_spec_runner_config_view_is_directory_keyed_not_name_keyed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The route matches the ON-DISK clone dirname, never a display name.
+
+    `project.yaml`'s own `project:` field is a display name that can differ
+    from the directory it lives in (the collector reports one such name,
+    "Maestro", for a clone checked out as "maestro" — see CLAUDE.md). The
+    server side of this contract must key on `Path(project_yaml_path)
+    .parent.name` only: a query by the directory succeeds, and a query by
+    the display name recorded inside the very same file must 404, not
+    quietly resolve to the same config.
+    """
+    import subprocess
+
+    repo = tmp_path / "repo-dir"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    (repo / "project.yaml").write_text(
+        "project: DisplayName\nspec_runner:\n  max_retries: 5\nworkstreams: []\n"
+    )
+    config = DispatcherConfig(roots=(tmp_path,))
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        by_dir = await client.get("/api/projects/repo-dir/spec-runner-config")
+        assert by_dir.status_code == 200
+        assert by_dir.json()["typed"]["max_retries"]["value"] == 5
+
+        by_display_name = await client.get(
+            "/api/projects/DisplayName/spec-runner-config"
+        )
+        assert by_display_name.status_code == 404
+
+
 async def test_spec_runner_config_invalid_candidate_maps_to_422(
     tmp_path: Path, monkeypatch
 ) -> None:
