@@ -509,3 +509,44 @@ def test_the_manifest_shape_and_its_exclusion_note_are_pinned() -> None:
     note = manifest["surface_note"]
     for excluded in ("manifest.json", "drift-control.md", "PINNED.txt"):
         assert excluded in note, note
+
+
+class TestManifestIdentity:
+    """The manifest is the authority the pin cross-check leans on.
+
+    So its own identity has to be checked by the product, not only by a test
+    against the real file: a manifest that keeps a self-consistent surface and
+    tree hash while declaring a different contract — or none — would pass every
+    other check and quietly disarm the cross-reference that depends on it.
+    """
+
+    def _with_manifest(self, tmp_path: Path, **changes: object) -> None:
+        manifest = {**_manifest_for(_SURFACE), **changes}
+        _write_vendored(
+            tmp_path / "self", _SURFACE, manifest=manifest, pin=_pin_text()
+        )
+
+    def test_a_manifest_declaring_another_contract_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        self._with_manifest(tmp_path, contract="something-else")
+        row = _integrity(check_contracts(_projects(tmp_path, with_vault=False)))
+        assert row.in_sync is False
+        assert "plan-fields" in (row.detail or "")
+
+    def test_a_manifest_with_no_contract_name_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """Not merely "the cross-check is skipped": a missing declaration is
+        the case that made the cross-check meaningless rather than absent."""
+        self._with_manifest(tmp_path, contract=None)
+        row = _integrity(check_contracts(_projects(tmp_path, with_vault=False)))
+        assert row.in_sync is False
+
+    def test_a_manifest_at_another_contract_version_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        self._with_manifest(tmp_path, contract_version=2)
+        row = _integrity(check_contracts(_projects(tmp_path, with_vault=False)))
+        assert row.in_sync is False
+        assert "version" in (row.detail or "")

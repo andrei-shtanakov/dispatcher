@@ -28,6 +28,13 @@ _SCHEMA_DIR = Path("schemas")
 # (overridable via the projects map, which keeps this hermetically testable).
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PF_CONTRACT_NAME = "plan-fields-v1"  # matches roadmap items' target_contract
+# What the vendored manifest must declare itself to be. Checked by the product,
+# not only by a test against the real file: the PINNED.txt cross-reference
+# takes its authority FROM the manifest, so a manifest that keeps a
+# self-consistent surface while declaring another contract — or none — would
+# disarm that cross-check without failing anything else.
+_PF_MANIFEST_CONTRACT = "plan-fields"
+_PF_MANIFEST_VERSION = 1
 _PF_CANON_PROJECT = "prograph-vault"
 _PF_CANON_DIR_REL = Path("authored/contracts/plan-fields/v1")
 _PF_MANIFEST_REL = _PF_CANON_DIR_REL / "manifest.json"
@@ -147,7 +154,7 @@ def _live_surface(root: Path) -> dict[str, str | None]:
     }
 
 
-def _pin_problem(vendored_dir: Path, contract: object) -> str | None:
+def _pin_problem(vendored_dir: Path, contract: str) -> str | None:
     """Why `PINNED.txt` fails to state a reviewable provenance, else None.
 
     This is provenance a reviewer can follow, not an attestation: it says
@@ -165,7 +172,7 @@ def _pin_problem(vendored_dir: Path, contract: object) -> str | None:
     # Cross-reference, not shape: a well-formed pin pointing at some other
     # contract is exactly as wrong as a missing one, and only the manifest
     # knows which contract this copy is supposed to be.
-    if isinstance(contract, str) and contract and contract not in source.group(0):
+    if contract not in source.group(0):
         return (
             f"PINNED.txt `source:` does not name the contract the manifest "
             f"declares ({contract})"
@@ -200,6 +207,20 @@ def _pf_vendored_integrity(vendored_dir: Path) -> ContractStatus:
         return status(False, "vendored manifest.json is absent")
     except json.JSONDecodeError as exc:
         return status(False, f"vendored manifest.json is unreadable: {exc.msg}")
+    declared = manifest.get("contract")
+    if declared != _PF_MANIFEST_CONTRACT:
+        return status(
+            False,
+            f"vendored manifest declares contract {declared!r}, "
+            f"not {_PF_MANIFEST_CONTRACT!r}",
+        )
+    version = manifest.get("contract_version")
+    if version != _PF_MANIFEST_VERSION:
+        return status(
+            False,
+            f"vendored manifest declares contract version {version!r}, "
+            f"not {_PF_MANIFEST_VERSION!r}",
+        )
     surface = manifest.get("surface", [])
     if not _valid_surface(surface):
         return status(False, "vendored manifest surface is malformed")
@@ -232,7 +253,7 @@ def _pf_vendored_integrity(vendored_dir: Path) -> ContractStatus:
             return status(False, f"excluded file is absent or unreadable: {name}")
         if actual != expected:
             return status(False, f"excluded file differs from its record: {name}")
-    pin = _pin_problem(vendored_dir, manifest.get("contract"))
+    pin = _pin_problem(vendored_dir, _PF_MANIFEST_CONTRACT)
     if pin is not None:
         return status(False, pin)
     return status(True, None)
