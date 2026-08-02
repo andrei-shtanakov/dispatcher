@@ -60,8 +60,14 @@ then swaps staging into place.
 Until that last step the working copy is untouched. Every ordinary failure —
 a bad or unknown commit, a failed provenance check, a corrupted or hollow
 manifest, `Ctrl-C` (`INT`), `TERM`, `HUP` — runs the restoring trap and
-leaves the working copy exactly as it was. This is verified, not assumed:
-signal delivery was tested directly, not simulated.
+leaves the working copy exactly as it was. For `INT` and `TERM` this is
+verified, not assumed:
+`tests/test_revendor_script.py::test_a_signal_mid_run_leaves_the_working_copy_alone`
+sends a real signal to the running script mid-extraction (not a simulation)
+and asserts the working copy is untouched afterward — run it yourself with
+`uv run pytest tests/test_revendor_script.py -k test_a_signal_mid_run_leaves_the_working_copy_alone -v`.
+`HUP` shares the same `trap cleanup EXIT` and is not separately exercised by
+a signal test.
 
 The one case the trap cannot cover is `SIGKILL` (`kill -9`) landing in the
 narrow window between the two renames at the very end of the swap. A trap

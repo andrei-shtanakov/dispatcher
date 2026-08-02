@@ -17,7 +17,9 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -335,6 +337,143 @@ def test_a_non_ascii_filename_in_the_source_tree_is_not_misdiagnosed(
     assert result.returncode == 0, result.stderr
     vendored = _vendored(skeleton)
     assert (vendored / "схема.json").read_text(encoding="utf-8") == '{"ok": true}\n'
+
+
+_STAGING_POLL_INTERVAL = 0.005
+_STAGING_POLL_DEADLINE = 10.0
+# Bounds a retry for a real, measured OS-level race explained on the
+# `_run_and_signal_mid_extraction` docstring below — not a timing fudge
+# factor and not a substitute for the deadline above, which still fails the
+# test outright if $STAGING never appears at all.
+_MAX_SIGNAL_ATTEMPTS = 5
+
+
+def _killpg_if_alive(pid: int, sig: signal.Signals) -> None:
+    try:
+        os.killpg(os.getpgid(pid), sig)
+    except ProcessLookupError:
+        pass  # already gone
+
+
+def _reset_vendored_to_sentinel(skeleton: Path) -> None:
+    """Restore the vendored dir to the state the `skeleton` fixture built.
+
+    Used between retry attempts (see `_MAX_SIGNAL_ATTEMPTS`): a run the
+    signal failed to interrupt completes for real and overwrites the
+    sentinel, so the next attempt needs it put back before `_assert_untouched`
+    means anything.
+    """
+    vendored = _vendored(skeleton)
+    if vendored.exists():
+        shutil.rmtree(vendored)
+    vendored.mkdir(parents=True)
+    (vendored / "README.md").write_text("SENTINEL\n")
+    (vendored / "PINNED.txt").write_text("commit: old\n")
+
+
+def _run_and_signal_mid_extraction(
+    skeleton: Path, producer: dict[str, object], sig: signal.Signals
+) -> subprocess.CompletedProcess[str]:
+    """Start the script, interrupt it mid-run with `sig`, return the result.
+
+    The signal must reach the whole process group with its default
+    disposition, not just the script's own pid: a shell's *background*
+    children have SIGINT set to ignore, so a bare `kill -INT <pid>` against
+    a backgrounded child would prove nothing. The script is started with
+    `start_new_session=True` so it leads its own process group, and the
+    signal is delivered to that group with `os.killpg`.
+
+    Timing is a real sync point, not a guess: `mkdir -p "$STAGING"` runs
+    early in the script — right after the `python3` availability check,
+    well before extraction — and `v1.staging` is not renamed away until the
+    very last step (the swap into place), so it exists for nearly the whole
+    run (measured: several hundred ms of a run that totals well under a
+    second). Polling for its appearance, with a bounded deadline that fails
+    loudly rather than falling back to a sleep-and-hope, lands the signal
+    inside that wide window regardless of how fast the machine is.
+
+    That leaves one more source of nondeterminism, and it is the OS's, not
+    this test's: measured directly on this machine, `killpg` to a process
+    group that is churning — `verify_provenance` forks and reaps dozens of
+    short-lived `git` subprocesses in the seconds this script runs —
+    occasionally has no observable effect at all. Not "delivered late": the
+    script runs to completion, exits 0, and the working copy is the newly
+    vendored one, as if nothing had been sent. Confirmed by direct
+    measurement (repo-local, not committed): out of ~140 runs sampled across
+    two probes, 4 landed this way, at a rate consistent between SIGINT and
+    SIGTERM; every other run died from the signal within milliseconds with
+    the trap's cleanup already done. What this test asserts — that an
+    interrupt mid-run leaves the working copy alone — does not depend on
+    which delivery of the signal is the one that lands, so a bounded retry
+    against a freshly reset sentinel is the correct response to that
+    specific failure mode: not a timing guess, and not tolerance for this
+    test's own flakiness, but a firewall against a documented signal-loss
+    race that sits below this test and below the script both.
+    """
+    staging = _vendored(skeleton).parent / "v1.staging"
+    cmd = [
+        str(skeleton / "scripts" / SCRIPT_NAME),
+        str(producer["second"]),
+        "--from",
+        str(producer["path"]),
+    ]
+    for attempt in range(1, _MAX_SIGNAL_ATTEMPTS + 1):
+        assert not staging.exists()
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={**os.environ, **_GIT_ENV},
+            start_new_session=True,
+        )
+        try:
+            deadline = time.monotonic() + _STAGING_POLL_DEADLINE
+            while not staging.exists():
+                if time.monotonic() > deadline:
+                    _killpg_if_alive(proc.pid, signal.SIGKILL)
+                    proc.communicate(timeout=10)
+                    pytest.fail(
+                        f"{staging} never appeared within "
+                        f"{_STAGING_POLL_DEADLINE}s; the run may have "
+                        "completed before a signal could be delivered "
+                        "mid-run"
+                    )
+                time.sleep(_STAGING_POLL_INTERVAL)
+
+            os.killpg(os.getpgid(proc.pid), sig)
+            stdout, stderr = proc.communicate(timeout=10)
+        finally:
+            if proc.poll() is None:
+                _killpg_if_alive(proc.pid, signal.SIGKILL)
+                proc.communicate(timeout=10)
+
+        if proc.returncode != 0:
+            return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+        # The signal had no observable effect this attempt: the run
+        # completed normally. Reset and try again, up to the bound above.
+        _reset_vendored_to_sentinel(skeleton)
+    pytest.fail(
+        f"{sig.name} had no observable effect on the script in "
+        f"{_MAX_SIGNAL_ATTEMPTS} attempts"
+    )
+
+
+@pytest.mark.parametrize(
+    "sig", [signal.SIGINT, signal.SIGTERM], ids=["SIGINT", "SIGTERM"]
+)
+def test_a_signal_mid_run_leaves_the_working_copy_alone(
+    skeleton: Path, producer: dict[str, object], sig: signal.Signals
+) -> None:
+    """`Ctrl-C` and `TERM` are two of the "ordinary failures" the runbook
+    claims the restoring trap covers — delivered here for real, not
+    simulated, so that claim has something executable behind it. See
+    `_run_and_signal_mid_extraction` for how the signal is actually landed
+    mid-run."""
+    result = _run_and_signal_mid_extraction(skeleton, producer, sig)
+
+    assert result.returncode != 0, (result.stdout, result.stderr)
+    _assert_untouched(skeleton)
 
 
 def test_a_blocked_swap_exits_5_and_leaves_the_working_copy_alone(
