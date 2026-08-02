@@ -1,0 +1,68 @@
+name: actions-upstream-drift (advisory)
+
+# guarantee B for the github-checker-actions/v1 contract. Asks whether
+# `contracts/actions/v1` in github-checker has moved away from the copy
+# vendored at `contracts/github-checker-actions/v1/`, and says which upstream
+# it asked about. The sibling job for plan-fields/steward lives in
+# upstream-drift.yml; this one is its analogue for the one vendored contract
+# that had no drift watcher until now (docs/revendor-github-checker-actions.md).
+#
+# Deliberately NOT a pull-request check and never a required one: a commit in
+# a neighbouring repository must not be able to redden this repository's PRs.
+# The PR gate is guarantee A — the vendored copy matches its own manifest —
+# which lives in the ordinary test job (tests/test_contract_ingest.py) and
+# needs no network.
+#
+# A red run here means a human owes a deliberate re-vendor PR via
+# scripts/revendor_github_checker_actions.sh. Nothing is updated
+# automatically, and the fix is never to edit the expected hash.
+on:
+  schedule:
+    - cron: "43 6 * * 1" # Mondays, offset from upstream-drift.yml's :17 so the two runs don't collide
+  workflow_dispatch: # no inputs: the ref is fixed below, not caller-supplied
+
+permissions:
+  contents: read
+
+jobs:
+  drift-actions-v1:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # The MOVING default branch on purpose: pinning the checkout to the
+      # commit PINNED.txt names would make this a second run of guarantee A,
+      # comparing the copy against the bytes it was made from. Drift can only
+      # be seen against where upstream actually is now. The resolved SHA is
+      # recorded by the reporter, so the run still says exactly what it
+      # looked at.
+      - uses: actions/checkout@v6
+        with:
+          repository: andrei-shtanakov/github-checker
+          ref: master
+          path: _upstream/github-checker
+
+      - uses: astral-sh/setup-uv@v8.1.0
+      - run: uv sync
+
+      - name: compare github-checker actions/v1 against the vendored copy
+        run: |
+          set +e
+          uv run python scripts/actions_drift_report.py \
+            _upstream/github-checker/contracts/actions/v1 \
+            --upstream-root _upstream/github-checker \
+            --ref master
+          code=$?
+          set -e
+          # 0 no drift · 1 drift · 2 upstream unavailable. Unavailable is red
+          # too: an upstream nobody could read is unknown, and unknown that
+          # looks green is exactly the failure this workstream keeps
+          # removing. The code and the summary keep the two apart for
+          # whoever reads the run.
+          case "$code" in
+            0) echo "no upstream drift" ;;
+            1) echo "::error::upstream drift — a deliberate re-vendor PR is due" ;;
+            2) echo "::error::upstream unavailable — nothing was compared (not 'no drift')" ;;
+            *) echo "::error::reporter failed with $code" ;;
+          esac
+          exit "$code"
