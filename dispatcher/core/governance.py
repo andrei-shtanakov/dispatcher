@@ -138,11 +138,17 @@ def _parse_record(line: str, number: int) -> dict[str, object] | BundleGovernanc
     if not isinstance(record, dict):
         return _unreadable(f"record is not an object (line {number})")
     if not _validator().is_valid(record):
+        version = record.get("schema_version")
         if (
             record.get("kind") == "header"
-            and record.get("schema_version") != SUPPORTED_SCHEMA_VERSION
+            and isinstance(version, str)
+            and version != SUPPORTED_SCHEMA_VERSION
         ):
-            version = record.get("schema_version")
+            # Only an actual, different version string earns the specific
+            # reason; a header that is invalid some other way (missing or
+            # non-string schema_version included) gets the generic one —
+            # "unsupported schema_version None" would point away from the
+            # real defect.
             return _unreadable(
                 f"unsupported schema_version {version!r} (line {number}); "
                 f"this consumer is pinned to v{SUPPORTED_SCHEMA_VERSION} "

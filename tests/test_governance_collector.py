@@ -61,6 +61,26 @@ def test_future_schema_version_is_unreadable_naming_the_version(
     assert result.reason is not None and "99" in result.reason
 
 
+def test_header_missing_schema_version_gets_the_generic_reason(
+    tmp_path: Path,
+) -> None:
+    """A header invalid for another reason must not be reported as an
+    'unsupported schema_version None' — that points away from the defect
+    (PR #107 review)."""
+    import json
+
+    header = json.loads((FIXTURES / "clean.jsonl").read_text().splitlines()[0])
+    del header["schema_version"]
+    repo = tmp_path / "observed"
+    (repo / VERDICTS_REL_PATH).parent.mkdir(parents=True)
+    (repo / VERDICTS_REL_PATH).write_text(json.dumps(header) + "\n")
+    result = collect_governance(repo, git_facts=fresh)
+    assert result.state == "unreadable"
+    assert result.reason is not None
+    assert "unsupported schema_version" not in result.reason
+    assert "does not match gate-verdicts/v1" in result.reason
+
+
 def test_empty_file_is_unreadable_not_pass(tmp_path: Path) -> None:
     repo = tmp_path / "observed"
     (repo / VERDICTS_REL_PATH).parent.mkdir(parents=True)
