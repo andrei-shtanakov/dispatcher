@@ -72,13 +72,24 @@ def _tree_sha256(surface: dict[str, str | None]) -> str:
     return digest.hexdigest()
 
 
-def compare(canon_dir: Path, vendored_dir: Path, provenance: dict[str, str]) -> Report:
+def compare(
+    canon_dir: Path,
+    vendored_dir: Path,
+    provenance: dict[str, str],
+    probe: str = "manifest.json",
+) -> Report:
     """Compare the two surfaces as they exist on disk.
 
     Both sides are hashed from their files, never read out of a manifest. A
     manifest-to-manifest comparison would call an upstream that changed files
     without regenerating its fingerprint "no drift" — the one case where the
     fingerprint is the least trustworthy thing in the directory.
+
+    `probe` is a JSON file whose readability proves `canon_dir` really is the
+    contract directory (a wrong path would otherwise hash an empty tree and
+    report drift instead of unavailable). plan-fields canon carries its own
+    manifest.json; canons without one (steward gate-verdicts) name their
+    schema file instead.
     """
     provenance_lines = [
         f"- upstream remote: `{provenance.get('remote', '?')}`",
@@ -100,15 +111,15 @@ def compare(canon_dir: Path, vendored_dir: Path, provenance: dict[str, str]) -> 
             ],
         )
     try:
-        json.loads((canon_dir / "manifest.json").read_text(encoding="utf-8"))
+        json.loads((canon_dir / probe).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         return report(
             UNAVAILABLE,
             [
                 "## Upstream unreadable",
                 "",
-                f"Canon manifest could not be read (`{type(exc).__name__}`). "
-                "Nothing was compared.",
+                f"Canon probe `{probe}` could not be read "
+                f"(`{type(exc).__name__}`). Nothing was compared.",
             ],
         )
 
@@ -200,6 +211,11 @@ def main(argv: list[str] | None = None) -> int:
         help="repo root of the canon checkout, for recording its provenance",
     )
     parser.add_argument("--ref", default="?", help="ref that was requested")
+    parser.add_argument(
+        "--canon-probe",
+        default="manifest.json",
+        help="JSON file whose readability proves the canon dir is the contract",
+    )
     args = parser.parse_args(argv)
 
     root = args.upstream_root or args.canon_dir
@@ -208,7 +224,7 @@ def main(argv: list[str] | None = None) -> int:
         "remote": _git(root, "remote", "get-url", "origin"),
         "ref": args.ref,
     }
-    report = compare(args.canon_dir, args.vendored, provenance)
+    report = compare(args.canon_dir, args.vendored, provenance, args.canon_probe)
     print(report.summary)
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_file:
