@@ -272,6 +272,112 @@ def test_a_manifest_recording_the_wrong_pin_is_caught(
     _assert_untouched(skeleton)
 
 
+def test_a_non_ascii_filename_in_the_source_tree_is_not_misdiagnosed(
+    skeleton: Path, tmp_path: Path
+) -> None:
+    """`git ls-tree` C-quotes any non-ASCII byte in a path by default (e.g.
+    "\\321\\201\\321\\205...json"), while `find` — used to list what actually
+    landed in staging — emits the raw bytes tar wrote. Without
+    core.quotePath=false the two listings can never agree, and a perfectly
+    fine non-ASCII filename gets reported as a provenance mismatch even
+    though nothing is wrong."""
+    repo = tmp_path / "unicode_producer"
+    root = repo / "contracts" / "actions" / "v1"
+    root.mkdir(parents=True)
+    _git(repo.parent, "init", "--quiet", str(repo))
+    (root / "схема.json").write_text('{"ok": true}\n', encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "--quiet", "-m", "unicode filename")
+    pin = _git(repo, "rev-parse", "HEAD")
+
+    result = _run(skeleton, pin, "--from", str(repo))
+
+    assert result.returncode == 0, result.stderr
+    vendored = _vendored(skeleton)
+    assert (vendored / "схема.json").read_text(encoding="utf-8") == '{"ok": true}\n'
+
+
+def test_a_blocked_swap_exits_5_and_leaves_the_working_copy_alone(
+    skeleton: Path, producer: dict[str, object]
+) -> None:
+    """A `mv` failing at the swap is an internal failure, not a usage error
+    — it must not collide with exit 1. Forced portably, without root and
+    without a platform-specific flag like macOS's `chflags uchg`: a regular
+    file is pre-placed at the "set aside" name the first rename targets.
+    `mv` refuses to overwrite a non-directory with a directory on both BSD
+    and GNU coreutils, so the very first rename of the swap fails before
+    either one touches the working copy."""
+    prev = _vendored(skeleton).parent / "v1.prev"
+    prev.touch()
+
+    result = _run(skeleton, str(producer["second"]), "--from", str(producer["path"]))
+
+    assert result.returncode == 5
+    vendored = _vendored(skeleton)
+    assert (vendored / "README.md").read_text() == "SENTINEL\n"
+    assert (vendored / "PINNED.txt").read_text() == "commit: old\n"
+    assert not (vendored.parent / "v1.staging").exists()
+
+
+def test_a_missing_python3_interpreter_exits_4_not_127(
+    skeleton: Path, producer: dict[str, object], tmp_path: Path
+) -> None:
+    """The early `command -v python3` check exists so an absent interpreter
+    lands on the documented "manifest generation" exit code, not on
+    whatever the shell's own "command not found" happens to produce. Built
+    by hand-picking, onto a bare PATH, exactly the binaries the script
+    calls before and during that check — deliberately leaving every
+    python3 off it. Every other tool must stay reachable, or a failure here
+    would prove nothing about python3 specifically."""
+    tool_names = (
+        "bash",
+        "sh",
+        "git",
+        "tar",
+        "sed",
+        "sort",
+        "find",
+        "diff",
+        "grep",
+        "mv",
+        "rm",
+        "mkdir",
+        "wc",
+        "tr",
+        "cat",
+        "date",
+        "dirname",
+        "basename",
+        "mktemp",
+        "env",
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in tool_names:
+        resolved = shutil.which(name)
+        assert resolved is not None, f"host is missing {name}"
+        (bin_dir / name).symlink_to(resolved)
+
+    result = subprocess.run(
+        [
+            str(skeleton / "scripts" / SCRIPT_NAME),
+            str(producer["second"]),
+            "--from",
+            str(producer["path"]),
+        ],
+        capture_output=True,
+        text=True,
+        env={
+            **_GIT_ENV,
+            "PATH": str(bin_dir),
+            "HOME": os.environ.get("HOME", ""),
+        },
+    )
+
+    assert result.returncode == 4, (result.stdout, result.stderr)
+    _assert_untouched(skeleton)
+
+
 def test_both_scripts_name_the_same_producer(tmp_path: Path) -> None:
     """`install_pinned_checker.sh` fetches the binary and this one fetches
     the contract. Pointed at different sources they would prove nothing

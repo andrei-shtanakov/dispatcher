@@ -21,7 +21,10 @@
 # and the report says the canonical remote was NOT consulted.
 #
 # Exit: 0 ok · 1 usage · 2 source or commit unavailable ·
-#       3 provenance mismatch · 4 manifest generation or read-back
+#       3 provenance mismatch · 4 manifest generation or read-back ·
+#       5 internal failure (working copy left as it was found)
+#       Any other nonzero status (127, 128, …) is an unexpected internal
+#       failure; the trap below has still restored the tree.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -61,7 +64,7 @@ done
 # it identified a commit for good.
 [[ "$NEW_PIN" =~ ^[0-9a-f]{40}$ ]] || die 1 "not a full 40-hex commit id: $NEW_PIN"
 
-WORK="$(mktemp -d)"
+WORK="$(mktemp -d)" || die 5 "could not create a scratch directory"
 
 cleanup() {
   local code=$?
@@ -95,6 +98,11 @@ fi
 git -C "$STORE" cat-file -e "$NEW_PIN^{commit}" 2> /dev/null ||
   die 2 "$NEW_PIN is not a commit in $PROVENANCE"
 
+# Checked before extraction, not at first use: an absent interpreter should
+# land on the documented "manifest generation" code, not on the shell's own
+# 127 for a command it never found.
+command -v python3 > /dev/null 2>&1 || die 4 "python3 not found on PATH"
+
 # Extract into a fresh staging directory, never over the top of the current
 # copy: a file upstream deleted would otherwise survive as ours and be
 # certified by the manifest we are about to generate.
@@ -108,8 +116,14 @@ git -C "$STORE" archive "$NEW_PIN" "$SRC_SUBDIR" | tar -x --strip-components=3 -
 verify_provenance() {
   # $1: "exact" (before our two meta files exist) or "with-meta" (after).
   local mode="$1" rel want got
-  git -C "$STORE" ls-tree -r --name-only "$NEW_PIN" -- "$SRC_SUBDIR" |
-    sed "s|^$SRC_SUBDIR/||" | LC_ALL=C sort > "$WORK/want.txt"
+  # core.quotePath=false: without it, ls-tree C-quotes any non-ASCII byte in
+  # a path (e.g. "\321\201...json"), while `find` below emits the raw bytes
+  # tar wrote — the two lists could never agree, and a perfectly fine
+  # non-ASCII filename would be misdiagnosed as a provenance mismatch.
+  git -c core.quotePath=false -C "$STORE" ls-tree -r --name-only "$NEW_PIN" \
+    -- "$SRC_SUBDIR" |
+    sed "s|^$SRC_SUBDIR/||" | LC_ALL=C sort > "$WORK/want.txt" ||
+    die 3 "could not read the tree of $NEW_PIN from $STORE"
   (cd "$STAGING" && find . -type f | sed 's|^\./||' | LC_ALL=C sort) > "$WORK/got.txt"
   if [ "$mode" = "with-meta" ]; then
     grep -vx -e 'PINNED.txt' -e 'manifest.json' "$WORK/got.txt" > "$WORK/got.meta" || true
@@ -118,8 +132,10 @@ verify_provenance() {
   diff "$WORK/want.txt" "$WORK/got.txt" >&2 ||
     die 3 "the staged file set is not the file set of $NEW_PIN"
   while IFS= read -r rel; do
-    want="$(git -C "$STORE" rev-parse "$NEW_PIN:$SRC_SUBDIR/$rel")"
-    got="$(git -C "$STORE" hash-object -- "$STAGING/$rel")"
+    want="$(git -C "$STORE" rev-parse "$NEW_PIN:$SRC_SUBDIR/$rel")" ||
+      die 3 "could not read the blob $NEW_PIN has at $SRC_SUBDIR/$rel"
+    got="$(git -C "$STORE" hash-object -- "$STAGING/$rel")" ||
+      die 3 "could not hash staged $rel"
     [ "$want" = "$got" ] ||
       die 3 "staged $rel is not the blob $NEW_PIN has at $SRC_SUBDIR/$rel"
   done < "$WORK/want.txt"
@@ -155,9 +171,13 @@ fi
 verify_provenance with-meta
 
 # Only now is the working copy touched, and the swap is two renames on one
-# filesystem with the trap above standing behind them.
-if [ -e "$DST" ]; then mv "$DST" "$PREV"; fi
-mv "$STAGING" "$DST"
+# filesystem with the trap above standing behind them. Either mv failing is
+# an internal failure, not a usage error — the trap restores $DST from
+# $PREV if the second rename is what failed.
+if [ -e "$DST" ]; then
+  mv "$DST" "$PREV" || die 5 "could not move $DST aside to $PREV"
+fi
+mv "$STAGING" "$DST" || die 5 "could not move the staged copy into $DST"
 rm -rf "$PREV"
 
 cat >&2 << EOF
