@@ -87,31 +87,70 @@ then swaps staging into place.
 
 Until that last step the working copy is untouched. Every ordinary failure —
 a bad or unknown commit, a failed provenance check, a corrupted or hollow
-manifest, `Ctrl-C` (`INT`), `TERM`, `HUP` — runs the restoring trap and
-leaves the working copy exactly as it was. For `INT` and `TERM` this is
-verified, not assumed:
+manifest, `Ctrl-C` (`INT`), `TERM`, `HUP` — runs the restoring cleanup and
+leaves the working copy exactly as it was. `INT`, `TERM`, and `HUP` each
+have their own explicit trap, not just the `EXIT` one: a signal with no
+trap of its own keeps its default disposition, and the kernel then
+terminates bash directly, before the `EXIT` trap or any other script code
+gets a chance to run — measured on Linux, this happened on a real,
+double-digit-percent share of signal deliveries mid-run under the old
+`EXIT`-only trap. The explicit handler also blocks further `INT`/`TERM`/`HUP`
+delivery as its first act, so a second `Ctrl-C` sent while cleanup is
+already running (an ordinary thing for an impatient operator to do) cannot
+cut off the `rm -rf`/`mv` that puts the tree back; only after cleanup
+finishes does the handler restore the signal's default disposition and
+re-raise it, so the process still visibly dies by signal rather than
+reporting an invented exit code. The consequence: a cleanup that hangs — a
+stuck `rm -rf` or `mv` on an unresponsive mount — is, from that point on,
+stoppable only with `kill -9`; another `Ctrl-C` will not reach it. What
+exactly a `SIGKILL` there leaves behind depends on when it lands; see below.
+For `INT` and `TERM` this is verified, not assumed:
 `tests/test_revendor_script.py::test_a_signal_mid_run_leaves_the_working_copy_alone`
 sends a real signal to the running script mid-extraction (not a simulation)
 and asserts the working copy is untouched afterward — run it yourself with
 `uv run pytest tests/test_revendor_script.py -k test_a_signal_mid_run_leaves_the_working_copy_alone -v`.
-`HUP` shares the same `trap cleanup EXIT` and is not separately exercised by
-a signal test.
+`HUP` shares the same handler shape and is not separately exercised by a
+signal test.
 
-The one case the trap cannot cover is `SIGKILL` (`kill -9`) landing in the
-narrow window between the two renames at the very end of the swap. A trap
-does not run on `SIGKILL`, so a kill in that exact window can leave the
-vendored directory absent from the working copy with its real contents
-parked, untouched, in an untracked sibling directory. If `git status` ever
-shows `contracts/github-checker-actions/v1/` missing alongside an untracked
-`contracts/github-checker-actions/v1.prev/`, that is what happened, and the
-recovery is one command:
+The one case the trap cannot cover is `SIGKILL` (`kill -9`), because a trap
+does not run on it at all. What it leaves behind depends on when it lands:
+
+- **Before the swap starts** — during ordinary cleanup (the scratch
+  removal, ordinary `die()` paths, ordinary signal handling) — it leaves
+  only `v1.staging` (and the scratch directory under `/tmp`) behind,
+  half-removed, next to a completely untouched working copy.
+- **From the moment `v1` is moved aside to `v1.prev`, through the final
+  `rm -rf` of `v1.prev` at the very end of a successful swap** — a wider
+  window than just "between the two renames" — it leaves `v1.prev` behind
+  too, in one of two shapes depending on exactly when: either `v1` is
+  missing (the kill landed before the second rename put the new copy in
+  place) with the real, previous contents sitting untouched in `v1.prev`;
+  or `v1` is already present and correct (the kill landed after the second
+  rename but before the trailing cleanup) with `v1.prev` now just a stale
+  leftover of the old copy.
+
+**Re-running the script resolves every one of these shapes on its own —
+no manual step is required.** If `v1` is missing, a fresh run's own restore
+logic (or, on a fully successful fresh run, the ordinary swap path, which
+skips the "move v1 aside" step when there is nothing at `v1` to move)
+brings the tree back to a normal state and discards the stale `v1.prev`.
+If `v1` is already present and correct with a stale `v1.prev` beside it, a
+fresh run's `mv` of the new `v1` onto the existing `v1.prev` **nests**
+rather than fails or overwrites — `mv` moves the source *into* an existing
+directory of that name — and the final `rm -rf` of `v1.prev` at the end of
+that run's own swap discards the whole nested pile, old and older copies
+alike, which is the correct outcome regardless: a successful re-vendor
+discards the previous copy either way. If you would rather not immediately
+re-vendor, the one-line recovery for the "`v1` missing" shape specifically
+is:
 
 ```bash
 mv contracts/github-checker-actions/v1.prev contracts/github-checker-actions/v1
 ```
 
-The window is two renames wide and `SIGKILL` in it is rare, but it is the
-one failure this procedure cannot restore automatically.
+`SIGKILL` landing in either window is rare, but it is the one failure this
+procedure cannot restore automatically — the point above is that it does
+not need to: re-running is sufficient either way.
 
 **Offline variant.** `--from <git-repo>` reads the commit out of a local
 repository's object database instead:

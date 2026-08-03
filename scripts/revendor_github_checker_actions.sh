@@ -73,8 +73,32 @@ done
 
 WORK="$(mktemp -d)" || die 5 "could not create a scratch directory"
 
-cleanup() {
-  local code=$?
+# A script this shape spends most of its life either doing nothing bash
+# considers "running" (forking dozens of short-lived `git` subprocesses in
+# verify_provenance) or blocked in wait() for one of them. `INT`/`TERM`/`HUP`
+# have no explicit trap of their own here, only the `EXIT` one below — and an
+# untrapped signal keeps its default disposition, which the kernel enforces
+# on the process directly. That terminates bash outright before it gets a
+# chance to run ANY of its own code, `cleanup` included: measured directly,
+# on Linux this landed on ~13% of INT/TERM deliveries mid-run (0 macOS
+# failures in 65 runs; ~150 Linux runs, 20 failures, every one confirmed by
+# trace log to have entered `cleanup` zero times). The EXIT trap alone is
+# not sufficient; only an explicit trap on the signal itself gives `cleanup`
+# a chance to run before the process dies.
+cleanup_swap() {
+  # Every statement here must run to completion regardless of its own exit
+  # status: an unresponsive mount, a read-only parent, or an immutable flag
+  # can make `rm -rf`/`mv` fail for real (this is precisely the wedged-
+  # filesystem case the runbook documents below), and under the script's
+  # `set -e` a failing statement would otherwise abort this function right
+  # there — skipping the `$PREV` restore if the scratch removal is what
+  # failed, or skipping the caller's own exit code (the `EXIT` path) or
+  # signal re-raise (the handler path) if the restore itself is what failed
+  # instead. Neither call site can guard against that individually; turning
+  # `errexit` off for this function's body is what makes every statement
+  # here run unconditionally, in order, with the working-copy guarantee
+  # never truncated by an internal cleanup failure.
+  set +e
   rm -rf "$WORK" "$STAGING"
   # Died between the two renames: the working copy is in $PREV and $DST is
   # gone. Put it back — a failed re-vendor must leave the tree as it found it.
@@ -82,9 +106,41 @@ cleanup() {
     [ -e "$DST" ] || mv "$PREV" "$DST"
     rm -rf "$PREV"
   fi
+  set -e
+}
+
+cleanup() {
+  local code=$?
+  cleanup_swap
   exit "$code"
 }
 trap cleanup EXIT
+
+# A second Ctrl-C is an ordinary thing for an operator to send, and once
+# cleanup_swap is running it must be allowed to finish: an INT landing on top
+# of an already-running `rm -rf`/`mv` is what could leave the swap half done.
+# Blocking further delivery of these three as the handler's first act is
+# what makes cleanup_swap uninterruptible once started. Re-raising the
+# signal at the default disposition afterwards — rather than calling `exit`
+# — is what lets a caller still observe death-by-signal instead of an
+# invented exit code; `trap - EXIT` first stops that re-raise from also
+# running cleanup_swap a second time through the handler above.
+on_fatal_signal() {
+  local sig="$1"
+  trap '' INT TERM HUP
+  trap - EXIT
+  cleanup_swap
+  # Restore default disposition for all three, not just $sig: the process is
+  # about to die from the re-raise below, essentially synchronously, so
+  # there is normally no window where script logic runs on with the other
+  # two still masked — but leaving them masked is a latent gap, not merely
+  # a matter of state we won't need again.
+  trap - INT TERM HUP
+  kill -s "$sig" $$
+}
+trap 'on_fatal_signal INT' INT
+trap 'on_fatal_signal TERM' TERM
+trap 'on_fatal_signal HUP' HUP
 
 if [ -n "$FROM" ]; then
   FROM="$(cd "$FROM" 2>/dev/null && pwd)" || die 2 "--from path does not exist"

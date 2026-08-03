@@ -476,6 +476,169 @@ def test_a_signal_mid_run_leaves_the_working_copy_alone(
     _assert_untouched(skeleton)
 
 
+def _seed_leftover_prev(skeleton: Path) -> Path:
+    """Simulate the state left by an earlier run that died mid-swap:
+    `v1.prev` already exists as a real directory, alongside the ordinary
+    (untouched) `v1`. Used to make `cleanup_swap`'s own `rm -rf "$PREV"` an
+    observable side effect: its disappearance is proof the restore block in
+    `cleanup_swap` was actually reached, not merely that nothing caught its
+    absence."""
+    prev = _vendored(skeleton).parent / "v1.prev"
+    prev.mkdir()
+    (prev / "leftover.txt").write_text("from an earlier interrupted run\n")
+    return prev
+
+
+def _make_staging_unremovable_and_fail(skeleton: Path) -> None:
+    """Replace the generator with a stub that chmods `$STAGING` itself
+    (not its parent) read-only, then fails.
+
+    `rm -rf` needs write permission on a directory to delete entries
+    *inside* it — that's `$STAGING`'s own mode bit, not its parent's — so
+    this blocks `cleanup_swap`'s `rm -rf "$WORK" "$STAGING"` without
+    touching write permission on `v1`/`v1.prev`'s shared parent, leaving
+    the swap-restore logic free to run normally. Placed in the generator
+    (not injected from the test process) so there is no race: the chmod is
+    guaranteed to happen before this stub's own failure triggers `die 4`,
+    with no timing window for the real generator to win a race against it."""
+    (skeleton / "scripts" / "vendor_manifest.py").write_text(
+        "import os, pathlib, sys\n"
+        "root = pathlib.Path(sys.argv[sys.argv.index('--root') + 1])\n"
+        "os.chmod(root, 0o555)\n"
+        "sys.exit(1)\n"
+    )
+
+
+def _cleanup_unremovable_staging(skeleton: Path) -> None:
+    """Undo `_make_staging_unremovable_and_fail`'s chmod so pytest's own
+    tmp_path teardown (and, on the next test, the `skeleton` fixture) can
+    remove `v1.staging` normally — the script itself could not, by
+    construction."""
+    staging = _vendored(skeleton).parent / "v1.staging"
+    if staging.exists():
+        staging.chmod(0o755)
+        shutil.rmtree(staging)
+
+
+def test_a_scratch_directory_that_cannot_be_removed_does_not_skip_the_restore_or_the_exit_code(
+    skeleton: Path, producer: dict[str, object]
+) -> None:
+    """Copilot review of #112: `cleanup_swap` ran under the script's own
+    `set -e`, so a failing `rm -rf`/`mv` inside it — an unresponsive mount,
+    a read-only parent, an immutable flag, exactly the wedged-filesystem
+    case the runbook discusses — used to abort the function immediately,
+    skipping the `$PREV` restore if the scratch removal is what failed, and
+    corrupting the caller's own exit code if the restore's own `rm -rf` is
+    what failed instead (the shell exits with the failing command's status,
+    not the one `die()` recorded).
+
+    Constructed without root, without a platform-specific flag: `rm -rf`
+    fails to remove `$STAGING`'s own now-populated contents once `$STAGING`
+    itself (not its parent) is chmod'd 0555 — see
+    `_make_staging_unremovable_and_fail`. A pre-seeded `v1.prev` (see
+    `_seed_leftover_prev`) proves the restore's `rm -rf "$PREV"` still ran.
+
+    Skipped under a root test runner: root bypasses the permission bits
+    this construction relies on, so the induced failure would never
+    actually occur and the test would prove nothing."""
+    if hasattr(os, "getuid") and os.getuid() == 0:
+        pytest.skip("root ignores the permission bits this test relies on")
+
+    prev = _seed_leftover_prev(skeleton)
+    _make_staging_unremovable_and_fail(skeleton)
+
+    result = _run(skeleton, str(producer["second"]), "--from", str(producer["path"]))
+
+    try:
+        # die 4's exit code, not clobbered by the scratch rm -rf failing
+        # partway through cleanup_swap.
+        assert result.returncode == 4, (result.stdout, result.stderr)
+        # The restore block was reached and its own rm -rf ran: pre-fix,
+        # set -e would have aborted cleanup_swap before this line ever
+        # executed, leaving the leftover in place.
+        assert not prev.exists()
+        vendored = _vendored(skeleton)
+        assert (vendored / "README.md").read_text() == "SENTINEL\n"
+        assert (vendored / "PINNED.txt").read_text() == "commit: old\n"
+    finally:
+        _cleanup_unremovable_staging(skeleton)
+
+
+def test_a_scratch_directory_that_cannot_be_removed_still_lets_a_signal_re_raise(
+    skeleton: Path, producer: dict[str, object]
+) -> None:
+    """The signal-path half of the same review finding: `on_fatal_signal`
+    calls `cleanup_swap` too, so the same `set -e` hole could have skipped
+    the restore and, worse, skipped the re-raise that makes the process die
+    by signal rather than fall through to whatever exit code a failed `rm`
+    happened to leave behind.
+
+    Same construction as the `EXIT`-path test, but the generator sleeps
+    long enough (well past `_STAGING_POLL_DEADLINE`'s poll interval) for a
+    real signal to be delivered while it holds `$STAGING` read-only —
+    synchronized on the chmod itself (its write bit going away), not on a
+    fixed sleep amount, so there is no timing guess."""
+    if hasattr(os, "getuid") and os.getuid() == 0:
+        pytest.skip("root ignores the permission bits this test relies on")
+
+    prev = _seed_leftover_prev(skeleton)
+    staging = _vendored(skeleton).parent / "v1.staging"
+    (skeleton / "scripts" / "vendor_manifest.py").write_text(
+        "import os, pathlib, sys, time\n"
+        "root = pathlib.Path(sys.argv[sys.argv.index('--root') + 1])\n"
+        "os.chmod(root, 0o555)\n"
+        "time.sleep(10)\n"
+        "sys.exit(1)\n"
+    )
+    cmd = [
+        str(skeleton / "scripts" / SCRIPT_NAME),
+        str(producer["second"]),
+        "--from",
+        str(producer["path"]),
+    ]
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={**os.environ, **_GIT_ENV},
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + _STAGING_POLL_DEADLINE
+
+        def _staging_is_locked() -> bool:
+            return staging.exists() and not (staging.stat().st_mode & 0o200)
+
+        while not _staging_is_locked():
+            if time.monotonic() > deadline:
+                _killpg_if_alive(proc.pid, signal.SIGKILL)
+                proc.communicate(timeout=10)
+                pytest.fail(
+                    f"{staging} was never made read-only within "
+                    f"{_STAGING_POLL_DEADLINE}s"
+                )
+            time.sleep(_STAGING_POLL_INTERVAL)
+
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        stdout, stderr = proc.communicate(timeout=10)
+    finally:
+        if proc.poll() is None:
+            _killpg_if_alive(proc.pid, signal.SIGKILL)
+            proc.communicate(timeout=10)
+
+    try:
+        # Died by the re-raised signal, not by whatever status a failed
+        # rm -rf inside cleanup_swap happened to leave behind.
+        assert proc.returncode == -signal.SIGTERM.value, (stdout, stderr)
+        assert not prev.exists()
+        vendored = _vendored(skeleton)
+        assert (vendored / "README.md").read_text() == "SENTINEL\n"
+        assert (vendored / "PINNED.txt").read_text() == "commit: old\n"
+    finally:
+        _cleanup_unremovable_staging(skeleton)
+
+
 def test_a_blocked_swap_exits_5_and_leaves_the_working_copy_alone(
     skeleton: Path, producer: dict[str, object]
 ) -> None:
