@@ -557,9 +557,18 @@ def test_a_non_mapping_spec_runner_is_refused_not_overwritten(scalar: str) -> No
 
     `dict(existing or {})` only raised for the TRUTHY non-mappings: `0`,
     `false` and `""` are falsey (and `dict("")` is `{}` anyway), so they
-    reached the writer and were silently replaced with a mapping."""
-    with pytest.raises(TypeError):
+    reached the writer and were silently replaced with a mapping.
+
+    The explicit `TypeError` this check raises is still there — `_stage`
+    now wraps it into the one content-free exception used for every
+    refusal on the render path, and its message already names only a
+    type, so nothing is lost by wrapping it."""
+    from dispatcher.core.spec_runner_config_actions import UnsafeEditError
+
+    with pytest.raises(UnsafeEditError) as caught:
         _render_text(f"project: alpha\nspec_runner: {scalar}\n", _cand())
+    assert caught.value.stage == "render"
+    assert "TypeError" in str(caught.value)
 
 
 @pytest.mark.parametrize(
@@ -910,6 +919,76 @@ def test_a_failure_before_the_fork_says_so(tmp_path: Path) -> None:
     outcome = runner.run("alpha", _candidate(repo))
     assert outcome.ok is False
     assert outcome.phase == PHASE_PRE_LAUNCH
+
+
+_SECRET = "s3cr3t-telegram-token-ABC123"
+
+
+def test_a_duplicate_key_refusal_does_not_echo_the_values(tmp_path: Path) -> None:
+    """MEASURED leak, not hypothetical: ruamel's DuplicateKeyError renders as
+    'found duplicate key "a" with value "2" (original value: "<secret>")'.
+    A neighbour's project.yaml routinely holds tokens."""
+    from dispatcher.core.spec_runner_config_actions import (
+        UnsafeEditError,
+        build_new_yaml_bytes,
+    )
+
+    base = f'a: "{_SECRET}"\na: 2\nspec_runner:\n  max_retries: 5\n'
+    with pytest.raises(UnsafeEditError) as caught:
+        build_new_yaml_bytes(base.encode("utf-8"), _cand())
+    assert _SECRET not in str(caught.value)
+    assert caught.value.stage == "parse"
+    assert "DuplicateKeyError" in str(caught.value)
+
+
+def test_invalid_utf8_refuses_without_echoing_bytes(tmp_path: Path) -> None:
+    from dispatcher.core.spec_runner_config_actions import (
+        UnsafeEditError,
+        build_new_yaml_bytes,
+    )
+
+    with pytest.raises(UnsafeEditError) as caught:
+        build_new_yaml_bytes(b"project: \xff\xfe bad\n", _cand())
+    assert caught.value.stage == "decode"
+    assert "UnicodeDecodeError" in str(caught.value)
+
+
+def test_the_original_cause_is_kept_but_never_chained(tmp_path: Path) -> None:
+    """`from None` so no accidental traceback rendering can print the
+    original's text, while local reproduction still has it."""
+    from dispatcher.core.spec_runner_config_actions import (
+        UnsafeEditError,
+        build_new_yaml_bytes,
+    )
+
+    base = f'a: "{_SECRET}"\na: 2\nspec_runner:\n  max_retries: 5\n'
+    with pytest.raises(UnsafeEditError) as caught:
+        build_new_yaml_bytes(base.encode("utf-8"), _cand())
+    assert caught.value.__cause__ is None
+    assert caught.value.original is not None
+
+
+def test_the_outcome_and_audit_line_carry_no_file_content(
+    tmp_path: Path, caplog
+) -> None:
+    """ActionOutcome.error and the audit line are the surfaces this design
+    claims to protect. A clean exception does not prove a caller has not
+    appended repr(original) on the way out."""
+    import logging
+
+    repo = make_project(tmp_path, "alpha")
+    (repo / "project.yaml").write_text(
+        f'a: "{_SECRET}"\na: 2\nspec_runner:\n  max_retries: 5\n'
+    )
+    runner = SpecRunnerConfigActionRunner(DispatcherConfig(roots=(tmp_path,)))
+    candidate = _candidate(repo, max_retries=7)
+    with caplog.at_level(logging.INFO, logger="dispatcher.actions.spec_runner_config"):
+        outcome = runner.run("alpha", candidate)
+
+    assert outcome.ok is False
+    assert outcome.phase == PHASE_PRE_LAUNCH
+    assert _SECRET not in (outcome.error or "")
+    assert _SECRET not in caplog.text
 
 
 def test_the_catch_all_labels_itself_pre_launch(

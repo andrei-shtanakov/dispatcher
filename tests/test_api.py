@@ -579,6 +579,40 @@ async def test_spec_runner_config_invalid_candidate_maps_to_422(
         assert "max_retries: 3" in (repo / "project.yaml").read_text()
 
 
+async def test_update_spec_runner_config_response_carries_no_file_content(
+    tmp_path: Path,
+) -> None:
+    """The refusal reaches an HTTP body. Assert on the body, not the
+    exception."""
+    import subprocess
+
+    secret = "s3cr3t-telegram-token-ABC123"
+    repo = tmp_path / "alpha"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    (repo / "project.yaml").write_text(
+        f'a: "{secret}"\na: 2\nspec_runner:\n  max_retries: 3\nworkstreams: []\n'
+    )
+    config = DispatcherConfig(roots=(tmp_path,))
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        base_mtime = (repo / "project.yaml").stat().st_mtime
+        resp = await client.post(
+            "/api/actions/update-spec-runner-config",
+            headers={"X-Action-Token": token},
+            json={
+                "dir": "alpha",
+                "typed": {"max_retries": 9},
+                "base_mtime": base_mtime,
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is False
+        assert secret not in resp.text
+
+
 async def test_spec_runner_config_busy_maps_to_409(tmp_path: Path, monkeypatch) -> None:
     from dispatcher.core.spec_runner_config_actions import (
         SpecRunnerConfigActionRunner,

@@ -28,6 +28,8 @@ import re
 import subprocess
 import tempfile
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -273,6 +275,61 @@ class SpecRunnerConfigConflictError(Exception):
     """project.yaml changed on disk since the form was rendered (-> 409)."""
 
 
+class UnsafeEditError(Exception):
+    """project.yaml cannot be edited safely; the message carries no content.
+
+    One type for every refusal on the render path, not one per stage: two
+    types would invite callers to treat them differently, and they are the
+    same decision — this file cannot be edited safely.
+
+    `project.yaml` belongs to a neighbour repo and routinely holds secrets
+    (`telegram_bot_token` is in this repo's own fixtures), and this message
+    reaches an HTTP response body and the audit log. So it carries the stage,
+    the cause's CLASS name, coordinates and sizes — never a source line, a
+    scalar value, or a diff.
+    """
+
+    def __init__(
+        self, message: str, *, stage: str, original: BaseException | None = None
+    ) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.original = original
+
+
+def _safe_cause(err: BaseException) -> str:
+    """Name the failure without quoting the file.
+
+    Deliberately NOT `str(err)`: ruamel's DuplicateKeyError prints both the
+    new and the original value verbatim. Deliberately not `str(mark)` or
+    `err.problem` either — both embed source text. Only the class name and
+    the mark's integer coordinates are safe.
+    """
+    name = type(err).__name__
+    mark = getattr(err, "problem_mark", None)
+    if mark is not None:
+        return f"{name} at line {mark.line + 1}, column {mark.column + 1}"
+    start = getattr(err, "start", None)
+    if isinstance(start, int):
+        return f"{name} at byte {start}"
+    return name
+
+
+@contextmanager
+def _stage(name: str) -> Iterator[None]:
+    """Convert anything raised inside into a content-free UnsafeEditError."""
+    try:
+        yield
+    except UnsafeEditError:
+        raise
+    except Exception as err:
+        raise UnsafeEditError(
+            f"cannot safely edit project.yaml: {name} failed ({_safe_cause(err)})",
+            stage=name,
+            original=err,
+        ) from None
+
+
 def build_new_yaml_bytes(
     base_bytes: bytes, candidate: ConfigCandidate
 ) -> tuple[bytes, list[str], bool]:
@@ -303,56 +360,62 @@ def build_new_yaml_bytes(
     re-encodes independently do not compose into "we verified these bytes and
     sent those bytes" — `Path.write_text` translates newlines on write.
     """
-    base_text = base_bytes.decode("utf-8")
-    yaml = YAML()
-    yaml.preserve_quotes = True
-    yaml.width = _NO_REWRAP
-    offset = _sequence_offset(base_text)
-    if offset is not None:
-        yaml.indent(mapping=2, sequence=offset + 2, offset=offset)
-    null_style = _null_style(base_text)
-    if null_style is not None:
-        yaml.Representer = _representer_spelling_null(null_style)
-    doc = yaml.load(StringIO(base_text))
-    existing = doc.get("spec_runner")
-    # A `spec_runner:` that is not a mapping is a file this editor cannot
-    # read, so it must not write one: raising here is what makes run()'s
-    # catch-all report a pre-launch failure instead of overwriting a value
-    # nobody understood. Checked explicitly rather than left to
-    # `dict(existing or {})`, which only raised for the TRUTHY non-mappings
-    # — `0`, `false` and `""` are falsey (and `dict("")` is `{}` anyway),
-    # so they reached the writer and were silently replaced.
-    # `spec_runner:` with no value at all parses as None and is not this
-    # case: it means "no block", and gets a fresh one.
-    if existing is not None and not isinstance(existing, dict):
-        raise TypeError(f"spec_runner: is not a mapping: {type(existing).__name__}")
-    current: dict[str, Any] = dict(existing or {})
-    emit: dict[str, Any] = {}
-    changed_keys: list[str] = []
-    for key in TYPED_FIELDS:
-        default = TYPED_DEFAULTS[key]
-        cand_val = candidate.typed.get(key, current.get(key, default))
-        if key in current or cand_val != default:
-            emit[key] = cand_val
-        if cand_val != current.get(key, default):
-            changed_keys.append(key)
-    current_extra: dict[str, Any] = current.get("extra_executor_config") or {}
-    if candidate.extra_executor_config is None:
-        effective_extra = current_extra
-    else:
-        effective_extra = candidate.extra_executor_config
-    extra_changed = effective_extra != current_extra
-    if effective_extra:
-        emit["extra_executor_config"] = _commented(effective_extra)
-    if isinstance(existing, CommentedMap):
-        block = existing
-    else:
-        block = CommentedMap()
-        doc["spec_runner"] = block
-    _apply_block(doc, block, emit)
-    buf = StringIO()
-    yaml.dump(doc, buf)
-    return buf.getvalue().encode("utf-8"), changed_keys, extra_changed
+    with _stage("decode"):
+        base_text = base_bytes.decode("utf-8")
+    with _stage("parse"):
+        yaml = YAML()
+        yaml.preserve_quotes = True
+        yaml.width = _NO_REWRAP
+        offset = _sequence_offset(base_text)
+        if offset is not None:
+            yaml.indent(mapping=2, sequence=offset + 2, offset=offset)
+        null_style = _null_style(base_text)
+        if null_style is not None:
+            yaml.Representer = _representer_spelling_null(null_style)
+        doc = yaml.load(StringIO(base_text))
+    with _stage("render"):
+        existing = doc.get("spec_runner")
+        # A `spec_runner:` that is not a mapping is a file this editor cannot
+        # read, so it must not write one: raising here is what makes run()'s
+        # catch-all report a pre-launch failure instead of overwriting a
+        # value nobody understood. Checked explicitly rather than left to
+        # `dict(existing or {})`, which only raised for the TRUTHY
+        # non-mappings — `0`, `false` and `""` are falsey (and `dict("")` is
+        # `{}` anyway), so they reached the writer and were silently
+        # replaced.
+        # `spec_runner:` with no value at all parses as None and is not this
+        # case: it means "no block", and gets a fresh one.
+        if existing is not None and not isinstance(existing, dict):
+            raise TypeError(f"spec_runner: is not a mapping: {type(existing).__name__}")
+        current: dict[str, Any] = dict(existing or {})
+        emit: dict[str, Any] = {}
+        changed_keys: list[str] = []
+        for key in TYPED_FIELDS:
+            default = TYPED_DEFAULTS[key]
+            cand_val = candidate.typed.get(key, current.get(key, default))
+            if key in current or cand_val != default:
+                emit[key] = cand_val
+            if cand_val != current.get(key, default):
+                changed_keys.append(key)
+        current_extra: dict[str, Any] = current.get("extra_executor_config") or {}
+        if candidate.extra_executor_config is None:
+            effective_extra = current_extra
+        else:
+            effective_extra = candidate.extra_executor_config
+        extra_changed = effective_extra != current_extra
+        if effective_extra:
+            emit["extra_executor_config"] = _commented(effective_extra)
+        if isinstance(existing, CommentedMap):
+            block = existing
+        else:
+            block = CommentedMap()
+            doc["spec_runner"] = block
+        _apply_block(doc, block, emit)
+    with _stage("encode"):
+        buf = StringIO()
+        yaml.dump(doc, buf)
+        new_bytes = buf.getvalue().encode("utf-8")
+    return new_bytes, changed_keys, extra_changed
 
 
 def _commit_message(changed_keys: list[str], extra_changed: bool) -> str:
