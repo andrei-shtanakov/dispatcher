@@ -1153,7 +1153,8 @@ def test_a_refusal_names_both_lengths() -> None:
 
 def test_an_alias_expanded_outside_the_block_is_refused() -> None:
     """Row 7: destroying an anchor INSIDE the block makes ruamel expand every
-    alias to it elsewhere, so `elsewhere: *over` becomes an inlined copy.
+    alias to it elsewhere, so `elsewhere: *zqx_anchor_name` becomes an
+    inlined copy.
 
     Since Check C, this is caught at `check-c` rather than `check-b`: an
     anchor inside the block aliased outside it is exactly Check C's trigger
@@ -1164,7 +1165,13 @@ def test_an_alias_expanded_outside_the_block_is_refused() -> None:
     edit-destroys-an-anchor-inside escape, Check C's own motivating case is
     an edit-changes-a-value-aliased-outside escape). Kept as a regression
     test: it pins that Check C now preempts this row-7 mechanism, not that
-    `check-b`'s own containment logic stopped working."""
+    `check-b`'s own containment logic stopped working.
+
+    The anchor is named `zqx_anchor_name` rather than something ordinary
+    (e.g. `over`): the message-leak assertion below needs a fragment no
+    English prose could ever contain as a substring, or a message that
+    later gains an unrelated word like "recover" would fail the assertion
+    for a reason that has nothing to do with a real leak."""
     from dispatcher.core.spec_runner_config_actions import (
         UnsafeEditError,
         build_new_yaml_bytes,
@@ -1173,15 +1180,15 @@ def test_an_alias_expanded_outside_the_block_is_refused() -> None:
     base = (
         "spec_runner:\n"
         "  max_retries: 5\n"
-        "  extra_executor_config: &over\n"
+        "  extra_executor_config: &zqx_anchor_name\n"
         "    a: 1\n"
-        "elsewhere: *over\n"
+        "elsewhere: *zqx_anchor_name\n"
     ).encode("utf-8")
     cand = ConfigCandidate(typed={}, extra_executor_config={}, base_mtime=0.0)
     with pytest.raises(UnsafeEditError) as caught:
         build_new_yaml_bytes(base, cand)
     assert caught.value.stage == "check-c"
-    assert "over" not in str(caught.value)  # the anchor name, not just the key
+    assert "zqx_anchor_name" not in str(caught.value)
 
 
 # --- Check C: semantic containment (cross-boundary anchors) ---------------

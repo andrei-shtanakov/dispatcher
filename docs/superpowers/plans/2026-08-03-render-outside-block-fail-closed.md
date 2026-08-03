@@ -245,6 +245,9 @@ bytes."
   plan: `"decode"`, `"parse"`, `"render"`, `"encode"`, `"check-a"`, `"check-b"`.
   `"parse"` covers style inspection as well as `yaml.load` — both are reading
   the source.
+  (Superseded by Task 7: `"check-c"` was added, running right after
+  `"check-a"` and before the candidate is applied — not listed here since
+  this is the historical Task-2 plan.)
 - Produces: `_stage(name)` context manager that converts any exception into
   `UnsafeEditError`.
 
