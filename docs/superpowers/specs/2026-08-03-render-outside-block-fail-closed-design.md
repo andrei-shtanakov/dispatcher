@@ -49,6 +49,8 @@ source bytes
   → configure + render reproducing BOM, line endings, markers, indentation
   → UTF-8 encode, exactly once
   → Check A: an unmodified round-trip must equal the source, byte for byte
+  → Check C: no node inside the block is reachable from outside it
+  → apply the candidate, render with it applied
   → Check B: outside the owned span, source and result must be identical
   → write_bytes those exact bytes; propose-pr sends them
 ```
@@ -98,7 +100,7 @@ them is how a gate comes to look like it covers more than it does.
 | Guarantee | Carried by |
 |---|---|
 | The renderer does not normalise the file unconditionally | **Check A** |
-| A change does not escape the `spec_runner:` block | **Check B** |
+| A change does not escape the `spec_runner:` block | **Check B** (bytes) + **Check C** (meaning) |
 | Unknown in-block data survives the candidate mutation | **in-place mutation (#113) + targeted tests** — *not* Check A |
 
 The third row matters. Check A runs *before* the candidate is applied, so a
@@ -106,6 +108,13 @@ candidate-mutation bug that drops an unknown key or a comment inside the block
 passes Check A untouched, and Check B excludes the block from comparison by
 construction. Nothing in this slice detects that class of bug; the tests in
 "In-block preservation" below are its only defence.
+
+**The overall guarantee is not narrowed by splitting it across two checks.**
+It remains: a PR must not change the meaning of data outside the managed
+block. Check B alone only ever bounded that to bytes; Check C carries the
+half Check B cannot express — meaning that changes without any outside byte
+moving. Together they carry the guarantee as originally stated, not a
+weaker one.
 
 Building a third, universal in-block diff engine would mean enumerating which
 in-block differences are legitimate — the allowed-normalisations list wearing a
@@ -128,7 +137,16 @@ deliberate case.
 With Check A passing, render with the candidate applied and require the source
 and the result bytes to be identical outside the owned span.
 
-Covers row 7 and any future edit-induced escape.
+Covers any escape that shows up as an outside **byte** difference. It does
+**not** cover an escape that changes outside *meaning* while every outside
+byte stays exactly where it was — an anchor inside the block aliased, or
+merge-keyed, from outside it tracks the block's own edit without the alias
+site's own text (`*sr`, `<<: *sr`) ever changing. That half of the
+guarantee is Check C's job, below. Row 7 (an anchor destroyed *by* the
+edit) is, in practice, caught earlier by Check C now: its precondition —
+an anchor inside the block aliased outside it — is exactly Check C's
+trigger, so Check C refuses on the source document before Check B's own
+row-7 mechanism ever runs.
 
 ### The owned span
 
@@ -152,12 +170,61 @@ inside the overlay from truncating the span.
 When `spec_runner:` is absent from the source, the source span is empty at the
 insertion point and the output span is the appended block.
 
+## Check C — semantic containment
+
+Check B compares bytes; an outside node can change **meaning** without a
+single outside byte moving, when it is the same ruamel object the block's
+own edit mutates in place — an anchor inside `spec_runner:` aliased, or
+merge-keyed, from outside it. Editing `max_retries` under such an anchor
+changes every alias to it too, and nothing outside the span is textually
+different: the alias site still reads `*sr`, or `<<: *sr`, verbatim.
+
+Runs on the **source** document, right after Check A and before the
+candidate is applied — it needs no candidate to answer "is this possible",
+and the owner requires the refusal to happen before launch, not after a
+render that merely demonstrates it.
+
+**The rule:** refuse when any node inside the owned block — including the
+block node itself — is reachable from outside the block. Simpler than
+proving that this particular candidate touches the specific aliased node,
+which the owner explicitly ruled unnecessary: the structural possibility is
+enough to refuse, whether or not this candidate would exercise it. Anchors
+that are defined and used wholly inside the block are not refused — they
+never leave the boundary.
+
+Detection is identity-based, not name-based: aliases are resolved at load
+time, so the alias site itself carries no anchor name to match against.
+Two things about the identity walk are load-bearing, each measured to cost
+an iteration if missed:
+
+- The block's own top-level slot is excluded **by key**, not by identity.
+  Excluding by identity (`if val is block: continue`) would also skip an
+  outside alias that resolves to the *whole block* — exactly the case being
+  hunted, since that alias site's value *is* the block object.
+- Identity is only meaningful for containers and anchored scalars. Plain
+  scalars are interned (`3` is the same object everywhere in the process),
+  so an identity test over them would refuse anchors that were never
+  aliased at all.
+
+Skipped when there is no block (`spec_runner:` absent, or not a mapping) —
+nothing for an outside alias to reach into, and a non-mapping block is
+refused on its own terms during "render" regardless.
+
+Also skipped when the block has no literal top-level position of its own —
+i.e. it is reachable **only** through a top-level merge key, nested inside
+some other key (the merge-key residual below). Check B's span-less
+fallback for that shape already requires the *whole* document to stay
+byte-identical for any real edit, at least as strong as Check C for that
+case; running Check C there too would only additionally refuse the
+untouched no-op, which changes no meaning anywhere and has nothing to
+protect against (`test_owned_span_handles_a_top_level_merge_key_cleanly`).
+
 ## Failure surface
 
-Both checks raise **one** dedicated exception type, carrying which check
-failed. Two types would invite callers to treat the two refusals differently,
-and they are the same decision: this file cannot be edited safely. `run()`'s
-existing catch-all turns it into
+All three checks raise **one** dedicated exception type, carrying which check
+failed. Separate types would invite callers to treat the refusals
+differently, and they are the same decision: this file cannot be edited
+safely. `run()`'s existing catch-all turns it into
 `ActionOutcome(ok=False, phase=PHASE_PRE_LAUNCH, error=...)`.
 
 `pre_launch` is accurate rather than convenient: no subprocess was launched, so
@@ -185,13 +252,13 @@ from `yaml.load`. `UnicodeDecodeError` similarly reports the offending byte.
 but "clean today" is not a property to depend on.)
 
 Therefore the safe exception wraps **all of `build_new_yaml_text`** — decode,
-style detection, load, mutation, dump, encode, and both checks — and it is the
-only exception type the function raises.
+style detection, load, mutation, dump, encode, and all three checks — and it
+is the only exception type the function raises.
 
-What may escape: the stage that failed (`decode`, `parse`, `render`, `encode`,
-`check-a`, `check-b`), the *class name* of the underlying cause, coordinates,
-lengths, counts, and which side of the span diverged. Class names are type
-identifiers and carry no file content.
+What may escape: the stage that failed (`decode`, `parse`, `check-a`,
+`check-c`, `render`, `encode`, `check-b`), the *class name* of the
+underlying cause, coordinates, lengths, counts, and which side of the span
+diverged. Class names are type identifiers and carry no file content.
 
 **No reference to the original exception survives** — not on an attribute, not
 via `__cause__`, not via `__context__`. The original object is proven to carry
@@ -290,6 +357,21 @@ BOM + CRLF + markers + no-final-newline case.
 from row 7. Both assert a refusal, and assert that the message contains no
 file content.
 
+**Check C** — a plain alias to the block, a merge key to the block (a
+separate case: `node.values()` alone never sees a merge key's source, so a
+`_children` bug that forgets it is otherwise invisible), a nested anchor
+inside the block used outside, and an anchored scalar inside the block used
+outside — each asserts `stage == "check-c"`. Two controls assert the
+guard does **not** fire: an anchor and its only alias both wholly inside the
+block, and an anchor defined and used wholly outside the block — a guard
+that refuses either is too broad and is a defect, not a safety win. A
+reverse-mutation test disables the guard (monkeypatches
+`_block_is_reachable_from_outside` to `False`) and confirms the plain-alias
+case is then silently accepted with the alias's own text untouched,
+proving the guard, not some other stage, is what refuses it. A last test
+plants a distinctive anchor name and asserts it does not appear in the
+message.
+
 **In-block preservation** (the third guarantee, which no check covers) — a
 candidate must preserve, inside `spec_runner:`: an unknown key, that key's
 quote style, standalone and inline comments, the relative order of unknown
@@ -344,7 +426,26 @@ cleanly, and the byte-exact no-op bar from #113 still holds.
   shape this editor stops handling, and it must be named rather than
   discovered (measured during Task 5; `test_owned_span_handles_a_top_level_
   merge_key_cleanly` covers the no-op case, which still works — only an
-  actual mutation through the merge key is refused).
+  actual mutation through the merge key is refused). Check C (Task 7)
+  deliberately does not widen this residual further: it skips its own check
+  whenever the block has no literal top-level position, precisely this
+  shape, because Check B's span-less fallback there is already at least as
+  strong for a real edit, and Check C would otherwise additionally refuse
+  the untouched no-op for no safety gain (nothing outside changes meaning
+  when nothing changes at all).
+- A third capability removal, alongside row 6 and the merge-key case above:
+  a `project.yaml` whose `spec_runner:` block is anchored and aliased (or
+  merge-keyed) elsewhere in the file becomes un-editable outright — Check C
+  refuses on the source document before the candidate is even applied,
+  whether or not this particular candidate would touch the aliased data.
+  The owner ruled this the correct trade: a structural possibility of
+  escape is enough to refuse, rather than proving the specific node is
+  touched. This also fully subsumes row 7's own mechanism (an anchor
+  destroyed by the edit): row 7 requires exactly the source shape Check C's
+  precondition looks for, so `test_an_alias_expanded_outside_the_block_is_
+  refused` now surfaces as `stage="check-c"` rather than `stage="check-b"`
+  — Check B's row-7 detection is not broken, just never reached, because
+  Check C always fires first on any input that could trigger it.
 - A candidate-mutation bug that damages unknown in-block data is caught only by
   the targeted tests above, never by the gate.
 - A `project.yaml` with duplicate keys is already unusable — ruamel's round-trip

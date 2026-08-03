@@ -1153,8 +1153,18 @@ def test_a_refusal_names_both_lengths() -> None:
 
 def test_an_alias_expanded_outside_the_block_is_refused() -> None:
     """Row 7: destroying an anchor INSIDE the block makes ruamel expand every
-    alias to it elsewhere, so `elsewhere: *over` becomes an inlined copy. No
-    style matching prevents this; only the containment check catches it."""
+    alias to it elsewhere, so `elsewhere: *over` becomes an inlined copy.
+
+    Since Check C, this is caught at `check-c` rather than `check-b`: an
+    anchor inside the block aliased outside it is exactly Check C's trigger
+    condition, so it now refuses on the SOURCE document before the
+    candidate (here, one that destroys the anchor by clearing
+    `extra_executor_config`) is ever applied. Same class as the semantic
+    escape Check C was added for; it differs only in direction (row 7 is an
+    edit-destroys-an-anchor-inside escape, Check C's own motivating case is
+    an edit-changes-a-value-aliased-outside escape). Kept as a regression
+    test: it pins that Check C now preempts this row-7 mechanism, not that
+    `check-b`'s own containment logic stopped working."""
     from dispatcher.core.spec_runner_config_actions import (
         UnsafeEditError,
         build_new_yaml_bytes,
@@ -1170,8 +1180,138 @@ def test_an_alias_expanded_outside_the_block_is_refused() -> None:
     cand = ConfigCandidate(typed={}, extra_executor_config={}, base_mtime=0.0)
     with pytest.raises(UnsafeEditError) as caught:
         build_new_yaml_bytes(base, cand)
-    assert caught.value.stage == "check-b"
-    assert "outside spec_runner" in str(caught.value)
+    assert caught.value.stage == "check-c"
+
+
+# --- Check C: semantic containment (cross-boundary anchors) ---------------
+#
+# Check B is a byte comparison outside the span, and an outside alias or
+# merge key can change MEANING without moving a single outside byte: it
+# resolves through the same object the block's edit mutates in place. Check
+# C asks the source document itself whether that is possible, before the
+# candidate is even applied.
+
+
+def test_check_c_refuses_a_plain_alias_to_the_block() -> None:
+    from dispatcher.core.spec_runner_config_actions import (
+        UnsafeEditError,
+        build_new_yaml_bytes,
+    )
+
+    base = ("spec_runner: &sr\n  max_retries: 3\nelsewhere: *sr\n").encode("utf-8")
+    with pytest.raises(UnsafeEditError) as caught:
+        build_new_yaml_bytes(base, _cand(max_retries=99))
+    assert caught.value.stage == "check-c"
+
+
+def test_check_c_refuses_a_merge_key_to_the_block() -> None:
+    """Separate from the plain-alias case: `_children` has to walk the
+    merge-key source explicitly — `node.values()` alone never reaches it."""
+    from dispatcher.core.spec_runner_config_actions import (
+        UnsafeEditError,
+        build_new_yaml_bytes,
+    )
+
+    base = (
+        "spec_runner: &sr\n"
+        "  max_retries: 3\n"
+        "other:\n"
+        "  <<: *sr\n"
+        "  note: unrelated section\n"
+    ).encode("utf-8")
+    with pytest.raises(UnsafeEditError) as caught:
+        build_new_yaml_bytes(base, _cand(max_retries=99))
+    assert caught.value.stage == "check-c"
+
+
+def test_check_c_refuses_a_nested_anchor_used_outside() -> None:
+    from dispatcher.core.spec_runner_config_actions import (
+        UnsafeEditError,
+        build_new_yaml_bytes,
+    )
+
+    base = (
+        "spec_runner:\n"
+        "  max_retries: 3\n"
+        "  extra_executor_config: &o\n"
+        "    a: 1\n"
+        "elsewhere: *o\n"
+    ).encode("utf-8")
+    with pytest.raises(UnsafeEditError) as caught:
+        build_new_yaml_bytes(base, _cand(max_retries=99))
+    assert caught.value.stage == "check-c"
+
+
+def test_check_c_refuses_an_anchored_scalar_used_outside() -> None:
+    from dispatcher.core.spec_runner_config_actions import (
+        UnsafeEditError,
+        build_new_yaml_bytes,
+    )
+
+    base = ("spec_runner:\n  max_retries: &mr 3\nelsewhere: *mr\n").encode("utf-8")
+    with pytest.raises(UnsafeEditError) as caught:
+        build_new_yaml_bytes(base, _cand(max_retries=99))
+    assert caught.value.stage == "check-c"
+
+
+def test_check_c_does_not_refuse_an_anchor_wholly_inside_the_block() -> None:
+    """Control: the anchor and its only alias both live inside the owned
+    block — the alias never leaves the boundary. A guard that refuses this
+    is too broad and is a defect, not a safety win."""
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_bytes
+
+    base = (
+        "spec_runner:\n"
+        "  max_retries: 3\n"
+        "  extra_executor_config: &o\n"
+        "    a: 1\n"
+        "  other_thing: *o\n"
+    ).encode("utf-8")
+    build_new_yaml_bytes(base, _cand(max_retries=99))  # must not raise
+
+
+def test_check_c_does_not_refuse_an_anchor_defined_and_used_outside() -> None:
+    """Control: anchor and alias both live outside the block — nothing
+    inside spec_runner is reachable from them."""
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_bytes
+
+    base = ("spec_runner:\n  max_retries: 3\na: &x 1\nb: *x\n").encode("utf-8")
+    build_new_yaml_bytes(base, _cand(max_retries=99))  # must not raise
+
+
+def test_check_c_is_load_bearing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reverse mutation: with the guard disabled, case 1's edit is silently
+    accepted and the outside alias tracks the new value — proof this check,
+    not Check A or B, is what refuses it. This is the exact defect the
+    owner ruled on: no outside byte moves (`elsewhere: *sr` is untouched
+    text), yet the data it resolves to changes 3 -> 99."""
+    import dispatcher.core.spec_runner_config_actions as mod
+
+    monkeypatch.setattr(
+        mod, "_block_is_reachable_from_outside", lambda doc, block: False
+    )
+    base = ("spec_runner: &sr\n  max_retries: 3\nelsewhere: *sr\n").encode("utf-8")
+    out, changed, _ = mod.build_new_yaml_bytes(base, _cand(max_retries=99))
+    text = out.decode("utf-8")
+    assert changed == ["max_retries"]
+    assert "max_retries: 99" in text
+    assert "elsewhere: *sr" in text  # the outside byte never moved
+
+
+def test_check_c_message_carries_no_anchor_name() -> None:
+    from dispatcher.core.spec_runner_config_actions import (
+        UnsafeEditError,
+        build_new_yaml_bytes,
+    )
+
+    base = (
+        "spec_runner: &super_secret_anchor_name\n"
+        "  max_retries: 3\n"
+        "elsewhere: *super_secret_anchor_name\n"
+    ).encode("utf-8")
+    with pytest.raises(UnsafeEditError) as caught:
+        build_new_yaml_bytes(base, _cand(max_retries=99))
+    assert "super_secret_anchor_name" not in str(caught.value)
 
 
 # --- The third guarantee: unknown in-block data survives the candidate ----

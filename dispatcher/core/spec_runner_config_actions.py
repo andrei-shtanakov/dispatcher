@@ -37,7 +37,7 @@ from typing import Any
 
 from pydantic import BaseModel
 from ruamel.yaml import YAML
-from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.comments import CommentedMap, CommentedSeq, merge_attrib
 from ruamel.yaml.representer import RoundTripRepresenter
 from ruamel.yaml.tokens import CommentToken
 
@@ -457,6 +457,72 @@ def _apply_block(doc: CommentedMap, block: CommentedMap, emit: dict[str, Any]) -
         _put_tail(doc, block, tail)
 
 
+def _children(node: Any) -> list[Any]:
+    """Every child object, including merge-key sources.
+
+    `node.values()` alone never sees a merge key's source mappings — ruamel
+    stores those separately under `merge_attrib` and resolves them into
+    membership only at lookup time, not in `.values()`.
+    """
+    out: list[Any] = []
+    if isinstance(node, CommentedMap):
+        out.extend(node.values())
+        merged = getattr(node, merge_attrib, None)
+        if merged is not None:
+            out.extend(list(merged))  # MergeValue iterates its source mappings
+    elif isinstance(node, CommentedSeq):
+        out.extend(list(node))
+    return out
+
+
+def _identity_is_meaningful(node: Any) -> bool:
+    """Containers and anchored scalars are distinct objects; plain scalars
+    are interned (`3` is the same object everywhere), so an identity test
+    over them would yield false refusals."""
+    if isinstance(node, (CommentedMap, CommentedSeq)):
+        return True
+    anchor = getattr(node, "anchor", None)
+    return anchor is not None and bool(anchor.value)
+
+
+def _ids_within(node: Any, acc: set[int]) -> None:
+    """Collect the identity of every node inside `node` for which identity
+    is meaningful (see `_identity_is_meaningful`)."""
+    if _identity_is_meaningful(node):
+        acc.add(id(node))
+    for child in _children(node):
+        _ids_within(child, acc)
+
+
+def _block_is_reachable_from_outside(doc: CommentedMap, block: Any) -> bool:
+    """True when an alias or merge key outside `spec_runner:` resolves to
+    the block or to anything inside it.
+
+    Refuses by KEY, not by identity: `if val is block: continue` would skip
+    the very case being hunted when the anchor is on the block itself,
+    because the outside alias site then *is* the block object.
+    """
+    inside: set[int] = set()
+    _ids_within(block, inside)
+    seen: set[int] = set()
+
+    def walk(node: Any) -> bool:
+        if id(node) in seen:
+            return False
+        seen.add(id(node))
+        if id(node) in inside:
+            return True
+        return any(walk(child) for child in _children(node))
+
+    for key, value in doc.items():
+        if key == "spec_runner":
+            continue
+        if walk(value):
+            return True
+    merged = getattr(doc, merge_attrib, None)
+    return merged is not None and any(walk(m) for m in list(merged))
+
+
 class ConfigCandidate(BaseModel):
     """A proposed spec_runner: block, as submitted by the editor UI."""
 
@@ -689,9 +755,41 @@ def _build_new_yaml_bytes(
             stage="check-a",
         )
     # Captured BEFORE `_apply_block` mutates `doc` below — once the block is
-    # edited, the source's own line numbers are gone.
+    # edited, the source's own line numbers are gone. Computed here (rather
+    # than after Check C) because Check C's own guard needs it too: a block
+    # with no literal top-level position exists only NESTED inside some
+    # other top-level key, reachable solely through a merge key
+    # (`test_owned_span_handles_a_top_level_merge_key_cleanly`). Check B's
+    # span-less fallback for that shape already requires the WHOLE document
+    # to stay byte-identical for any edit through that route — a blanket
+    # refusal at least as strong, for a real edit, as anything Check C would
+    # add — so running Check C there too would only additionally refuse the
+    # untouched NO-OP, which changes no meaning anywhere and has nothing to
+    # protect against.
     source_lines = base_text.splitlines(keepends=True)
     source_span = _owned_span(doc, source_lines)
+    # Check C — semantic containment. Runs on the SOURCE document, before
+    # the candidate is applied: `_apply_block` below edits the block's
+    # CommentedMap in place, so an outside alias or merge key that already
+    # resolves into it would track that edit without a single outside byte
+    # moving — Check B compares bytes and is blind to this by construction.
+    # Guarded on the block being a real mapping: `None` or a non-mapping
+    # `spec_runner:` has nothing for an outside alias to reach into, and is
+    # rejected on its own terms later in "render".
+    block_before_edit = doc.get("spec_runner")
+    with _stage("check-c"):
+        escapes = (
+            source_span is not None
+            and isinstance(block_before_edit, CommentedMap)
+            and _block_is_reachable_from_outside(doc, block_before_edit)
+        )
+    if escapes:
+        raise UnsafeEditError(
+            "cannot safely edit project.yaml: an anchor inside spec_runner "
+            "is aliased outside it, so editing the block would change the "
+            "meaning of data outside it",
+            stage="check-c",
+        )
     with _stage("render"):
         existing = doc.get("spec_runner")
         # A `spec_runner:` that is not a mapping is a file this editor cannot
