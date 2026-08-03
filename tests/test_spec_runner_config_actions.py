@@ -1199,3 +1199,144 @@ def test_the_tail_comment_after_the_block_is_outside_the_span() -> None:
     assert "review_model: rm" in text
     assert text.index("review_model: rm") < text.index("# col-0 standalone")
     assert text.index("# col-0 standalone") < text.index("after: 1")
+
+
+# --- Fix round 1: I-1, M-1, M-2, M-3, M-4 ----------------------------------
+
+
+def test_check_b_refuses_when_the_tail_region_is_actually_corrupted() -> None:
+    """`test_the_tail_comment_after_the_block_is_outside_the_span` above only
+    asserts substring ordering, which a Check B that never fires (e.g.
+    `_outside` neutered to always return `("", "")`) would still satisfy —
+    a WORKING renderer never touches that region either, so the assertions
+    are silent evidence either way. This test corrupts the trailing region
+    on purpose so Check B's own refusal is what is being exercised, not
+    merely output that happens to be correct.
+
+    Mutation-checked by hand: with `_outside` patched to
+    `lambda lines, span: ("", "")`, this test FAILS (`DID NOT RAISE`) while
+    `test_the_tail_comment_after_the_block_is_outside_the_span` still
+    passes — recorded in task-5-report.md's fix-round-1 section."""
+    import dispatcher.core.spec_runner_config_actions as mod
+
+    base = ("spec_runner:\n  max_retries: 5\n\n# col-0 standalone\nafter: 1\n").encode(
+        "utf-8"
+    )
+    real_render = mod._render
+    calls = {"n": 0}
+
+    def corrupting_render(doc: object, style: object) -> bytes:
+        calls["n"] += 1
+        out = real_render(doc, style)  # type: ignore[arg-type]
+        if calls["n"] == 2:  # the "encode" stage's call, after Check A's own
+            out = out.replace(b"after: 1", b"after: 999")
+        return out
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(mod, "_render", corrupting_render)
+        with pytest.raises(mod.UnsafeEditError) as caught:
+            mod.build_new_yaml_bytes(base, _cand(max_retries=9))
+    assert caught.value.stage == "check-b"
+    assert "after the block" in str(caught.value)
+
+
+def test_owned_span_handles_a_top_level_merge_key_cleanly() -> None:
+    """A `spec_runner:` reachable only through a top-level merge key
+    (`<<: *anchor`) is a member of `doc` via merge resolution, while
+    `doc.lc.data` only ever holds literally-present keys — the two
+    disagree, and `"spec_runner" not in doc` followed by indexing
+    `doc.lc.data["spec_runner"]` raised `KeyError`, which escaped every
+    `_stage` block and reached the wrapper's own catch-all as a
+    content-free but mislabeled `stage="unknown"`. A safe no-op edit on
+    this shape must produce a clean, unmodified result instead."""
+    from dispatcher.core.spec_runner_config import TYPED_DEFAULTS
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_bytes
+
+    base = (
+        "defaults: &d\n  spec_runner:\n    max_retries: 5\n<<: *d\nother: 1\n"
+    ).encode("utf-8")
+    cand = ConfigCandidate(typed={**TYPED_DEFAULTS, "max_retries": 5}, base_mtime=0.0)
+    out, changed, extra_changed = build_new_yaml_bytes(base, cand)
+    assert out == base
+    assert changed == []
+    assert extra_changed is False
+
+
+def test_an_indented_ellipsis_inside_a_block_scalar_is_not_a_document_marker() -> None:
+    """A real YAML document-end marker is column-0 only; `.strip() == "..."`
+    also matched an INDENTED `...` that is scalar DATA, which shrank the
+    span past real block content and produced a false refusal."""
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_bytes
+
+    base = (
+        "spec_runner:\n"
+        "  extra_executor_config:\n"
+        "    note: |\n"
+        "      one\n"
+        "      ...\n"
+        "z: 1\n"
+    ).encode("utf-8")
+    out, changed, _ = build_new_yaml_bytes(base, _cand(max_retries=9))
+    assert changed == ["max_retries"]
+    text = out.decode("utf-8")
+    assert "max_retries: 9" in text
+    assert "      ...\n" in text  # the scalar's own line, untouched
+
+
+def test_a_wholesale_block_deletion_is_refused_outright() -> None:
+    """Unreachable via `_apply_block` today (it never deletes the key), but
+    the wrong default direction for a fail-closed check to have on
+    standby: a source with a REAL, positioned block and an output with
+    none at all is a wholesale deletion, which must refuse outright rather
+    than fall back to the weaker concatenated comparison the merge-key
+    case (above) legitimately needs."""
+    import dispatcher.core.spec_runner_config_actions as mod
+
+    base = b"spec_runner:\n  max_retries: 5\nz: 1\n"
+    real_owned_span = mod._owned_span
+    calls = {"n": 0}
+
+    def owned_span_hiding_the_output(
+        doc: object, lines: list[str]
+    ) -> tuple[int, int] | None:
+        calls["n"] += 1
+        result = real_owned_span(doc, lines)  # type: ignore[arg-type]
+        return None if calls["n"] == 2 else result  # 2nd call is the output side
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(mod, "_owned_span", owned_span_hiding_the_output)
+        with pytest.raises(mod.UnsafeEditError) as caught:
+            mod.build_new_yaml_bytes(base, _cand(max_retries=9))
+    assert caught.value.stage == "check-b"
+    assert "no spec_runner: block" in str(caught.value)
+
+
+def test_the_concatenated_check_names_a_real_output_line() -> None:
+    """When the block is freshly created (no span in the source), a
+    divergence in the region the new span excludes must be reported at the
+    OUTPUT's own line number — not an index into a string built by
+    skipping the span, which under-counts by the span's own height
+    (measured: short by 2 before this fix) for any mismatch that falls
+    after it."""
+    import dispatcher.core.spec_runner_config_actions as mod
+
+    base = "project: alpha\n\n# trailing note\n...\n".encode("utf-8")
+    real_render = mod._render
+    calls = {"n": 0}
+
+    def corrupting_render(doc: object, style: object) -> bytes:
+        calls["n"] += 1
+        out = real_render(doc, style)  # type: ignore[arg-type]
+        if calls["n"] == 2:
+            out = out.replace(b"...\n", b"zzz: 9\n")
+        return out
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(mod, "_render", corrupting_render)
+        with pytest.raises(mod.UnsafeEditError) as caught:
+            mod.build_new_yaml_bytes(base, _cand(max_retries=9))
+    message = str(caught.value)
+    assert caught.value.stage == "check-b"
+    # Real rendered lines: 1 project:, 2 blank, 3 # trailing note,
+    # 4 spec_runner:, 5   max_retries: 9, 6 (corrupted, was "...").
+    assert "first mismatch at output line 6" in message

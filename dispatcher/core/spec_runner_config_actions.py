@@ -270,16 +270,26 @@ def _owned_span(doc: CommentedMap, lines: list[str]) -> tuple[int, int] | None:
     fallback to `len(lines)` would otherwise pull that marker line into the
     span on one side of a comparison but not the other (no block at all on
     the source side means the whole file, marker included, is "outside").
+    The marker check is column-0 exact (`rstrip` of the line ending only,
+    not `.strip()`): an indented `...` inside a block scalar is data, not a
+    document marker, and treating it as one would truncate the span past
+    real content.
+
+    `doc.lc.data.get(...)` rather than `"spec_runner" in doc` plus indexing:
+    a top-level merge key (`<<: *anchor`) makes membership true through
+    merge resolution while `lc.data` only ever holds literally-present
+    keys, so the two can disagree and the index would raise `KeyError`.
     """
-    if "spec_runner" not in doc:
+    pos = doc.lc.data.get("spec_runner")
+    if pos is None:
         return None
-    start = doc.lc.data["spec_runner"][0]
-    following = [pos[0] for pos in doc.lc.data.values() if pos[0] > start]
+    start = pos[0]
+    following = [p[0] for p in doc.lc.data.values() if p[0] > start]
     end = (min(following) if following else len(lines)) - 1
     while end > start and (
         not lines[end].strip()
         or lines[end].lstrip().startswith("#")
-        or lines[end].strip() == "..."
+        or lines[end].rstrip("\r\n") == "..."
     ):
         end -= 1
     return start, end
@@ -301,6 +311,35 @@ def _first_differing_line(left: str, right: str) -> int:
         if left_lines[index] != right_lines[index]:
             return index
     return min(len(left_lines), len(right_lines))
+
+
+def _first_differing_output_line(
+    source_lines: list[str], new_lines: list[str], new_span: tuple[int, int]
+) -> int:
+    """0-based OUTPUT line index of the first divergence, for the case where
+    the source has no span of its own (the block did not exist there).
+
+    There is no shared boundary to index a concatenated comparison against,
+    so the coordinate has to be found by walking `new_lines` directly,
+    skipping `new_span`, rather than by indexing into a string built from
+    pieces that skip the span — that index is not a real output line
+    wherever the divergence falls after the span.
+    """
+    start, end = new_span
+    src_index = 0
+    new_index = 0
+    while new_index < len(new_lines):
+        if start <= new_index <= end:
+            new_index += 1
+            continue
+        if (
+            src_index >= len(source_lines)
+            or source_lines[src_index] != new_lines[new_index]
+        ):
+            return new_index
+        src_index += 1
+        new_index += 1
+    return new_index
 
 
 def _last_line_slot(node: Any) -> tuple[Any, Any] | None:
@@ -678,27 +717,57 @@ def _build_new_yaml_bytes(
         new_lines = new_text.splitlines(keepends=True)
         new_doc = _configured_yaml(style).load(StringIO(new_text))
         new_span = _owned_span(new_doc, new_lines)
+    if source_span is not None and new_span is None:
+        # Fail-closed direction: the source had a real, positioned block and
+        # the output does not — a wholesale deletion the piecewise
+        # comparison below would have caught as "after the block" changed
+        # to nothing. Falling back to the weaker concatenated comparison
+        # here would accept it instead. Unreachable today (`_apply_block`
+        # never deletes the key), but the wrong default direction for a
+        # fail-closed check to have on standby. Guarded on `source_span is
+        # not None`: a `spec_runner:` reachable only through a top-level
+        # merge key (`<<: *anchor`) has no literal position on EITHER side
+        # (`_owned_span` returns None for both, never having had one to
+        # lose), which is the concatenated-comparison case below, not a
+        # deletion.
+        raise UnsafeEditError(
+            "cannot safely edit project.yaml: rendering changes bytes outside "
+            "spec_runner (the rendered output has no spec_runner: block; "
+            f"source/output lengths {len(base_bytes)}/{len(new_bytes)})",
+            stage="check-b",
+        )
     source_before, source_after = _outside(source_lines, source_span)
     new_before, new_after = _outside(new_lines, new_span)
-    if source_span is None or new_span is None:
-        # No pre-existing span on one side (the block was created or removed
-        # outright by this edit), so there is no shared boundary to compare
-        # before/after against separately — only their concatenation, which
-        # still catches any content actually lost or altered.
-        checks: tuple[tuple[str, str, str, int], ...] = (
-            (
-                "no pre-existing span to compare before/after separately",
-                source_before + source_after,
-                new_before + new_after,
-                0,
-            ),
-        )
-    else:
-        checks = (
-            ("before the block", source_before, new_before, 0),
-            ("after the block", source_after, new_after, new_span[1] + 1),
-        )
-    for side, was, now, offset in checks:
+    if source_span is None:
+        # No literal top-level position for `spec_runner:` in the source —
+        # either the block is being created fresh, or it is only reachable
+        # through a merge key, which never gets one either. Either way
+        # there is no shared boundary to compare "before" and "after"
+        # separately against — only whether the source, taken whole, still
+        # matches the new document once the new span (if any) is skipped.
+        if source_before + source_after != new_before + new_after:
+            differing = (
+                _first_differing_output_line(source_lines, new_lines, new_span)
+                if new_span is not None
+                else _first_differing_line(source_before, new_before)
+            )
+            raise UnsafeEditError(
+                "cannot safely edit project.yaml: rendering changes bytes "
+                "outside spec_runner (no pre-existing span to compare "
+                "before/after separately; first mismatch at output line "
+                f"{differing + 1}; source/output lengths "
+                f"{len(base_bytes)}/{len(new_bytes)})",
+                stage="check-b",
+            )
+        return new_bytes, changed_keys, extra_changed
+    # By construction: `source_span is None` returned above, and
+    # `source_span is not None and new_span is None` raised above it — a
+    # `None` here would mean neither branch matched, which cannot happen.
+    assert new_span is not None
+    for side, was, now, offset in (
+        ("before the block", source_before, new_before, 0),
+        ("after the block", source_after, new_after, new_span[1] + 1),
+    ):
         if was == now:
             continue
         differing = _first_differing_line(was, now)
