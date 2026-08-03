@@ -190,19 +190,32 @@ class _SourceStyle:
 
 
 def _inspect_style(text: str) -> _SourceStyle:
+    """Measure the source's style, including whether it opens/closes with an
+    explicit `---`/`...` document marker.
+
+    The marker check is column-0 exact (only trailing whitespace is
+    tolerated): an indented `---`- or `...`-looking line inside a block
+    scalar is DATA, not a document marker. Same rule `_owned_span` already
+    applies to the `...` end marker when locating the block's span — this
+    is its sibling, checked against the raw (not `.strip()`-ed) line so the
+    leading indentation survives long enough to be tested. Filtering out
+    blank and comment lines still uses the stripped form, since a comment
+    can itself be indented.
+    """
     body = text.lstrip("﻿")
-    stripped_lines = [
-        line.strip()
-        for line in body.splitlines()
-        if line.strip() and not line.strip().startswith("#")
+    lines = body.splitlines()
+    significant = [
+        line for line in lines if line.strip() and not line.strip().startswith("#")
     ]
+    first = significant[0] if significant else ""
+    last = significant[-1] if significant else ""
     newlines = body.count("\n")
     return _SourceStyle(
         bom=text.startswith("﻿"),
         crlf=newlines > 0 and body.count("\r\n") == newlines,
         final_newline=text.endswith("\n"),
-        explicit_start=bool(stripped_lines) and stripped_lines[0] == "---",
-        explicit_end=bool(stripped_lines) and stripped_lines[-1] == "...",
+        explicit_start=first.rstrip() == "---",
+        explicit_end=last.rstrip() == "...",
         mapping_indent=_mapping_indent(body) or 2,
         sequence_offset=_sequence_offset(body),
         null_style=_null_style(body),
@@ -458,14 +471,22 @@ def _apply_block(doc: CommentedMap, block: CommentedMap, emit: dict[str, Any]) -
 
 
 def _children(node: Any) -> list[Any]:
-    """Every child object, including merge-key sources.
+    """Every child object, including mapping KEYS and merge-key sources.
 
     `node.values()` alone never sees a merge key's source mappings — ruamel
     stores those separately under `merge_attrib` and resolves them into
-    membership only at lookup time, not in `.values()`.
+    membership only at lookup time, not in `.values()`. Keys matter too:
+    YAML permits an alias as a key (`? *sr : v`), so a node inside the
+    owned block could otherwise be reachable from an outside KEY without
+    `_block_is_reachable_from_outside` ever seeing it. Today every such
+    shape is refused earlier at Check A (ruamel cannot round-trip an
+    aliased complex key), so this has no observable effect yet — walking
+    keys anyway keeps Check C's completeness a property of its own walk,
+    not a fact that happens to be true because Check A got there first.
     """
     out: list[Any] = []
     if isinstance(node, CommentedMap):
+        out.extend(node.keys())
         out.extend(node.values())
         merged = getattr(node, merge_attrib, None)
         if merged is not None:

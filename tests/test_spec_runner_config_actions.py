@@ -1322,6 +1322,37 @@ def test_check_c_message_carries_no_anchor_name() -> None:
     assert "super_secret_anchor_name" not in str(caught.value)
 
 
+def test_check_c_an_alias_used_as_an_outside_mapping_key_is_refused() -> None:
+    """Copilot C-2: YAML permits an alias AS a key (`? *anchor : value`), so
+    in principle a node inside the block could be reachable only through
+    an outside KEY, which `_children` did not walk before this test was
+    written. Pinning what actually happens today: ruamel cannot round-trip
+    an aliased complex key at all, so this is refused at `check-a`, before
+    Check C is ever reached, on both a no-op and a real edit -- there is no
+    live escape. `_children` now walks mapping keys too (one line, `_
+    children`'s `CommentedMap` branch), so Check C's own coverage of this
+    shape no longer depends on Check A getting there first; this test pins
+    today's actual (still check-a) outcome so a future change to Check A's
+    behaviour here is not a silent, undetected escape."""
+    from dispatcher.core.spec_runner_config_actions import (
+        UnsafeEditError,
+        build_new_yaml_bytes,
+    )
+
+    base = (
+        "spec_runner:\n"
+        "  max_retries: 3\n"
+        "  extra_executor_config: &o\n"
+        "    a: 1\n"
+        "? *o\n"
+        ": value\n"
+    ).encode("utf-8")
+    for cand in (_cand(), _cand(max_retries=99)):  # no-op, then a real edit
+        with pytest.raises(UnsafeEditError) as caught:
+            build_new_yaml_bytes(base, cand)
+        assert caught.value.stage == "check-a"
+
+
 def _shared_alias_dag(depth: int) -> bytes:
     """`spec_runner:` with a DAG of `depth` nested anchors, each aliased
     TWICE by the next level (`l{i}` references `l{i-1}` through both `p`
@@ -1584,6 +1615,64 @@ def test_owned_span_handles_a_top_level_merge_key_cleanly() -> None:
     assert out == base
     assert changed == []
     assert extra_changed is False
+
+
+# --- Copilot C-1: `_inspect_style` must match `_owned_span`'s column-0 rule
+#
+# `_owned_span` already treats `...` as a document marker only at column 0
+# (the test right below this comment block). `_inspect_style` had the SAME
+# defect on the style-detection side: it built `explicit_start`/
+# `explicit_end` from `.strip()`-ed lines, so an indented marker-looking
+# line inside a block scalar was misread as a real document marker,
+# turning `yaml.explicit_end = True` on and making the renderer emit a
+# genuine `...` at column 0 that the source never had — Check A then
+# refuses valid YAML as unreproducible.
+
+
+def test_a_trailing_ellipsis_inside_a_block_scalar_is_not_a_document_end_marker() -> (
+    None
+):
+    """The exact shape Copilot flagged: a block scalar's own content, not
+    the source's `explicit_end`, is the file's last line. Must edit
+    cleanly, not refuse at check-a."""
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_bytes
+
+    base = (
+        "spec_runner:\n  max_retries: 3\nz:\n  note: |\n    body\n    ...\n"
+    ).encode("utf-8")
+    out, changed, _ = build_new_yaml_bytes(base, _cand(max_retries=99))
+    assert changed == ["max_retries"]
+    text = out.decode("utf-8")
+    assert "max_retries: 99" in text
+    assert text.endswith("    ...\n")  # the scalar's own line, untouched
+    assert not text.rstrip("\n").endswith("\n...")  # no real marker was added
+
+
+def test_an_indented_dashdashdash_inside_a_block_scalar_is_not_a_start_marker() -> None:
+    """Mirror of the case above, for `explicit_start`. Unlike the trailing
+    case, this direction turns out to have no reachable exploit: the
+    document's first significant line can only be indented if something
+    already opened that indentation, and whatever did so (a `key:` line)
+    is itself non-blank and comes first in the file, so it — not the
+    indented content beneath it — is what `_inspect_style` actually looks
+    at. The one raw-text shape where an indented `---` WOULD be
+    `_inspect_style`'s first significant line (nothing precedes it) is not
+    even valid YAML (`ScannerError: mapping values are not allowed here`),
+    so `_stage("parse")` refuses it before the wrong `explicit_start` value
+    could matter. Kept anyway, symmetric with the fix and with the
+    trailing-side test: confirms an indented `---`-looking block-scalar
+    line elsewhere in a REAL file is still read as data, not a marker."""
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_bytes
+
+    base = ("spec_runner:\n  note: |\n    ---\n    body\n  max_retries: 3\n").encode(
+        "utf-8"
+    )
+    out, changed, _ = build_new_yaml_bytes(base, _cand(max_retries=99))
+    assert changed == ["max_retries"]
+    text = out.decode("utf-8")
+    assert "max_retries: 99" in text
+    assert not text.startswith("---\n")  # no real marker was added
+    assert "    ---\n" in text  # the scalar's own line, untouched
 
 
 def test_an_indented_ellipsis_inside_a_block_scalar_is_not_a_document_marker() -> None:
