@@ -324,6 +324,14 @@ def _first_differing_output_line(
     skipping `new_span`, rather than by indexing into a string built from
     pieces that skip the span — that index is not a real output line
     wherever the divergence falls after the span.
+
+    The caller only reaches here when a difference is already known to
+    exist, but the walk below can still run out of `new_lines` before
+    finding one directly: that happens when the OUTPUT is shorter outside
+    the span than the source is (`source_lines` has trailing content the
+    output does not). There is no real output line at that position — the
+    last real line is reported instead of `len(new_lines)`, which would
+    name a line that does not exist.
     """
     start, end = new_span
     src_index = 0
@@ -339,7 +347,7 @@ def _first_differing_output_line(
             return new_index
         src_index += 1
         new_index += 1
-    return new_index
+    return max(new_index - 1, 0)
 
 
 def _last_line_slot(node: Any) -> tuple[Any, Any] | None:
@@ -566,10 +574,17 @@ def build_new_yaml_bytes(
     file, secret included) remain reachable from `err.__traceback__`'s
     frames for as long as the traceback object is alive, and any reporter
     configured to capture frame locals (e.g. Sentry's
-    `include_local_variables`, `better-exceptions`) recovers them. This is
-    inherent to how Python exceptions carry their traceback and is not
-    something a handler at this boundary can close — noted here as an
-    accepted residual, not silently assumed away.
+    `include_local_variables`, `better-exceptions`) recovers them. Walking
+    that same traceback also reaches `contextlib`'s own `__exit__` frame (the
+    `_stage` context manager's machinery, not this repo's code) — its local
+    named `value` is bound to the ORIGINAL exception object itself, the one
+    this function exists to scrub, with the secret rendered verbatim in its
+    message. That is a third channel, not a restatement of the first two:
+    `base_bytes`/`base_text` are the raw file, `value` is the unscrubbed
+    exception the guarantee above is specifically about. This is inherent to
+    how Python exceptions carry their traceback and is not something a
+    handler at this boundary can close — noted here as an accepted residual,
+    not silently assumed away.
     """
     unexpected_cause_name: str | None = None
     try:
@@ -601,11 +616,21 @@ def build_new_yaml_bytes(
     # what looked right and wasn't: `from None` only sets `__suppress_
     # context__`, and manually clearing `__context__` before that `raise`
     # does not stick, since raising re-populates it right there. Ending the
-    # `except` block first (this function is a plain try/except, not a
-    # `@contextmanager` — `_stage`'s obstacle does not apply here) means
-    # nothing is "currently being handled" by the time this line runs, so
-    # `__context__` is never set to begin with. Same technique as
-    # core/contract.py's own `ContractViolation` raises.
+    # `except` block first means nothing is "currently being handled" by the
+    # time this line runs, so `__context__` is never set to begin with. Same
+    # technique as core/contract.py's own `ContractViolation` raises.
+    #
+    # The operative rule, more general than "this function happens to be a
+    # plain try/except": raising a NEW exception outside the handler is safe
+    # iff nothing is being handled anywhere up the call stack at that point.
+    # A plain function like this one satisfies that by construction — until
+    # some future caller invokes it from inside ITS OWN `except` block, at
+    # which point that caller's exception is what gets chained onto this
+    # raise's `__context__`, not anything from in here. Today's sole call
+    # site (`SpecRunnerConfigActionRunner.run`) calls this from inside a
+    # `try:`, not an `except:`, so the guarantee holds — but that is a
+    # property of the CALLER, not of this function, and would need
+    # rechecking if a future caller wrapped this call in an `except` block.
     raise UnsafeEditError(
         f"cannot safely edit project.yaml: unexpected failure "
         f"({unexpected_cause_name})",

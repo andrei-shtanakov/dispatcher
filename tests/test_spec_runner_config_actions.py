@@ -355,6 +355,7 @@ def _render_text(text: str, candidate: ConfigCandidate) -> tuple[str, list[str],
 
 _STYLE_CASES = {
     "marker_start": "---\nproject: alpha\nspec_runner:\n  max_retries: 5\n",
+    "marker_end": "project: alpha\nspec_runner:\n  max_retries: 5\n...\n",
     "marker_both": "---\nproject: alpha\nspec_runner:\n  max_retries: 5\n...\n",
     "no_final_newline": "project: alpha\nspec_runner:\n  max_retries: 5",
     "crlf": "project: alpha\r\nspec_runner:\r\n  max_retries: 5\r\n",
@@ -394,6 +395,22 @@ def test_a_real_edit_keeps_each_source_style(name: str) -> None:
     assert text.startswith("﻿") == _STYLE_CASES[name].startswith("﻿")
     assert text.endswith("\n") == _STYLE_CASES[name].endswith("\n")
     assert ("\r\n" in text) == ("\r\n" in _STYLE_CASES[name])
+    # a real edit must keep the `---`/`...` markers and the mapping indent
+    # too, not only the three surfaces above — a mutation could reproduce a
+    # no-op fine and still lose these on an edit that actually changes a key.
+    source = _STYLE_CASES[name]
+    source_stripped = [line.strip() for line in source.splitlines() if line.strip()]
+    output_stripped = [line.strip() for line in text.splitlines() if line.strip()]
+    assert (output_stripped[0] == "---") == (source_stripped[0] == "---")
+    assert (output_stripped[-1] == "...") == (source_stripped[-1] == "...")
+
+    def _indent_of(body: str) -> int:
+        for line in body.splitlines():
+            if line.lstrip().startswith("max_retries"):
+                return len(line) - len(line.lstrip())
+        raise AssertionError("max_retries: not found")
+
+    assert _indent_of(text) == _indent_of(source)
 
 
 def test_emission_omits_implicit_defaults() -> None:
@@ -1157,6 +1174,59 @@ def test_an_alias_expanded_outside_the_block_is_refused() -> None:
     assert "outside spec_runner" in str(caught.value)
 
 
+# --- The third guarantee: unknown in-block data survives the candidate ----
+#
+# Check A runs BEFORE the candidate is applied, so a candidate-mutation bug
+# that drops an unknown key, a quote style, a comment or an ordering passes
+# Check A untouched. Check B excludes the block from comparison by
+# construction, so it cannot see this class of bug either. These tests are
+# the third guarantee's only defence (design doc, "The three guarantees,
+# stated separately").
+
+_IN_BLOCK_NEIGHBOUR_DATA = """\
+project: alpha
+spec_runner:
+  max_retries: 5
+  # a standalone note the owner wrote
+  zzz_unknown_first: "quoted value"  # inline note
+  aaa_unknown_second: 'single quoted'
+  claude_model: keep-me
+workstreams: []
+"""
+
+
+def test_an_unknown_in_block_key_survives_the_candidate() -> None:
+    text, _, _ = _render_text(_IN_BLOCK_NEIGHBOUR_DATA, _cand(max_retries=7))
+    assert "zzz_unknown_first:" in text
+    assert "aaa_unknown_second:" in text
+
+
+def test_an_unknown_keys_quote_style_survives_the_candidate() -> None:
+    text, _, _ = _render_text(_IN_BLOCK_NEIGHBOUR_DATA, _cand(max_retries=7))
+    assert '"quoted value"' in text
+    assert "'single quoted'" in text
+
+
+def test_in_block_comments_survive_the_candidate() -> None:
+    text, _, _ = _render_text(_IN_BLOCK_NEIGHBOUR_DATA, _cand(max_retries=7))
+    assert "# a standalone note the owner wrote" in text
+    assert "# inline note" in text
+
+
+def test_the_order_of_unknown_keys_survives_the_candidate() -> None:
+    """Alphabetically reversed on purpose: a re-sort would silently pass a
+    test that used already-sorted names."""
+    text, _, _ = _render_text(_IN_BLOCK_NEIGHBOUR_DATA, _cand(max_retries=7))
+    assert text.index("zzz_unknown_first") < text.index("aaa_unknown_second")
+
+
+def test_values_absent_from_the_candidate_survive() -> None:
+    cand = ConfigCandidate(typed={"max_retries": 7}, base_mtime=0.0)
+    text, changed, _ = _render_text(_IN_BLOCK_NEIGHBOUR_DATA, cand)
+    assert "claude_model: keep-me" in text
+    assert changed == ["max_retries"]
+
+
 _SPAN_POSITIONS = {
     "first": "spec_runner:\n  max_retries: 5\nz_after: 1\n",
     "middle": "a_before: 1\nspec_runner:\n  max_retries: 5\nz_after: 1\n",
@@ -1340,3 +1410,35 @@ def test_the_concatenated_check_names_a_real_output_line() -> None:
     # Real rendered lines: 1 project:, 2 blank, 3 # trailing note,
     # 4 spec_runner:, 5   max_retries: 9, 6 (corrupted, was "...").
     assert "first mismatch at output line 6" in message
+
+
+def test_the_concatenated_check_names_the_last_real_line_when_output_is_short() -> None:
+    """The other way the walk in `_first_differing_output_line` can end: the
+    OUTPUT is missing trailing content the source has, so the walk runs out
+    of `new_lines` without ever finding a byte-for-byte mismatch to point at.
+    Before this fix the function returned `len(new_lines)`, one past the
+    last real (0-based) index, which the caller's `+ 1` turned into a line
+    number with no corresponding line at all. The last real output line is
+    reported instead."""
+    import dispatcher.core.spec_runner_config_actions as mod
+
+    base = "project: alpha\n\n# trailing note\n...\n".encode("utf-8")
+    real_render = mod._render
+    calls = {"n": 0}
+
+    def truncating_render(doc: object, style: object) -> bytes:
+        calls["n"] += 1
+        out = real_render(doc, style)  # type: ignore[arg-type]
+        if calls["n"] == 2:  # the "encode" stage's call, after Check A's own
+            out = out[: -len(b"...\n")]  # drop the trailing line outright
+        return out
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(mod, "_render", truncating_render)
+        with pytest.raises(mod.UnsafeEditError) as caught:
+            mod.build_new_yaml_bytes(base, _cand(max_retries=9))
+    message = str(caught.value)
+    assert caught.value.stage == "check-b"
+    # Real (truncated) rendered lines: 1 project:, 2 blank, 3 # trailing
+    # note, 4 spec_runner:, 5   max_retries: 9 — 5 lines total, no 6th.
+    assert "first mismatch at output line 5" in message

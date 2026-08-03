@@ -228,12 +228,18 @@ the function raises **by construction**, not because nothing outside a
 **Accepted residual — this guarantee is about the exception object, not the
 traceback.** The scrubbed `UnsafeEditError`'s traceback still carries frames
 whose locals include `base_bytes`/`base_text` — the complete neighbour file,
-secret included — for as long as the traceback object is alive. Any reporter
-configured to capture frame locals (Sentry's `include_local_variables`,
-`better-exceptions`) recovers them regardless of what this boundary clears on
-the exception object. This is inherent to how Python tracebacks work and is
-not something a handler here can close; it is named rather than silently
-assumed away.
+secret included — for as long as the traceback object is alive. Walking that
+same traceback also reaches `contextlib`'s own `__exit__` frame (the `_stage`
+context manager's machinery): its local named `value` is bound to the
+**original exception object itself** — the one this whole boundary exists to
+scrub — with the secret rendered verbatim in its message. That is a third
+channel, distinct from the file-content one: `base_bytes`/`base_text` are the
+raw file; `value` is the unscrubbed exception. Any reporter configured to
+capture frame locals (Sentry's `include_local_variables`,
+`better-exceptions`) recovers all of it regardless of what this boundary
+clears on the exception object. This is inherent to how Python tracebacks
+work and is not something a handler here can close; it is named rather than
+silently assumed away.
 
 Local diagnosis is reproduced against the file, which the owner already has.
 Re-running costs less than keeping a hidden leak channel open.
@@ -328,6 +334,17 @@ cleanly, and the byte-exact no-op bar from #113 still holds.
   tail. An overlay ending in a block scalar whose final lines begin with `#`
   would truncate the span. The failure mode is a refusal, never a bad PR.
 - Mixed line endings within one file are not reproduced; Check A refuses.
+- A second capability removal, alongside row 6: a `project.yaml` whose
+  `spec_runner:` is reachable only through a top-level merge key
+  (`<<: *anchor`) is now effectively un-editable. `_apply_block` mutates the
+  anchored mapping in place — typically nested under a key like `defaults:` —
+  which has no literal position of its own (`_owned_span` never had one to
+  give it), so it lies outside every span and Check B refuses the edit. This
+  is fail-closed and the right direction, not a bug, but it is a second file
+  shape this editor stops handling, and it must be named rather than
+  discovered (measured during Task 5; `test_owned_span_handles_a_top_level_
+  merge_key_cleanly` covers the no-op case, which still works — only an
+  actual mutation through the merge key is refused).
 - A candidate-mutation bug that damages unknown in-block data is caught only by
   the targeted tests above, never by the gate.
 - A `project.yaml` with duplicate keys is already unusable — ruamel's round-trip
