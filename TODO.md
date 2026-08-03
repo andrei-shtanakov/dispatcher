@@ -163,6 +163,20 @@
       неизвестность видимой (`fail-closed-covers-the-instrument`), но ценой того,
       что редактор откажется работать с таким файлом вместо того, чтобы открыть
       неаккуратный PR. Что из двух правильнее — решение владельца, не рефакторинг.
+- [ ] Read-путь `project.yaml` эхом печатает PyYAML-ошибку с исходной строкой файла @owner:andrei @id:read-path-yaml-error-leak
+      Найдено во время работы над `@id:render-outside-block-fail-closed`
+      (write-путь). `dispatcher/core/collectors/base.py:203`
+      (`read_yaml`/`SourceReadError`) кладёт `str(err)` от PyYAML в сообщение,
+      а `discover_project_configs` (`core/spec_runner_config.py:148`) кладёт
+      его в `warnings` как есть — та же природа утечки,
+      что была измерена на write-пути (ruamel `DuplicateKeyError` печатает
+      значение вербатим): секрет из `project.yaml` соседнего репо оказывается
+      в тексте предупреждения. Сейчас все четыре места вызова разбирают
+      результат как `configs, _ = discover_project_configs(...)` и warnings
+      отбрасывают, поэтому наружу (HTTP, аудит-лог) сегодня ничего не
+      достигает — не блокер, а долг: любое будущее место, которое начнёт
+      читать вторую компоненту кортежа, унаследует утечку молча. Код здесь не
+      трогаем — вне диффа этой задачи.
 - [ ] README + иконка для `vscode-ext/` @owner:andrei @id:vscode-ext-readme
       Страница расширения показывает «No README available».
 - [x] `detail()` (`dispatcher/server/static/index.html`) брал `repoDir` из display-имени коллектора и кормил им четыре directory-keyed места — PR #111 @owner:andrei @id:spec-runner-config-dir-name-mismatch

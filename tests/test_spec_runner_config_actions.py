@@ -953,9 +953,10 @@ def test_invalid_utf8_refuses_without_echoing_bytes(tmp_path: Path) -> None:
     assert "UnicodeDecodeError" in str(caught.value)
 
 
-def test_the_original_cause_is_kept_but_never_chained(tmp_path: Path) -> None:
-    """`from None` so no accidental traceback rendering can print the
-    original's text, while local reproduction still has it."""
+def test_no_reference_to_the_original_exception_survives(tmp_path: Path) -> None:
+    """The original object carries the secret in its own message, so keeping
+    it anywhere would make this boundary depend on some future logger's
+    behaviour. Walk the whole chain — asserting on str() would not see it."""
     from dispatcher.core.spec_runner_config_actions import (
         UnsafeEditError,
         build_new_yaml_bytes,
@@ -964,8 +965,11 @@ def test_the_original_cause_is_kept_but_never_chained(tmp_path: Path) -> None:
     base = f'a: "{_SECRET}"\na: 2\nspec_runner:\n  max_retries: 5\n'
     with pytest.raises(UnsafeEditError) as caught:
         build_new_yaml_bytes(base.encode("utf-8"), _cand())
-    assert caught.value.__cause__ is None
-    assert caught.value.original is not None
+    err = caught.value
+    assert err.__cause__ is None
+    assert err.__context__ is None
+    assert not hasattr(err, "original")
+    assert _SECRET not in repr(vars(err))
 
 
 def test_the_outcome_and_audit_line_carry_no_file_content(

@@ -287,14 +287,22 @@ class UnsafeEditError(Exception):
     reaches an HTTP response body and the audit log. So it carries the stage,
     the cause's CLASS name, coordinates and sizes — never a source line, a
     scalar value, or a diff.
+
+    Carries NO reference to the exception it replaces — not an attribute,
+    not `__cause__`, not `__context__`. The original is proven to carry
+    secrets in its own message and attributes (`_safe_cause` exists because
+    of it), so keeping it anywhere would make this boundary's safety depend
+    on the behaviour of some future logger, serialiser or error reporter —
+    weaker than "safe by construction". Same rule `core/contract.py:636-642`
+    already applies to `ContractViolation`: `from None` only suppresses
+    *display*, it does not clear `__context__`. `build_new_yaml_bytes` is
+    the choke point that enforces this (see below); `_stage`'s `from None`
+    is defense in depth, not the guarantee itself.
     """
 
-    def __init__(
-        self, message: str, *, stage: str, original: BaseException | None = None
-    ) -> None:
+    def __init__(self, message: str, *, stage: str) -> None:
         super().__init__(message)
         self.stage = stage
-        self.original = original
 
 
 def _safe_cause(err: BaseException) -> str:
@@ -326,11 +334,40 @@ def _stage(name: str) -> Iterator[None]:
         raise UnsafeEditError(
             f"cannot safely edit project.yaml: {name} failed ({_safe_cause(err)})",
             stage=name,
-            original=err,
         ) from None
 
 
 def build_new_yaml_bytes(
+    base_bytes: bytes, candidate: ConfigCandidate
+) -> tuple[bytes, list[str], bool]:
+    """Render project.yaml bytes; see `_build_new_yaml_bytes` for the how.
+
+    The choke point for the no-reference-survives guarantee on
+    `UnsafeEditError` (see its docstring). `from None` inside `_stage`
+    only suppresses *display*; it leaves the original exception reachable
+    on `__context__` — and `contextlib` re-raising inside a
+    `@contextmanager` re-establishes that link on the way out regardless,
+    so clearing it inside `_stage` itself does not stick. This function is
+    the one place outside any exception handler where the raised
+    `UnsafeEditError` can be scrubbed for good: no reference to the
+    original survives past this line, not on an attribute, not via
+    `__cause__`, not via `__context__`.
+    """
+    try:
+        return _build_new_yaml_bytes(base_bytes, candidate)
+    except UnsafeEditError as err:
+        # The original is proven to carry secrets in its own message, so no
+        # reference to it may leave this function — not on an attribute, not
+        # via __cause__, not via __context__. Retaining it would make this
+        # boundary's safety depend on some future logger or error reporter.
+        # Same rule as core/contract.py:636-642.
+        err.__cause__ = None
+        err.__context__ = None
+        err.__suppress_context__ = True
+        raise
+
+
+def _build_new_yaml_bytes(
     base_bytes: bytes, candidate: ConfigCandidate
 ) -> tuple[bytes, list[str], bool]:
     """Render project.yaml bytes with only its `spec_runner:` key replaced.
