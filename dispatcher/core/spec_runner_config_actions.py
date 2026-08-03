@@ -310,10 +310,17 @@ def build_new_yaml_text(
         yaml.Representer = _representer_spelling_null(null_style)
     doc = yaml.load(StringIO(base_text))
     existing = doc.get("spec_runner")
-    # `dict(...)` on a non-mapping raises, and that is deliberate: a
-    # `spec_runner:` that is not a mapping is a file this editor does not
-    # understand, and run()'s catch-all turns the raise into a reported
-    # pre-launch failure rather than a silent overwrite.
+    # A `spec_runner:` that is not a mapping is a file this editor cannot
+    # read, so it must not write one: raising here is what makes run()'s
+    # catch-all report a pre-launch failure instead of overwriting a value
+    # nobody understood. Checked explicitly rather than left to
+    # `dict(existing or {})`, which only raised for the TRUTHY non-mappings
+    # — `0`, `false` and `""` are falsey (and `dict("")` is `{}` anyway),
+    # so they reached the writer and were silently replaced.
+    # `spec_runner:` with no value at all parses as None and is not this
+    # case: it means "no block", and gets a fresh one.
+    if existing is not None and not isinstance(existing, dict):
+        raise TypeError(f"spec_runner: is not a mapping: {type(existing).__name__}")
     current: dict[str, Any] = dict(existing or {})
     emit: dict[str, Any] = {}
     changed_keys: list[str] = []

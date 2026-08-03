@@ -541,6 +541,30 @@ def test_a_noop_candidate_reproduces_the_file_byte_for_byte() -> None:
     assert text == base
 
 
+@pytest.mark.parametrize("scalar", ["0", "false", '""', "hello", "[1, 2]"])
+def test_a_non_mapping_spec_runner_is_refused_not_overwritten(scalar: str) -> None:
+    """Overwriting it would destroy a value the editor cannot even read.
+
+    `dict(existing or {})` only raised for the TRUTHY non-mappings: `0`,
+    `false` and `""` are falsey (and `dict("")` is `{}` anyway), so they
+    reached the writer and were silently replaced with a mapping."""
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
+
+    with pytest.raises(TypeError):
+        build_new_yaml_text(f"project: alpha\nspec_runner: {scalar}\n", _cand())
+
+
+@pytest.mark.parametrize(
+    "absent", ["project: alpha\n", "project: alpha\nspec_runner:\n"]
+)
+def test_an_absent_or_null_spec_runner_still_gets_a_fresh_block(absent: str) -> None:
+    """The flip side: `spec_runner:` with no value is not a non-mapping."""
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
+
+    text, _, _ = build_new_yaml_text(absent, _cand(max_retries=7))
+    assert "max_retries: 7" in text
+
+
 def test_replacing_the_overlay_keeps_the_comment_that_follows_the_block() -> None:
     """Clearing the overlay is not the only way to destroy the nested map the
     trailing text hangs off — swapping it for a different one does too."""
