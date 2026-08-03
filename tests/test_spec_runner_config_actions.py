@@ -86,19 +86,49 @@ def fake_checker(
         "import json, sys\n"
         "argv = sys.argv[1:]\n"
         "edit_content = None\n"
+        "edit_bytes_hex = None\n"
         "for a in argv:\n"
         "    if a.startswith('project.yaml='):\n"
         "        p = a.split('=', 1)[1]\n"
         "        try:\n"
-        "            edit_content = open(p).read()\n"
+        "            raw = open(p, 'rb').read()\n"
+        "            edit_bytes_hex = raw.hex()\n"
+        "            edit_content = raw.decode('utf-8')\n"
         "        except OSError:\n"
         "            pass\n"
-        f"json.dump({{'argv': argv, 'edit_content': edit_content}}, "
+        f"json.dump({{'argv': argv, 'edit_content': edit_content, "
+        f"'edit_bytes_hex': edit_bytes_hex}}, "
         f"open({str(record)!r}, 'w'))\n"
         f"json.dump({payload!r}, sys.stdout)\n"
         f"sys.exit({returncode})\n"
     )
     return ("python3", str(script)), record
+
+
+def test_the_bytes_that_were_rendered_are_the_bytes_propose_pr_receives(
+    tmp_path: Path,
+) -> None:
+    """`Path.write_text` opens with newline=None and translates \\n to
+    os.linesep, so a text-mode write can alter bytes after they were built.
+    The temp file propose-pr reads must be byte-identical to what the
+    renderer produced, on every platform."""
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_bytes
+
+    repo = make_project(tmp_path, "alpha")
+    base_bytes = (repo / "project.yaml").read_bytes()
+    candidate = _candidate(repo, max_retries=7)
+    expected, _, _ = build_new_yaml_bytes(base_bytes, candidate)
+
+    command, record = fake_checker(tmp_path, {"ok": True, "detail": "created"})
+    runner = SpecRunnerConfigActionRunner(
+        DispatcherConfig(roots=(tmp_path,)), command=command
+    )
+    runner.run("alpha", candidate)
+
+    import json as _json
+
+    written = bytes.fromhex(_json.loads(record.read_text())["edit_bytes_hex"])
+    assert written == expected
 
 
 def _candidate(repo: Path, **typed_overrides) -> ConfigCandidate:
@@ -249,7 +279,7 @@ def test_write_failure_audits_and_frees_busy_slot(
     def boom(base_text, cand):
         raise RuntimeError("yaml render exploded")
 
-    monkeypatch.setattr(mod, "build_new_yaml_text", boom)
+    monkeypatch.setattr(mod, "build_new_yaml_bytes", boom)
     with caplog.at_level("INFO", logger="dispatcher.actions.spec_runner_config"):
         outcome = runner.run("alpha", candidate)
     assert not outcome.ok
@@ -313,10 +343,17 @@ def _cand(**typed_overrides) -> ConfigCandidate:
     return ConfigCandidate(typed={**TYPED_DEFAULTS, **typed_overrides}, base_mtime=0.0)
 
 
-def test_emission_omits_implicit_defaults() -> None:
-    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
+def _render_text(text: str, candidate: ConfigCandidate) -> tuple[str, list[str], bool]:
+    """String-in/string-out wrapper: the renderer's contract is bytes, but
+    most tests are about YAML shape, not encoding."""
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_bytes
 
-    text, changed, extra_changed = build_new_yaml_text(
+    out, changed, extra = build_new_yaml_bytes(text.encode("utf-8"), candidate)
+    return out.decode("utf-8"), changed, extra
+
+
+def test_emission_omits_implicit_defaults() -> None:
+    text, changed, extra_changed = _render_text(
         _BASE_YAML, _cand(max_retries=5, claude_model="claude-opus-4-8")
     )
     # explicit keys stay; implicit-at-default keys are NOT materialized
@@ -329,9 +366,7 @@ def test_emission_omits_implicit_defaults() -> None:
 
 
 def test_emission_adds_changed_from_default() -> None:
-    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
-
-    text, changed, _ = build_new_yaml_text(
+    text, changed, _ = _render_text(
         _BASE_YAML,
         _cand(max_retries=5, claude_model="claude-opus-4-8", review_model="x"),
     )
@@ -341,9 +376,8 @@ def test_emission_adds_changed_from_default() -> None:
 
 def test_emission_keeps_explicit_even_when_set_back_to_default() -> None:
     from dispatcher.core.spec_runner_config import TYPED_DEFAULTS
-    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
 
-    text, changed, _ = build_new_yaml_text(
+    text, changed, _ = _render_text(
         _BASE_YAML,
         _cand(
             max_retries=TYPED_DEFAULTS["max_retries"],
@@ -356,10 +390,8 @@ def test_emission_keeps_explicit_even_when_set_back_to_default() -> None:
 
 
 def test_emission_partial_candidate_preserves_explicit_current() -> None:
-    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
-
     cand = ConfigCandidate(typed={"review_model": "y"}, base_mtime=0.0)
-    text, changed, _ = build_new_yaml_text(_BASE_YAML, cand)
+    text, changed, _ = _render_text(_BASE_YAML, cand)
     # keys absent from the candidate keep their current-file values
     assert "max_retries: 5" in text
     assert "claude_model: claude-opus-4-8" in text
@@ -368,41 +400,33 @@ def test_emission_partial_candidate_preserves_explicit_current() -> None:
 
 
 def test_emission_preserves_rest_of_file() -> None:
-    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
-
-    text, _, _ = build_new_yaml_text(_BASE_YAML, _cand(max_retries=7))
+    text, _, _ = _render_text(_BASE_YAML, _cand(max_retries=7))
     assert "project: alpha" in text
     assert "workstreams: []" in text
 
 
 def test_emission_omitted_extra_preserves_current() -> None:
-    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
-
     cand = ConfigCandidate(typed={"review_model": "y"}, base_mtime=0.0)
-    text, changed, extra_changed = build_new_yaml_text(_BASE_YAML_WITH_EXTRA, cand)
+    text, changed, extra_changed = _render_text(_BASE_YAML_WITH_EXTRA, cand)
     assert "telegram_bot_token" in text  # overlay preserved, not dropped
     assert extra_changed is False
     assert changed == ["review_model"]
 
 
 def test_emission_explicit_empty_extra_clears() -> None:
-    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
-
     cand = ConfigCandidate(typed={}, extra_executor_config={}, base_mtime=0.0)
-    text, _, extra_changed = build_new_yaml_text(_BASE_YAML_WITH_EXTRA, cand)
+    text, _, extra_changed = _render_text(_BASE_YAML_WITH_EXTRA, cand)
     assert "telegram_bot_token" not in text  # intentional clear
     assert extra_changed is True
 
 
 def test_emission_nonempty_extra_replaces() -> None:
-    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
-
     cand = ConfigCandidate(
         typed={},
         extra_executor_config={"executor": {"budget_usd": 5.0}},
         base_mtime=0.0,
     )
-    text, _, extra_changed = build_new_yaml_text(_BASE_YAML_WITH_EXTRA, cand)
+    text, _, extra_changed = _render_text(_BASE_YAML_WITH_EXTRA, cand)
     assert "budget_usd" in text
     assert "telegram_bot_token" not in text
     assert extra_changed is True
@@ -410,7 +434,7 @@ def test_emission_nonempty_extra_replaces() -> None:
 
 # --- What the renderer must NOT touch -------------------------------------
 #
-# `build_new_yaml_text` edits one key of somebody else's file and hands the
+# `build_new_yaml_bytes` edits one key of somebody else's file and hands the
 # result to `propose-pr`, so anything it changes beyond that key ships as an
 # unrequested diff in a neighbour repo. These tests pin the blast radius.
 # The bug they were written for: the block was rebuilt as a fresh plain dict
@@ -432,16 +456,12 @@ workstreams: []
 
 
 def test_standalone_comment_after_the_block_survives() -> None:
-    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
-
-    text, _, _ = build_new_yaml_text(_BASE_YAML_COMMENTED, _cand(max_retries=7))
+    text, _, _ = _render_text(_BASE_YAML_COMMENTED, _cand(max_retries=7))
     assert "# col-0 standalone, right after the block" in text
 
 
 def test_comments_inside_the_block_survive() -> None:
-    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
-
-    text, _, _ = build_new_yaml_text(_BASE_YAML_COMMENTED, _cand(max_retries=7))
+    text, _, _ = _render_text(_BASE_YAML_COMMENTED, _cand(max_retries=7))
     assert "max_retries: 7  # inline on a key" in text
     assert "# standalone between two keys" in text
     assert "# indented, after the last key of the block" in text
@@ -463,17 +483,13 @@ def test_a_key_the_editor_has_no_field_for_is_not_dropped() -> None:
     is a real key of research-bench's project.yaml, and its own comment says
     preflight rejects the config when it is absent. The editor knows nothing
     about it, which is a reason to leave it alone, not to delete it."""
-    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
-
-    text, _, _ = build_new_yaml_text(_BASE_YAML_UNKNOWN_KEY, _cand(max_retries=7))
+    text, _, _ = _render_text(_BASE_YAML_UNKNOWN_KEY, _cand(max_retries=7))
     assert "spec_gen_budget_usd: null" in text
     assert "# the legacy field must be explicitly nulled or preflight" in text
 
 
 def test_the_files_own_key_order_is_kept() -> None:
     """Re-sorting into TYPED_FIELDS order is a diff nobody asked for."""
-    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
-
     base = """\
 project: alpha
 spec_runner:
@@ -482,7 +498,7 @@ spec_runner:
   max_retries: 5
 workstreams: []
 """
-    text, _, _ = build_new_yaml_text(base, ConfigCandidate(typed={}, base_mtime=0.0))
+    text, _, _ = _render_text(base, ConfigCandidate(typed={}, base_mtime=0.0))
     block = text[text.index("spec_runner:") : text.index("workstreams:")]
     assert block.index("review_model") < block.index("claude_model")
     assert block.index("claude_model") < block.index("max_retries")
@@ -491,9 +507,7 @@ workstreams: []
 def test_an_appended_key_does_not_displace_the_trailing_comment() -> None:
     """ruamel hangs the text that follows the block off the block's LAST key,
     so appending a key after it emits that text mid-block unless it is moved."""
-    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
-
-    text, _, _ = build_new_yaml_text(_BASE_YAML_COMMENTED, _cand(review_model="rm"))
+    text, _, _ = _render_text(_BASE_YAML_COMMENTED, _cand(review_model="rm"))
     assert "review_model: rm" in text
     assert text.index("review_model: rm") < text.index("# indented, after the last")
     assert text.index("# col-0 standalone") < text.index("workstreams:")
@@ -501,8 +515,6 @@ def test_an_appended_key_does_not_displace_the_trailing_comment() -> None:
 
 def test_clearing_extra_keeps_the_comment_that_follows_the_block() -> None:
     """Same text, but hanging off a NESTED last key that gets deleted whole."""
-    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
-
     base = """\
 project: alpha
 spec_runner:
@@ -515,7 +527,7 @@ spec_runner:
 workstreams: []
 """
     cand = ConfigCandidate(typed={}, extra_executor_config={}, base_mtime=0.0)
-    text, _, extra_changed = build_new_yaml_text(base, cand)
+    text, _, extra_changed = _render_text(base, cand)
     assert extra_changed is True
     assert "telegram_bot_token" not in text  # the clear still happens
     assert "# col-0 standalone, right after the block" in text
@@ -528,12 +540,10 @@ def test_a_noop_candidate_reproduces_the_file_byte_for_byte() -> None:
     otherwise the editor opens a PR full of churn it did not intend, and the
     "no-op" the write path reports is not one. Byte equality is the only
     assertion that covers the losses nobody thought to name."""
-    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
-
     base = (
         Path(__file__).parent / "fixtures" / "project_yaml_with_comments.yaml"
     ).read_text()
-    text, changed, extra_changed = build_new_yaml_text(
+    text, changed, extra_changed = _render_text(
         base, ConfigCandidate(typed={}, base_mtime=0.0)
     )
     assert changed == []
@@ -548,10 +558,8 @@ def test_a_non_mapping_spec_runner_is_refused_not_overwritten(scalar: str) -> No
     `dict(existing or {})` only raised for the TRUTHY non-mappings: `0`,
     `false` and `""` are falsey (and `dict("")` is `{}` anyway), so they
     reached the writer and were silently replaced with a mapping."""
-    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
-
     with pytest.raises(TypeError):
-        build_new_yaml_text(f"project: alpha\nspec_runner: {scalar}\n", _cand())
+        _render_text(f"project: alpha\nspec_runner: {scalar}\n", _cand())
 
 
 @pytest.mark.parametrize(
@@ -559,17 +567,13 @@ def test_a_non_mapping_spec_runner_is_refused_not_overwritten(scalar: str) -> No
 )
 def test_an_absent_or_null_spec_runner_still_gets_a_fresh_block(absent: str) -> None:
     """The flip side: `spec_runner:` with no value is not a non-mapping."""
-    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
-
-    text, _, _ = build_new_yaml_text(absent, _cand(max_retries=7))
+    text, _, _ = _render_text(absent, _cand(max_retries=7))
     assert "max_retries: 7" in text
 
 
 def test_replacing_the_overlay_keeps_the_comment_that_follows_the_block() -> None:
     """Clearing the overlay is not the only way to destroy the nested map the
     trailing text hangs off — swapping it for a different one does too."""
-    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
-
     base = """\
 project: alpha
 spec_runner:
@@ -586,7 +590,7 @@ workstreams: []
         extra_executor_config={"executor": {"budget_usd": 5.0}},
         base_mtime=0.0,
     )
-    text, _, extra_changed = build_new_yaml_text(base, cand)
+    text, _, extra_changed = _render_text(base, cand)
     assert extra_changed is True
     assert "budget_usd: 5.0" in text
     assert "telegram_bot_token" not in text
@@ -604,9 +608,7 @@ def test_matching_the_files_null_spelling_does_not_leak_to_other_ruamel_users() 
 
     from ruamel.yaml import YAML
 
-    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
-
-    build_new_yaml_text(_BASE_YAML_UNKNOWN_KEY, _cand(max_retries=7))
+    _render_text(_BASE_YAML_UNKNOWN_KEY, _cand(max_retries=7))
 
     buf = StringIO()
     YAML().dump({"k": None}, buf)
@@ -921,7 +923,7 @@ def test_the_catch_all_labels_itself_pre_launch(
     def boom(base_text: object, cand: object) -> str:
         raise RuntimeError("yaml render exploded")
 
-    monkeypatch.setattr(module, "build_new_yaml_text", boom)
+    monkeypatch.setattr(module, "build_new_yaml_bytes", boom)
     repo = make_project(tmp_path, "alpha")
     command, _ = fake_checker(tmp_path, {"ok": True, "detail": "created"})
     runner = SpecRunnerConfigActionRunner(

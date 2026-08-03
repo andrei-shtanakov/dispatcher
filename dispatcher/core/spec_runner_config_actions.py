@@ -273,12 +273,12 @@ class SpecRunnerConfigConflictError(Exception):
     """project.yaml changed on disk since the form was rendered (-> 409)."""
 
 
-def build_new_yaml_text(
-    base_text: str, candidate: ConfigCandidate
-) -> tuple[str, list[str], bool]:
-    """Render project.yaml text with only its `spec_runner:` key replaced.
+def build_new_yaml_bytes(
+    base_bytes: bytes, candidate: ConfigCandidate
+) -> tuple[bytes, list[str], bool]:
+    """Render project.yaml bytes with only its `spec_runner:` key replaced.
 
-    Takes the CAPTURED base text (never re-reads the file — the caller
+    Takes the CAPTURED base bytes (never re-reads the file — the caller
     hashed exactly these bytes for --if-match; a second read would reopen
     the TOCTOU window). Emits a typed key iff it is explicit in the current
     block OR its candidate value differs from the default (DESIGN-402) —
@@ -286,7 +286,7 @@ def build_new_yaml_text(
     mirror cannot leak into observed repos. `extra_executor_config` is
     tri-state: `None` preserves the current file's overlay untouched,
     `{}` is an intentional clear, and a non-empty dict replaces it.
-    Returns (rendered text, changed typed keys, extra-changed flag) for
+    Returns (rendered bytes, changed typed keys, extra-changed flag) for
     the commit message.
 
     ruamel round-trip mode preserves comments/order elsewhere in the file.
@@ -298,7 +298,12 @@ def build_new_yaml_text(
     somebody else's repo: a key it has no field for, a comment, a blank
     line and an indent level are all things it was not asked to change.
     A candidate that changes nothing renders the input back byte for byte.
+
+    Takes and returns BYTES. A check that compares `str` and a write that
+    re-encodes independently do not compose into "we verified these bytes and
+    sent those bytes" — `Path.write_text` translates newlines on write.
     """
+    base_text = base_bytes.decode("utf-8")
     yaml = YAML()
     yaml.preserve_quotes = True
     yaml.width = _NO_REWRAP
@@ -347,7 +352,7 @@ def build_new_yaml_text(
     _apply_block(doc, block, emit)
     buf = StringIO()
     yaml.dump(doc, buf)
-    return buf.getvalue(), changed_keys, extra_changed
+    return buf.getvalue().encode("utf-8"), changed_keys, extra_changed
 
 
 def _commit_message(changed_keys: list[str], extra_changed: bool) -> str:
@@ -444,15 +449,15 @@ class SpecRunnerConfigActionRunner:
         try:
             base_bytes = project_yaml.read_bytes()
             if_match_hex = hashlib.sha256(base_bytes).hexdigest()
-            new_text, changed_keys, extra_changed = build_new_yaml_text(
-                base_bytes.decode(), candidate
+            new_bytes, changed_keys, extra_changed = build_new_yaml_bytes(
+                base_bytes, candidate
             )
             message = _commit_message(changed_keys, extra_changed)
             with tempfile.TemporaryDirectory(
                 prefix="dispatcher-config-edit-"
             ) as tmp_dir:
                 edit_file = Path(tmp_dir) / "project.yaml"
-                edit_file.write_text(new_text)
+                edit_file.write_bytes(new_bytes)
                 outcome = self._invoke(
                     project_yaml.parent,
                     message=message,
