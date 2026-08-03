@@ -1,0 +1,44 @@
+# Trimmed from the real research-bench/project.yaml (2026-08-03).
+# Kept because every hazard the renderer has to survive is present here at
+# once: a key the editor does not know (`spec_gen_budget_usd`, whose own
+# comment says preflight rejects the config without it), multi-line human
+# reasoning inside the block, `extra_executor_config` as the block's last
+# key, a col-0 standalone comment right after the block, and 4-space
+# sequence indentation outside the block that is none of our business.
+project: research-bench-pilot
+repo_path: ~/labs/all_ai_orchestrators/research-bench
+base_branch: master
+branch_prefix: "research/"
+
+spec_runner:
+  max_retries: 2
+  task_timeout_minutes: 45
+  auto_commit: true
+  create_git_branch: true
+  run_lint_on_done: false
+  # spec_gen budget SSOT (§9) moved to domain.spec_gen.budget_usd below;
+  # the legacy field must be explicitly nulled or preflight rejects the
+  # config as ambiguous (domain-spec-gen-ssot-conflict).
+  spec_gen_budget_usd: null
+  # Research domain: per-task verification retired (Stage B moves
+  # verification to the workstream-final VERIFYING phase, see domain:
+  # below) — run_tests_on_done/test_command are gone.
+  extra_executor_config:
+    executor:
+      hooks:
+        post_done:
+          run_review: false
+
+# Stage B domain profile (see README.md "Stage B contract").
+# Presence of `domain:` activates the VERIFYING phase.
+domain:
+  verification:
+    verifier:
+      argv:
+        - uv
+        - run
+        - bench-verify
+      # Must be >= deterministic + link-resolve + critic.
+      timeout_seconds: 600
+    read_only:
+      - "briefs/**"

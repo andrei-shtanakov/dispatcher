@@ -408,6 +408,187 @@ def test_emission_nonempty_extra_replaces() -> None:
     assert extra_changed is True
 
 
+# --- What the renderer must NOT touch -------------------------------------
+#
+# `build_new_yaml_text` edits one key of somebody else's file and hands the
+# result to `propose-pr`, so anything it changes beyond that key ships as an
+# unrequested diff in a neighbour repo. These tests pin the blast radius.
+# The bug they were written for: the block was rebuilt as a fresh plain dict
+# and assigned over `doc["spec_runner"]`, which threw away the loaded
+# CommentedMap and with it every comment inside the block, the file's key
+# order, and every key the editor has no field for.
+
+_BASE_YAML_COMMENTED = """\
+project: alpha
+spec_runner:
+  max_retries: 5  # inline on a key
+  # standalone between two keys
+  claude_model: claude-opus-4-8
+  # indented, after the last key of the block
+
+# col-0 standalone, right after the block
+workstreams: []
+"""
+
+
+def test_standalone_comment_after_the_block_survives() -> None:
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
+
+    text, _, _ = build_new_yaml_text(_BASE_YAML_COMMENTED, _cand(max_retries=7))
+    assert "# col-0 standalone, right after the block" in text
+
+
+def test_comments_inside_the_block_survive() -> None:
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
+
+    text, _, _ = build_new_yaml_text(_BASE_YAML_COMMENTED, _cand(max_retries=7))
+    assert "max_retries: 7  # inline on a key" in text
+    assert "# standalone between two keys" in text
+    assert "# indented, after the last key of the block" in text
+
+
+_BASE_YAML_UNKNOWN_KEY = """\
+project: alpha
+spec_runner:
+  max_retries: 5
+  # the legacy field must be explicitly nulled or preflight rejects the
+  # config as ambiguous
+  spec_gen_budget_usd: null
+workstreams: []
+"""
+
+
+def test_a_key_the_editor_has_no_field_for_is_not_dropped() -> None:
+    """Silently deleting it is worse than losing a comment: `spec_gen_budget_usd`
+    is a real key of research-bench's project.yaml, and its own comment says
+    preflight rejects the config when it is absent. The editor knows nothing
+    about it, which is a reason to leave it alone, not to delete it."""
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
+
+    text, _, _ = build_new_yaml_text(_BASE_YAML_UNKNOWN_KEY, _cand(max_retries=7))
+    assert "spec_gen_budget_usd: null" in text
+    assert "# the legacy field must be explicitly nulled or preflight" in text
+
+
+def test_the_files_own_key_order_is_kept() -> None:
+    """Re-sorting into TYPED_FIELDS order is a diff nobody asked for."""
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
+
+    base = """\
+project: alpha
+spec_runner:
+  review_model: r
+  claude_model: c
+  max_retries: 5
+workstreams: []
+"""
+    text, _, _ = build_new_yaml_text(base, ConfigCandidate(typed={}, base_mtime=0.0))
+    block = text[text.index("spec_runner:") : text.index("workstreams:")]
+    assert block.index("review_model") < block.index("claude_model")
+    assert block.index("claude_model") < block.index("max_retries")
+
+
+def test_an_appended_key_does_not_displace_the_trailing_comment() -> None:
+    """ruamel hangs the text that follows the block off the block's LAST key,
+    so appending a key after it emits that text mid-block unless it is moved."""
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
+
+    text, _, _ = build_new_yaml_text(_BASE_YAML_COMMENTED, _cand(review_model="rm"))
+    assert "review_model: rm" in text
+    assert text.index("review_model: rm") < text.index("# indented, after the last")
+    assert text.index("# col-0 standalone") < text.index("workstreams:")
+
+
+def test_clearing_extra_keeps_the_comment_that_follows_the_block() -> None:
+    """Same text, but hanging off a NESTED last key that gets deleted whole."""
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
+
+    base = """\
+project: alpha
+spec_runner:
+  max_retries: 5
+  extra_executor_config:
+    executor:
+      telegram_bot_token: "123:abc"
+
+# col-0 standalone, right after the block
+workstreams: []
+"""
+    cand = ConfigCandidate(typed={}, extra_executor_config={}, base_mtime=0.0)
+    text, _, extra_changed = build_new_yaml_text(base, cand)
+    assert extra_changed is True
+    assert "telegram_bot_token" not in text  # the clear still happens
+    assert "# col-0 standalone, right after the block" in text
+
+
+def test_a_noop_candidate_reproduces_the_file_byte_for_byte() -> None:
+    """The acceptance bar, on a fixture trimmed from a real project.yaml.
+
+    A candidate that changes nothing must render the input back unchanged —
+    otherwise the editor opens a PR full of churn it did not intend, and the
+    "no-op" the write path reports is not one. Byte equality is the only
+    assertion that covers the losses nobody thought to name."""
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
+
+    base = (
+        Path(__file__).parent / "fixtures" / "project_yaml_with_comments.yaml"
+    ).read_text()
+    text, changed, extra_changed = build_new_yaml_text(
+        base, ConfigCandidate(typed={}, base_mtime=0.0)
+    )
+    assert changed == []
+    assert extra_changed is False
+    assert text == base
+
+
+def test_replacing_the_overlay_keeps_the_comment_that_follows_the_block() -> None:
+    """Clearing the overlay is not the only way to destroy the nested map the
+    trailing text hangs off — swapping it for a different one does too."""
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
+
+    base = """\
+project: alpha
+spec_runner:
+  max_retries: 5
+  extra_executor_config:
+    executor:
+      telegram_bot_token: "123:abc"
+
+# col-0 standalone, right after the block
+workstreams: []
+"""
+    cand = ConfigCandidate(
+        typed={},
+        extra_executor_config={"executor": {"budget_usd": 5.0}},
+        base_mtime=0.0,
+    )
+    text, _, extra_changed = build_new_yaml_text(base, cand)
+    assert extra_changed is True
+    assert "budget_usd: 5.0" in text
+    assert "telegram_bot_token" not in text
+    assert "# col-0 standalone, right after the block" in text
+    # and it is still AFTER the block, not folded into it
+    assert text.index("budget_usd") < text.index("# col-0 standalone")
+    assert text.index("# col-0 standalone") < text.index("workstreams:")
+
+
+def test_matching_the_files_null_spelling_does_not_leak_to_other_ruamel_users() -> None:
+    """`add_representer` is a classmethod: reaching it through an instance
+    would rewrite null rendering for every other YAML() in the process,
+    including modules that have nothing to do with project.yaml."""
+    from io import StringIO
+
+    from ruamel.yaml import YAML
+
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_text
+
+    build_new_yaml_text(_BASE_YAML_UNKNOWN_KEY, _cand(max_retries=7))
+
+    buf = StringIO()
+    YAML().dump({"k": None}, buf)
+    assert buf.getvalue() == "k:\n"
+
+
 def test_commit_message_lists_changed_keys_with_fallback() -> None:
     from dispatcher.core.spec_runner_config_actions import _commit_message
 

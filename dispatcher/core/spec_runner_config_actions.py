@@ -34,6 +34,9 @@ from typing import Any
 
 from pydantic import BaseModel
 from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.representer import RoundTripRepresenter
+from ruamel.yaml.tokens import CommentToken
 
 from dispatcher.core.actions import (
     PHASE_LAUNCHED_UNREADABLE,
@@ -58,6 +61,193 @@ from dispatcher.core.spec_runner_config_schema import (
 _ACTION_TIMEOUT = 120
 _SAFE_DIR_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")
 _audit = logging.getLogger("dispatcher.actions.spec_runner_config")
+
+# Wide enough that ruamel never re-wraps a long scalar it did not have to
+# touch. Re-wrapping is the same class of harm as the comment loss below:
+# a diff in somebody else's file that nobody asked for.
+_NO_REWRAP = 4096
+
+_SEQ_DASH_RE = re.compile(r"^(\s*)-(?:\s|$)")
+_BLOCK_KEY_RE = re.compile(r"^(\s*)(?:[^\s#-][^:]*|\"[^\"]*\"|'[^']*'):\s*(?:#.*)?$")
+
+
+def _sequence_offset(text: str) -> int | None:
+    """The file's own block-sequence indentation, or None if unreadable.
+
+    ruamel re-emits sequences with ITS defaults, not the file's, so a file
+    that indents `- item` under its key comes back re-indented from end to
+    end — churn across regions this editor never touched (the real
+    research-bench/project.yaml re-indents its whole `domain:` tree on a
+    no-op edit). Measured, never assumed: a file with no block sequence, or
+    one that indents them inconsistently, gets ruamel's default rather than
+    a guess that would be wrong in a new way.
+    """
+    offsets: set[int] = set()
+    key_indent: int | None = None
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        dash = _SEQ_DASH_RE.match(line)
+        if dash is not None:
+            if key_indent is not None:
+                offsets.add(len(dash.group(1)) - key_indent)
+            continue
+        key = _BLOCK_KEY_RE.match(line)
+        key_indent = len(key.group(1)) if key is not None else None
+    if len(offsets) != 1:
+        return None
+    offset = offsets.pop()
+    return offset if offset >= 0 else None
+
+
+_NULL_TOKEN_RE = re.compile(r":[ \t]+(null|Null|NULL|~)[ \t]*(?:#.*)?$", re.MULTILINE)
+_NULL_REPRESENTERS: dict[str, type[RoundTripRepresenter]] = {}
+
+
+def _null_style(text: str) -> str | None:
+    """How this file spells null, or None if it never spells it explicitly.
+
+    ruamel loads `k: null` as Python `None` and emits it back as `k:` —
+    same value, but in a diff it reads as if the editor half-deleted the
+    field. research-bench's `spec_gen_budget_usd: null` is exactly that
+    case, and its own comment says the field must be *explicitly* nulled.
+    A file that mixes spellings gets ruamel's default: reproducing one of
+    them everywhere would be churn of its own.
+    """
+    tokens = set(_NULL_TOKEN_RE.findall(text))
+    return tokens.pop() if len(tokens) == 1 else None
+
+
+def _representer_spelling_null(style: str) -> type[RoundTripRepresenter]:
+    """A representer subclass that writes None as `style`.
+
+    Subclass, not `add_representer` on the shared class: that method is a
+    classmethod, so calling it through an instance would rewrite null
+    rendering for every other ruamel user in the process.
+    """
+    cached = _NULL_REPRESENTERS.get(style)
+    if cached is not None:
+        return cached
+
+    def represent_none(self: RoundTripRepresenter, data: None) -> Any:
+        return self.represent_scalar("tag:yaml.org,2002:null", style)
+
+    class _NullStyled(RoundTripRepresenter):
+        pass
+
+    cls: type[RoundTripRepresenter] = _NullStyled
+    # `add_representer` copies the inherited table into the subclass before
+    # writing, so the shared RoundTripRepresenter is left alone.
+    cls.add_representer(type(None), represent_none)
+    _NULL_REPRESENTERS[style] = cls
+    return cls
+
+
+def _last_line_slot(node: Any) -> tuple[Any, Any] | None:
+    """(container, key) whose comment slot owns the block's LAST rendered line.
+
+    ruamel hangs the text that follows a block — the blank line and the
+    col-0 comment after it — off whatever key emitted that last line, which
+    for a nested last entry is a leaf several levels down, not the block's
+    own key. Anything that removes or displaces that leaf takes the
+    following text with it unless the text is moved first.
+    """
+    slot: tuple[Any, Any] | None = None
+    while True:
+        if isinstance(node, CommentedMap) and node:
+            key: Any = next(reversed(node))
+        elif isinstance(node, CommentedSeq) and node:
+            key = len(node) - 1
+        else:
+            return slot
+        slot = (node, key)
+        node = node[key]
+
+
+def _commented(value: Any) -> Any:
+    """Rebuild plain containers as ruamel ones, leaving loaded ones alone.
+
+    A plain dict assigned into the tree cannot carry comments, so
+    `_last_line_slot` cannot see into it and the block's tail would be
+    re-attached above the overlay instead of after it. Values that came
+    from the file are returned untouched — they already carry their own.
+    """
+    if isinstance(value, (CommentedMap, CommentedSeq)):
+        return value
+    if isinstance(value, dict):
+        return CommentedMap((key, _commented(item)) for key, item in value.items())
+    if isinstance(value, list):
+        return CommentedSeq(_commented(item) for item in value)
+    return value
+
+
+def _take_tail(block: CommentedMap) -> CommentToken | None:
+    """Detach the lines following the block's last line; leave inline alone.
+
+    A post-key comment token is emitted verbatim starting on the key's own
+    line, so its first line is that key's inline comment and belongs to the
+    key; only what comes after it is the block's tail.
+    """
+    found = _last_line_slot(block)
+    if found is None:
+        return None
+    owner, key = found
+    slot = owner.ca.items.get(key)
+    if slot is None or slot[2] is None:
+        return None
+    token = slot[2]
+    inline, _, tail = token.value.partition("\n")
+    if not tail:
+        return None
+    if inline:
+        token.value = inline + "\n"
+    else:
+        slot[2] = None
+    return CommentToken("\n" + tail, token.start_mark, token.end_mark)
+
+
+def _put_tail(doc: CommentedMap, block: CommentedMap, token: CommentToken) -> None:
+    """Re-attach the tail after the block's new last line."""
+    found = _last_line_slot(block)
+    # An emptied block has no line to hang it off; the parent's own slot for
+    # `spec_runner` is emitted right after it, which is the same place.
+    owner, key = found if found is not None else (doc, "spec_runner")
+    slot = owner.ca.items.setdefault(key, [None, None, None, None])
+    if slot[2] is None:
+        slot[2] = token
+    else:
+        # Both end and begin with a newline; keeping both would invent a
+        # blank line that was not in the file.
+        slot[2].value = slot[2].value.removesuffix("\n") + token.value
+
+
+def _apply_block(doc: CommentedMap, block: CommentedMap, emit: dict[str, Any]) -> None:
+    """Write `emit` into the loaded block instead of rebuilding it.
+
+    Assigning a freshly built dict over `doc["spec_runner"]` threw away the
+    loaded CommentedMap, and with it every comment inside the block, the
+    file's key order, and every key this editor has no field for. Only keys
+    this code actually decided about are touched; the rest of the block is
+    somebody else's and is left exactly as parsed.
+    """
+    dropped = "extra_executor_config" not in emit and "extra_executor_config" in block
+    appended = any(key not in block for key in emit)
+    # Swapping a container for a different one destroys the nested leaf the
+    # tail hangs off just as surely as deleting it does.
+    swapped = any(
+        isinstance(block.get(key), (CommentedMap, CommentedSeq))
+        and block[key] is not value
+        for key, value in emit.items()
+    )
+    # Only when the block's last line is about to move: an edit that merely
+    # updates keys in place must be able to reproduce the file byte for byte.
+    tail = _take_tail(block) if dropped or appended or swapped else None
+    if dropped:
+        del block["extra_executor_config"]
+    for key, value in emit.items():
+        block[key] = value
+    if tail is not None:
+        _put_tail(doc, block, tail)
 
 
 class ConfigCandidate(BaseModel):
@@ -102,18 +292,36 @@ def build_new_yaml_text(
     ruamel round-trip mode preserves comments/order elsewhere in the file.
     `YAML()` defaults to `typ="rt"` — as safe as yaml.safe_load(); never
     pass `typ="unsafe"`.
+
+    The block is edited IN PLACE, and the emitter is matched to the file's
+    own layout, because everything this function renders ships as a PR in
+    somebody else's repo: a key it has no field for, a comment, a blank
+    line and an indent level are all things it was not asked to change.
+    A candidate that changes nothing renders the input back byte for byte.
     """
     yaml = YAML()
     yaml.preserve_quotes = True
+    yaml.width = _NO_REWRAP
+    offset = _sequence_offset(base_text)
+    if offset is not None:
+        yaml.indent(mapping=2, sequence=offset + 2, offset=offset)
+    null_style = _null_style(base_text)
+    if null_style is not None:
+        yaml.Representer = _representer_spelling_null(null_style)
     doc = yaml.load(StringIO(base_text))
-    current: dict[str, Any] = dict(doc.get("spec_runner") or {})
-    new_block: dict[str, Any] = {}
+    existing = doc.get("spec_runner")
+    # `dict(...)` on a non-mapping raises, and that is deliberate: a
+    # `spec_runner:` that is not a mapping is a file this editor does not
+    # understand, and run()'s catch-all turns the raise into a reported
+    # pre-launch failure rather than a silent overwrite.
+    current: dict[str, Any] = dict(existing or {})
+    emit: dict[str, Any] = {}
     changed_keys: list[str] = []
     for key in TYPED_FIELDS:
         default = TYPED_DEFAULTS[key]
         cand_val = candidate.typed.get(key, current.get(key, default))
         if key in current or cand_val != default:
-            new_block[key] = cand_val
+            emit[key] = cand_val
         if cand_val != current.get(key, default):
             changed_keys.append(key)
     current_extra: dict[str, Any] = current.get("extra_executor_config") or {}
@@ -123,8 +331,13 @@ def build_new_yaml_text(
         effective_extra = candidate.extra_executor_config
     extra_changed = effective_extra != current_extra
     if effective_extra:
-        new_block["extra_executor_config"] = effective_extra
-    doc["spec_runner"] = new_block
+        emit["extra_executor_config"] = _commented(effective_extra)
+    if isinstance(existing, CommentedMap):
+        block = existing
+    else:
+        block = CommentedMap()
+        doc["spec_runner"] = block
+    _apply_block(doc, block, emit)
     buf = StringIO()
     yaml.dump(doc, buf)
     return buf.getvalue(), changed_keys, extra_changed
