@@ -883,6 +883,11 @@ taught to forgive: the whole check is render(load(x)) == x."
 
 - [ ] **Step 1: Write the failing tests**
 
+> Superseded by Task 7: row 7 now surfaces at `stage="check-c"`, not
+> `"check-b"` — Check C's precondition (an anchor inside the block aliased
+> outside it) is exactly row 7's own, so it fires first. Historical sample
+> below is left as originally written.
+
 ```python
 def test_an_alias_expanded_outside_the_block_is_refused() -> None:
     """Row 7: destroying an anchor INSIDE the block makes ruamel expand every

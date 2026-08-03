@@ -1181,6 +1181,7 @@ def test_an_alias_expanded_outside_the_block_is_refused() -> None:
     with pytest.raises(UnsafeEditError) as caught:
         build_new_yaml_bytes(base, cand)
     assert caught.value.stage == "check-c"
+    assert "over" not in str(caught.value)  # the anchor name, not just the key
 
 
 # --- Check C: semantic containment (cross-boundary anchors) ---------------
@@ -1312,6 +1313,112 @@ def test_check_c_message_carries_no_anchor_name() -> None:
     with pytest.raises(UnsafeEditError) as caught:
         build_new_yaml_bytes(base, _cand(max_retries=99))
     assert "super_secret_anchor_name" not in str(caught.value)
+
+
+def _shared_alias_dag(depth: int) -> bytes:
+    """`spec_runner:` with a DAG of `depth` nested anchors, each aliased
+    TWICE by the next level (`l{i}` references `l{i-1}` through both `p`
+    and `q`), plus a final consumer so the innermost anchor is not unused.
+    Every reference is wholly inside the block — this is about walk COST,
+    not about triggering a refusal."""
+    lines = ["spec_runner:", "  l0: &a0", "    x: 1"]
+    for i in range(1, depth + 1):
+        lines.append(f"  l{i}: &a{i}")
+        lines.append(f"    p: *a{i - 1}")
+        lines.append(f"    q: *a{i - 1}")
+    lines.append(f"  consumer: *a{depth}")
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def test_check_c_does_not_blow_up_on_a_shared_alias_dag() -> None:
+    """I-1: `_ids_within` lacked `walk`'s own memoisation guard, so a DAG of
+    shared aliases inside the block was walked exponentially -- every node
+    with two aliased children roughly doubles the work of its parent.
+    Measured pre-fix through `build_new_yaml_bytes` on this exact
+    generator: depth=16 0.433s, 18 2.155s, 20 7.911s, 22 31.416s (the
+    pre-Check-C renderer alone: 0.010s on the same input); depth=30
+    extrapolates to ~2 hours. This runs on the HTTP request thread against
+    an untrusted neighbour file while the repo's `_busy` slot is held --
+    it fails SLOW, not closed. Bounded well under the measured depth=20
+    pre-fix time so a reintroduced regression fails this test fast rather
+    than hanging the suite."""
+    import time
+
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_bytes
+
+    base = _shared_alias_dag(20)
+    start = time.monotonic()
+    build_new_yaml_bytes(base, _cand(max_retries=99))
+    elapsed = time.monotonic() - start
+    assert elapsed < 2.0, (
+        f"took {elapsed:.2f}s -- _ids_within likely lost its memoisation guard"
+    )
+
+
+def test_check_c_a_plain_scalar_repeated_in_and_out_of_the_block_still_edits() -> None:
+    """I-2: identity is only meaningful for containers and anchored
+    scalars -- a PLAIN int or bool appears as the same interned object
+    wherever it occurs, inside the block or out. Mutating
+    `_identity_is_meaningful` to `lambda node: True` leaves the whole test
+    file green (nothing else exercises an unanchored scalar shared this
+    way) while falsely refusing every real neighbour file that happens to
+    repeat a small int or a bool between `spec_runner:` and the rest of the
+    document -- exactly this shape, just not one anyone had reason to
+    craft on purpose."""
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_bytes
+
+    base = (
+        "spec_runner:\n"
+        "  max_retries: 3\n"
+        "  auto_commit: true\n"
+        "other_int: 3\n"
+        "other_bool: true\n"
+    ).encode("utf-8")
+    build_new_yaml_bytes(base, _cand(max_retries=99))  # must not raise
+
+
+def test_check_c_plain_scalar_control_dies_under_the_always_true_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutation proof for the control above: with identity treated as
+    meaningful for EVERY node (including plain scalars), the shared `3`
+    and `true` are (wrongly) seen as the same object reachable from
+    outside, and the edit that must succeed is refused instead."""
+    import dispatcher.core.spec_runner_config_actions as mod
+
+    monkeypatch.setattr(mod, "_identity_is_meaningful", lambda node: True)
+    base = (
+        "spec_runner:\n"
+        "  max_retries: 3\n"
+        "  auto_commit: true\n"
+        "other_int: 3\n"
+        "other_bool: true\n"
+    ).encode("utf-8")
+    with pytest.raises(mod.UnsafeEditError) as caught:
+        mod.build_new_yaml_bytes(base, _cand(max_retries=99))
+    assert caught.value.stage == "check-c"
+
+
+def test_check_b_still_refuses_a_real_merge_key_only_edit() -> None:
+    """I-3: the ONE thing Check C's merge-key skip (above) depends on is
+    that Check B already refuses every REAL edit through that shape on its
+    own, with no help from Check C. This drives that refusal through real,
+    unforced ruamel behaviour -- no monkeypatched `_render` or
+    `_owned_span` -- unlike the other `check-b` tests, which all construct
+    their refusal that way now that row 7's own organic case moved to
+    `check-c`. If this ever stops refusing, Check C's skip
+    (`source_span is not None`) is no longer sound and must be revisited."""
+    from dispatcher.core.spec_runner_config_actions import (
+        UnsafeEditError,
+        build_new_yaml_bytes,
+    )
+
+    base = (
+        "defaults: &d\n  spec_runner:\n    max_retries: 5\n<<: *d\nother: 1\n"
+    ).encode("utf-8")
+    with pytest.raises(UnsafeEditError) as caught:
+        build_new_yaml_bytes(base, _cand(max_retries=99))
+    assert caught.value.stage == "check-b"
 
 
 # --- The third guarantee: unknown in-block data survives the candidate ----

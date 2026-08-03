@@ -487,7 +487,20 @@ def _identity_is_meaningful(node: Any) -> bool:
 
 def _ids_within(node: Any, acc: set[int]) -> None:
     """Collect the identity of every node inside `node` for which identity
-    is meaningful (see `_identity_is_meaningful`)."""
+    is meaningful (see `_identity_is_meaningful`).
+
+    The early return is a memoisation guard, not just a dedupe: without it,
+    a DAG of shared aliases inside the block (`l1: &a1 {p: *a0, q: *a0}`,
+    `l2: &a2 {p: *a1, q: *a1}`, ...) is walked exponentially, since every
+    node with two aliased children gets visited twice as often as its
+    parent. Measured end to end through `build_new_yaml_bytes`: 22 such
+    levels took 31s where the pre-Check-C renderer took 0.01s. Must run
+    BEFORE `acc.add` — checking membership after adding would make every
+    meaningful node "already seen" on its own first visit and never
+    recurse into its children at all.
+    """
+    if id(node) in acc:
+        return
     if _identity_is_meaningful(node):
         acc.add(id(node))
     for child in _children(node):

@@ -83,7 +83,8 @@ So the boundary is fixed at bytes:
 - `build_new_yaml_text(base_bytes: bytes, candidate) -> tuple[bytes, ...]`.
   The decode moves *inside* the function, which also brings it under the safe
   exception below.
-- Encode to UTF-8 exactly once. Both checks compare `bytes`, never `str`.
+- Encode to UTF-8 exactly once. Checks A and B compare `bytes`, never `str`
+  (Check C compares object identity, not bytes at all — see below).
 - The caller writes the returned bytes with `write_bytes`. The bytes that
   passed the checks are the bytes `propose-pr` receives.
 - `--if-match` continues to hash the `base_bytes` actually read; unchanged.
@@ -237,7 +238,7 @@ secrets — `telegram_bot_token` appears in this repo's own test fixtures. The
 error travels into an HTTP response body and the audit log, so **no diff, no
 line text, and no scalar value may appear in it.**
 
-Guarding only the two checks would leave the boundary open one step earlier,
+Guarding only the checks would leave the boundary open one step earlier,
 where `run()`'s catch-all does `error=str(err)`. This is not hypothetical —
 measured:
 
@@ -282,7 +283,10 @@ within the original exception's propagation. So the guarantee is enforced at
 one choke point instead: every `UnsafeEditError` leaving `build_new_yaml_bytes`
 passes through a boundary handler that nulls `__context__`, `__cause__` and
 sets `__suppress_context__`. One place covers every path out of the function,
-including the two checks, which do not go through the stage wrapper at all.
+including all three checks' own `raise UnsafeEditError(...)` statements,
+which sit outside any `_stage` block (only their computation — e.g. Check
+C's call to `_block_is_reachable_from_outside` — runs inside one, same as
+Check A's `_render` call and Check B's re-render/re-load).
 
 That choke point also catches `Exception` broadly, not only `UnsafeEditError`:
 nothing but `_stage`'s own wrapping keeps an unrelated bug (e.g. in the class-
