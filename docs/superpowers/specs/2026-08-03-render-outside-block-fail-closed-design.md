@@ -43,11 +43,14 @@ files editable; the gate independently verifies the result. If the
 preservation machinery is wrong, the gate still refuses the mutation.
 
 ```
-inspect source style
+source bytes
+  → UTF-8 decode
+  → inspect source style
   → configure + render reproducing BOM, line endings, markers, indentation
+  → UTF-8 encode, exactly once
   → Check A: an unmodified round-trip must equal the source, byte for byte
   → Check B: outside the owned span, source and result must be identical
-  → only then hand the bytes to propose-pr
+  → write_bytes those exact bytes; propose-pr sends them
 ```
 
 ### Non-negotiable: the comparators forgive nothing
@@ -60,6 +63,32 @@ expressible: the whole check is `render(load(text)) == text`.
 A useful consequence: **every style-detection heuristic below is an unverified
 guess made safe by Check A.** Detection can therefore stay simple. When it
 guesses wrong the result is a refusal, never a bad PR.
+
+## The byte pipeline
+
+A check that compares `str` and a write that re-encodes independently do not
+compose into "we verified these bytes and sent those bytes". Today the path is
+textual end to end: `run()` does `base_bytes.decode()`, `build_new_yaml_text`
+returns `str`, and the temp file is written with `Path.write_text`.
+
+`write_text` opens in text mode with `newline=None`, which translates `\n` to
+`os.linesep` on write. On Windows the CRLF this design deliberately preserves
+would be translated **a second time**, producing `\r\r\n` — bytes that no check
+ever saw.
+
+So the boundary is fixed at bytes:
+
+- `build_new_yaml_text(base_bytes: bytes, candidate) -> tuple[bytes, ...]`.
+  The decode moves *inside* the function, which also brings it under the safe
+  exception below.
+- Encode to UTF-8 exactly once. Both checks compare `bytes`, never `str`.
+- The caller writes the returned bytes with `write_bytes`. The bytes that
+  passed the checks are the bytes `propose-pr` receives.
+- `--if-match` continues to hash the `base_bytes` actually read; unchanged.
+
+Byte coordinates in diagnostics are computed on the **encoded bytes**. After
+any non-ASCII character a Python string index and a byte offset diverge, and
+the reported number has to name the thing that was compared.
 
 ## The three guarantees, stated separately
 
@@ -85,8 +114,8 @@ different hat. Explicitly out of scope.
 ## Check A — fidelity
 
 Load the source, render it again with **no candidate applied at all** (a pure
-`load` → `dump`, not `_apply_block` with an empty candidate), and require byte
-equality with the source.
+`load` → `dump`, not `_apply_block` with an empty candidate), encode, and
+require equality with the source **bytes**.
 
 Covers rows 1–6 and any construct neither of us thought of, anywhere in the
 file including inside the block. Needs no notion of a block boundary.
@@ -97,7 +126,7 @@ deliberate case.
 ## Check B — containment
 
 With Check A passing, render with the candidate applied and require the source
-and the result to be identical outside the owned span.
+and the result bytes to be identical outside the owned span.
 
 Covers row 7 and any future edit-induced escape.
 
@@ -134,15 +163,41 @@ existing catch-all turns it into
 `pre_launch` is accurate rather than convenient: no subprocess was launched, so
 no PR can exist. Nothing is written anywhere.
 
-### Diagnostics carry no file content
+### Diagnostics carry no file content — across the whole render path
 
 `project.yaml` is an untrusted file from a neighbour repo and routinely holds
 secrets — `telegram_bot_token` appears in this repo's own test fixtures. The
 error travels into an HTTP response body and the audit log, so **no diff, no
 line text, and no scalar value may appear in it.**
 
-Permitted: which check failed, byte or line coordinates, lengths, counts, and
-which side of the span diverged. Example messages:
+Guarding only the two checks would leave the boundary open one step earlier,
+where `run()`'s catch-all does `error=str(err)`. This is not hypothetical —
+measured:
+
+```
+DuplicateKeyError: found duplicate key "a" with value "2"
+                   (original value: "s3cr3t-telegram-token-ABC123")
+```
+
+A duplicate key anywhere in the file prints **both values verbatim**, straight
+from `yaml.load`. `UnicodeDecodeError` similarly reports the offending byte.
+(`ScannerError`, `ParserError` and `ComposerError` were checked and are clean —
+but "clean today" is not a property to depend on.)
+
+Therefore the safe exception wraps **all of `build_new_yaml_text`** — decode,
+style detection, load, mutation, dump, encode, and both checks — and it is the
+only exception type the function raises.
+
+What may escape: the stage that failed (`decode`, `parse`, `render`, `encode`,
+`check-a`, `check-b`), the *class name* of the underlying cause, coordinates,
+lengths, counts, and which side of the span diverged. Class names are type
+identifiers and carry no file content.
+
+The original exception is retained on an attribute for local reproduction, and
+raised `from None` so that no accidental traceback rendering can chain its text
+into a log.
+
+Example messages:
 
 ```
 cannot safely edit project.yaml: YAML renderer cannot reproduce the source
@@ -150,6 +205,9 @@ byte-for-byte (first mismatch at byte 126; source/output lengths 842/839)
 
 cannot safely edit project.yaml: rendering changes bytes outside spec_runner
 (after the block; first mismatch at output line 17; source/output lengths 842/851)
+
+cannot safely edit project.yaml: parse failed (DuplicateKeyError at line 12,
+column 1)
 ```
 
 No full-diff tool is built. `build_new_yaml_text` is a pure function, so a
@@ -191,6 +249,22 @@ quote style, standalone and inline comments, the relative order of unknown
 keys, and values absent from the candidate. Some of these exist from #113;
 quote style and unknown-key ordering are new.
 
+**The byte pipeline** — a file whose content is non-ASCII *before* the first
+difference, asserting the reported coordinate is a **byte** offset and not a
+string index (the two diverge exactly there). And: the bytes written to the
+temp edit file are byte-identical to the bytes that passed the checks — asserted
+at the temp file, since that is what `propose-pr` reads.
+
+**Diagnostics leak nothing** — invalid UTF-8, and malformed YAML including the
+duplicate-key case, must produce a refusal whose message contains neither the
+offending value nor any source line. The duplicate-key case is the regression
+test for the measured leak above.
+
+**Span placement** — `spec_runner:` as the first, a middle, and the last
+top-level key; several top-level keys following it; a block scalar immediately
+before the span boundary; and `spec_runner:` absent from a file that ends in a
+trailing comment and a `...` marker.
+
 **No regression** — both real `project.yaml` files in the workspace still edit
 cleanly, and the byte-exact no-op bar from #113 still holds.
 
@@ -202,3 +276,8 @@ cleanly, and the byte-exact no-op bar from #113 still holds.
 - Mixed line endings within one file are not reproduced; Check A refuses.
 - A candidate-mutation bug that damages unknown in-block data is caught only by
   the targeted tests above, never by the gate.
+- A `project.yaml` with duplicate keys is already unusable — ruamel's round-trip
+  loader raises. This design does not change that, only stops the refusal from
+  printing both values.
+- Diagnostic coordinates and lengths do disclose *where* and *how large* a file
+  is. Accepted: they name the comparison, not its content.
