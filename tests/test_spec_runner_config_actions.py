@@ -353,6 +353,49 @@ def _render_text(text: str, candidate: ConfigCandidate) -> tuple[str, list[str],
     return out.decode("utf-8"), changed, extra
 
 
+_STYLE_CASES = {
+    "marker_start": "---\nproject: alpha\nspec_runner:\n  max_retries: 5\n",
+    "marker_both": "---\nproject: alpha\nspec_runner:\n  max_retries: 5\n...\n",
+    "no_final_newline": "project: alpha\nspec_runner:\n  max_retries: 5",
+    "crlf": "project: alpha\r\nspec_runner:\r\n  max_retries: 5\r\n",
+    "bom": "﻿project: alpha\nspec_runner:\n  max_retries: 5\n",
+    "mapping_indent_3": "project: alpha\nspec_runner:\n   max_retries: 5\n",
+    "mapping_indent_4": "project: alpha\nspec_runner:\n    max_retries: 5\n",
+    "combined": ("﻿---\r\nproject: alpha\r\nspec_runner:\r\n   max_retries: 5\r\n..."),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_STYLE_CASES))
+def test_a_noop_reproduces_each_source_style(name: str) -> None:
+    """Rows 1-5 are fixed by making the RENDERING reproduce the source, never
+    by teaching a comparator to forgive them."""
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_bytes
+
+    base = _STYLE_CASES[name].encode("utf-8")
+    out, changed, _ = build_new_yaml_bytes(
+        base, ConfigCandidate(typed={}, base_mtime=0.0)
+    )
+    assert out == base
+    assert changed == []
+
+
+@pytest.mark.parametrize("name", sorted(_STYLE_CASES))
+def test_a_real_edit_keeps_each_source_style(name: str) -> None:
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_bytes
+
+    base = _STYLE_CASES[name].encode("utf-8")
+    out, changed, _ = build_new_yaml_bytes(
+        base, ConfigCandidate(typed={"max_retries": 9}, base_mtime=0.0)
+    )
+    assert changed == ["max_retries"]
+    text = out.decode("utf-8")
+    assert "max_retries: 9" in text
+    # everything the style test pinned still holds
+    assert text.startswith("﻿") == _STYLE_CASES[name].startswith("﻿")
+    assert text.endswith("\n") == _STYLE_CASES[name].endswith("\n")
+    assert ("\r\n" in text) == ("\r\n" in _STYLE_CASES[name])
+
+
 def test_emission_omits_implicit_defaults() -> None:
     text, changed, extra_changed = _render_text(
         _BASE_YAML, _cand(max_retries=5, claude_model="claude-opus-4-8")

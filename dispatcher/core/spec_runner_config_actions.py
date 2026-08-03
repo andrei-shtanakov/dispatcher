@@ -30,6 +30,7 @@ import tempfile
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -143,6 +144,104 @@ def _representer_spelling_null(style: str) -> type[RoundTripRepresenter]:
     cls.add_representer(type(None), represent_none)
     _NULL_REPRESENTERS[style] = cls
     return cls
+
+
+_NULL_ONLY_KEY_RE = re.compile(r"^(\s*)(?:[^\s#-][^:]*|\"[^\"]*\"|'[^']*'):\s*$")
+
+
+def _mapping_indent(text: str) -> int | None:
+    """The file's own nesting step, or None if it is not consistent.
+
+    A guess, and allowed to be one: Check A verifies the result, so a wrong
+    measurement produces a refusal rather than a bad PR.
+    """
+    steps: set[int] = set()
+    parent: int | None = None
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        stripped = line.lstrip()
+        indent = len(line) - len(stripped)
+        if stripped.startswith("-"):
+            parent = None
+            continue
+        if parent is not None and indent > parent:
+            steps.add(indent - parent)
+        parent = indent if _NULL_ONLY_KEY_RE.match(line) else None
+    if len(steps) != 1:
+        return None
+    step = steps.pop()
+    return step if 1 <= step <= 8 else None
+
+
+@dataclass(frozen=True)
+class _SourceStyle:
+    """Everything about the source's layout that ruamel would otherwise
+    replace with its own defaults."""
+
+    bom: bool
+    crlf: bool
+    final_newline: bool
+    explicit_start: bool
+    explicit_end: bool
+    mapping_indent: int
+    sequence_offset: int | None
+    null_style: str | None
+
+
+def _inspect_style(text: str) -> _SourceStyle:
+    body = text.lstrip("﻿")
+    stripped_lines = [
+        line.strip()
+        for line in body.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    newlines = body.count("\n")
+    return _SourceStyle(
+        bom=text.startswith("﻿"),
+        crlf=newlines > 0 and body.count("\r\n") == newlines,
+        final_newline=text.endswith("\n"),
+        explicit_start=bool(stripped_lines) and stripped_lines[0] == "---",
+        explicit_end=bool(stripped_lines) and stripped_lines[-1] == "...",
+        mapping_indent=_mapping_indent(body) or 2,
+        sequence_offset=_sequence_offset(body),
+        null_style=_null_style(body),
+    )
+
+
+def _configured_yaml(style: _SourceStyle) -> YAML:
+    """A fresh YAML per use.
+
+    Precaution, not a fix for an observed bug: dumping one document twice was
+    measured stable, anchors included, both across instances and on a reused
+    one. A fresh instance keeps the fidelity render from sharing any emitter
+    state with the real one, so that stability does not become load-bearing.
+    """
+    yaml = YAML()
+    yaml.preserve_quotes = True
+    yaml.width = _NO_REWRAP
+    yaml.explicit_start = style.explicit_start
+    yaml.explicit_end = style.explicit_end
+    offset = style.sequence_offset if style.sequence_offset is not None else 0
+    yaml.indent(mapping=style.mapping_indent, sequence=offset + 2, offset=offset)
+    if style.null_style is not None:
+        yaml.Representer = _representer_spelling_null(style.null_style)
+    return yaml
+
+
+def _render(doc: CommentedMap, style: _SourceStyle) -> bytes:
+    """Emit `doc` as the source's own bytes: ruamel first, then the three
+    things its emitter has no setting for."""
+    buf = StringIO()
+    _configured_yaml(style).dump(doc, buf)
+    text = buf.getvalue()
+    if not style.final_newline:
+        text = text.rstrip("\n")
+    if style.crlf:
+        text = text.replace("\n", "\r\n")
+    if style.bom:
+        text = "﻿" + text
+    return text.encode("utf-8")
 
 
 def _last_line_slot(node: Any) -> tuple[Any, Any] | None:
@@ -449,16 +548,8 @@ def _build_new_yaml_bytes(
     with _stage("decode"):
         base_text = base_bytes.decode("utf-8")
     with _stage("parse"):
-        yaml = YAML()
-        yaml.preserve_quotes = True
-        yaml.width = _NO_REWRAP
-        offset = _sequence_offset(base_text)
-        if offset is not None:
-            yaml.indent(mapping=2, sequence=offset + 2, offset=offset)
-        null_style = _null_style(base_text)
-        if null_style is not None:
-            yaml.Representer = _representer_spelling_null(null_style)
-        doc = yaml.load(StringIO(base_text))
+        style = _inspect_style(base_text)
+        doc = _configured_yaml(style).load(StringIO(base_text))
     with _stage("render"):
         existing = doc.get("spec_runner")
         # A `spec_runner:` that is not a mapping is a file this editor cannot
@@ -498,9 +589,7 @@ def _build_new_yaml_bytes(
             doc["spec_runner"] = block
         _apply_block(doc, block, emit)
     with _stage("encode"):
-        buf = StringIO()
-        yaml.dump(doc, buf)
-        new_bytes = buf.getvalue().encode("utf-8")
+        new_bytes = _render(doc, style)
     return new_bytes, changed_keys, extra_changed
 
 
