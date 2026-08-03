@@ -256,3 +256,34 @@ def make_proctor(root: Path) -> Path:
         "2026-07-01 INFO started\n2026-07-02 ERROR trigger failed: boom\n"
     )
     return p
+
+
+def assert_no_secret_reachable(
+    err: BaseException, secret: str, *, max_depth: int = 10
+) -> None:
+    """Walk `err`'s `__cause__`/`__context__` chain; `secret` must be nowhere.
+
+    Shared by the render-outside-block-fail-closed tests (Tasks 2, 4, 5):
+    every exception this render path raises must be safe to log or return
+    over HTTP, and that safety must survive whatever a caller does with the
+    exception object, not just what `str()` shows. `str()` alone missed
+    `.args` (a tuple built straight from the constructor's `message`
+    positional, which `Exception.__str__` happens to render — but a
+    reporter that dumps `.args` directly does not go through `__str__`);
+    `repr(vars(err))` alone missed attributes that live outside `__dict__`
+    on some exception types. Checking only the object handed to
+    `pytest.raises` would also miss a secret still reachable one hop
+    further down the chain, which is exactly the property Finding 3
+    exists to close.
+    """
+    seen: set[int] = set()
+    node: BaseException | None = err
+    depth = 0
+    while node is not None and depth < max_depth and id(node) not in seen:
+        seen.add(id(node))
+        assert secret not in str(node), f"str() at depth {depth}"
+        assert secret not in repr(node), f"repr() at depth {depth}"
+        assert secret not in repr(node.args), f".args at depth {depth}"
+        assert secret not in repr(vars(node)), f"vars() at depth {depth}"
+        node = node.__cause__ or node.__context__
+        depth += 1

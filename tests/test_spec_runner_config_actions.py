@@ -3,6 +3,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from conftest import assert_no_secret_reachable
 
 from dispatcher.core.actions import (
     PHASE_LAUNCHED_UNREADABLE,
@@ -969,7 +970,32 @@ def test_no_reference_to_the_original_exception_survives(tmp_path: Path) -> None
     assert err.__cause__ is None
     assert err.__context__ is None
     assert not hasattr(err, "original")
-    assert _SECRET not in repr(vars(err))
+    assert_no_secret_reachable(err, _SECRET)
+
+
+def test_a_bug_in_the_safe_formatter_still_leaves_no_secret_reachable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_safe_cause` is not total — it is called WHILE `_stage` is handling
+    the secret-bearing original, so a bug in it (an AttributeError on a
+    `problem_mark`-shaped assumption, say) is exactly the kind of statement
+    that lives outside every `_stage` block's own coverage. Nothing may
+    escape `build_new_yaml_bytes` except a scrubbed `UnsafeEditError`, not
+    an unrelated exception with the original still on its `__context__`."""
+    import dispatcher.core.spec_runner_config_actions as mod
+
+    def boom(err: BaseException) -> str:
+        raise AttributeError("_safe_cause itself is broken")
+
+    monkeypatch.setattr(mod, "_safe_cause", boom)
+    base = f'a: "{_SECRET}"\na: 2\nspec_runner:\n  max_retries: 5\n'
+    with pytest.raises(mod.UnsafeEditError) as caught:
+        mod.build_new_yaml_bytes(base.encode("utf-8"), _cand())
+    err = caught.value
+    assert err.stage == "unknown"
+    assert err.__cause__ is None
+    assert err.__context__ is None
+    assert_no_secret_reachable(err, _SECRET)
 
 
 def test_the_outcome_and_audit_line_carry_no_file_content(

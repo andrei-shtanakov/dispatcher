@@ -177,6 +177,23 @@
       достигает — не блокер, а долг: любое будущее место, которое начнёт
       читать вторую компоненту кортежа, унаследует утечку молча. Код здесь не
       трогаем — вне диффа этой задачи.
+- [ ] `UnsafeEditError`'а traceback всё ещё несёт кадры с секретом — принятый остаток, не баг @owner:andrei @id:exception-traceback-frame-locals
+      Измерено при закрытии `@id:render-outside-block-fail-closed`. Гарантия
+      «ни одна ссылка на оригинал не переживает» (Finding из ревью Task 2,
+      round 1+2) закрывает сам объект исключения — сообщение, `args`,
+      атрибуты, `__cause__`, `__context__` — но НЕ его traceback: кадры
+      `_build_new_yaml_bytes` держат `base_bytes`/`base_text` (весь файл
+      соседа целиком, секрет включён) локальными переменными, пока жив
+      объект traceback. Любой репортер, настроенный сохранять локали кадров
+      (Sentry `include_local_variables`, `better-exceptions`), их достанет —
+      независимо от того, что зачищено на самом объекте исключения. Это
+      свойство трейсбеков Python, а не дефект этого кода: починки на уровне
+      этой функции не существует. Пункт — не «сделать», а «не потерять»:
+      если в проекте когда-нибудь появится Sentry/аналогичный репортер,
+      его конфиг для этого пути должен явно выключать захват локалей кадров
+      (или маскировать `project.yaml`-содержимое до того, как оно попадёт в
+      кадр), иначе гарантия окажется тише, чем заявлено в
+      `docs/superpowers/specs/2026-08-03-render-outside-block-fail-closed-design.md`.
 - [ ] README + иконка для `vscode-ext/` @owner:andrei @id:vscode-ext-readme
       Страница расширения показывает «No README available».
 - [x] `detail()` (`dispatcher/server/static/index.html`) брал `repoDir` из display-имени коллектора и кормил им четыре directory-keyed места — PR #111 @owner:andrei @id:spec-runner-config-dir-name-mismatch

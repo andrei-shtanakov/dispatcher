@@ -352,7 +352,29 @@ def build_new_yaml_bytes(
     `UnsafeEditError` can be scrubbed for good: no reference to the
     original survives past this line, not on an attribute, not via
     `__cause__`, not via `__context__`.
+
+    The second `except` below is not decorative: every statement in
+    `_build_new_yaml_bytes` outside a `_stage` block is (today) just the
+    final `return`, but that is an invariant of the current source, not a
+    property of this function's construction. `_safe_cause` itself is not
+    total — `mark.line + 1` assumes a `problem_mark` shaped like ruamel's —
+    and Tasks that extend this function may add a helper, or a statement,
+    outside a `_stage` block. Anything that escapes `_stage`'s own coverage
+    must still come out as a scrubbed `UnsafeEditError`, or the guarantee
+    this docstring makes is false the day either of those happens.
+
+    This guarantee covers the exception OBJECT only — its message, `args`,
+    attributes, `__cause__` and `__context__`. It does NOT cover the
+    traceback's frame locals: `base_bytes`/`base_text` (the whole neighbour
+    file, secret included) remain reachable from `err.__traceback__`'s
+    frames for as long as the traceback object is alive, and any reporter
+    configured to capture frame locals (e.g. Sentry's
+    `include_local_variables`, `better-exceptions`) recovers them. This is
+    inherent to how Python exceptions carry their traceback and is not
+    something a handler at this boundary can close — noted here as an
+    accepted residual, not silently assumed away.
     """
+    unexpected_cause_name: str | None = None
     try:
         return _build_new_yaml_bytes(base_bytes, candidate)
     except UnsafeEditError as err:
@@ -360,11 +382,38 @@ def build_new_yaml_bytes(
         # reference to it may leave this function — not on an attribute, not
         # via __cause__, not via __context__. Retaining it would make this
         # boundary's safety depend on some future logger or error reporter.
-        # Same rule as core/contract.py:636-642.
+        # Same rule as core/contract.py:636-642. A bare `raise` re-raises
+        # the SAME object already being handled, so — unlike the arm below —
+        # nothing re-populates `__context__` on the way out.
         err.__cause__ = None
         err.__context__ = None
         err.__suppress_context__ = True
         raise
+    except Exception as err:  # nothing else may leave this function
+        # Anything reaching here escaped every `_stage` block — e.g. a bug
+        # in `_safe_cause` itself, raised while it was handling the very
+        # exception it exists to make safe. Only the class name is pulled
+        # out here; `err` itself must not survive this function on any
+        # attribute, `__cause__`, or `__context__` of the replacement.
+        unexpected_cause_name = type(err).__name__
+    # Raised OUTSIDE the handler, unlike the arm above: building a NEW
+    # exception object while `except Exception as err` is still open sets
+    # its `__context__` to `err` at the moment of the `raise` statement
+    # itself — verified with a canary, because trusting the obvious
+    # `raise UnsafeEditError(...) from None` INSIDE that block is exactly
+    # what looked right and wasn't: `from None` only sets `__suppress_
+    # context__`, and manually clearing `__context__` before that `raise`
+    # does not stick, since raising re-populates it right there. Ending the
+    # `except` block first (this function is a plain try/except, not a
+    # `@contextmanager` — `_stage`'s obstacle does not apply here) means
+    # nothing is "currently being handled" by the time this line runs, so
+    # `__context__` is never set to begin with. Same technique as
+    # core/contract.py's own `ContractViolation` raises.
+    raise UnsafeEditError(
+        f"cannot safely edit project.yaml: unexpected failure "
+        f"({unexpected_cause_name})",
+        stage="unknown",
+    )
 
 
 def _build_new_yaml_bytes(

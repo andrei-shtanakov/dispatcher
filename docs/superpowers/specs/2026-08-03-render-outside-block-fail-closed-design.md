@@ -217,6 +217,24 @@ passes through a boundary handler that nulls `__context__`, `__cause__` and
 sets `__suppress_context__`. One place covers every path out of the function,
 including the two checks, which do not go through the stage wrapper at all.
 
+That choke point also catches `Exception` broadly, not only `UnsafeEditError`:
+nothing but `_stage`'s own wrapping keeps an unrelated bug (e.g. in the class-
+name/coordinate formatter itself, which runs while the secret-bearing original
+is still being handled) from leaving this function with the original still
+reachable on `__context__`. `build_new_yaml_bytes` is the only exception type
+the function raises **by construction**, not because nothing outside a
+`_stage` block happens to raise today.
+
+**Accepted residual — this guarantee is about the exception object, not the
+traceback.** The scrubbed `UnsafeEditError`'s traceback still carries frames
+whose locals include `base_bytes`/`base_text` — the complete neighbour file,
+secret included — for as long as the traceback object is alive. Any reporter
+configured to capture frame locals (Sentry's `include_local_variables`,
+`better-exceptions`) recovers them regardless of what this boundary clears on
+the exception object. This is inherent to how Python tracebacks work and is
+not something a handler here can close; it is named rather than silently
+assumed away.
+
 Local diagnosis is reproduced against the file, which the owner already has.
 Re-running costs less than keeping a hidden leak channel open.
 
