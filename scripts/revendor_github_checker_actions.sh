@@ -86,6 +86,19 @@ WORK="$(mktemp -d)" || die 5 "could not create a scratch directory"
 # not sufficient; only an explicit trap on the signal itself gives `cleanup`
 # a chance to run before the process dies.
 cleanup_swap() {
+  # Every statement here must run to completion regardless of its own exit
+  # status: an unresponsive mount, a read-only parent, or an immutable flag
+  # can make `rm -rf`/`mv` fail for real (this is precisely the wedged-
+  # filesystem case the runbook documents below), and under the script's
+  # `set -e` a failing statement would otherwise abort this function right
+  # there — skipping the `$PREV` restore if the scratch removal is what
+  # failed, or skipping the caller's own exit code (the `EXIT` path) or
+  # signal re-raise (the handler path) if the restore itself is what failed
+  # instead. Neither call site can guard against that individually; turning
+  # `errexit` off for this function's body is what makes every statement
+  # here run unconditionally, in order, with the working-copy guarantee
+  # never truncated by an internal cleanup failure.
+  set +e
   rm -rf "$WORK" "$STAGING"
   # Died between the two renames: the working copy is in $PREV and $DST is
   # gone. Put it back — a failed re-vendor must leave the tree as it found it.
@@ -93,6 +106,7 @@ cleanup_swap() {
     [ -e "$DST" ] || mv "$PREV" "$DST"
     rm -rf "$PREV"
   fi
+  set -e
 }
 
 cleanup() {
