@@ -156,7 +156,7 @@
       гейт, отказывающийся рендерить, если меняется хоть строка вне блока
       `spec_runner:`; это превращает тихий шум в отказ и требует продуктового
       решения — см. `@id:render-outside-block-fail-closed`.
-- [x] Fail-closed гейт: отказываться рендерить `project.yaml`, если правка меняет хоть строку вне блока `spec_runner:` — PR #TBD @owner:andrei @id:render-outside-block-fail-closed
+- [x] Fail-closed гейт: отказываться рендерить `project.yaml`, если правка меняет хоть строку вне блока `spec_runner:` — PR #114 @owner:andrei @id:render-outside-block-fail-closed
       Поднято при закрытии `@id:ruamel-standalone-comment-loss` (PR #113). Сейчас
       совпадение стиля с файлом — измеренное, но всё же best-effort: файл, чей
       стиль ruamel не воспроизводит, тихо получает шум в чужом PR. Гейт делает
