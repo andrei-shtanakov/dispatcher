@@ -116,7 +116,12 @@ on_fatal_signal() {
   trap '' INT TERM HUP
   trap - EXIT
   cleanup_swap
-  trap - "$sig"
+  # Restore default disposition for all three, not just $sig: the process is
+  # about to die from the re-raise below, essentially synchronously, so
+  # there is normally no window where script logic runs on with the other
+  # two still masked — but leaving them masked is a latent gap, not merely
+  # a matter of state we won't need again.
+  trap - INT TERM HUP
   kill -s "$sig" $$
 }
 trap 'on_fatal_signal INT' INT

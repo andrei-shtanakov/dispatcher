@@ -100,8 +100,15 @@ already running (an ordinary thing for an impatient operator to do) cannot
 cut off the `rm -rf`/`mv` that puts the tree back; only after cleanup
 finishes does the handler restore the signal's default disposition and
 re-raise it, so the process still visibly dies by signal rather than
-reporting an invented exit code. For `INT` and `TERM` this is verified, not
-assumed:
+reporting an invented exit code. The consequence: a cleanup that hangs — a
+stuck `rm -rf` or `mv` on an unresponsive mount — is, from that point on,
+stoppable only with `kill -9`; another `Ctrl-C` will not reach it. A
+`SIGKILL` outside the two-rename swap window described below leaves only
+`v1.staging` (and the scratch directory under `/tmp`) behind, half-removed,
+next to an otherwise untouched working copy — re-running the script removes
+`v1.staging` itself as its first act, so no manual cleanup step is needed
+beyond re-running it once whatever wedged the filesystem is resolved. For
+`INT` and `TERM` this is verified, not assumed:
 `tests/test_revendor_script.py::test_a_signal_mid_run_leaves_the_working_copy_alone`
 sends a real signal to the running script mid-extraction (not a simulation)
 and asserts the working copy is untouched afterward — run it yourself with
