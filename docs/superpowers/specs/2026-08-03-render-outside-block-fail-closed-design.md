@@ -256,9 +256,22 @@ temp edit file are byte-identical to the bytes that passed the checks — assert
 at the temp file, since that is what `propose-pr` reads.
 
 **Diagnostics leak nothing** — invalid UTF-8, and malformed YAML including the
-duplicate-key case, must produce a refusal whose message contains neither the
-offending value nor any source line. The duplicate-key case is the regression
-test for the measured leak above.
+duplicate-key case, must produce a refusal that discloses neither the offending
+value nor any source line. The duplicate-key case is the regression test for
+the measured leak above.
+
+Asserted on the **surfaces this design claims to protect**, not on
+`str(exception)`:
+
+- `ActionOutcome.error` as returned by `run()`;
+- the HTTP response body of the route that serves the action;
+- the audit line actually emitted by `_audit`.
+
+A test of the exception alone proves only that the exception is clean. It
+cannot show that a caller has not since appended `repr(original)`, a traceback,
+or other unsafe context on the way to one of those three surfaces — and those
+are what a neighbour's secret would actually escape through. Each test plants a
+recognisable secret in the fixture and asserts its absence from the surface.
 
 **Span placement** — `spec_runner:` as the first, a middle, and the last
 top-level key; several top-level keys following it; a block scalar immediately
