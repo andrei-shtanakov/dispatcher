@@ -19,7 +19,7 @@ from dispatcher.core.spec_runner_config_actions import (
     SpecRunnerConfigRejectedError,
 )
 
-_PROJECT_YAML = """
+_PROJECT_YAML = """\
 project: alpha
 spec_runner:
   max_retries: 3
@@ -1084,3 +1084,51 @@ def test_the_catch_all_labels_itself_pre_launch(
     outcome = runner.run("alpha", _candidate(repo))
     assert outcome.ok is False
     assert outcome.phase == PHASE_PRE_LAUNCH
+
+
+def test_row_6_aligned_values_are_refused_not_reflowed() -> None:
+    """ruamel cannot reproduce alignment padding, so an aligned file becomes
+    honestly unsupported rather than silently reflowed."""
+    from dispatcher.core.spec_runner_config_actions import (
+        UnsafeEditError,
+        build_new_yaml_bytes,
+    )
+
+    base = b"project:      alpha\nspec_runner:\n  max_retries: 5\n"
+    with pytest.raises(UnsafeEditError) as caught:
+        build_new_yaml_bytes(base, _cand(max_retries=7))
+    assert caught.value.stage == "check-a"
+    assert "cannot reproduce the source" in str(caught.value)
+
+
+def test_the_fidelity_coordinate_is_a_byte_offset_not_a_string_index() -> None:
+    """They diverge after the first non-ASCII character, and the number has
+    to name the thing that was compared."""
+    from dispatcher.core.spec_runner_config_actions import (
+        UnsafeEditError,
+        build_new_yaml_bytes,
+    )
+
+    # 'путь' is 4 chars but 8 bytes; the alignment damage is after it.
+    base = "note: путь\nproject:      alpha\nspec_runner:\n  max_retries: 5\n"
+    with pytest.raises(UnsafeEditError) as caught:
+        build_new_yaml_bytes(base.encode("utf-8"), _cand(max_retries=7))
+    message = str(caught.value)
+    # ruamel always emits exactly one separator space after "project:", so
+    # that byte matches the source's first padding space too — the real
+    # divergence starts one byte later, at the second padding space.
+    expected = base.encode("utf-8").index(b"project:      alpha") + len(b"project: ")
+    assert f"first mismatch at byte {expected}" in message
+    assert "путь" not in message
+
+
+def test_a_refusal_names_both_lengths() -> None:
+    from dispatcher.core.spec_runner_config_actions import (
+        UnsafeEditError,
+        build_new_yaml_bytes,
+    )
+
+    base = b"project:      alpha\nspec_runner:\n  max_retries: 5\n"
+    with pytest.raises(UnsafeEditError) as caught:
+        build_new_yaml_bytes(base, _cand(max_retries=7))
+    assert f"lengths {len(base)}/" in str(caught.value)

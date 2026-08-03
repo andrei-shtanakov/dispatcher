@@ -244,6 +244,16 @@ def _render(doc: CommentedMap, style: _SourceStyle) -> bytes:
     return text.encode("utf-8")
 
 
+def _first_differing_byte(left: bytes, right: bytes) -> int:
+    """Index of the first differing byte; the shorter length if one is a
+    prefix of the other."""
+    limit = min(len(left), len(right))
+    for index in range(limit):
+        if left[index] != right[index]:
+            return index
+    return limit
+
+
 def _last_line_slot(node: Any) -> tuple[Any, Any] | None:
     """(container, key) whose comment slot owns the block's LAST rendered line.
 
@@ -550,6 +560,21 @@ def _build_new_yaml_bytes(
     with _stage("parse"):
         style = _inspect_style(base_text)
         doc = _configured_yaml(style).load(StringIO(base_text))
+    # Check A — fidelity. A pure load -> dump, with NO candidate applied:
+    # this asks only whether the renderer can reproduce this file at all.
+    # It covers every construct, including ones nobody enumerated, anywhere
+    # in the file, and needs no notion of a block boundary. It is also what
+    # makes the style heuristics above safe to guess at.
+    with _stage("check-a"):
+        fidelity = _render(doc, style)
+    if fidelity != base_bytes:
+        raise UnsafeEditError(
+            "cannot safely edit project.yaml: YAML renderer cannot reproduce "
+            "the source byte-for-byte (first mismatch at byte "
+            f"{_first_differing_byte(base_bytes, fidelity)}; "
+            f"source/output lengths {len(base_bytes)}/{len(fidelity)})",
+            stage="check-a",
+        )
     with _stage("render"):
         existing = doc.get("spec_runner")
         # A `spec_runner:` that is not a mapping is a file this editor cannot
