@@ -193,9 +193,32 @@ What may escape: the stage that failed (`decode`, `parse`, `render`, `encode`,
 lengths, counts, and which side of the span diverged. Class names are type
 identifiers and carry no file content.
 
-The original exception is retained on an attribute for local reproduction, and
-raised `from None` so that no accidental traceback rendering can chain its text
-into a log.
+**No reference to the original exception survives** — not on an attribute, not
+via `__cause__`, not via `__context__`. The original object is proven to carry
+secrets in its message and its attributes, so retaining it anywhere would make
+this boundary's safety depend on the behaviour of some future logger,
+serialiser or error reporter. That is weaker than "safe by construction".
+
+This matches the rule this repo already set at `core/contract.py:636-642`:
+
+> `from None` is not enough either: it only suppresses *display*, leaving the
+> object on `__context__`. `str()` and the default traceback stay clean, but
+> any reporter that serialises exception attributes recovers it.
+
+Only pre-extracted safe values cross the boundary: stage, the cause's class
+name as a string, coordinates, sizes and counts.
+
+Measured, because the obvious implementation does not work: raising outside
+the handler — `contract.py`'s technique — does **not** clear `__context__`
+when it happens inside a `@contextmanager`, since `contextlib` re-raises
+within the original exception's propagation. So the guarantee is enforced at
+one choke point instead: every `UnsafeEditError` leaving `build_new_yaml_bytes`
+passes through a boundary handler that nulls `__context__`, `__cause__` and
+sets `__suppress_context__`. One place covers every path out of the function,
+including the two checks, which do not go through the stage wrapper at all.
+
+Local diagnosis is reproduced against the file, which the owner already has.
+Re-running costs less than keeping a hidden leak channel open.
 
 Example messages:
 

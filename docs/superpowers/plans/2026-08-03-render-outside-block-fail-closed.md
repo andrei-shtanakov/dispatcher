@@ -240,8 +240,8 @@ bytes."
 
 **Interfaces:**
 - Consumes: `build_new_yaml_bytes` from Task 1.
-- Produces: `UnsafeEditError(message, *, stage, original=None)` with attributes
-  `.stage: str` and `.original: BaseException | None`. Stages used across the
+- Produces: `UnsafeEditError(message, *, stage)` with attribute `.stage: str`.
+  It retains NO reference to the original exception. Stages used across the
   plan: `"decode"`, `"parse"`, `"render"`, `"encode"`, `"check-a"`, `"check-b"`.
   `"parse"` covers style inspection as well as `yaml.load` — both are reading
   the source.
@@ -285,9 +285,10 @@ def test_invalid_utf8_refuses_without_echoing_bytes(tmp_path: Path) -> None:
     assert "UnicodeDecodeError" in str(caught.value)
 
 
-def test_the_original_cause_is_kept_but_never_chained(tmp_path: Path) -> None:
-    """`from None` so no accidental traceback rendering can print the
-    original's text, while local reproduction still has it."""
+def test_no_reference_to_the_original_exception_survives(tmp_path: Path) -> None:
+    """The original object carries the secret in its own message, so keeping
+    it anywhere would make this boundary depend on some future logger's
+    behaviour. Walk the whole chain — asserting on str() would not see it."""
     from dispatcher.core.spec_runner_config_actions import (
         UnsafeEditError,
         build_new_yaml_bytes,
@@ -296,8 +297,12 @@ def test_the_original_cause_is_kept_but_never_chained(tmp_path: Path) -> None:
     base = f'a: "{_SECRET}"\na: 2\nspec_runner:\n  max_retries: 5\n'
     with pytest.raises(UnsafeEditError) as caught:
         build_new_yaml_bytes(base.encode("utf-8"), _cand())
-    assert caught.value.__cause__ is None
-    assert caught.value.original is not None
+    err = caught.value
+    assert err.__cause__ is None
+    assert err.__context__ is None
+    assert not hasattr(err, "original")
+    # nothing in the object's own attributes carries it either
+    assert _SECRET not in repr(vars(err))
 ```
 
 And the two surface tests — the exception being clean does not prove the
@@ -347,7 +352,7 @@ def test_update_spec_runner_config_response_carries_no_file_content(
 
 - [ ] **Step 2: Run and watch them fail**
 
-Run: `uv run pytest tests/test_spec_runner_config_actions.py -k "duplicate_key or invalid_utf8 or original_cause or no_file_content" -v`
+Run: `uv run pytest tests/test_spec_runner_config_actions.py -k "duplicate_key or invalid_utf8 or no_reference or no_file_content" -v`
 Expected: FAIL with `ImportError: cannot import name 'UnsafeEditError'`.
 
 - [ ] **Step 3: Add the exception and the stage wrapper**
@@ -371,11 +376,10 @@ class UnsafeEditError(Exception):
     """
 
     def __init__(
-        self, message: str, *, stage: str, original: BaseException | None = None
+        self, message: str, *, stage: str
     ) -> None:
         super().__init__(message)
         self.stage = stage
-        self.original = original
 ```
 
 Then the cause formatter and the wrapper, placed just above
@@ -411,8 +415,7 @@ def _stage(name: str) -> Iterator[None]:
         raise UnsafeEditError(
             f"cannot safely edit project.yaml: {name} failed ({_safe_cause(err)})",
             stage=name,
-            original=err,
-        ) from None
+        )
 ```
 
 Add to the imports at the top of the file:
@@ -459,12 +462,43 @@ route arm is needed by reading `dispatcher/server/app.py:528-532`; leave the
 file unchanged if the catch-all covers it. Add a comment there only if you
 find it does not.
 
-- [ ] **Step 6: Run and watch them pass**
+- [ ] **Step 6: Clear the implicit chain at the function boundary**
+
+`raise ... from None` suppresses *display* only; the original stays reachable
+on `__context__`, and its text holds the secret. Raising outside the handler
+(the technique `core/contract.py:636-642` uses) does NOT help here — measured:
+inside a `@contextmanager`, `contextlib` re-raises within the original
+exception's propagation, so `__context__` is set anyway.
+
+So enforce it at one choke point. Wrap the whole body of
+`build_new_yaml_bytes`, so every path out of the function is covered —
+including the two checks in Tasks 4 and 5, which raise directly and never go
+through `_stage`:
+
+```python
+    try:
+        return _build_new_yaml_bytes(base_bytes, candidate)
+    except UnsafeEditError as err:
+        # The original is proven to carry secrets in its own message, so no
+        # reference to it may leave this function — not on an attribute, not
+        # via __cause__, not via __context__. Retaining it would make this
+        # boundary's safety depend on some future logger or error reporter.
+        # Same rule as core/contract.py:636-642.
+        err.__cause__ = None
+        err.__context__ = None
+        err.__suppress_context__ = True
+        raise
+```
+
+Move the existing body into a module-level `_build_new_yaml_bytes` with the
+same signature; `build_new_yaml_bytes` becomes this wrapper.
+
+- [ ] **Step 7: Run and watch them pass**
 
 Run: `uv run pytest tests/test_spec_runner_config_actions.py tests/test_api.py -q`
 Expected: all pass.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 uv run ruff format . && uv run ruff check . && uv run pyrefly check
@@ -1170,7 +1204,8 @@ action-token fixtures rather than invent new ones, and the PR title/body in
 Task 6. Both are marked as such.
 
 **Type consistency.** `build_new_yaml_bytes(bytes, ConfigCandidate) -> tuple[bytes, list[str], bool]`
-is used identically in Tasks 1-6. `UnsafeEditError(message, *, stage, original)`
-with `.stage`/`.original` is consistent across Tasks 2, 4, 5. `_SourceStyle`
+is used identically in Tasks 1-6. `UnsafeEditError(message, *, stage)` with
+`.stage` and no reference to the original exception is consistent across
+Tasks 2, 4, 5. `_SourceStyle`
 fields are referenced only as defined in Task 3. `_owned_span` returns
 `tuple[int, int] | None` and `_outside` consumes exactly that.
