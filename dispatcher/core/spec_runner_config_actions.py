@@ -254,6 +254,55 @@ def _first_differing_byte(left: bytes, right: bytes) -> int:
     return limit
 
 
+def _owned_span(doc: CommentedMap, lines: list[str]) -> tuple[int, int] | None:
+    """Inclusive 0-based line range of the `spec_runner:` block's DATA.
+
+    Trailing blank and comment lines are deliberately left OUT, which puts
+    the text following the block into the compared region — that text is
+    exactly what #113 was about. The end is derived from the next top-level
+    key rather than by walking the block's own subtree, because ruamel's line
+    info for a block scalar points at the `|`, not at the scalar's last line,
+    and walking would truncate the span.
+
+    The `...` explicit-end marker is stripped the same way: it is an emitter
+    option (`style.explicit_end`), not a key's data, so when `spec_runner` is
+    the mapping's last key and has no following key to bound it, the
+    fallback to `len(lines)` would otherwise pull that marker line into the
+    span on one side of a comparison but not the other (no block at all on
+    the source side means the whole file, marker included, is "outside").
+    """
+    if "spec_runner" not in doc:
+        return None
+    start = doc.lc.data["spec_runner"][0]
+    following = [pos[0] for pos in doc.lc.data.values() if pos[0] > start]
+    end = (min(following) if following else len(lines)) - 1
+    while end > start and (
+        not lines[end].strip()
+        or lines[end].lstrip().startswith("#")
+        or lines[end].strip() == "..."
+    ):
+        end -= 1
+    return start, end
+
+
+def _outside(lines: list[str], span: tuple[int, int] | None) -> tuple[str, str]:
+    """(before, after) the owned span. No span -> the whole text is outside."""
+    if span is None:
+        return "".join(lines), ""
+    start, end = span
+    return "".join(lines[:start]), "".join(lines[end + 1 :])
+
+
+def _first_differing_line(left: str, right: str) -> int:
+    """0-based index of the first line that differs, within the region."""
+    left_lines = left.splitlines()
+    right_lines = right.splitlines()
+    for index in range(min(len(left_lines), len(right_lines))):
+        if left_lines[index] != right_lines[index]:
+            return index
+    return min(len(left_lines), len(right_lines))
+
+
 def _last_line_slot(node: Any) -> tuple[Any, Any] | None:
     """(container, key) whose comment slot owns the block's LAST rendered line.
 
@@ -575,6 +624,10 @@ def _build_new_yaml_bytes(
             f"source/output lengths {len(base_bytes)}/{len(fidelity)})",
             stage="check-a",
         )
+    # Captured BEFORE `_apply_block` mutates `doc` below — once the block is
+    # edited, the source's own line numbers are gone.
+    source_lines = base_text.splitlines(keepends=True)
+    source_span = _owned_span(doc, source_lines)
     with _stage("render"):
         existing = doc.get("spec_runner")
         # A `spec_runner:` that is not a mapping is a file this editor cannot
@@ -615,6 +668,47 @@ def _build_new_yaml_bytes(
         _apply_block(doc, block, emit)
     with _stage("encode"):
         new_bytes = _render(doc, style)
+    # Check B — containment. Check A already proved the renderer reproduces
+    # this file, so any difference now is attributable to the edit; this asks
+    # only whether the edit stayed inside the block we own. Spans are located
+    # independently in source and output, so a tail that shifts down a line
+    # when a key is appended is not a difference — only content is compared.
+    with _stage("check-b"):
+        new_text = new_bytes.decode("utf-8")
+        new_lines = new_text.splitlines(keepends=True)
+        new_doc = _configured_yaml(style).load(StringIO(new_text))
+        new_span = _owned_span(new_doc, new_lines)
+    source_before, source_after = _outside(source_lines, source_span)
+    new_before, new_after = _outside(new_lines, new_span)
+    if source_span is None or new_span is None:
+        # No pre-existing span on one side (the block was created or removed
+        # outright by this edit), so there is no shared boundary to compare
+        # before/after against separately — only their concatenation, which
+        # still catches any content actually lost or altered.
+        checks: tuple[tuple[str, str, str, int], ...] = (
+            (
+                "no pre-existing span to compare before/after separately",
+                source_before + source_after,
+                new_before + new_after,
+                0,
+            ),
+        )
+    else:
+        checks = (
+            ("before the block", source_before, new_before, 0),
+            ("after the block", source_after, new_after, new_span[1] + 1),
+        )
+    for side, was, now, offset in checks:
+        if was == now:
+            continue
+        differing = _first_differing_line(was, now)
+        raise UnsafeEditError(
+            "cannot safely edit project.yaml: rendering changes bytes outside "
+            f"spec_runner ({side}; first mismatch at output line "
+            f"{offset + differing + 1}; source/output lengths "
+            f"{len(base_bytes)}/{len(new_bytes)})",
+            stage="check-b",
+        )
     return new_bytes, changed_keys, extra_changed
 
 

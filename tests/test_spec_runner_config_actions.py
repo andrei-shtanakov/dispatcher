@@ -1132,3 +1132,70 @@ def test_a_refusal_names_both_lengths() -> None:
     with pytest.raises(UnsafeEditError) as caught:
         build_new_yaml_bytes(base, _cand(max_retries=7))
     assert f"lengths {len(base)}/" in str(caught.value)
+
+
+def test_an_alias_expanded_outside_the_block_is_refused() -> None:
+    """Row 7: destroying an anchor INSIDE the block makes ruamel expand every
+    alias to it elsewhere, so `elsewhere: *over` becomes an inlined copy. No
+    style matching prevents this; only the containment check catches it."""
+    from dispatcher.core.spec_runner_config_actions import (
+        UnsafeEditError,
+        build_new_yaml_bytes,
+    )
+
+    base = (
+        "spec_runner:\n"
+        "  max_retries: 5\n"
+        "  extra_executor_config: &over\n"
+        "    a: 1\n"
+        "elsewhere: *over\n"
+    ).encode("utf-8")
+    cand = ConfigCandidate(typed={}, extra_executor_config={}, base_mtime=0.0)
+    with pytest.raises(UnsafeEditError) as caught:
+        build_new_yaml_bytes(base, cand)
+    assert caught.value.stage == "check-b"
+    assert "outside spec_runner" in str(caught.value)
+
+
+_SPAN_POSITIONS = {
+    "first": "spec_runner:\n  max_retries: 5\nz_after: 1\n",
+    "middle": "a_before: 1\nspec_runner:\n  max_retries: 5\nz_after: 1\n",
+    "last": "a_before: 1\nspec_runner:\n  max_retries: 5\n",
+    "many_following": ("a: 1\nspec_runner:\n  max_retries: 5\nb: 2\nc: 3\nd: 4\n"),
+    "block_scalar_at_the_boundary": (
+        "spec_runner:\n"
+        "  max_retries: 5\n"
+        "  extra_executor_config:\n"
+        "    note: |\n"
+        "      first\n"
+        "      second\n"
+        "\n"
+        "# after the block\n"
+        "after: 1\n"
+    ),
+    "absent_with_tail_and_end_marker": ("project: alpha\n\n# trailing note\n...\n"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_SPAN_POSITIONS))
+def test_an_edit_is_contained_wherever_the_block_sits(name: str) -> None:
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_bytes
+
+    base = _SPAN_POSITIONS[name].encode("utf-8")
+    out, _, _ = build_new_yaml_bytes(base, _cand(max_retries=9))
+    assert b"max_retries: 9" in out
+
+
+def test_the_tail_comment_after_the_block_is_outside_the_span() -> None:
+    """It is the thing #113 was about, so it is protected by Check B rather
+    than merely produced correctly."""
+    from dispatcher.core.spec_runner_config_actions import build_new_yaml_bytes
+
+    base = ("spec_runner:\n  max_retries: 5\n\n# col-0 standalone\nafter: 1\n").encode(
+        "utf-8"
+    )
+    out, _, _ = build_new_yaml_bytes(base, _cand(max_retries=9, review_model="rm"))
+    text = out.decode("utf-8")
+    assert "review_model: rm" in text
+    assert text.index("review_model: rm") < text.index("# col-0 standalone")
+    assert text.index("# col-0 standalone") < text.index("after: 1")
