@@ -82,11 +82,11 @@ reads = [
     "spec-runner/spec/.executor-state.db",
     "spec-runner/executor.config.yaml",
     "spec-runner/logs",
-    # governance-collector (core/governance.py) reads
-    # <repo>/.steward/gate_verdicts.jsonl for EVERY observed repo; only
-    # steward produces the file today. When another repo starts emitting
-    # verdicts, add its path here — the declaration must track the real
-    # read surface (WS-005 intended-graph I-02).
+    # governance-collector (core/governance.py) ATTEMPTS to read
+    # <repo>/.steward/gate_verdicts.jsonl for every observed repo, but the
+    # declared surface lists only repos that actually emit the file —
+    # today that is steward alone. When another repo starts emitting
+    # verdicts, add its path here (WS-005 intended-graph I-02).
     "steward/.steward/gate_verdicts.jsonl",
 ]
 
