@@ -229,7 +229,7 @@
       достигает — не блокер, а долг: любое будущее место, которое начнёт
       читать вторую компоненту кортежа, унаследует утечку молча. Код здесь не
       трогаем — вне диффа этой задачи.
-- [ ] `UnsafeEditError`'а traceback всё ещё несёт кадры с секретом — принятый остаток, не баг @owner:andrei @id:exception-traceback-frame-locals
+- [ ] `UnsafeEditError`'а traceback всё ещё несёт кадры с секретом — принятый остаток, не баг @owner:andrei @id:exception-traceback-frame-locals @trigger:"в dispatcher появляется traceback-форматтер/репортер с locals capture (Sentry include_local_variables, better-exceptions, rich) или иной потребитель полного traceback"
       Измерено при закрытии `@id:render-outside-block-fail-closed`. Гарантия
       «ни одна ссылка на оригинал не переживает» (Finding из ревью Task 2,
       round 1+2) закрывает сам объект исключения — сообщение, `args`,
@@ -253,6 +253,18 @@
       (или маскировать `project.yaml`-содержимое до того, как оно попадёт в
       кадр), иначе гарантия окажется тише, чем заявлено в
       `docs/superpowers/specs/2026-08-03-render-outside-block-fail-closed-design.md`.
+      Заготовка на срабатывание триггера. Первичная защита — прежняя (см. выше):
+      конфиг репортера обязан выключать захват локалей кадров на этом пути.
+      Кандидат-механизм вдобавок (гипотеза, проверить при срабатывании):
+      зачистка traceback на внешней границе — в финальном catch, после
+      завершения распространения (`traceback.clear_frames` /
+      `__traceback__ = None`). Зачистка в choke point `_build_new_yaml_bytes`
+      канал `contextlib.__exit__` НЕ закрывает — этот кадр добавляется в
+      traceback позже, при распространении вверх; `raise from None` тоже не
+      решение — implicit chaining происходит в момент raise (измерено при
+      закрытии `@id:render-outside-block-fail-closed`). Истина — acceptance:
+      canary-секрет в фикстурном `project.yaml`, тест обходит tb-кадры и
+      `f_locals` и не находит канарейку — обход ловит оба измеренных канала.
 - [ ] README + иконка для `vscode-ext/` @owner:andrei @id:vscode-ext-readme
       Страница расширения показывает «No README available».
 - [x] `detail()` (`dispatcher/server/static/index.html`) брал `repoDir` из display-имени коллектора и кормил им четыре directory-keyed места — PR #111 @owner:andrei @id:spec-runner-config-dir-name-mismatch
