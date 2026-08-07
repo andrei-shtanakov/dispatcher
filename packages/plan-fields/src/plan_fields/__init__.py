@@ -1,6 +1,6 @@
 """plan-fields — offline parser + validator for the plan-fields v2 contract.
 
-Standalone by design: no import of the dispatcher application. The v1 contract
+Standalone by design: no import of the dispatcher application. The v2 contract
 (schema, registries, fixtures) is vendored under ``contract/`` (pinned copy).
 """
 
