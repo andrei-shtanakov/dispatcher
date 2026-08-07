@@ -126,6 +126,12 @@ def parse_todo(
         parsed.append((node, item.values("blocked_by")))
         if owner_diag is not None:
             severity = "info" if owner_diag == "PF-OWNER-LEGACY-ROLE" else "warning"
+            if owner is None:
+                message = f"{node_id} has no @owner"
+            elif owner_diag == "PF-OWNER-LEGACY-ROLE":
+                message = f"@owner {owner} is a transitional DEC-007 role-slug"
+            else:
+                message = f"@owner '{owner}' is not a canonical owner principal"
             diagnostics.append(
                 _diag(
                     owner_diag,
@@ -133,12 +139,7 @@ def parse_todo(
                     node_id,
                     None,
                     None,
-                    f"{node_id} has "
-                    + (
-                        "no @owner"
-                        if owner is None
-                        else f"non-canonical @owner '{owner}'"
-                    ),
+                    message,
                     prov,
                 )
             )
