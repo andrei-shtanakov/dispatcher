@@ -31,7 +31,7 @@ from dispatcher.core.contracts import check_contracts
 from dispatcher.core.models import ContractStatus
 from dispatcher.core.roadmap import contract_sync_by_name
 
-_CANON_REL = "authored/contracts/plan-fields/v1"
+_CANON_REL = "authored/contracts/plan-fields/v2"
 _VENDORED_REL = "packages/plan-fields/src/plan_fields/contract"
 # A synthetic pin for the fabricated copies below — deliberately NOT the
 # commit the real copy is vendored from (see PINNED.txt). These tests build
@@ -53,7 +53,7 @@ def _manifest_for(files: dict[str, str]) -> dict:
         h.update(f"{e['path']}\0{e['sha256']}\n".encode())
     return {
         "contract": "plan-fields",
-        "contract_version": 1,
+        "contract_version": 2,
         "tree_sha256": h.hexdigest(),
         "surface": surface,
     }
@@ -542,7 +542,7 @@ class TestManifestIdentity:
     def test_a_manifest_at_another_contract_version_is_refused(
         self, tmp_path: Path
     ) -> None:
-        self._with_manifest(tmp_path, contract_version=2)
+        self._with_manifest(tmp_path, contract_version=1)
         row = _integrity(check_contracts(_projects(tmp_path, with_vault=False)))
         assert row.in_sync is False
         assert "version" in (row.detail or "")
