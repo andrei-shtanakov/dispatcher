@@ -19,9 +19,12 @@
 - Здесь — **только пункты уровня команды и кросс-проектные**. Микрошаги реализации
   живут в `spec/tasks.md` (TASK-NNN) и `docs/superpowers/plans/`; дайджест их намеренно
   не читает.
-- Поля пункта — инлайн-теги `@owner:` / `@blocked_by:<repo>#<slug>` / `@trigger:"…"`
-  (формат — §3 handoff-ноты 2026-07-26). Все три опциональны: пустое поле означает
-  «неизвестно» и само измеримо — это честнее выдуманного владельца или триггера.
+- Поля пункта — инлайн-теги `@owner:<principal>` / `@blocked_by:<reference>` /
+  `@trigger:"…"`. Канонические владельцы: `github:<login>`,
+  `github-team:<org>/<team>`, `repo:<manifest-key>` или литерал `TBD`.
+  Отсутствующий `@owner` означает `missing`, а `@owner:TBD` — явно отложенное
+  назначение; это разные измеримые состояния. Каноническая ссылка блокера —
+  `todo://<repo>/<id>`; legacy `<repo>#<slug>` принимается только переходно.
 - `@id:<node-id>` — канонический идентификатор пункта (ADR-ECO-005 PF-2B): строчная
   грамматика `[a-z0-9][a-z0-9._-]{0,63}`, из него строится URI `todo://dispatcher/<id>`.
   Переходно `@blocked_by` принимает и legacy `<repo>#<slug>`, и канонический
@@ -77,13 +80,13 @@
 
 ## Governance-плоскость (ADR-ECO-004)
 
-- [ ] Governance view: рендерить `declared vs observed` enforcement-зрелость правил (ADR-ECO-004 D3, Batch 2 §6) @owner:andrei @blocked_by:prograph-vault#governance-observed-derived @trigger:"в prograph-vault появился derived/governance/ с observed-зрелостью" @id:governance-declared-vs-observed
+- [ ] Governance view: рендерить `declared vs observed` enforcement-зрелость правил (ADR-ECO-004 D3, Batch 2 §6) @owner:github:andrei-shtanakov @blocked_by:prograph-vault#governance-observed-derived @trigger:"в prograph-vault появился derived/governance/ с observed-зрелостью" @id:governance-declared-vs-observed
       Declared-сторона готова: `../prograph-vault/authored/registry/governance.yaml`
       (v1, 2026-07-18) и сам файл называет ожидаемый путь observed —
       `derived/governance/`, который на 2026-07-26 не существует. Сравнивать не с чем,
       поэтому пункт заблокирован, а не «в работе»: dispatcher здесь рендерер, не
       источник, и читать «на будущее» нечего.
-- [x] WS-005 WS-B: вендор `gate-verdicts/v1` + governance-collector (6 состояний бандла) — PR #107 @owner:andrei @id:ws005-governance-collector
+- [x] WS-005 WS-B: вендор `gate-verdicts/v1` + governance-collector (6 состояний бандла) — PR #107 @owner:github:andrei-shtanakov @id:ws005-governance-collector
       Принятие inbox-issue #106 от steward (ADR-ECO-006). Канон:
       `steward/contracts/gate-verdicts/v1` @ `4836345`; копия —
       `contracts/steward-gate-verdicts/v1/` с раздельными copy-integrity
@@ -91,7 +94,7 @@
       `<repo>/.steward/gate_verdicts.jsonl` + git-факты и только
       классифицирует (ARCH-C1/C3): pass | blocked | no-data | unreadable |
       stale | unresolvable. Панель — WS-C, отдельная inbox-issue после.
-- [x] WS-005 WS-C: governance-панель — read-only UI поверх collect_governance — PR #109 @owner:andrei @id:ws005-governance-panel
+- [x] WS-005 WS-C: governance-панель — read-only UI поверх collect_governance — PR #109 @owner:github:andrei-shtanakov @id:ws005-governance-panel
       Принятие inbox-issue #108 (ADR-ECO-006, from: steward). Панель потребляет
       только read model `dispatcher/core/governance.py` (ARCH-C4 — файл
       `.steward/gate_verdicts.jsonl` напрямую не читает), маршруты — только GET
@@ -102,37 +105,37 @@
 
 ## Кросс-репные контракты
 
-- [ ] `contracts/executor-config/v0-provisional`: довести до реального потребителя либо явно пометить контракт отложенным @owner:andrei @blocked_by:todo://maestro/specrunnerconfig-passthrough @trigger:"Maestro начал читать contracts/executor-config" @id:executor-config-consumer
+- [ ] `contracts/executor-config/v0-provisional`: довести до реального потребителя либо явно пометить контракт отложенным @owner:github:andrei-shtanakov @blocked_by:todo://maestro/specrunnerconfig-passthrough @trigger:"Maestro начал читать contracts/executor-config" @id:executor-config-consumer
       Статус-обзор экосистемы 07-24 назвал это watch-item: схема запинена (DESIGN-301),
       но единственная ссылка в экосистеме — план-док Maestro
       `2026-07-17-specrunnerconfig-passthrough.md`, потребителя нет. Риск — зомби-пин,
       который «застыл» без интеграции. Наша часть — решение: ждать потребителя или
       написать в README контракта, что он отложен.
-- [ ] Заморозить схемы MCP-тулзов (вендоринг пиненой копией по дисциплине ADR-ECO-003) @owner:andrei @trigger:"robin или Maestro начали вызывать dispatcher mcp" @id:freeze-mcp-tool-schemas
+- [ ] Заморозить схемы MCP-тулзов (вендоринг пиненой копией по дисциплине ADR-ECO-003) @owner:github:andrei-shtanakov @trigger:"robin или Maestro начали вызывать dispatcher mcp" @id:freeze-mcp-tool-schemas
       Схемы 15 тулзов сознательно UNSTABLE: фиксировать контракт до первого потребителя
       значит заморозить угаданную форму.
-- [x] Вендорить `contracts/actions/v1`, когда github-checker его опубликует — PR #97 @owner:andrei @blocked_by:github-checker#contracts-actions-v1 @trigger:"github-checker опубликовал контракт действий" @id:vendor-contracts-actions-v1
+- [x] Вендорить `contracts/actions/v1`, когда github-checker его опубликует — PR #97 @owner:github:andrei-shtanakov @blocked_by:github-checker#contracts-actions-v1 @trigger:"github-checker опубликовал контракт действий" @id:vendor-contracts-actions-v1
       Пиненая копия из `github-checker@ef03fef` (36 файлов поверхности: схема, README,
       34 фикстуры; per-file sha256 + `tree_sha256` в `manifest.json`), извлечена из
       git object database. Единственный вход — `ingest(raw, *, returncode)`; сошлись
       все три parse-path'а. Контракт действий больше не «поведение бинаря»:
       absent/`null`/`false` держатся через `model_fields_set`, а не через дефолты.
-- [x] Ре-вендоринг actions/v1 — воспроизводимая процедура: runbook + скрипт с одним входом — PR #102 @owner:andrei @id:revendor-actions-runbook
+- [x] Ре-вендоринг actions/v1 — воспроизводимая процедура: runbook + скрипт с одним входом — PR #102 @owner:github:andrei-shtanakov @id:revendor-actions-runbook
       Процедура жила только в историческом плане `2026-07-31-vendor-actions-v1.md`,
       а пин правился руками в трёх местах: согласованная правка всех трёх
       оставляла сьют зелёным, заверяя новые байты старым коммитом.
 
 ## Хвосты качества
 
-- [x] Прогнать live-смоук write-path с реальным `github-checker` на PATH — PR #98 @owner:andrei @id:live-smoke-write-path
+- [x] Прогнать live-смоук write-path с реальным `github-checker` на PATH — PR #98 @owner:github:andrei-shtanakov @id:live-smoke-write-path
       Выполнено 2026-08-01 локально: `test_write_path_live_smoke_real_binary` прошёл на
       `dispatcher@b571cba` против бинаря, установленного из `github-checker@ef03fef`
       (тот же коммит, на который запинен вендоренный контракт). Сюита — 650 passed,
       0 skipped. Отдельно от этого пункта CI-сторона закрыта в
       `@id:design-405-level-3-never-runs`.
-- [ ] Route-level тест сериализации `ok=True` для четырёх additive-полей `ActionOutcome` @owner:andrei @id:action-outcome-serialization-test
+- [ ] Route-level тест сериализации `ok=True` для четырёх additive-полей `ActionOutcome` @owner:github:andrei-shtanakov @id:action-outcome-serialization-test
       Принятый follow-up PR #40.
-- [x] ruamel: standalone-комментарий сразу после блока `spec_runner` теряется при ре-рендере `project.yaml` — PR #113 @owner:andrei @id:ruamel-standalone-comment-loss
+- [x] ruamel: standalone-комментарий сразу после блока `spec_runner` теряется при ре-рендере `project.yaml` — PR #113 @owner:github:andrei-shtanakov @id:ruamel-standalone-comment-loss
       Закрыто 2026-08-03. Формулировка пункта занижала масштаб: одна строка
       (`doc["spec_runner"] = new_block`, свежий plain dict поверх загруженной
       `CommentedMap`) теряла **три** вещи — комментарии в блоке и после него,
@@ -156,7 +159,7 @@
       гейт, отказывающийся рендерить, если меняется хоть строка вне блока
       `spec_runner:`; это превращает тихий шум в отказ и требует продуктового
       решения — см. `@id:render-outside-block-fail-closed`.
-- [x] Fail-closed гейт: отказываться рендерить `project.yaml`, если правка меняет хоть строку вне блока `spec_runner:` — PR #114 @owner:andrei @id:render-outside-block-fail-closed
+- [x] Fail-closed гейт: отказываться рендерить `project.yaml`, если правка меняет хоть строку вне блока `spec_runner:` — PR #114 @owner:github:andrei-shtanakov @id:render-outside-block-fail-closed
       Поднято при закрытии `@id:ruamel-standalone-comment-loss` (PR #113). Сейчас
       совпадение стиля с файлом — измеренное, но всё же best-effort: файл, чей
       стиль ruamel не воспроизводит, тихо получает шум в чужом PR. Гейт делает
@@ -215,7 +218,7 @@
       топ-левел позиции (только через `<<: *anchor`), потому что
       безспановый fallback Check B там уже не слабее для реальной
       правки, а Check C иначе отказал бы и no-op'у, ничего не защищая.
-- [ ] Read-путь `project.yaml` эхом печатает PyYAML-ошибку с исходной строкой файла @owner:andrei @id:read-path-yaml-error-leak
+- [ ] Read-путь `project.yaml` эхом печатает PyYAML-ошибку с исходной строкой файла @owner:github:andrei-shtanakov @id:read-path-yaml-error-leak
       Найдено во время работы над `@id:render-outside-block-fail-closed`
       (write-путь). `dispatcher/core/collectors/base.py:203`
       (`read_yaml`/`SourceReadError`) кладёт `str(err)` от PyYAML в сообщение,
@@ -229,7 +232,7 @@
       достигает — не блокер, а долг: любое будущее место, которое начнёт
       читать вторую компоненту кортежа, унаследует утечку молча. Код здесь не
       трогаем — вне диффа этой задачи.
-- [ ] `UnsafeEditError`'а traceback всё ещё несёт кадры с секретом — принятый остаток, не баг @owner:andrei @id:exception-traceback-frame-locals @trigger:"в dispatcher появляется traceback-форматтер/репортер с locals capture (Sentry include_local_variables, better-exceptions, rich) или иной потребитель полного traceback"
+- [ ] `UnsafeEditError`'а traceback всё ещё несёт кадры с секретом — принятый остаток, не баг @owner:github:andrei-shtanakov @id:exception-traceback-frame-locals @trigger:"в dispatcher появляется traceback-форматтер/репортер с locals capture (Sentry include_local_variables, better-exceptions, rich) или иной потребитель полного traceback"
       Измерено при закрытии `@id:render-outside-block-fail-closed`. Гарантия
       «ни одна ссылка на оригинал не переживает» (Finding из ревью Task 2,
       round 1+2) закрывает сам объект исключения — сообщение, `args`,
@@ -265,9 +268,9 @@
       закрытии `@id:render-outside-block-fail-closed`). Истина — acceptance:
       canary-секрет в фикстурном `project.yaml`, тест обходит tb-кадры и
       `f_locals` и не находит канарейку — обход ловит оба измеренных канала.
-- [ ] README + иконка для `vscode-ext/` @owner:andrei @id:vscode-ext-readme
+- [ ] README + иконка для `vscode-ext/` @owner:github:andrei-shtanakov @id:vscode-ext-readme
       Страница расширения показывает «No README available».
-- [x] `detail()` (`dispatcher/server/static/index.html`) брал `repoDir` из display-имени коллектора и кормил им четыре directory-keyed места — PR #111 @owner:andrei @id:spec-runner-config-dir-name-mismatch
+- [x] `detail()` (`dispatcher/server/static/index.html`) брал `repoDir` из display-имени коллектора и кормил им четыре directory-keyed места — PR #111 @owner:github:andrei-shtanakov @id:spec-runner-config-dir-name-mismatch
       Найдено при зачистке merge-gate-console (2026-07-30), закрыто 2026-08-02.
       `detail(name, dirName)` уже получал оба значения — merge-gate брал `dirName`
       с тех самых пор, а блок конфига пятнадцатью строками ниже продолжал брать
@@ -283,7 +286,7 @@
       видно в сигнатурах. Отсутствующий `dirName` не откатывается к имени:
       запрос не уходит, панель скрыта. Коллектор по-прежнему отдаёт `Maestro`
       при каноне каталога `maestro` — см. `maestro-double-name` ниже.
-- [ ] Merge-gate: список открытых PR по репо (номер + заголовок), чтобы `#merge-gate` открывался кликом, а не ручным вводом номера @owner:andrei @id:merge-gate-pr-listing
+- [ ] Merge-gate: список открытых PR по репо (номер + заголовок), чтобы `#merge-gate` открывался кликом, а не ручным вводом номера @owner:github:andrei-shtanakov @id:merge-gate-pr-listing
       Task 4 (2026-07-30) исходно планировала клик по существующему PR-рендерингу
       в карточке проекта — такого рендеринга нет: read-модель несёт GitHub-состояние
       только как непрозрачный `github: dict[str, Any]` (`core/snapshot_contract.py`),
@@ -291,7 +294,7 @@
       этого — ручной ввод номера PR рядом с панелью project-detail (аддитивно, без
       нового backend). Реальный список требует поля read-модели + endpoint + UI;
       см. `docs/superpowers/plans/2026-07-30-merge-gate-console.md` Task 4 Step 3.
-- [x] `ActionRunner._invoke` ловит вокруг `subprocess.run` только `FileNotFoundError`/`TimeoutExpired`/`JSONDecodeError`/`ValidationError` — гарантия «аудит-строка на каждую попытку» пробивается ещё двумя исключениями — PR #96 (фикс) + #100 (гарантия как свойство) @owner:andrei @id:actions-envelope-catch-too-narrow
+- [x] `ActionRunner._invoke` ловит вокруг `subprocess.run` только `FileNotFoundError`/`TimeoutExpired`/`JSONDecodeError`/`ValidationError` — гарантия «аудит-строка на каждую попытку» пробивается ещё двумя исключениями — PR #96 (фикс) + #100 (гарантия как свойство) @owner:github:andrei-shtanakov @id:actions-envelope-catch-too-narrow
       Найдено same-class-свипом финального ревью merge-gate-console (2026-07-30,
       S-1, pre-existing, Minor). `subprocess.run(..., text=True)` декодирует строго,
       поэтому продюсер, который **реально отработал** и написал в stdout не-UTF-8
@@ -329,7 +332,7 @@
       выходам `_invoke` (включая таймаут — единственный, у кого своего теста не было)
       требует аудит-строку с фазой на каждом. Мутации проверены поимённо.
 
-- [ ] Вёрстка экранов (`<style>` в `<head>` у `index.html`) вне досягаемости Node-харнесса: удаление всего блока оставляет сьют зелёным @owner:andrei @id:web-harness-does-not-see-css
+- [ ] Вёрстка экранов (`<style>` в `<head>` у `index.html`) вне досягаемости Node-харнесса: удаление всего блока оставляет сьют зелёным @owner:github:andrei-shtanakov @id:web-harness-does-not-see-css
       Найдено финальным ревью ветки task-authoring (2026-07-31, coverage-gap,
       не блокер). Харнесс исполняет `<script>` из `<body>` над распарсенной
       разметкой и проверяет поведение, а не внешний вид; CSS он не применяет и
@@ -337,16 +340,15 @@
       «экран не разъехался» сьют не говорит ничего, и говорить не начнёт без
       настоящего браузера (Playwright + скриншот-диффы). Записано, чтобы зелёный
       прогон не читался как «вёрстка проверена».
-- [ ] `tests/web/dom.js` — рукописная DOM-заглушка для task-authoring Node-харнесса; `jsdom` предпочтительнее, но отсутствует осознанно @owner:andrei @id:web-tests-hand-rolled-dom
+- [ ] `tests/web/dom.js` — рукописная DOM-заглушка для task-authoring Node-харнесса; `jsdom` предпочтительнее, но отсутствует осознанно @owner:github:andrei-shtanakov @id:web-tests-hand-rolled-dom
       Python-сьют не ставит npm-пакеты (`uv`-only дисциплина этого репо), поэтому
       `jsdom` как test-only devDependency потребовал бы отдельного `npm install`
       шага в CI и локально — цена, которую задача не оправдала. Компромисс держит
       харнесс зависимым только от `node` на PATH; если объём/сложность DOM-стабов
       вырастет, `jsdom` стоит пересмотреть.
 
-- [x] `DESIGN-405` уровень 3 (`test_write_path_live_smoke_real_binary`) теперь
+- [x] `DESIGN-405` уровень 3 (`test_write_path_live_smoke_real_binary`) теперь @owner:github:andrei-shtanakov @id:design-405-level-3-never-runs
       выполняется в CI: `skipif` снят, бинарь ставится на пине — PR #98
-      @owner:andrei @id:design-405-level-3-never-runs
       Закрыто 2026-08-01 по факту CI, а не по локальному прогону: в обоих джобах
       `test (3.12)` и `test (3.13)` в логе есть
       `installing github-checker @ ef03fefcded37676b19ef1c6f88b956a09a26d3f`, затем
@@ -361,7 +363,7 @@
       `test_pf6_drift.py::test_real_vendored_copy_is_in_sync_with_canon` скипается
       в CI, потому что соседний canon-репо там не чекаутится — закрыто ниже.
 
-- [x] PF-6: развести две гарантии, сидевшие в одном `in_sync` — PR #99 @owner:andrei @id:pf6-split-integrity-and-drift
+- [x] PF-6: развести две гарантии, сидевшие в одном `in_sync` — PR #99 @owner:github:andrei-shtanakov @id:pf6-split-integrity-and-drift
       Тест скипался в CI не по недосмотру: он сравнивал завендоренную копию с
       **живым рабочим деревом** соседа, то есть отвечал «апстрим не уехал?», а
       назывался и использовался как «пин цел». Чекаут соседа стоял на `03affef`,
@@ -383,19 +385,19 @@
 
 ## Наблюдения (работу не начинаем, пока не сработает триггер)
 
-- [ ] Пин `fastmcp<3` и три отклонённых GHSA (OpenAPI SSRF, OAuth proxy, Gemini-CLI injection) — переоценить @owner:andrei @trigger:"бамп fastmcp до 3.x" @id:fastmcp-pin-reeval
+- [ ] Пин `fastmcp<3` и три отклонённых GHSA (OpenAPI SSRF, OAuth proxy, Gemini-CLI injection) — переоценить @owner:github:andrei-shtanakov @trigger:"бамп fastmcp до 3.x" @id:fastmcp-pin-reeval
       Отклонены обоснованно: путь только stdio, без OpenAPI/OAuth/HTTP. Патчи есть лишь
       в 3.2.0, а пин `<3` держит мажор общим с Maestro.
-- [ ] Двойное имя Maestro: коллектор отдаёт `"Maestro"`, канон репо — `maestro` @owner:andrei @trigger:"каталог Maestro/ переименован в maestro/ на диске" @id:maestro-double-name
+- [ ] Двойное имя Maestro: коллектор отдаёт `"Maestro"`, канон репо — `maestro` @owner:github:andrei-shtanakov @trigger:"каталог Maestro/ переименован в maestro/ на диске" @id:maestro-double-name
       Детект коллектора content-based (`maestro/` + `pyproject.toml`), поэтому
       переименование каталога discovery не сломает — но в Sync-вкладке repo придёт под
       именем каталога, и два пространства имён разойдутся. Тот же класс, что discovery-имя
       vs service-id у proctor: слепое переименование запрещено, нужна осознанная
       нормализация.
-- [ ] Handoff в arbiter по ошибке `agent_id` в `report_benchmark` @owner:andrei @id:arbiter-agent-id-handoff
+- [ ] Handoff в arbiter по ошибке `agent_id` в `report_benchmark` @owner:github:andrei-shtanakov @id:arbiter-agent-id-handoff
       Дефект соседа, который dispatcher только показывает; наша часть — написать
       handoff/issue, править чужой репо нельзя.
-- [x] Для `contracts/github-checker-actions/v1` нет drift-сигнала: о том, что продюсер уехал, узнаём только вручную — PR #110 @owner:andrei @id:actions-v1-no-drift-signal
+- [x] Для `contracts/github-checker-actions/v1` нет drift-сигнала: о том, что продюсер уехал, узнаём только вручную — PR #110 @owner:github:andrei-shtanakov @id:actions-v1-no-drift-signal
       У plan-fields две гарантии — offline integrity в PR-гейте и scheduled
       `upstream-drift.yml`; у actions/v1 была только первая, и она по построению
       останется зелёной сколько угодно долго после того, как канон уехал.
