@@ -16,12 +16,15 @@ from typing import Any
 from plan_fields.canonical import canonicalize
 from plan_fields.scrape import _canonical_title, scrape_items
 
-CONTRACT_VERSION = 1
-SCHEMA_VERSION = 1
+CONTRACT_VERSION = 2
+SCHEMA_VERSION = 2
 
 TODO_URI_RE = re.compile(r"^todo://([a-z0-9][a-z0-9-]*)/([a-z0-9][a-z0-9._-]{0,63})$")
 LEGACY_RE = re.compile(r"^([a-z0-9][a-z0-9-]*)#(\S+)$")
 ROLE_RE = re.compile(r"^[a-z][a-z0-9-]{1,31}$")
+GITHUB_RE = re.compile(r"^github:([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)$")
+TEAM_RE = re.compile(r"^github-team:([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)$")
+REPO_OWNER_RE = re.compile(r"^repo:([a-z0-9][a-z0-9-]*)$")
 
 FRESHNESS = {
     "source-ref": "source_ref",
@@ -44,6 +47,19 @@ def _freshness(raw: dict[str, str]) -> dict[str, Any] | None:
     if not any(k in raw for k in FRESHNESS):
         return None
     return {field: raw.get(tag) for tag, field in FRESHNESS.items()}
+
+
+def _owner(value: str | None) -> tuple[dict[str, Any] | None, str | None, str | None]:
+    if value is None:
+        return None, None, "PF-OWNER-MISSING"
+    for pattern, kind in ((GITHUB_RE, "github_user"), (TEAM_RE, "github_team"), (REPO_OWNER_RE, "repository")):
+        if match := pattern.fullmatch(value):
+            return {"kind": kind, "id": match.group(1), "raw": value}, None, None
+    if value == "TBD":
+        return {"kind": "tbd", "id": None, "raw": value}, None, None
+    if ROLE_RE.fullmatch(value):
+        return None, value, "PF-OWNER-LEGACY-ROLE"
+    return None, None, "PF-OWNER-GRAMMAR"
 
 
 def parse_todo(
@@ -84,6 +100,7 @@ def parse_todo(
             continue
         node_id = f"todo://{repo}/{item_id}"
         owner = raw.get("owner")
+        owner_ref, owner_role, owner_diag = _owner(owner)
         node = {
             "node_id": node_id,
             "kind": "operational_item",
@@ -91,7 +108,8 @@ def parse_todo(
             "repo": repo,
             "title": title,
             "declared_status": status,
-            "owner_role": owner,
+            "owner_role": owner_role,
+            "owner_ref": owner_ref,
             "trigger": raw.get("trigger"),
             "freshness": _freshness(raw),
             "tombstone": status == "closed",
@@ -102,27 +120,16 @@ def parse_todo(
         # every @blocked_by on the item, in source order — a key can repeat, and
         # each blocker gets its own reference below (never collapsed to one)
         parsed.append((node, item.values("blocked_by")))
-        if owner is None:
+        if owner_diag is not None:
+            severity = "info" if owner_diag == "PF-OWNER-LEGACY-ROLE" else "warning"
             diagnostics.append(
                 _diag(
-                    "PF-OWNER-MISSING",
-                    "warning",
+                    owner_diag,
+                    severity,
                     node_id,
                     None,
                     None,
-                    f"{node_id} has no @owner",
-                    prov,
-                )
-            )
-        elif not ROLE_RE.match(owner):
-            diagnostics.append(
-                _diag(
-                    "PF-OWNER-GRAMMAR",
-                    "warning",
-                    node_id,
-                    None,
-                    None,
-                    f"@owner '{owner}' is not a role-slug",
+                    f"{node_id} has " + ("no @owner" if owner is None else f"non-canonical @owner '{owner}'"),
                     prov,
                 )
             )

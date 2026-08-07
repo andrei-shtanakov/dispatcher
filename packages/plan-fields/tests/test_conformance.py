@@ -10,14 +10,14 @@ def test_all_fixtures_conform():
     results = run_conformance()
     failures = [f"{r.name}: {r.detail}" for r in results if not r.ok]
     assert not failures, "non-conforming fixtures:\n" + "\n".join(failures)
-    # 6 simple pairs + 1 history bundle
-    assert len(results) == 7
+    # 7 simple pairs + 1 history bundle
+    assert len(results) == 8
 
 
 def test_schema_is_valid():
     # load_schema raising or a malformed schema would surface here
     schema = load_schema()
-    assert schema["$id"] == "urn:ecosystem:plan-fields:v1:schema"
+    assert schema["$id"] == "urn:ecosystem:plan-fields:v2:schema"
 
 
 def test_parser_output_validates_against_schema():

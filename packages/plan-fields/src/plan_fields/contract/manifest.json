@@ -1,25 +1,25 @@
 {
   "contract": "plan-fields",
-  "contract_version": 1,
-  "schema_id": "urn:ecosystem:plan-fields:v1:schema",
+  "contract_version": 2,
+  "schema_id": "urn:ecosystem:plan-fields:v2:schema",
   "surface_note": "sha256 of every frozen contract file consumers vendor; excludes drift-control meta (manifest.json, drift-control.md) and vendor-only PINNED.txt. See drift-control.md.",
-  "tree_sha256": "5d606dbd3a610e471e40b54a0edbccb84e9e84b081d451853e8dcaae12779770",
+  "tree_sha256": "e98073e14e1de5000981550013396d5f66208301841eb659b4ebff624a871b6f",
   "surface": [
     {
       "path": "README.md",
-      "sha256": "80b8ea22761811c564409e02b33aecc030769345edcb80cc3e02885c1f18a55f"
+      "sha256": "596f0210f2e3acb5c0d22278789836f61a49fb7744ceb086019aae9fa81330f2"
     },
     {
       "path": "diagnostics.yaml",
-      "sha256": "25b6e94c1b73afec961c98af22375c99ffab06ea2a4036bd6d107adf5fbcaf2b"
+      "sha256": "360e8a7cea6eaf3550cfd2da663da751e5590126496747cee4fffbe884853e60"
     },
     {
       "path": "fixtures/README.md",
-      "sha256": "d48acc37b852b4cf313922191d419bd2d04e282ba0359ae73e7ae0607944d54c"
+      "sha256": "9324cc063bb95c1ff5b3bd33a6f005dcc2136676d57509d59c256227cde2ea0e"
     },
     {
       "path": "fixtures/invalid/ambiguous-legacy-ref.expected.json",
-      "sha256": "38ca6e792da5a0b29463940c74cae9c52ebe401852d0752bb236c14af0ff5c5a"
+      "sha256": "80ea01794a5c3a61104c8c982c6d66584a2b3181d652ed33a4b5c6fffa16e69a"
     },
     {
       "path": "fixtures/invalid/ambiguous-legacy-ref.md",
@@ -27,7 +27,7 @@
     },
     {
       "path": "fixtures/invalid/dangling-id.expected.json",
-      "sha256": "281e5c7e3f8a5e2b8b3baf07b116098eb211f98e56b7ee525a39a85525b8fb94"
+      "sha256": "efd05168cd8595caf296dfdc923d2135f452b6692850c8260e3cda2ae0da1a02"
     },
     {
       "path": "fixtures/invalid/dangling-id.md",
@@ -35,7 +35,7 @@
     },
     {
       "path": "fixtures/invalid/duplicate-id.expected.json",
-      "sha256": "f63b439ed9f721b23f0275dda96639382af6fa991d1794b24c9ebe534684566e"
+      "sha256": "33d0608555dc411f45ff02167f3a07fa639d102076de7990d53c009d864f6e83"
     },
     {
       "path": "fixtures/invalid/duplicate-id.md",
@@ -43,7 +43,7 @@
     },
     {
       "path": "fixtures/invalid/missing-id.expected.json",
-      "sha256": "239a36f0b0aee80112b9954e6ddf5720083749e3e62a3c79af58811877142320"
+      "sha256": "8d68d6debdfaf9871bc2db8ce208f97bb0fae4f02225790d5c29f38c5aab8c5e"
     },
     {
       "path": "fixtures/invalid/missing-id.md",
@@ -59,7 +59,7 @@
     },
     {
       "path": "fixtures/invalid/reused-id/expected.json",
-      "sha256": "ad77fc53875467e6e0c529d6ce1afab48af97a382187a5d7bb3e031d1d4f3e0d"
+      "sha256": "c6d83a81cf9c501bd41a58e7514100d408bd2fbd003c5b3af18cc32963142a55"
     },
     {
       "path": "fixtures/invalid/reused-id/previous.md",
@@ -67,7 +67,7 @@
     },
     {
       "path": "fixtures/valid/basic.expected.json",
-      "sha256": "c036c0aefc83ce690269536e65e681f76146a73411a6c41578f3258ab9767460"
+      "sha256": "bd76dec2ffe4e2a538a21d2f635dd25d74e3f5763b2807fff54e1bf9b29790d4"
     },
     {
       "path": "fixtures/valid/basic.md",
@@ -75,19 +75,27 @@
     },
     {
       "path": "fixtures/valid/tombstone.expected.json",
-      "sha256": "3dcbf4a5170ae65cd3fe317285a2b370d2d0811754ae023995bf25e6a1c77398"
+      "sha256": "5574c4bec3dd270db90edbbaf570472c05fe07bbcaf3308b5aae863cad9486f4"
     },
     {
       "path": "fixtures/valid/tombstone.md",
       "sha256": "92712f8a106284923893c76d344c03ab1ce49c25090d1a95c6c7bfd0f5ed5dae"
     },
     {
+      "path": "fixtures/valid/typed-owner.expected.json",
+      "sha256": "ef2e2ce5488618c85de0f3bc00ea704a84bca6cd7bbffaf1aee33068e04b5303"
+    },
+    {
+      "path": "fixtures/valid/typed-owner.md",
+      "sha256": "4b394cfe1d6b08f9b967beba5cc7c4a7c8c8f37365d8a7bfe06ec67c3a662915"
+    },
+    {
       "path": "rules.yaml",
-      "sha256": "3455fc0a80f50d7e69ddb944252a63be2c628fc90761ef5c79222f1d0652cde7"
+      "sha256": "8665a64b0dd2164566b9ba2c64031b894c11613e5d7d74181d3d5cde3a8b0127"
     },
     {
       "path": "schema.json",
-      "sha256": "1d8007205334b69d8414595bf4569736edbb7db71853b41684c29c0647dbca1f"
+      "sha256": "968811eb9d86edabd0ac01c53534d412027132214a5a72ecf5988508cfb70669"
     }
   ]
 }

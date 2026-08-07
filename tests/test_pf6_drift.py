@@ -127,7 +127,7 @@ def _projects(tmp_path: Path, *, with_vault: bool = True) -> dict[str, Path]:
 
 
 def _row(results: list[ContractStatus], kind: str) -> ContractStatus:
-    return next(r for r in results if r.name == "plan-fields-v1" and r.kind == kind)
+    return next(r for r in results if r.name == "plan-fields-v2" and r.kind == kind)
 
 
 def _integrity(results: list[ContractStatus]) -> ContractStatus:
@@ -330,14 +330,14 @@ class TestUpstreamDrift:
 def test_governance_folds_integrity_only_not_the_observation(
     tmp_path: Path,
 ) -> None:
-    """Roadmap evidence for plan-fields-v1 must not go unknown just because
+    """Roadmap evidence for plan-fields-v2 must not go unknown just because
     no canon checkout was handed over — that would make every ordinary run
     report less than it knows."""
     _good_copy(tmp_path)
     results = check_contracts(_projects(tmp_path, with_vault=False))
     assert _drift(results).in_sync is None  # the observation is unknown
     assert (
-        contract_sync_by_name(results, kind="vendored_integrity")["plan-fields-v1"]
+        contract_sync_by_name(results, kind="vendored_integrity")["plan-fields-v2"]
         is True
     )
 
@@ -348,7 +348,7 @@ def test_governance_reports_drift_when_integrity_is_broken(tmp_path: Path) -> No
     (vdir / "schema.json").write_text('{"x":2}')
     results = check_contracts(_projects(tmp_path, with_vault=False))
     assert (
-        contract_sync_by_name(results, kind="vendored_integrity")["plan-fields-v1"]
+        contract_sync_by_name(results, kind="vendored_integrity")["plan-fields-v2"]
         is False
     )
 
@@ -500,11 +500,11 @@ def test_the_manifest_shape_and_its_exclusion_note_are_pinned() -> None:
         "surface",
     }
     assert manifest["contract"] == "plan-fields"
-    assert manifest["contract_version"] == 1
+    assert manifest["contract_version"] == 2
     # the normative surface must not have moved: this slice re-vendors meta
     # only, and a changed fingerprint here means the scope slipped
     assert manifest["tree_sha256"] == (
-        "5d606dbd3a610e471e40b54a0edbccb84e9e84b081d451853e8dcaae12779770"
+        "e98073e14e1de5000981550013396d5f66208301841eb659b4ebff624a871b6f"
     )
     note = manifest["surface_note"]
     for excluded in ("manifest.json", "drift-control.md", "PINNED.txt"):

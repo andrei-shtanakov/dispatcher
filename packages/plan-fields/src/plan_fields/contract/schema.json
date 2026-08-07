@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:ecosystem:plan-fields:v1:schema",
-  "title": "plan-fields v1 — canonical parser output",
+  "$id": "urn:ecosystem:plan-fields:v2:schema",
+  "title": "plan-fields v2 — canonical parser output",
   "description": "The canonical JSON a plan-fields parser emits over a fleet snapshot. contract_version identifies the plan-fields contract; schema_version identifies this envelope shape. References carry every extracted @blocked_by (raw/legacy/unresolved); only resolved canonical todo:// -> todo:// relations appear in edges.",
   "type": "object",
   "additionalProperties": false,
@@ -15,8 +15,8 @@
     "diagnostics"
   ],
   "properties": {
-    "contract_version": { "const": 1 },
-    "schema_version": { "const": 1 },
+    "contract_version": { "const": 2 },
+    "schema_version": { "const": 2 },
     "generated_at": { "type": "string" },
     "nodes": { "type": "array", "items": { "$ref": "#/$defs/OperationalNode" } },
     "references": { "type": "array", "items": { "$ref": "#/$defs/Reference" } },
@@ -70,6 +70,19 @@
       "description": "raw parsed tag values exactly as written, so grammar diagnostics never lose the original value",
       "additionalProperties": true
     },
+    "OwnerRef": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["kind", "id", "raw"],
+      "properties": {
+        "kind": {
+          "enum": ["github_user", "github_team", "repository", "tbd"]
+        },
+        "id": { "type": ["string", "null"] },
+        "raw": { "type": "string" }
+      },
+      "description": "Typed accountable principal parsed from operational @owner; null for missing, invalid, or transitional DEC-007 role values"
+    },
     "OperationalNode": {
       "type": "object",
       "additionalProperties": false,
@@ -80,6 +93,7 @@
         "repo",
         "title",
         "declared_status",
+        "owner_ref",
         "tombstone",
         "provenance"
       ],
@@ -92,8 +106,9 @@
         "declared_status": { "enum": ["open", "closed", "unknown"] },
         "owner_role": {
           "type": ["string", "null"],
-          "description": "DEC-007 role-slug (no @), or null when absent"
+          "description": "Transitional DEC-007 role-slug (no @); null for typed owner principals"
         },
+        "owner_ref": { "$ref": "#/$defs/OwnerRef" },
         "trigger": { "type": ["string", "null"] },
         "freshness": { "$ref": "#/$defs/Freshness" },
         "tombstone": { "type": "boolean" },
@@ -148,7 +163,7 @@
       "required": ["code", "severity", "subject_uri", "related_uri", "rule_id", "message"],
       "properties": {
         "code": { "type": "string", "pattern": "^PF-[A-Z0-9-]+$" },
-        "severity": { "enum": ["warning", "error"] },
+        "severity": { "enum": ["info", "warning", "error"] },
         "subject_uri": { "type": ["string", "null"] },
         "related_uri": { "type": ["string", "null"] },
         "rule_id": { "type": ["string", "null"] },

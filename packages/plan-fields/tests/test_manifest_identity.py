@@ -544,7 +544,9 @@ def test_a_self_reference_keeps_parse_todos_verdict_exactly(tmp_path: Path) -> N
 
     alone = parse_todo(keyed_text, "demo")
     in_fleet = parse_fleet([RepoInput("demo", keyed_text)], idx)
-    assert [d["code"] for d in alone["diagnostics"]] == ["PF-LEGACY-AMBIGUOUS"]
+    assert [
+        d["code"] for d in alone["diagnostics"] if not d["code"].startswith("PF-OWNER")
+    ] == ["PF-LEGACY-AMBIGUOUS"]
     assert "more than one" in alone["diagnostics"][0]["message"]
     # the whole list, not just the code: nothing added, nothing swallowed
     assert in_fleet["diagnostics"] == alone["diagnostics"]
@@ -554,7 +556,11 @@ def test_a_self_reference_keeps_parse_todos_verdict_exactly(tmp_path: Path) -> N
         [RepoInput("demo", _MATCHER_DIVERGENCE_TODO.format(spelling="demo-checkout"))],
         idx,
     )
-    assert [d["code"] for d in aliased["diagnostics"]] == ["PF-LEGACY-AMBIGUOUS"]
+    assert [
+        d["code"]
+        for d in aliased["diagnostics"]
+        if not d["code"].startswith("PF-OWNER")
+    ] == ["PF-LEGACY-AMBIGUOUS"]
     assert (
         aliased["diagnostics"][0]["message"].replace(
             "demo-checkout#thing", "demo#thing"
@@ -578,9 +584,13 @@ def test_a_self_reference_keeps_parse_todos_verdict_exactly(tmp_path: Path) -> N
         ],
         idx,
     )
-    assert alone["diagnostics"] == []  # a unique hit is a reference, not a defect
+    assert not [
+        d for d in alone["diagnostics"] if not d["code"].startswith("PF-OWNER")
+    ]  # a unique hit is a reference, not a defect
     assert in_fleet["diagnostics"] == alone["diagnostics"]
-    assert aliased["diagnostics"] == []  # ...and the alias must not invent one
+    assert not [
+        d for d in aliased["diagnostics"] if not d["code"].startswith("PF-OWNER")
+    ]  # ...and the alias must not invent one
 
     # Same-repo UNIQUE match, both spellings: agreeing on silence is not enough
     # to prove they agree, so pin the reference each produced. This is where the

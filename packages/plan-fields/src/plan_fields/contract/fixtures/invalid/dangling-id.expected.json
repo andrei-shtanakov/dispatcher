@@ -1,42 +1,76 @@
 {
-  "contract_version": 1,
-  "schema_version": 1,
+  "contract_version": 2,
+  "diagnostics": [
+    {
+      "code": "PF-ID-DANGLING",
+      "message": "canonical reference todo://demo/ghost points to an @id absent from repo demo",
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": "todo://demo/ghost",
+      "rule_id": null,
+      "severity": "warning",
+      "subject_uri": "todo://demo/needer"
+    },
+    {
+      "code": "PF-OWNER-LEGACY-ROLE",
+      "message": "@owner tech-lead is a transitional DEC-007 role-slug",
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "info",
+      "subject_uri": "todo://demo/needer"
+    }
+  ],
+  "edges": [],
   "generated_at": "2026-07-28T00:00:00Z",
   "nodes": [
     {
-      "node_id": "todo://demo/needer",
-      "kind": "operational_item",
+      "declared_status": "open",
+      "freshness": null,
       "id": "needer",
+      "kind": "operational_item",
+      "node_id": "todo://demo/needer",
+      "owner_ref": null,
+      "owner_role": "tech-lead",
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
       "repo": "demo",
       "title": "Depends on a ghost",
-      "declared_status": "open",
-      "owner_role": "tech-lead",
-      "trigger": null,
-      "freshness": null,
       "tombstone": false,
-      "provenance": { "repo": "demo", "remote_origin": null, "commit": null, "path": "TODO.md", "line": 3 }
+      "trigger": null
     }
   ],
   "references": [
     {
       "kind": "blocked_by",
-      "source_node_id": "todo://demo/needer",
+      "legacy_blocker_ref": null,
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
       "raw_ref": "todo://demo/ghost",
       "resolved_target": null,
-      "legacy_blocker_ref": null,
-      "provenance": { "repo": "demo", "remote_origin": null, "commit": null, "path": "TODO.md", "line": 3 }
+      "source_node_id": "todo://demo/needer"
     }
   ],
-  "edges": [],
-  "diagnostics": [
-    {
-      "code": "PF-ID-DANGLING",
-      "severity": "warning",
-      "subject_uri": "todo://demo/needer",
-      "related_uri": "todo://demo/ghost",
-      "rule_id": null,
-      "message": "canonical reference todo://demo/ghost points to an @id absent from repo demo",
-      "provenance": { "repo": "demo", "remote_origin": null, "commit": null, "path": "TODO.md", "line": 3 }
-    }
-  ]
+  "schema_version": 2
 }

@@ -27,14 +27,14 @@ _SCHEMA_DIR = Path("schemas")
 # Neither is a "detected project", so resolve them from the monorepo layout
 # (overridable via the projects map, which keeps this hermetically testable).
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_PF_CONTRACT_NAME = "plan-fields-v1"  # matches roadmap items' target_contract
+_PF_CONTRACT_NAME = "plan-fields-v2"  # matches ADR-ECO-005a contract identity
 # What the vendored manifest must declare itself to be. Checked by the product,
 # not only by a test against the real file: the PINNED.txt cross-reference
 # takes its authority FROM the manifest, so a manifest that keeps a
 # self-consistent surface while declaring another contract — or none — would
 # disarm that cross-check without failing anything else.
 _PF_MANIFEST_CONTRACT = "plan-fields"
-_PF_MANIFEST_VERSION = 1
+_PF_MANIFEST_VERSION = 2
 _PF_CANON_PROJECT = "prograph-vault"
 _PF_CANON_DIR_REL = Path("authored/contracts/plan-fields/v1")
 _PF_MANIFEST_REL = _PF_CANON_DIR_REL / "manifest.json"

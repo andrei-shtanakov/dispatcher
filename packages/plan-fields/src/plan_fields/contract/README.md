@@ -1,12 +1,12 @@
 ---
-title: "plan-fields contract v1"
+title: "plan-fields contract v2"
 type: contract
 status: proposed
 owner: Andrei
-updated: 2026-07-28
+updated: 2026-08-07
 ---
 
-# plan-fields contract — v1
+# plan-fields contract — v2
 
 Canonical, cross-cutting contract for the **operational plan plane** (per-repo `TODO.md`)
 and the evidence vocabulary that the governance plane consumes. Decided in
@@ -27,8 +27,8 @@ pinned copy inward; nothing reads this directory at run time.
 
 ## Versions
 
-- `contract_version: 1` — the plan-fields contract semantics (this document + registries).
-- `schema_version: 1` — the JSON envelope shape in `schema.json`.
+- `contract_version: 2` — typed operational-owner semantics from ADR-ECO-005a.
+- `schema_version: 2` — the JSON envelope shape in `schema.json`.
 
 They are intentionally separate: the envelope shape can rev without changing contract
 semantics, and vice versa.
@@ -56,10 +56,33 @@ nodes, references, edges, diagnostics}`:
 
 - **nodes** — `OperationalNode` per `@id`-bearing checkbox item. Required: `node_id`
   (`todo://<repo>/<id>`), `id`, `repo`, `title`, `declared_status` (from the checkbox),
-  `tombstone`, `provenance`. Optional: `owner_role` (DEC-007 slug), `trigger`, `freshness`,
+  `tombstone`, `provenance`, and nullable `owner_ref`. Optional: transitional
+  `owner_role` (DEC-007 slug), `trigger`, `freshness`,
   and `raw` (the open map of tag values exactly as written). `raw` **MAY** be omitted; when an
   item carries tags a parser **SHOULD** include it so grammar diagnostics keep the original.
   Fixtures include `raw` illustratively on at least one node per case, not on every node.
+
+### Operational owner
+
+`@owner` names one accountable principal in one of four canonical forms:
+
+- `github:<handle>` → `owner_ref.kind=github_user`;
+- `github-team:<org>/<team>` → `owner_ref.kind=github_team`;
+- `repo:<manifest-key>` → `owner_ref.kind=repository`;
+- `TBD` → `owner_ref.kind=tbd`, `id=null`.
+
+The raw value is retained in `owner_ref.raw`. A bare DEC-007 role-slug is
+transitional: it populates `owner_role`, leaves `owner_ref=null`, and emits
+`PF-OWNER-LEGACY-ROLE`. Missing or invalid values also leave `owner_ref=null`,
+but are distinguished by `PF-OWNER-MISSING` / `PF-OWNER-GRAMMAR`.
+
+The single-repo parser can validate the syntax of `repo:<manifest-key>` but cannot
+prove that the repository exists. The fleet layer resolves the key against the
+frozen workspace manifest's non-member repository entries; a miss emits
+`PF-OWNER-REPO-UNKNOWN` and must not be reported as `repo-owned`.
+
+Ownership and movement are orthogonal. A trigger or blocker never changes the
+owner classification; consumers report both axes (and preferably their matrix).
 - **references** — *every* extracted `@blocked_by`, resolved or not (raw / legacy /
   unresolved). Each keeps `raw_ref`, and either `resolved_target` (a canonical URI) or
   `legacy_blocker_ref` (`<repo>#<slug>`).

@@ -1,7 +1,7 @@
 # Consuming `plan-fields` from another repo (PF-7)
 
 The whole point of this package is that **one** parser implements the
-plan-fields v1 contract. So an external consumer depends on the package as a
+plan-fields v2 contract. So an external consumer depends on the package as a
 **pinned dependency** — it must never copy the package source inward. (The
 *contract* is vendored inside the package, at `src/plan_fields/contract/`, and
 drift-controlled by PF-6. The *package* is not vendored per consumer — copying

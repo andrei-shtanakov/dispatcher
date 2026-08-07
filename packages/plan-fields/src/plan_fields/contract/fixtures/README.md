@@ -1,12 +1,12 @@
 ---
-title: "plan-fields v1 — conformance fixtures"
+title: "plan-fields v2 — conformance fixtures"
 type: contract
 status: proposed
 owner: Andrei
-updated: 2026-07-28
+updated: 2026-08-07
 ---
 
-# plan-fields v1 — fixtures
+# plan-fields v2 — fixtures
 
 Normative input → expected-output pairs. They are the machine-checkable spec; the executable
 validator that runs them is a **PF-3** deliverable (not in the KB — see the contract README).
@@ -25,8 +25,9 @@ validator that runs them is a **PF-3** deliverable (not in the KB — see the co
 
 | Case | Kind | Expected |
 |---|---|---|
-| `valid/basic` | pair | 2 nodes, 1 resolved reference + edge, 0 diagnostics |
-| `valid/tombstone` | pair | closed `@id` item → `tombstone: true`, 0 diagnostics |
+| `valid/basic` | pair | 2 legacy-role nodes, 1 resolved reference + edge, transitional owner diagnostics |
+| `valid/typed-owner` | pair | all four typed owner principal forms project to `owner_ref` |
+| `valid/tombstone` | pair | closed `@id` item → `tombstone: true`, transitional owner diagnostics |
 | `invalid/duplicate-id` | pair | `PF-ID-DUPLICATE` (error) |
 | `invalid/missing-id` | pair | `PF-ID-MISSING` (warning); no node (an id is required) |
 | `invalid/dangling-id` | pair | canonical ref to an absent `@id` → `PF-ID-DANGLING`; reference kept, no edge |

@@ -1,36 +1,81 @@
 {
-  "contract_version": 1,
-  "schema_version": 1,
+  "contract_version": 2,
+  "diagnostics": [
+    {
+      "code": "PF-OWNER-LEGACY-ROLE",
+      "message": "@owner tech-lead is a transitional DEC-007 role-slug",
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "info",
+      "subject_uri": "todo://demo/benchmark-2"
+    },
+    {
+      "code": "PF-OWNER-LEGACY-ROLE",
+      "message": "@owner tech-lead is a transitional DEC-007 role-slug",
+      "provenance": {
+        "commit": null,
+        "line": 4,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "info",
+      "subject_uri": "todo://demo/followup"
+    }
+  ],
+  "edges": [],
   "generated_at": "2026-07-28T00:00:00Z",
   "nodes": [
     {
-      "node_id": "todo://demo/benchmark-2",
-      "kind": "operational_item",
+      "declared_status": "closed",
+      "freshness": null,
       "id": "benchmark-2",
+      "kind": "operational_item",
+      "node_id": "todo://demo/benchmark-2",
+      "owner_ref": null,
+      "owner_role": "tech-lead",
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
       "repo": "demo",
       "title": "Second benchmark",
-      "declared_status": "closed",
-      "owner_role": "tech-lead",
-      "trigger": null,
-      "freshness": null,
       "tombstone": true,
-      "provenance": { "repo": "demo", "remote_origin": null, "commit": null, "path": "TODO.md", "line": 3 }
+      "trigger": null
     },
     {
-      "node_id": "todo://demo/followup",
-      "kind": "operational_item",
+      "declared_status": "open",
+      "freshness": null,
       "id": "followup",
+      "kind": "operational_item",
+      "node_id": "todo://demo/followup",
+      "owner_ref": null,
+      "owner_role": "tech-lead",
+      "provenance": {
+        "commit": null,
+        "line": 4,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
       "repo": "demo",
       "title": "Follow-up work",
-      "declared_status": "open",
-      "owner_role": "tech-lead",
-      "trigger": null,
-      "freshness": null,
       "tombstone": false,
-      "provenance": { "repo": "demo", "remote_origin": null, "commit": null, "path": "TODO.md", "line": 4 }
+      "trigger": null
     }
   ],
   "references": [],
-  "edges": [],
-  "diagnostics": []
+  "schema_version": 2
 }
