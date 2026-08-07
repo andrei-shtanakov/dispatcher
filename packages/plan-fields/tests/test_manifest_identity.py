@@ -547,7 +547,10 @@ def test_a_self_reference_keeps_parse_todos_verdict_exactly(tmp_path: Path) -> N
     assert [
         d["code"] for d in alone["diagnostics"] if not d["code"].startswith("PF-OWNER")
     ] == ["PF-LEGACY-AMBIGUOUS"]
-    assert "more than one" in alone["diagnostics"][0]["message"]
+    alone_ambiguity = next(
+        d for d in alone["diagnostics"] if d["code"] == "PF-LEGACY-AMBIGUOUS"
+    )
+    assert "more than one" in alone_ambiguity["message"]
     # the whole list, not just the code: nothing added, nothing swallowed
     assert in_fleet["diagnostics"] == alone["diagnostics"]
 
@@ -561,11 +564,12 @@ def test_a_self_reference_keeps_parse_todos_verdict_exactly(tmp_path: Path) -> N
         for d in aliased["diagnostics"]
         if not d["code"].startswith("PF-OWNER")
     ] == ["PF-LEGACY-AMBIGUOUS"]
+    aliased_ambiguity = next(
+        d for d in aliased["diagnostics"] if d["code"] == "PF-LEGACY-AMBIGUOUS"
+    )
     assert (
-        aliased["diagnostics"][0]["message"].replace(
-            "demo-checkout#thing", "demo#thing"
-        )
-        == alone["diagnostics"][0]["message"]
+        aliased_ambiguity["message"].replace("demo-checkout#thing", "demo#thing")
+        == alone_ambiguity["message"]
     )
 
     # --- the same divergence the other way round --------------------------
