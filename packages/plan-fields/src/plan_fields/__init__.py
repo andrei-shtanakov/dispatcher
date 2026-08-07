@@ -21,11 +21,11 @@ from plan_fields.fleet_api import (
     check_legacy_fleet,
     parse_fleet,
 )
-from plan_fields.parser import parse_todo
+from plan_fields.parser import parse_owner, parse_todo
 from plan_fields.scrape import ScrapedItem, scrape_items
 from plan_fields.validator import load_schema, run_conformance, validate_document
 
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 
 __all__ = [
     "AmbiguousIdentityError",
@@ -42,6 +42,7 @@ __all__ = [
     "load_schema",
     "manifest_index",
     "parse_fleet",
+    "parse_owner",
     "parse_todo",
     "resolve_checkout",
     "run_conformance",

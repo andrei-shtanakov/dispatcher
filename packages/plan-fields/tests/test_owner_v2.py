@@ -2,9 +2,29 @@ from plan_fields import (
     ManifestIndex,
     RepoInput,
     parse_fleet,
+    parse_owner,
     parse_todo,
     validate_document,
 )
+
+
+def test_public_owner_parser_covers_items_without_an_id() -> None:
+    assert parse_owner("github:andrei-shtanakov") == (
+        {
+            "kind": "github_user",
+            "id": "andrei-shtanakov",
+            "raw": "github:andrei-shtanakov",
+        },
+        None,
+        None,
+    )
+    repo_ref, _, _ = parse_owner("repo:devtools")
+    tbd_ref, _, _ = parse_owner("TBD")
+    assert repo_ref is not None and repo_ref["kind"] == "repository"
+    assert tbd_ref is not None and tbd_ref["kind"] == "tbd"
+    assert parse_owner(None) == (None, None, "PF-OWNER-MISSING")
+    assert parse_owner("tech-lead") == (None, "tech-lead", "PF-OWNER-LEGACY-ROLE")
+    assert parse_owner("not valid!") == (None, None, "PF-OWNER-GRAMMAR")
 
 
 def test_typed_owner_forms_project_to_owner_ref() -> None:

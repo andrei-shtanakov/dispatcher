@@ -49,7 +49,16 @@ def _freshness(raw: dict[str, str]) -> dict[str, Any] | None:
     return {field: raw.get(tag) for tag, field in FRESHNESS.items()}
 
 
-def _owner(value: str | None) -> tuple[dict[str, Any] | None, str | None, str | None]:
+def parse_owner(
+    value: str | None,
+) -> tuple[dict[str, Any] | None, str | None, str | None]:
+    """Parse one operational owner value using the canonical v2 grammar.
+
+    The tuple is ``(owner_ref, owner_role, diagnostic_code)`` and matches the
+    fields and diagnostics emitted by :func:`parse_todo`.  It is public so
+    operational reporters can classify items which deliberately have no
+    ``@id`` without copying the owner grammar.
+    """
     if value is None:
         return None, None, "PF-OWNER-MISSING"
     for pattern, kind in (
@@ -104,7 +113,7 @@ def parse_todo(
             continue
         node_id = f"todo://{repo}/{item_id}"
         owner = raw.get("owner")
-        owner_ref, owner_role, owner_diag = _owner(owner)
+        owner_ref, owner_role, owner_diag = parse_owner(owner)
         node = {
             "node_id": node_id,
             "kind": "operational_item",
