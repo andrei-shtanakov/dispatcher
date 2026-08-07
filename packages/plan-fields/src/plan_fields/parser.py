@@ -52,7 +52,11 @@ def _freshness(raw: dict[str, str]) -> dict[str, Any] | None:
 def _owner(value: str | None) -> tuple[dict[str, Any] | None, str | None, str | None]:
     if value is None:
         return None, None, "PF-OWNER-MISSING"
-    for pattern, kind in ((GITHUB_RE, "github_user"), (TEAM_RE, "github_team"), (REPO_OWNER_RE, "repository")):
+    for pattern, kind in (
+        (GITHUB_RE, "github_user"),
+        (TEAM_RE, "github_team"),
+        (REPO_OWNER_RE, "repository"),
+    ):
         if match := pattern.fullmatch(value):
             return {"kind": kind, "id": match.group(1), "raw": value}, None, None
     if value == "TBD":
@@ -129,7 +133,12 @@ def parse_todo(
                     node_id,
                     None,
                     None,
-                    f"{node_id} has " + ("no @owner" if owner is None else f"non-canonical @owner '{owner}'"),
+                    f"{node_id} has "
+                    + (
+                        "no @owner"
+                        if owner is None
+                        else f"non-canonical @owner '{owner}'"
+                    ),
                     prov,
                 )
             )
