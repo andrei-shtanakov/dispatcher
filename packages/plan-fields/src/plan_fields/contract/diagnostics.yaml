@@ -1,4 +1,4 @@
-# plan-fields v1 — diagnostic code registry.
+# plan-fields v2 — diagnostic code registry.
 #
 # This registry describes POLICY, not per-instance outcome:
 #   * default_severity — the severity a fresh occurrence starts at.
@@ -14,8 +14,8 @@
 # A Diagnostic instance (schema.json) carries the already-COMPUTED severity. Phase 0b owns
 # the history that applies escalation; the contract only states the policy.
 
-contract_version: 1
-version: 1
+contract_version: 2
+version: 2
 
 codes:
   PF-BLOCKER-DANGLING:
@@ -82,13 +82,25 @@ codes:
     default_severity: warning
     scope: intra_repo
     escalation: second_independent_snapshot
-    summary: "an item carries no @owner role"
+    summary: "an item carries no operational @owner principal"
 
   PF-OWNER-GRAMMAR:
     default_severity: warning
     scope: intra_repo
     escalation: second_independent_snapshot
-    summary: "@owner is not a valid DEC-007 role-slug (^[a-z][a-z0-9-]{1,31}$, no @)"
+    summary: "@owner is neither a typed principal nor a transitional DEC-007 role-slug"
+
+  PF-OWNER-LEGACY-ROLE:
+    default_severity: info
+    scope: intra_repo
+    escalation: never
+    summary: "@owner uses a transitional bare DEC-007 role-slug instead of a typed principal"
+
+  PF-OWNER-REPO-UNKNOWN:
+    default_severity: warning
+    scope: cross_repo
+    escalation: second_independent_snapshot
+    summary: "a syntactically valid repo:<key> owner does not resolve to a non-member repository in the frozen workspace manifest"
 
   PF-TOMBSTONE-REMOVED:
     default_severity: warning

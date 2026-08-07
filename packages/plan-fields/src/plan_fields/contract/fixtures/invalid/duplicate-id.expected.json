@@ -1,46 +1,96 @@
 {
-  "contract_version": 1,
-  "schema_version": 1,
-  "generated_at": "2026-07-28T00:00:00Z",
-  "nodes": [
-    {
-      "node_id": "todo://demo/dup",
-      "kind": "operational_item",
-      "id": "dup",
-      "repo": "demo",
-      "title": "First thing",
-      "declared_status": "open",
-      "owner_role": "tech-lead",
-      "trigger": null,
-      "freshness": null,
-      "tombstone": false,
-      "provenance": { "repo": "demo", "remote_origin": null, "commit": null, "path": "TODO.md", "line": 3 }
-    },
-    {
-      "node_id": "todo://demo/dup",
-      "kind": "operational_item",
-      "id": "dup",
-      "repo": "demo",
-      "title": "Second thing",
-      "declared_status": "open",
-      "owner_role": "tech-lead",
-      "trigger": null,
-      "freshness": null,
-      "tombstone": false,
-      "provenance": { "repo": "demo", "remote_origin": null, "commit": null, "path": "TODO.md", "line": 4 }
-    }
-  ],
-  "references": [],
-  "edges": [],
+  "contract_version": 2,
   "diagnostics": [
     {
       "code": "PF-ID-DUPLICATE",
-      "severity": "error",
-      "subject_uri": "todo://demo/dup",
+      "message": "@id 'dup' appears on two items in repo demo (lines 3 and 4)",
+      "provenance": {
+        "commit": null,
+        "line": 4,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
       "related_uri": null,
       "rule_id": null,
-      "message": "@id 'dup' appears on two items in repo demo (lines 3 and 4)",
-      "provenance": { "repo": "demo", "remote_origin": null, "commit": null, "path": "TODO.md", "line": 4 }
+      "severity": "error",
+      "subject_uri": "todo://demo/dup"
+    },
+    {
+      "code": "PF-OWNER-LEGACY-ROLE",
+      "message": "@owner tech-lead is a transitional DEC-007 role-slug",
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "info",
+      "subject_uri": "todo://demo/dup"
+    },
+    {
+      "code": "PF-OWNER-LEGACY-ROLE",
+      "message": "@owner tech-lead is a transitional DEC-007 role-slug",
+      "provenance": {
+        "commit": null,
+        "line": 4,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "info",
+      "subject_uri": "todo://demo/dup"
     }
-  ]
+  ],
+  "edges": [],
+  "generated_at": "2026-07-28T00:00:00Z",
+  "nodes": [
+    {
+      "declared_status": "open",
+      "freshness": null,
+      "id": "dup",
+      "kind": "operational_item",
+      "node_id": "todo://demo/dup",
+      "owner_ref": null,
+      "owner_role": "tech-lead",
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "repo": "demo",
+      "title": "First thing",
+      "tombstone": false,
+      "trigger": null
+    },
+    {
+      "declared_status": "open",
+      "freshness": null,
+      "id": "dup",
+      "kind": "operational_item",
+      "node_id": "todo://demo/dup",
+      "owner_ref": null,
+      "owner_role": "tech-lead",
+      "provenance": {
+        "commit": null,
+        "line": 4,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "repo": "demo",
+      "title": "Second thing",
+      "tombstone": false,
+      "trigger": null
+    }
+  ],
+  "references": [],
+  "schema_version": 2
 }

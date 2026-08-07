@@ -210,7 +210,7 @@ async def test_the_contract_row_wire_shape_is_pinned(tmp_path: Path) -> None:
         "upstream_drift",
         "listing",
     }
-    plan_fields = [c for c in contracts if c["name"] == "plan-fields-v1"]
+    plan_fields = [c for c in contracts if c["name"] == "plan-fields-v2"]
     by_kind = {c["kind"]: c for c in plan_fields}
     # both verdicts are served, side by side and separately labelled
     assert set(by_kind) == {"vendored_integrity", "upstream_drift"}

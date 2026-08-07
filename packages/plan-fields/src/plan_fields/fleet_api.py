@@ -148,6 +148,24 @@ def parse_fleet(
         references.extend(doc["references"])
         edges.extend(doc["edges"])
         diagnostics.extend(doc["diagnostics"])
+        for node in doc["nodes"]:
+            owner_ref = node.get("owner_ref")
+            if (
+                isinstance(owner_ref, dict)
+                and owner_ref.get("kind") == "repository"
+                and owner_ref.get("id") not in index.canonical_keys
+            ):
+                diagnostics.append(
+                    _diag(
+                        "PF-OWNER-REPO-UNKNOWN",
+                        "warning",
+                        node["node_id"],
+                        None,
+                        None,
+                        f"repository owner {owner_ref.get('raw')} is absent from the frozen manifest",
+                        node["provenance"],
+                    )
+                )
         present[repo] = doc["nodes"]
 
     node_ids = {n["node_id"] for n in nodes}

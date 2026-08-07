@@ -27,16 +27,16 @@ _SCHEMA_DIR = Path("schemas")
 # Neither is a "detected project", so resolve them from the monorepo layout
 # (overridable via the projects map, which keeps this hermetically testable).
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_PF_CONTRACT_NAME = "plan-fields-v1"  # matches roadmap items' target_contract
+_PF_CONTRACT_NAME = "plan-fields-v2"  # matches ADR-ECO-005a contract identity
 # What the vendored manifest must declare itself to be. Checked by the product,
 # not only by a test against the real file: the PINNED.txt cross-reference
 # takes its authority FROM the manifest, so a manifest that keeps a
 # self-consistent surface while declaring another contract — or none — would
 # disarm that cross-check without failing anything else.
 _PF_MANIFEST_CONTRACT = "plan-fields"
-_PF_MANIFEST_VERSION = 1
+_PF_MANIFEST_VERSION = 2
 _PF_CANON_PROJECT = "prograph-vault"
-_PF_CANON_DIR_REL = Path("authored/contracts/plan-fields/v1")
+_PF_CANON_DIR_REL = Path("authored/contracts/plan-fields/v2")
 _PF_MANIFEST_REL = _PF_CANON_DIR_REL / "manifest.json"
 _PF_VENDORED_REL = Path("packages/plan-fields/src/plan_fields/contract")
 # Excluded from the fingerprinted surface (parity with the vault generator):
@@ -54,7 +54,7 @@ _PF_META_HASHES = {
     # Recorded when vendored; a re-vendor that updates the file and forgets
     # this line fails its own test rather than certifying a stale copy.
     "drift-control.md": (
-        "7547f28ac446b7d56d1bf4c65295024b08b392d26ea77daa4e5b91b10b6f7f10"
+        "8f44b1bd9834b7645f4cf7621a8e98f856e51c4cb3e5f221c9479e9501637f05"
     ),
 }
 # Checked by shape and cross-reference instead of by hash: `manifest.json`

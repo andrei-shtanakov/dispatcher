@@ -1,6 +1,6 @@
-"""plan-fields — offline parser + validator for the plan-fields v1 contract.
+"""plan-fields — offline parser + validator for the plan-fields v2 contract.
 
-Standalone by design: no import of the dispatcher application. The v1 contract
+Standalone by design: no import of the dispatcher application. The v2 contract
 (schema, registries, fixtures) is vendored under ``contract/`` (pinned copy).
 """
 
@@ -25,7 +25,7 @@ from plan_fields.parser import parse_todo
 from plan_fields.scrape import ScrapedItem, scrape_items
 from plan_fields.validator import load_schema, run_conformance, validate_document
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 __all__ = [
     "AmbiguousIdentityError",

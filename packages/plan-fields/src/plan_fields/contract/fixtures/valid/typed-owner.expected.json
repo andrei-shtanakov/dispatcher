@@ -1,0 +1,122 @@
+{
+  "contract_version": 2,
+  "diagnostics": [],
+  "edges": [],
+  "generated_at": "2026-07-28T00:00:00Z",
+  "nodes": [
+    {
+      "declared_status": "open",
+      "freshness": null,
+      "id": "human",
+      "kind": "operational_item",
+      "node_id": "todo://demo/human",
+      "owner_ref": {
+        "id": "andrei-shtanakov",
+        "kind": "github_user",
+        "raw": "github:andrei-shtanakov"
+      },
+      "owner_role": null,
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "raw": {
+        "id": "human",
+        "owner": "github:andrei-shtanakov"
+      },
+      "repo": "demo",
+      "title": "Human owner",
+      "tombstone": false,
+      "trigger": null
+    },
+    {
+      "declared_status": "open",
+      "freshness": null,
+      "id": "repo",
+      "kind": "operational_item",
+      "node_id": "todo://demo/repo",
+      "owner_ref": {
+        "id": "dispatcher",
+        "kind": "repository",
+        "raw": "repo:dispatcher"
+      },
+      "owner_role": null,
+      "provenance": {
+        "commit": null,
+        "line": 5,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "raw": {
+        "id": "repo",
+        "owner": "repo:dispatcher"
+      },
+      "repo": "demo",
+      "title": "Repository owner",
+      "tombstone": false,
+      "trigger": null
+    },
+    {
+      "declared_status": "open",
+      "freshness": null,
+      "id": "tbd",
+      "kind": "operational_item",
+      "node_id": "todo://demo/tbd",
+      "owner_ref": {
+        "id": null,
+        "kind": "tbd",
+        "raw": "TBD"
+      },
+      "owner_role": null,
+      "provenance": {
+        "commit": null,
+        "line": 6,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "raw": {
+        "id": "tbd",
+        "owner": "TBD"
+      },
+      "repo": "demo",
+      "title": "Deliberately unassigned",
+      "tombstone": false,
+      "trigger": null
+    },
+    {
+      "declared_status": "open",
+      "freshness": null,
+      "id": "team",
+      "kind": "operational_item",
+      "node_id": "todo://demo/team",
+      "owner_ref": {
+        "id": "example/platform",
+        "kind": "github_team",
+        "raw": "github-team:example/platform"
+      },
+      "owner_role": null,
+      "provenance": {
+        "commit": null,
+        "line": 4,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "raw": {
+        "id": "team",
+        "owner": "github-team:example/platform"
+      },
+      "repo": "demo",
+      "title": "Team owner",
+      "tombstone": false,
+      "trigger": null
+    }
+  ],
+  "references": [],
+  "schema_version": 2
+}

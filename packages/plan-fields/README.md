@@ -1,8 +1,8 @@
 # plan-fields
 
-Offline parser + validator for the **plan-fields v1** contract (ADR-ECO-005, PF-3).
+Offline parser + validator for the **plan-fields v2** contract (ADR-ECO-005a).
 
-Standalone by design: it **does not import the dispatcher application**. The v1
+Standalone by design: it **does not import the dispatcher application**. The v2
 contract (schema, registries, fixtures) is **vendored** under
 `src/plan_fields/contract/` as a pinned copy — see `contract/PINNED.txt`. Contract
 drift-control (canonical vs this pinned copy) is a separate item, **PF-6**.
@@ -25,7 +25,7 @@ validate_document(doc)  # raises on non-conformance
 print(canonical_dumps(doc))
 ```
 
-## What v0.1 implements
+## What v0.8 implements
 
 Single-snapshot semantics: identity/tombstone extraction, canonical + legacy
 `@blocked_by` resolution (references vs edges), and diagnostics **PF-ID-MISSING**,

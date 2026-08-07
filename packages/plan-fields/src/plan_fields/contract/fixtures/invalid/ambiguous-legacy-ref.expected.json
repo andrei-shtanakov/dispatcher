@@ -1,68 +1,146 @@
 {
-  "contract_version": 1,
-  "schema_version": 1,
+  "contract_version": 2,
+  "diagnostics": [
+    {
+      "code": "PF-LEGACY-AMBIGUOUS",
+      "message": "legacy reference demo#alpha matches more than one item in repo demo; migrate to an @id",
+      "provenance": {
+        "commit": null,
+        "line": 5,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "warning",
+      "subject_uri": "todo://demo/needer"
+    },
+    {
+      "code": "PF-OWNER-LEGACY-ROLE",
+      "message": "@owner tech-lead is a transitional DEC-007 role-slug",
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "info",
+      "subject_uri": "todo://demo/alpha-one"
+    },
+    {
+      "code": "PF-OWNER-LEGACY-ROLE",
+      "message": "@owner tech-lead is a transitional DEC-007 role-slug",
+      "provenance": {
+        "commit": null,
+        "line": 4,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "info",
+      "subject_uri": "todo://demo/alpha-two"
+    },
+    {
+      "code": "PF-OWNER-LEGACY-ROLE",
+      "message": "@owner tech-lead is a transitional DEC-007 role-slug",
+      "provenance": {
+        "commit": null,
+        "line": 5,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "info",
+      "subject_uri": "todo://demo/needer"
+    }
+  ],
+  "edges": [],
   "generated_at": "2026-07-28T00:00:00Z",
   "nodes": [
     {
-      "node_id": "todo://demo/alpha-one",
-      "kind": "operational_item",
+      "declared_status": "open",
+      "freshness": null,
       "id": "alpha-one",
+      "kind": "operational_item",
+      "node_id": "todo://demo/alpha-one",
+      "owner_ref": null,
+      "owner_role": "tech-lead",
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
       "repo": "demo",
       "title": "Alpha step",
-      "declared_status": "open",
-      "owner_role": "tech-lead",
-      "trigger": null,
-      "freshness": null,
       "tombstone": false,
-      "provenance": { "repo": "demo", "remote_origin": null, "commit": null, "path": "TODO.md", "line": 3 }
+      "trigger": null
     },
     {
-      "node_id": "todo://demo/alpha-two",
-      "kind": "operational_item",
+      "declared_status": "open",
+      "freshness": null,
       "id": "alpha-two",
+      "kind": "operational_item",
+      "node_id": "todo://demo/alpha-two",
+      "owner_ref": null,
+      "owner_role": "tech-lead",
+      "provenance": {
+        "commit": null,
+        "line": 4,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
       "repo": "demo",
       "title": "Alpha step again",
-      "declared_status": "open",
-      "owner_role": "tech-lead",
-      "trigger": null,
-      "freshness": null,
       "tombstone": false,
-      "provenance": { "repo": "demo", "remote_origin": null, "commit": null, "path": "TODO.md", "line": 4 }
+      "trigger": null
     },
     {
-      "node_id": "todo://demo/needer",
-      "kind": "operational_item",
+      "declared_status": "open",
+      "freshness": null,
       "id": "needer",
+      "kind": "operational_item",
+      "node_id": "todo://demo/needer",
+      "owner_ref": null,
+      "owner_role": "tech-lead",
+      "provenance": {
+        "commit": null,
+        "line": 5,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
       "repo": "demo",
       "title": "Depends on alpha",
-      "declared_status": "open",
-      "owner_role": "tech-lead",
-      "trigger": null,
-      "freshness": null,
       "tombstone": false,
-      "provenance": { "repo": "demo", "remote_origin": null, "commit": null, "path": "TODO.md", "line": 5 }
+      "trigger": null
     }
   ],
   "references": [
     {
       "kind": "blocked_by",
-      "source_node_id": "todo://demo/needer",
+      "legacy_blocker_ref": "demo#alpha",
+      "provenance": {
+        "commit": null,
+        "line": 5,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
       "raw_ref": "demo#alpha",
       "resolved_target": null,
-      "legacy_blocker_ref": "demo#alpha",
-      "provenance": { "repo": "demo", "remote_origin": null, "commit": null, "path": "TODO.md", "line": 5 }
+      "source_node_id": "todo://demo/needer"
     }
   ],
-  "edges": [],
-  "diagnostics": [
-    {
-      "code": "PF-LEGACY-AMBIGUOUS",
-      "severity": "warning",
-      "subject_uri": "todo://demo/needer",
-      "related_uri": null,
-      "rule_id": null,
-      "message": "legacy reference demo#alpha matches more than one item in repo demo; migrate to an @id",
-      "provenance": { "repo": "demo", "remote_origin": null, "commit": null, "path": "TODO.md", "line": 5 }
-    }
-  ]
+  "schema_version": 2
 }
