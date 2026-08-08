@@ -1,4 +1,4 @@
-"""Vendored steward gate-catalog v1: the canonical obligation vocabulary.
+"""Vendored steward gate-catalog v2: the canonical obligation vocabulary.
 
 Inbox #125 (ADR-ECO-006, D7 of steward's gate-id-catalog design). Steward's
 ``profiles/gate-catalog.yaml`` is the SSOT for gate identity; its
@@ -28,7 +28,7 @@ _CATALOG_PATH = (
     / "v1"
     / "gate-catalog.yaml"
 )
-SUPPORTED_CATALOG_VERSION = 1
+SUPPORTED_CATALOG_VERSION = 2
 
 
 class GateEntry(BaseModel):

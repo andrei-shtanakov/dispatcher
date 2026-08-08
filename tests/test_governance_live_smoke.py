@@ -104,6 +104,22 @@ async def test_live_smoke_real_gate_check_to_http_state(tmp_path: Path) -> None:
     (spec / "15-behaviour.md").write_text(_BEHAVIOUR)
     profile = tmp_path / "profile.yaml"
     profile.write_text(_PROFILE)
+    # gate-check @ пине steward#50+ требует для --emit-verdicts sibling-файлы
+    # профиля: gate-catalog.yaml (эмиттер-гейт по active-каталогу — берём наш
+    # ВЕНДОРЕННЫЙ канон, он и есть предмет этого смоука) и roles.yaml
+    # (минимальная валидная форма — ролей каталог не ссылается).
+    vendored_catalog = (
+        Path(__file__).resolve().parents[1]
+        / "contracts"
+        / "steward-gate-catalog"
+        / "v1"
+        / "gate-catalog.yaml"
+    )
+    (tmp_path / "gate-catalog.yaml").write_bytes(vendored_catalog.read_bytes())
+    (tmp_path / "roles.yaml").write_text(
+        'version: 1\nslug_pattern: "^[a-z][a-z0-9-]{1,31}$"\n'
+        "roles:\n  - {slug: owner, display: Owner}\n"
+    )
     _git(repo, "init", "--quiet", "-b", "master")
     _git(repo, "add", "-A")
     _git(repo, "commit", "--quiet", "-m", "seed")

@@ -210,7 +210,7 @@ def test_unknown_obligation_is_unreadable_naming_value_and_line(
     assert result.state == "unreadable"
     assert result.reason is not None
     assert "'vibes'" in result.reason
-    assert "line 5" in result.reason
+    assert "line 6" in result.reason
     assert "contracts/steward-gate-catalog/v1/" in result.reason
 
 

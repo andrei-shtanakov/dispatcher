@@ -10,10 +10,14 @@
 #
 # Gate obligations ('quality' | 'approval') reflect the *intent* of the check:
 # quality = correctness/completeness gate (gate-check concern); approval =
-# evidence/authorization gate (separate governance concern, not implemented yet).
-# The active set ('status: active') forms the v1 contract; no other status
-# appears in runtime use. GC-APPROVAL-MISSING is the only declared gate — it
-# marks an unimplemented obligation that must be handled by governance policy.
+# evidence/authorization gate (a separate governance concern from quality,
+# but implemented the same way — a gate-check finding). The active set
+# ('status: active') forms the v2 contract; no other status appears in
+# runtime use. GC-APPROVAL-MISSING (AP-5, 2026-08-08) is the first and only
+# approval-obligation gate: it enforces the release-stage merge-evidence
+# policy (steward.gatecheck.approval.check_approval_evidence) — presence of
+# first-parent merge provenance plus a classified, non-agent, non-unknown
+# merge actor for every approved artifact confirmed on the default branch.
 #
 # Stages are profile/policy-scoped contexts that select which gate applies
 # (e.g., "authoring" vs "release"). Each active gate declares which stages
@@ -21,7 +25,7 @@
 # is inactive in that context.
 #
 # applicable_roles: Absent means role-agnostic — the check runs against the
-# artifact or bundle, not a specific role. At present, all 19 active gates are
+# artifact or bundle, not a specific role. At present, all 20 active gates are
 # role-agnostic (field omitted). When a gate *does* need role dispatch (future),
 # it will carry a non-empty list here. GC-APPROVAL-MISSING explicitly omits this
 # field. GC-APPROVAL-ROLE is intentionally absent from the catalog — the boundary
@@ -35,7 +39,7 @@
 # concerns gate identity, while a second OQ-1 addresses Maestro contract binding.
 # Always cite @id:oq-1-approval-evidence when referencing this decision.
 
-version: 1
+version: 2
 
 obligation_vocabulary:
   - quality
@@ -162,6 +166,6 @@ gates:
 
   GC-APPROVAL-MISSING:
     obligation: approval
-    status: declared
+    status: active
     title: "required merge evidence is absent"
     stages: [release]

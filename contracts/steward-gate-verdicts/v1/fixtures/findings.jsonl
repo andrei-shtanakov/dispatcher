@@ -1,5 +1,6 @@
 {"kind": "header", "schema_version": "1", "source_commit": "abababababababababababababababababababab", "dirty": false, "generated_at": "2026-08-02T12:00:00+00:00", "profile": "team-exp", "bundle": "workstreams/WS-005-gate-verdicts/spec"}
 {"kind": "artifact", "path": "10-requirements.md", "node_id": "requirements", "status": "approved", "owner_roles": ["product", "architects"]}
 {"kind": "artifact", "path": "15-behaviour-spec.md", "node_id": "behaviour-spec", "status": "approved", "owner_roles": ["product", "qa"]}
-{"kind": "finding", "gate_id": "GC-STALE", "verdict": "fail", "artifact": "15-behaviour-spec.md", "message": "upstream 'requirements' changed since approval — mark stale and re-approve"}
-{"kind": "finding", "gate_id": "GC-TRACE-EMPTY", "verdict": "warn", "artifact": "10-requirements.md", "message": "downstream 'requirements' carries no traces_to link"}
+{"kind": "finding", "gate_id": "GC-STALE", "verdict": "fail", "artifact": "15-behaviour-spec.md", "message": "upstream 'requirements' changed since approval — mark stale and re-approve", "obligation": "quality"}
+{"kind": "finding", "gate_id": "GC-TRACE-EMPTY", "verdict": "warn", "artifact": "10-requirements.md", "message": "downstream 'requirements' carries no traces_to link", "obligation": "quality"}
+{"kind": "finding", "gate_id": "GC-APPROVAL-MISSING", "verdict": "fail", "artifact": "15-behaviour-spec.md", "message": "required merge evidence is absent: no first-parent merge provenance for the current blob", "obligation": "approval"}

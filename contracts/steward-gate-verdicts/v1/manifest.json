@@ -1,17 +1,17 @@
 {
   "contract": "steward-gate-verdicts",
   "contract_version": 1,
-  "producer_commit": "4836345a4250735ebce9de7616a4a42b463da654",
+  "producer_commit": "9b79700cb7edb7b6930734ecd10b7ad230870bc6",
   "surface_note": "sha256 of every vendored file; excludes PINNED.txt and this manifest",
-  "tree_sha256": "633eec48fa0884aebb1abc4d649ef6321ffba5a62837387707414e3d21baca66",
+  "tree_sha256": "e7b425333f069fb7a627a30f216364f8bb8931b35765a23140afe85fbeb65cf3",
   "surface": [
     {
       "path": "README.md",
-      "sha256": "4cf54bfc3e14f84f9d432f99f5d4fc28c31727f1f639ef1a6ee37cf22e20617d"
+      "sha256": "eccec8c15dd772a546b46612db46beb1ea4c0a881bd00c2bf4b8ccfafd017612"
     },
     {
       "path": "SCHEMA.json",
-      "sha256": "db9c6826b4a8439d7fe47e20395524e03b7fea6bf3b5cf94a5041592f0534772"
+      "sha256": "67aa22de2e2a8db0061e1c1323a846c716d9bc37b62e40c566880c91bb9a36dc"
     },
     {
       "path": "fixtures/clean.jsonl",
@@ -19,11 +19,11 @@
     },
     {
       "path": "fixtures/dangling_artifact.jsonl",
-      "sha256": "cbf8e71761a3b0b9c4f0da67fb3553fef63a3303a3f5dd9881207ac109d6e62b"
+      "sha256": "5bc80b5498ffd319f12caab98297b638a3d0d10881eeb5a9e34320308b6adc62"
     },
     {
       "path": "fixtures/findings.jsonl",
-      "sha256": "a15ff2d89ce5a484368ac88ece15c9202d258f9f5e42040c8d050f1d112a687a"
+      "sha256": "b5607eed8cc2699a5b2d5d046bf01a3888ab81a7a22843a05794d00c2107dc25"
     },
     {
       "path": "fixtures/future_schema.jsonl",
