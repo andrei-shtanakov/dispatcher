@@ -27,10 +27,13 @@
   (зеркало frontmatter), `owner_roles` — **DEC-007 слаги без `@`** (список до
   миграции на singular).
 - **finding** — факт нарушения: `gate_id` (`GC-*`), `verdict` (`fail`|`warn` —
-  маппинг severity error→fail), `artifact`, `message`. Поля `obligation`, `tier`,
-  `phase`, `risk_model_version`, `waiver_ref` объявлены и **зарезервированы**:
-  их словари принадлежат gate-id каталогу и риск-интеграции (TODO §3), producer
-  их пока не эмитит.
+  маппинг severity error→fail), `artifact`, `message`. `obligation` эмитится
+  producer'ом из каталога `profiles/gate-catalog.yaml` для каждого active
+  finding; словарь — `quality | approval`. `GC-APPROVAL-MISSING` (AP-5,
+  2026-08-08, каталог v2) — первый и пока единственный активный
+  `approval`-гейт: release-stage merge-evidence policy; остальные active-гейты
+  каталога — `quality`. `tier`, `phase`, `risk_model_version`, `waiver_ref`
+  остаются reserved (риск-интеграция).
 
 **Steward пишет только факты** — findings и header. Классификацию
 (pass / blocked / no-data / unreadable / stale / unresolvable) вычисляет читатель

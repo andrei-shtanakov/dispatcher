@@ -1,5 +1,5 @@
 source: steward profiles/gate-catalog.yaml
-commit: c26ca38f7f318b6f4849540a50a6cacf4c98f20b
+commit: 9b79700cb7edb7b6930734ecd10b7ad230870bc6
 vendored: 2026-08-08
 note: pinned copy (repo-boundaries vendoring, ADR-ECO-003). Do not edit here —
   re-vendor with scripts/revendor_steward_gate_catalog.sh, which derives every

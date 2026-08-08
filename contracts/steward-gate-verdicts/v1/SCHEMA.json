@@ -61,7 +61,7 @@
         "message": {"type": "string", "minLength": 1},
         "obligation": {
           "type": ["string", "null"],
-          "description": "Reserved: filled when the gate-id catalog lands (TODO gate-id-catalog); vocabulary is the catalog's to define."
+          "description": "Emitted by the producer since gate-catalog v1; vocabulary owned by profiles/gate-catalog.yaml"
         },
         "tier": {"type": ["string", "null"], "description": "Reserved: risk-model tier (WS-006 integration)."},
         "phase": {"type": ["string", "null"], "description": "Reserved: lifecycle phase policy (severity-by-stage, ADR open question 4)."},
