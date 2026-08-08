@@ -105,7 +105,7 @@
 
 ## Кросс-репные контракты
 
-- [ ] Вендор steward gate-catalog v1: пиненая копия `profiles/gate-catalog.yaml` + канонический словарь obligation в governance-коллекторе @owner:github:andrei-shtanakov @id:vendor-gate-catalog
+- [x] Вендор steward gate-catalog v1: пиненая копия `profiles/gate-catalog.yaml` + канонический словарь obligation в governance-коллекторе — PR #126 @owner:github:andrei-shtanakov @id:vendor-gate-catalog
       Принятие inbox-issue #125 от steward (ADR-ECO-006, D7 дизайна
       gate-id-catalog). Канон: `steward/profiles/gate-catalog.yaml` @
       `c26ca38` (SSOT стабильных gate_id, v1: 19 active/quality +
