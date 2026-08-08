@@ -17,6 +17,11 @@ Architectural constraints this module lives under:
 - The line shapes are validated against the *vendored* schema copy
   (``contracts/steward-gate-verdicts/v1/``), the same runtime pattern as
   ``core/contract.py``; no sibling-repo path is ever resolved (CON-03).
+- A finding's ``obligation`` is validated against the vendored gate-catalog
+  vocabulary (``contracts/steward-gate-catalog/v1/``, inbox #125): the
+  schema allows any string, but the catalog is the SSOT for what the value
+  may say, and a value outside it means producer and vendored catalog have
+  diverged — ``unreadable``, never ``pass`` (NFR-02).
 """
 
 from __future__ import annotations
@@ -30,6 +35,8 @@ from typing import Literal
 
 import jsonschema
 from pydantic import BaseModel, ConfigDict, ValidationError
+
+from dispatcher.core.gate_catalog import obligation_vocabulary
 
 _SCHEMA_PATH = (
     Path(__file__).resolve().parents[2]
@@ -186,7 +193,21 @@ def _parse_lines(text: str) -> _Parsed | BundleGovernance:
             if kind == "artifact":
                 artifacts.append(VerdictArtifact.model_validate(record))
             else:
-                findings.append(VerdictFinding.model_validate(record))
+                finding = VerdictFinding.model_validate(record)
+                # An absent obligation is an older producer and stays valid;
+                # a present value outside the vendored catalog's vocabulary
+                # means the producer speaks a catalog this consumer has not
+                # vendored yet — surfaced, never silently passed through.
+                if (
+                    finding.obligation is not None
+                    and finding.obligation not in obligation_vocabulary()
+                ):
+                    return _unreadable(
+                        f"unknown obligation {finding.obligation!r} "
+                        f"(line {offset}); not in the vendored gate-catalog "
+                        "vocabulary (contracts/steward-gate-catalog/v1/)"
+                    )
+                findings.append(finding)
     except ValidationError as err:
         # Schema-valid but model-invalid means the two drifted apart; that
         # is a defect worth surfacing, still never silently and never pass.

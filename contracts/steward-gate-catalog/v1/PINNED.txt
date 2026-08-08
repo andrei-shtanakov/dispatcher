@@ -1,0 +1,8 @@
+source: steward profiles/gate-catalog.yaml
+commit: c26ca38f7f318b6f4849540a50a6cacf4c98f20b
+vendored: 2026-08-08
+note: pinned copy (repo-boundaries vendoring, ADR-ECO-003). Do not edit here —
+  re-vendor with scripts/revendor_steward_gate_catalog.sh, which derives every
+  value in this directory from the one commit it is given. Procedure:
+  docs/revendor-steward-gate-catalog.md. Nothing in shipped code may read
+  ../steward at run time.

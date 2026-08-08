@@ -172,6 +172,48 @@ def test_stale_wins_over_findings(tmp_path: Path) -> None:
     assert result.state == "stale"
 
 
+def _findings_with_obligation(tmp_path: Path, obligation: str) -> Path:
+    """The findings fixture with `obligation` stamped onto its last finding.
+
+    Built from the vendored fixture, not hand-made from scratch (CON-03);
+    only the field under test is added."""
+    import json
+
+    lines = (FIXTURES / "findings.jsonl").read_text().splitlines()
+    record = json.loads(lines[-1])
+    record["obligation"] = obligation
+    lines[-1] = json.dumps(record)
+    repo = tmp_path / "observed"
+    (repo / VERDICTS_REL_PATH).parent.mkdir(parents=True)
+    (repo / VERDICTS_REL_PATH).write_text("\n".join(lines) + "\n")
+    return repo
+
+
+def test_catalog_obligation_on_a_finding_is_accepted(tmp_path: Path) -> None:
+    """A value from the vendored gate-catalog vocabulary (inbox #125) parses
+    and is carried through; absent obligation is the older producer and is
+    covered by the untouched fixture tests above."""
+    repo = _findings_with_obligation(tmp_path, "quality")
+    result = collect_governance(repo, git_facts=fresh)
+    assert result.state == "blocked"
+    assert "quality" in {f.obligation for f in result.findings}
+
+
+def test_unknown_obligation_is_unreadable_naming_value_and_line(
+    tmp_path: Path,
+) -> None:
+    """Fail-closed: an obligation outside the catalog vocabulary means the
+    producer and the vendored catalog diverged — never silently passed
+    through, and the reason points at the vendored copy to re-vendor."""
+    repo = _findings_with_obligation(tmp_path, "vibes")
+    result = collect_governance(repo, git_facts=fresh)
+    assert result.state == "unreadable"
+    assert result.reason is not None
+    assert "'vibes'" in result.reason
+    assert "line 5" in result.reason
+    assert "contracts/steward-gate-catalog/v1/" in result.reason
+
+
 def _seed_git_repo(tmp_path: Path) -> tuple[Path, str]:
     """A real observed repo whose bundle matches the clean fixture's layout."""
     import os

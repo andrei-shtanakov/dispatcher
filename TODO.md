@@ -105,6 +105,27 @@
 
 ## Кросс-репные контракты
 
+- [ ] Вендор steward gate-catalog v1: пиненая копия `profiles/gate-catalog.yaml` + канонический словарь obligation в governance-коллекторе @owner:github:andrei-shtanakov @id:vendor-gate-catalog
+      Принятие inbox-issue #125 от steward (ADR-ECO-006, D7 дизайна
+      gate-id-catalog). Канон: `steward/profiles/gate-catalog.yaml` @
+      `c26ca38` (SSOT стабильных gate_id, v1: 19 active/quality +
+      GC-APPROVAL-MISSING declared/approval); копия —
+      `contracts/steward-gate-catalog/v1/` с раздельными copy-integrity
+      (PR-гейт, `tests/test_gate_catalog_vendor.py`) и upstream-drift
+      (scheduled `drift-steward-gate-catalog`). Потребитель:
+      `core/gate_catalog.py` + валидация `obligation` finding-записей в
+      `core/governance.py` по словарю каталога — значение вне словаря =
+      `unreadable`, fail-closed (NFR-02), отсутствующее значение валидно
+      (старый producer). Ре-вендор: `docs/revendor-steward-gate-catalog.md`.
+- [ ] Ре-вендор `gate-verdicts/v1` бандлом steward: README-активация obligation + fixtures с obligation + stale-фраза в SCHEMA @owner:github:andrei-shtanakov @trigger:"steward обновил fixtures+SCHEMA gate-verdicts одним бандлом (inbox #125 п.3) — либо красный drift-steward-gate-verdicts" @id:revendor-gate-verdicts-obligation-bundle
+      Из inbox #125 п.2–3: README контракта уже изменён точечно на пине
+      `c26ca38` (активация obligation), SCHEMA.json не тронут побайтово —
+      advisory `drift-steward-gate-verdicts` до ре-вендора может гореть, и
+      это осознанно. Steward обновит fixtures (сейчас несут findings без
+      obligation — схемно валидно, но уже не образец producer-вывода) и
+      stale-фразу в SCHEMA одним бандлом; ре-вендорим один раз после него
+      (`docs/revendor-steward-gate-verdicts.md`), чтобы не расширять
+      advisory-blast дважды.
 - [ ] `contracts/executor-config/v0-provisional`: довести до реального потребителя либо явно пометить контракт отложенным @owner:github:andrei-shtanakov @blocked_by:todo://maestro/specrunnerconfig-passthrough @trigger:"Maestro начал читать contracts/executor-config" @id:executor-config-consumer
       Статус-обзор экосистемы 07-24 назвал это watch-item: схема запинена (DESIGN-301),
       но единственная ссылка в экосистеме — план-док Maestro
