@@ -59,6 +59,47 @@ jobs:
           esac
           exit "$code"
 
+  # Same guarantee B for the steward gate-catalog/v1 contract (inbox #125).
+  # A separate job so one upstream being unreadable does not hide another's
+  # drift; a separate reporter because the surface is a single file, not a
+  # directory.
+  drift-steward-gate-catalog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # The MOVING default branch on purpose — drift can only be seen against
+      # where upstream actually is now; the resolved SHA is recorded by the
+      # reporter, so the run still says exactly what it looked at.
+      - uses: actions/checkout@v6
+        with:
+          repository: andrei-shtanakov/steward
+          ref: master
+          path: _upstream/steward
+
+      - uses: astral-sh/setup-uv@v8.1.0
+      - run: uv sync
+
+      - name: compare steward catalog against the vendored copy
+        run: |
+          set +e
+          uv run python scripts/gate_catalog_drift_report.py \
+            _upstream/steward/profiles/gate-catalog.yaml \
+            --upstream-root _upstream/steward \
+            --ref master
+          code=$?
+          set -e
+          # 0 no drift · 1 drift · 2 canon unavailable. Unavailable is red
+          # too: an upstream nobody could read is unknown, and unknown that
+          # looks green is exactly the failure this workstream keeps removing.
+          case "$code" in
+            0) echo "no upstream drift" ;;
+            1) echo "::error::upstream drift — a deliberate re-vendor PR is due" ;;
+            2) echo "::error::canon unavailable — nothing was compared (not 'no drift')" ;;
+            *) echo "::error::reporter failed with $code" ;;
+          esac
+          exit "$code"
+
   # Same guarantee B for the steward gate-verdicts/v1 contract (WS-005 WS-B,
   # inbox #106). A separate job so one upstream being unreadable does not hide
   # the other's drift.
