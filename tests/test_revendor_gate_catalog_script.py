@@ -112,7 +112,7 @@ def test_a_commit_without_the_catalog_is_refused(
     result = _run(
         skeleton, str(producer["before_catalog"]), "--from", str(producer["repo"])
     )
-    assert result.returncode in (2, 3)
+    assert result.returncode == 2
     # The staging parent may remain as an empty directory; what must not
     # exist is a certified vendored copy.
     assert not (skeleton / "contracts" / "steward-gate-catalog" / "v1").exists()

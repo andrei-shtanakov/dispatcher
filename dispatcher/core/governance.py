@@ -181,6 +181,7 @@ def _parse_lines(text: str) -> _Parsed | BundleGovernance:
 
     artifacts: list[VerdictArtifact] = []
     findings: list[VerdictFinding] = []
+    vocabulary = obligation_vocabulary()
     try:
         header = VerdictHeader.model_validate(first)
         for offset, line in enumerate(lines[1:], start=2):
@@ -200,7 +201,7 @@ def _parse_lines(text: str) -> _Parsed | BundleGovernance:
                 # vendored yet — surfaced, never silently passed through.
                 if (
                     finding.obligation is not None
-                    and finding.obligation not in obligation_vocabulary()
+                    and finding.obligation not in vocabulary
                 ):
                     return _unreadable(
                         f"unknown obligation {finding.obligation!r} "
