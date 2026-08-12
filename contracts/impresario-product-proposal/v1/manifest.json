@@ -1,0 +1,29 @@
+{
+  "contract": "impresario-product-proposal",
+  "contract_version": 1,
+  "producer_commit": "28727ff76a3983744596137706c844c95a5ad12b",
+  "surface_note": "sha256 of every vendored file; excludes PINNED.txt and this manifest",
+  "tree_sha256": "af5a6f1d678601e952b794c4bf04ef1a17ee4deee0d7155ec69fd62126834c47",
+  "surface": [
+    {
+      "path": "fixtures/invalid/status-ready-for-committee.yaml",
+      "sha256": "40c953d9b576cfa5ee4935a59c72ccdc6e8839c0f870df7b3a408ddf3948f618"
+    },
+    {
+      "path": "fixtures/invalid/status-recycle.yaml",
+      "sha256": "e7bb34d70fbf1fb088213430124769bce879a43ddfae296abf5308c3769e66c3"
+    },
+    {
+      "path": "fixtures/invalid/version-zero.yaml",
+      "sha256": "ec6d7b6538899fe880d58315cde94eec81f4c5c1838fe0ad20d546a38db8f34a"
+    },
+    {
+      "path": "fixtures/valid/pp-001.yaml",
+      "sha256": "af9f78f7f0f6f54891e5ab6524afde453aadbb44178a01f08c29895d19c9a026"
+    },
+    {
+      "path": "schema.json",
+      "sha256": "9d54ddb980e2cad354ecb2b0af49cde2dd36109090a97b6bebe49a8a93ee2619"
+    }
+  ]
+}

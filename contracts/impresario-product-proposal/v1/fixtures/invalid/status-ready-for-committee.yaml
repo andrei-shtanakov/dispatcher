@@ -1,0 +1,11 @@
+# Инвариант: ready_for_committee не является состоянием FSM;
+# readiness к Gate B вычисляется и не персистится
+proposal_id: PP-002
+idea_ref: idea://IDEA-001
+version: 5
+status: ready_for_committee
+iteration: 2
+refs:
+  exchange_log: exchange-log://XL-001
+created_at: 2026-08-11T08:00:00Z
+updated_at: 2026-08-12T10:00:00Z

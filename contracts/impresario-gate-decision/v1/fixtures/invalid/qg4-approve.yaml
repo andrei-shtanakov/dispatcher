@@ -1,0 +1,13 @@
+# Инвариант: у QG-4 исходы select/defer/park/reject; approve — исход QG-5 гейтов
+decision_id: GD-006
+gate_id: qg4_backlog
+subject:
+  kind: ranked_backlog
+  ref: backlog://BL-portfolio
+  version: 3
+decision: approve
+decided_by:
+  kind: human
+  id: product-owner
+decided_at: 2026-08-10T11:00:00Z
+reason: "Одобряю бэклог целиком."

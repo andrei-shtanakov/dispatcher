@@ -1,0 +1,8 @@
+source: impresario contracts/product-proposal/v1
+commit: 28727ff76a3983744596137706c844c95a5ad12b
+vendored: 2026-08-12
+note: pinned copy (repo-boundaries vendoring, ADR-ECO-003). Do not edit here —
+  re-vendor with scripts/revendor_impresario_contracts.sh, which re-vendors
+  BOTH impresario contract directories from the one commit it is given, so
+  the two manifests can never name different commits. Nothing in shipped
+  code may read ../impresario at run time.

@@ -1,0 +1,10 @@
+# Инвариант: version — монотонное целое, начинается с 1
+proposal_id: PP-004
+idea_ref: idea://IDEA-001
+version: 0
+status: draft
+iteration: 0
+refs:
+  exchange_log: exchange-log://XL-001
+created_at: 2026-08-11T08:00:00Z
+updated_at: 2026-08-11T08:00:00Z

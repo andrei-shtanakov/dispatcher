@@ -1,0 +1,17 @@
+decision_id: GD-001
+gate_id: qg5_business
+subject:
+  kind: product_proposal
+  ref: proposal://PP-001
+  version: 4
+decision: approve
+decided_by:
+  kind: human
+  id: sponsor-pnl
+  role: business_owner
+decided_at: 2026-08-12T10:00:00Z
+reason: "Unit-экономика v1 и бюджет запроса приемлемы; стратегическое соответствие подтверждено."
+artifacts_reviewed:
+  - proposal://PP-001
+  - research-pack://RP-001
+  - concept-draft://CD-001

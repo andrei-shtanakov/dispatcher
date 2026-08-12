@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:impresario:contract:product-proposal:v1",
+  "title": "ProductProposal",
+  "description": "Пакет форконцепта. SSOT FSM — docs/semantics.md: статусы draft | in_iteration | ready_for_business | business_approved | approved | on_hold | killed. ready_for_committee не статус (readiness вычисляется); recycle/hold/kill — outcomes GateDecision. Достижимость статуса по decision records — tool-enforced.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "proposal_id",
+    "idea_ref",
+    "version",
+    "status",
+    "iteration",
+    "refs",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "proposal_id": { "type": "string", "pattern": "^PP-[0-9]{3,}$" },
+    "idea_ref": { "type": "string", "pattern": "^idea://IDEA-[0-9]{3,}$" },
+    "version": { "type": "integer", "minimum": 1 },
+    "status": {
+      "enum": [
+        "draft",
+        "in_iteration",
+        "ready_for_business",
+        "business_approved",
+        "approved",
+        "on_hold",
+        "killed"
+      ]
+    },
+    "iteration": { "type": "integer", "minimum": 0 },
+    "refs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exchange_log"],
+      "properties": {
+        "latest_research_pack": { "type": "string", "pattern": "^research-pack://RP-[0-9]{3,}$" },
+        "latest_concept_draft": { "type": "string", "pattern": "^concept-draft://CD-[0-9]{3,}$" },
+        "exchange_log": { "type": "string", "pattern": "^exchange-log://XL-[0-9]{3,}$" }
+      }
+    },
+    "content": {
+      "description": "Содержательные блоки пакета (исследование, концепция, экономика, контур клиента, технология, вехи, открытые вопросы). Состав и зрелость — предмет процесса, не schema v1.",
+      "type": "object"
+    },
+    "created_at": { "$ref": "#/$defs/timestamp" },
+    "updated_at": { "$ref": "#/$defs/timestamp" }
+  },
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    }
+  }
+}

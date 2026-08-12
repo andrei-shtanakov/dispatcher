@@ -1,0 +1,18 @@
+decision_id: GD-002
+gate_id: qg5_business
+subject:
+  kind: product_proposal
+  ref: proposal://PP-001
+  version: 3
+decision: recycle
+decided_by:
+  kind: human
+  id: sponsor-pnl
+  role: business_owner
+decided_at: 2026-08-11T15:00:00Z
+reason: "Экономика не сходится в базовом сценарии."
+required_changes:
+  - "validate unit economics"
+return_to: in_iteration
+artifacts_reviewed:
+  - proposal://PP-001

@@ -1,0 +1,13 @@
+# Инвариант: recycle обязан нести return_to и required_changes (иначе теряется контекст возврата)
+decision_id: GD-004
+gate_id: qg5_business
+subject:
+  kind: product_proposal
+  ref: proposal://PP-001
+  version: 3
+decision: recycle
+decided_by:
+  kind: human
+  id: sponsor-pnl
+decided_at: 2026-08-11T15:00:00Z
+reason: "Доработать."
