@@ -797,20 +797,34 @@ async function detail(name, dirName) {
   // waits. Taken here, the stale call's token is already behind ppGen by
   // the time it reaches the pp block below, so every check there fails shut.
   const myPp = ++ppGen;
+  // B1: same reasoning as myPp above, for the onboarding/spec-runner-config/
+  // governance blocks below — taken here, at entry, so a stale resume is
+  // already behind detailGen by the time it reaches any of them.
+  const myDetail = ++detailGen;
   document.getElementById("detail-name").textContent = "— " + name;
   document.getElementById("detail").textContent = "loading…";
   try {
     const ob = await get(
       "/api/projects/" + encodeURIComponent(name) + "/onboarding"
     );
-    document.getElementById("detail").innerHTML = renderOnboarding(ob);
+    if (myDetail === detailGen) {
+      document.getElementById("detail").innerHTML = renderOnboarding(ob);
+    }
   } catch (err) {
-    document.getElementById("detail").textContent = String(err);
+    if (myDetail === detailGen) {
+      document.getElementById("detail").textContent = String(err);
+    }
   }
 
   const panel = document.getElementById("spec-runner-config");
-  panel.hidden = true;
-  currentSpecRunnerConfig = null;
+  // B1: this reset happens after the onboarding await above — a stale call
+  // resuming here must not hide/null out the CURRENT project's already-
+  // rendered panel and config (currentSpecRunnerConfig is module state used
+  // by later actions).
+  if (myDetail === detailGen) {
+    panel.hidden = true;
+    currentSpecRunnerConfig = null;
+  }
   // I-6 parity: this endpoint and its mutation are directory-keyed (server
   // matches Path(project_yaml_path).parent.name), NOT display-name-keyed —
   // must use dirName, never `name`. When dirName is absent (an undetected
@@ -825,10 +839,13 @@ async function detail(name, dirName) {
       const resp = await fetch(
         "/api/projects/" + encodeURIComponent(dirName) + "/spec-runner-config"
       );
-      if (resp.ok) {
-        currentSpecRunnerConfig = await resp.json();
-        currentSpecRunnerConfig.repoDir = dirName;
-        renderSpecRunnerConfigForm(currentSpecRunnerConfig);
+      if (resp.ok && myDetail === detailGen) {
+        const config = await resp.json();
+        if (myDetail === detailGen) {
+          currentSpecRunnerConfig = config;
+          currentSpecRunnerConfig.repoDir = dirName;
+          renderSpecRunnerConfigForm(currentSpecRunnerConfig);
+        }
       }
     } catch {
       // no project.yaml for this project — leave the panel hidden
@@ -837,14 +854,21 @@ async function detail(name, dirName) {
 
   const gvTitle = document.getElementById("governance-title");
   const gvPanel = document.getElementById("governance");
-  gvTitle.hidden = true;
-  gvPanel.textContent = "";
+  // B1: this reset happens after the spec-runner-config block above — a
+  // stale call resuming here must not blank the CURRENT project's already-
+  // rendered governance panel (mirrors the ppTitle/ppPanel reset guard below).
+  if (myDetail === detailGen) {
+    gvTitle.hidden = true;
+    gvPanel.textContent = "";
+  }
   try {
     const gv = await get(
       "/api/projects/" + encodeURIComponent(name) + "/governance"
     );
-    gvTitle.hidden = false;
-    gvPanel.innerHTML = renderGovernance(gv);
+    if (myDetail === detailGen) {
+      gvTitle.hidden = false;
+      gvPanel.innerHTML = renderGovernance(gv);
+    }
   } catch {
     // unknown project is already surfaced by the onboarding block above;
     // an unreachable endpoint must not take the rest of the panel down
@@ -1570,6 +1594,11 @@ let taGen = 0;
 // Inbox #129 PR-2: generation counter for the product-proposals panel —
 // a late response for the PREVIOUS project must never render here.
 let ppGen = 0;
+// B1: generation counter for detail()'s onboarding/spec-runner-config/
+// governance blocks — a stale detail() resume must not render the previous
+// project's data into those three panels. Parallel to ppGen by design (each
+// panel family keeps its own token), not unified with it.
+let detailGen = 0;
 // A create POST is in flight. Distinct from the generation: a lookup started
 // mid-flight must not merely lose a race, it must not run at all — the
 // mutation is already on the wire and this screen cannot describe its result

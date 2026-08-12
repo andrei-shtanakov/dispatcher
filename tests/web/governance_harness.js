@@ -118,13 +118,28 @@ const UNRESOLVABLE = gov('unresolvable', {
   unresolvable_findings: [FINDING('99-ghost.md', 'ghost', 'GC-COMPLETENESS')],
 });
 
-function defaultRoutes(governance) {
+function overviewProjects(names) {
+  return names.map(name => ({
+    name, detected: true, path: `/repos/${name}`,
+    counts: {tasks: 0, models: 0, test_results: 0, errors: 0},
+    freshness: 'fresh', warnings: [],
+  }));
+}
+
+const DEFAULT_ONBOARDING = () => ok({
+  project: {description: 'a repo', description_source: 'README'},
+  roadmap_position: null, next_items: [], live_tasks: [], warnings: [],
+});
+
+// names/onboardingRoute/govRoute are optional per-URL overrides (mirrors the
+// govRoute-param threading in product_proposals_harness.js) so a single case
+// can run two projects with distinct onboarding/governance fixtures and a
+// delayed response for one of them — everything else keeps the single-
+// project `governance` fixture used by the existing cases below.
+function defaultRoutes(governance, names, onboardingRoute, govRoute) {
   return [
-    [u => u.startsWith('/api/overview'), () => ok({projects: [{
-      name: 'widget', detected: true, path: '/repos/widget',
-      counts: {tasks: 0, models: 0, test_results: 0, errors: 0},
-      freshness: 'fresh', warnings: [],
-    }]})],
+    [u => u.startsWith('/api/overview'),
+      () => ok({projects: overviewProjects(names)})],
     [u => u.startsWith('/api/errors'), () => ok([])],
     [u => u.startsWith('/api/models'), () => ok([])],
     [u => u.startsWith('/api/contracts'), () => ok([])],
@@ -137,12 +152,9 @@ function defaultRoutes(governance) {
     [u => u.startsWith('/api/actions/session'), () => ok({token: 'test-token'})],
     [u => u.startsWith('/api/spec-runner-config/suggest-availability'),
       () => ok({available: false, detail: 'n/a'})],
-    [u => u.endsWith('/onboarding'), () => ok({
-      project: {description: 'a repo', description_source: 'README'},
-      roadmap_position: null, next_items: [], live_tasks: [], warnings: [],
-    })],
+    [u => u.endsWith('/onboarding'), onboardingRoute || DEFAULT_ONBOARDING],
     [u => u.endsWith('/spec-runner-config'), () => resp(404, {detail: 'none'})],
-    [u => u.endsWith('/governance'), () => ok(governance)],
+    [u => u.endsWith('/governance'), govRoute || (() => ok(governance))],
   ];
 }
 
@@ -150,9 +162,9 @@ const drain = async (turns = 5) => {
   for (let i = 0; i < turns; i++) await new Promise(r => setTimeout(r, 0));
 };
 
-async function boot(governance) {
+async function boot(governance, names = ['widget'], onboardingRoute, govRoute) {
   const document = new Document(BODY_HTML);
-  const routes = defaultRoutes(governance);
+  const routes = defaultRoutes(governance, names, onboardingRoute, govRoute);
   const ctx = {
     document, console, URL,
     setTimeout, clearTimeout,
@@ -171,9 +183,9 @@ async function boot(governance) {
   return {ctx, document};
 }
 
-async function openDetail(env) {
+async function openDetail(env, index = 0) {
   const card = env.document
-    .querySelectorAll('#projects .card[data-name]')[0];
+    .querySelectorAll('#projects .card[data-name]')[index];
   if (!card) throw new Error('refresh() rendered no selectable project card');
   await Promise.all(dispatch(card.querySelector('h2') || card, 'click'));
   await drain();
@@ -285,6 +297,60 @@ testCase('a hostile finding message arrives escaped', async () => {
   const out = render(env, payload);
   check(!out.includes('<img'), 'raw markup does not survive esc()');
   check(out.includes('&lt;img'), 'the message is still readable, escaped');
+});
+
+testCase('a stale detail() resume parked in governance must not render the '
+  + 'previous project\'s onboarding/governance (B1 race guard)', async () => {
+  const WIDGET_DESC = 'widget-only onboarding description, distinct on screen';
+  const GADGET_DESC = 'gadget-only onboarding description, distinct on screen';
+  const WIDGET_MARKER = 'widget-only marker finding message';
+  const onboardingRoute = u => u.includes('widget')
+    ? ok({
+        project: {description: WIDGET_DESC, description_source: 'README'},
+        roadmap_position: null, next_items: [], live_tasks: [], warnings: [],
+      })
+    : ok({
+        project: {description: GADGET_DESC, description_source: 'README'},
+        roadmap_position: null, next_items: [], live_tasks: [], warnings: [],
+      });
+  const widgetGov = gov('blocked', {
+    header: HEADER,
+    artifacts: [ART('10-requirements.md')],
+    findings: [FINDING('10-requirements.md', WIDGET_MARKER)],
+  });
+  const gadgetGov = gov('no-data', {reason: 'no gate_verdicts.jsonl'});
+  let releaseWidgetGov;
+  const slowWidgetGov = new Promise(resolve => { releaseWidgetGov = resolve; });
+  const govRoute = u => u.includes('widget')
+    ? slowWidgetGov.then(() => ok(widgetGov))
+    : ok(gadgetGov);
+
+  const env = await boot(PASS, ['widget', 'gadget'], onboardingRoute, govRoute);
+  // Click widget WITHOUT awaiting its handlers: detail() parks on the
+  // delayed governance fetch, BEFORE it ever reaches the pp block — same
+  // discipline as the pp harness's "race guard II" case (awaiting here
+  // would deadlock this case).
+  const first = env.document
+    .querySelectorAll('#projects .card[data-name]')[0];
+  dispatch(first.querySelector('h2') || first, 'click');
+  await drain();
+  await openDetail(env, 1);   // gadget: onboarding + governance resolve immediately
+  check(env.document.getElementById('detail-name').textContent.includes('gadget'),
+    'gadget is on screen before the stale widget response lands');
+  check(screenText(env, 'detail').includes(GADGET_DESC),
+    'gadget onboarding description is on screen');
+  check(screenText(env, 'governance').includes('no-data'),
+    'gadget governance state is on screen');
+  releaseWidgetGov();         // the stale widget governance response lands LAST
+  await drain();
+  check(env.document.getElementById('detail-name').textContent.includes('gadget'),
+    '#detail-name still says gadget after the stale response lands');
+  const govText = screenText(env, 'governance');
+  check(!govText.includes(WIDGET_MARKER),
+    '#governance does not contain widget\'s marker finding message');
+  const detailText = screenText(env, 'detail');
+  check(!detailText.includes(WIDGET_DESC),
+    '#detail does not contain widget\'s onboarding description');
 });
 
 // ---- main ------------------------------------------------------------------
