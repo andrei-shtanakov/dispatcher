@@ -29,6 +29,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+from collections import Counter
 from pathlib import Path
 from typing import Literal
 
@@ -302,7 +303,8 @@ def _supersession_integrity(records: list[dict[str, object]]) -> list[Diagnostic
     decision history is unprovable — the caller classifies unknown.
     """
     ids = [str(r["decision_id"]) for r in records]
-    duplicates = sorted({i for i in ids if ids.count(i) > 1})
+    counts = Counter(ids)
+    duplicates = sorted(i for i, n in counts.items() if n > 1)
     if duplicates:
         return [
             Diagnostic(
@@ -316,13 +318,14 @@ def _supersession_integrity(records: list[dict[str, object]]) -> list[Diagnostic
         for r in records
         if (target := _supersedes_target(r)) is not None
     }
+    id_set = set(ids)
     diagnostics = [
         Diagnostic(
             code="supersedes-dangling",
             message=f"{source} supersedes {target}, which is not in the bundle",
         )
         for source, target in sorted(chain.items())
-        if target not in set(ids)
+        if target not in id_set
     ]
     cycles: set[frozenset[str]] = set()
     for start in chain:
