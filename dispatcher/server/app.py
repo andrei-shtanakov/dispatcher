@@ -30,6 +30,7 @@ from dispatcher.core.models import (
     ProjectSnapshot,
 )
 from dispatcher.core.onboarding import OnboardingView
+from dispatcher.core.product_proposals import ProductProposalsReport
 from dispatcher.core.roadmap import (
     BlockersResponse,
     DriftResponse,
@@ -258,6 +259,27 @@ def create_app(
             return read_api.governance(cache, name)
         except read_api.ReadLookupError as err:
             raise HTTPException(status_code=404, detail=str(err)) from err
+
+    @app.get(
+        "/api/projects/{name}/product-proposals",
+        response_model=ProductProposalsReport,
+    )
+    def project_product_proposals(name: str) -> ProductProposalsReport:
+        """Inbox #129: read-only gate_waiting (GET only; producer decides —
+        dispatcher renders). 404 codes are structured so the panel can tell
+        «not this kind of project» from «unknown project»."""
+        try:
+            return read_api.product_proposals(cache, name)
+        except read_api.ReadLookupError as err:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "project-not-found", "message": str(err)},
+            ) from err
+        except read_api.NotImpresarioMirrorError as err:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "not-impresario-mirror", "message": str(err)},
+            ) from err
 
     @app.get("/api/roadmap/{item_id}", response_model=RoadmapItemView)
     def roadmap_item(item_id: str) -> RoadmapItemView:
