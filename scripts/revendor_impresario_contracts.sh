@@ -190,6 +190,6 @@ cat >&2 << EOF
 re-vendored both impresario contracts at $NEW_PIN
   provenance: $PROVENANCE
               $PROVENANCE_NOTE
-  next:       uv run pytest tests/test_impresario_contracts_vendor.py \
+  next:       uv run pytest tests/test_impresario_contracts_vendor.py \\
                 tests/test_product_proposals.py -v
 EOF
