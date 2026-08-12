@@ -64,7 +64,9 @@ jobs:
       # Same discipline for the product-proposals live smoke (inbox #129):
       # the real impresario tree at the vendored pin, or the test FAILS.
       - name: checkout pinned impresario (product-proposals live smoke)
-        run: echo "IMPRESARIO_PINNED_DIR=$(scripts/checkout_pinned_impresario.sh)" >> "$GITHUB_ENV"
+        run: |
+          dir="$(scripts/checkout_pinned_impresario.sh)"
+          echo "IMPRESARIO_PINNED_DIR=$dir" >> "$GITHUB_ENV"
       - run: uv run pytest tests/ -v
 
   plan-fields:
