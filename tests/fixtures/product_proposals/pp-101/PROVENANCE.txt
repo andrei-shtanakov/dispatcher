@@ -1,0 +1,9 @@
+source: impresario pilot/forconcept/pp-101 (the first live bundle)
+commit: 28727ff76a3983744596137706c844c95a5ad12b  (same as the contract pin)
+copied: 2026-08-12
+files: proposal.yaml, decisions/gd-001.yaml, decisions/gd-002.yaml — only the
+  contract-relevant files; cd-*/rp-*/idea/exchange-log/loop.state/trace do not
+  affect gate_waiting classification and are deliberately omitted.
+note: pinned test fixture (read from git objects, not the working tree).
+  Acceptance scenarios mutate a tmp_path copy of THIS directory — the files
+  here are never edited. Refresh together with a contract re-vendor.
