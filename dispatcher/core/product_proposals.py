@@ -147,11 +147,11 @@ class ProductProposalsReport(BaseModel):
     mirror_path: str
     bundles: list[ProposalBundle] = Field(default_factory=list)
     waits: list[GateWait] = Field(default_factory=list)
+    needs_human: list[LoopWait] = Field(default_factory=list)
     diagnostics: list[Diagnostic] = Field(default_factory=list)
     # Any non-ok bundle or report-level diagnostic. A plain GateWait does
     # NOT raise attention — waiting is expected business work.
     attention: bool = False
-    needs_human: list[LoopWait] = Field(default_factory=list)
 
 
 class _StrictLoader(yaml.SafeLoader):
