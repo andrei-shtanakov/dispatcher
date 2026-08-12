@@ -404,7 +404,7 @@ def _load_bundle(mirror_root: Path, bundle_dir: Path) -> ProposalBundle:
             Diagnostic(
                 code="proposal-unreadable",
                 message="not a YAML mapping",
-                path=f"{rel}/proposal.yaml",
+                path=_relpath(bundle_dir / "proposal.yaml", mirror_root),
             )
         )
     elif not _proposal_validator().is_valid(data):
@@ -412,7 +412,7 @@ def _load_bundle(mirror_root: Path, bundle_dir: Path) -> ProposalBundle:
             Diagnostic(
                 code="proposal-schema-invalid",
                 message="does not match the vendored product-proposal/v1",
-                path=f"{rel}/proposal.yaml",
+                path=_relpath(bundle_dir / "proposal.yaml", mirror_root),
             )
         )
     else:

@@ -522,6 +522,17 @@ def test_in_mirror_file_symlink_stays_readable(tmp_path: Path) -> None:
     assert b.state == "ok" and b.waits == []
 
 
+def test_root_level_bundle_diagnostic_path_has_one_spelling(tmp_path: Path) -> None:
+    """proposal.yaml diagnostics use one path spelling everywhere: the
+    root-level bundle case must say "proposal.yaml", not "./proposal.yaml"."""
+    from dispatcher.core.product_proposals import _load_bundle
+
+    mirror = tmp_path / "mirror"
+    _mk(mirror, "proposal.yaml", "proposal_id: PP-101\n")  # schema-invalid
+    b = _load_bundle(mirror, mirror)
+    assert b.diagnostics[0].path == "proposal.yaml"
+
+
 def test_missing_decisions_dir_is_a_valid_bundle(tmp_path: Path) -> None:
     mirror = tmp_path / "mirror"
     _mk(
