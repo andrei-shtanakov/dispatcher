@@ -140,7 +140,20 @@
       `GET /api/projects/{name}/product-proposals`). Перед кодом — короткий
       design note: состав и семантика parity для TUI, VSCode и MCP (инварианты
       FR-05/FR-06; отдельно решить про MCP — в фазе 1 был явно вне scope).
-      Реализация отдельной сессией.
+      Реализация отдельной сессией. Parity включает и `needs_human`/loop-статусы
+      фазы 2.
+
+- [x] Read-only `needs_human` из loop-state/v1 — фаза 2 gate_waiting — PR #136 @owner:github:andrei-shtanakov @id:product-proposal-needs-human
+      Принятие inbox-issue #136 от impresario (ADR-ECO-006), продолжение
+      #129 (фаза 1 — PR #132..#135). Единый re-pin всех трёх контрактов @
+      `51e3103` (anti-mix по трём манифестам, checkout — трёхсторонний
+      agreement). `loop.state` классифицируется fail-closed
+      (absent | running | needs_human | ready_for_business | failed |
+      unknown), строгий JSON, локальный membership-чек `proposal_id`;
+      identity ожидания `(loop_id, stop.iteration)`, freshness `stop.at`.
+      Панель: чипы loop-статусов (включая absent) + таблица needs_human +
+      «0 loops waiting». Acceptance #136 на пинованной копии PP-101.
+      Producer-side `LOOPSTATE_*` кросс-чеки остаются за impresario.
 
 ## Кросс-репные контракты
 
