@@ -6,6 +6,7 @@ mirrors and exercise the serialized public response.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import httpx
@@ -83,6 +84,7 @@ async def test_undetected_mirror_is_200_mirror_not_detected(
     assert data["bundles"] == []
     assert [d["code"] for d in data["diagnostics"]] == ["mirror-not-detected"]
     assert data["attention"] is True
+    assert data["needs_human"] == []
 
 
 async def test_healthy_empty_mirror_is_200_zero_bundles(tmp_path: Path) -> None:
@@ -93,6 +95,7 @@ async def test_healthy_empty_mirror_is_200_zero_bundles(tmp_path: Path) -> None:
     data = resp.json()
     assert data["bundles"] == [] and data["waits"] == []
     assert data["diagnostics"] == [] and data["attention"] is False
+    assert data["needs_human"] == []
 
 
 async def test_anchors_lost_after_discovery_is_200_anchors_missing(
@@ -110,6 +113,7 @@ async def test_anchors_lost_after_discovery_is_200_anchors_missing(
     data = resp.json()
     assert [d["code"] for d in data["diagnostics"]] == ["mirror-anchors-missing"]
     assert data["attention"] is True
+    assert data["needs_human"] == []
 
 
 async def test_partial_result_is_200_with_attention(tmp_path: Path) -> None:
@@ -123,8 +127,44 @@ async def test_partial_result_is_200_with_attention(tmp_path: Path) -> None:
     assert resp.status_code == 200
     data = resp.json()
     assert [b["state"] for b in data["bundles"]] == ["ok", "unreadable"]
+    assert [b["loop_status"] for b in data["bundles"]] == ["absent", "unknown"]
     assert [
         (w["proposal_id"], w["gate_id"], w["authority"]) for w in data["waits"]
     ] == [("PP-101", "qg5_business", "business_owner")]
     assert data["waits"][0]["proposal_updated_at"] == "2026-08-12T04:12:30Z"
     assert data["attention"] is True
+    assert data["needs_human"] == []
+
+
+async def test_needs_human_serializes_through_the_route(tmp_path: Path) -> None:
+    mirror = make_impresario(tmp_path)
+    _seed_wait(mirror)
+    (mirror / "pilot" / "pp-101" / "loop.state").write_text(
+        json.dumps(
+            {
+                "loop_id": "LOOP-101",
+                "idea_ref": "idea://IDEA-101",
+                "idea_input_hash": "sha256:" + "f" * 64,
+                "proposal_id": "PP-101",
+                "exchange_log_id": "XL-101",
+                "max_iterations": 3,
+                "stop": {
+                    "verdict": "needs_human",
+                    "reason": "ждём человека",
+                    "iteration": 1,
+                    "at": "2026-08-12T05:00:00Z",
+                },
+            }
+        )
+    )
+    async with _client(tmp_path) as client:
+        resp = await client.get("/api/projects/impresario/product-proposals")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert [b["loop_status"] for b in data["bundles"]] == ["needs_human"]
+    assert [
+        (w["loop_id"], w["iteration"], w["reason"], w["stopped_at"])
+        for w in data["needs_human"]
+    ] == [("LOOP-101", 1, "ждём человека", "2026-08-12T05:00:00Z")]
+    # both wait kinds coexist on one bundle: Gate A + loop
+    assert [w["gate_id"] for w in data["waits"]] == ["qg5_business"]
