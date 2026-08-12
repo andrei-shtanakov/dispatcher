@@ -15,8 +15,14 @@
 #   IMPRESARIO_PINNED_DIR="$(scripts/checkout_pinned_impresario.sh)" \
 #     uv run pytest tests/test_product_proposals_live_smoke.py -v
 #
+# The printed directory outlives this script — the caller owns its lifetime
+# (the test above reads it after we exit). Only the bare object store we
+# create for a network fetch is cleaned up on exit; a caller-supplied
+# --from store is never touched.
+#
 # Exit: 0 ok · 1 usage · 2 source or commit unavailable ·
-#       3 provenance failure (manifest disagreement, or PP-101 absent)
+#       3 provenance failure (manifest disagreement, unreadable/malformed
+#       manifest, or PP-101 absent)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -36,7 +42,7 @@ while [ $# -gt 0 ]; do
 done
 
 command -v python3 > /dev/null 2>&1 || die 2 "python3 not found on PATH"
-read -r PIN_A PIN_B <<< "$(python3 - "$REPO_ROOT" << 'PY'
+PINS="$(python3 - "$REPO_ROOT" << 'PY'
 import json
 import pathlib
 import sys
@@ -49,6 +55,11 @@ pins = [
 print(pins[0], pins[1])
 PY
 )" || die 3 "could not read producer_commit from the vendored manifests"
+read -r PIN_A PIN_B <<< "$PINS"
+[[ "$PIN_A" =~ ^[0-9a-f]{40}$ ]] ||
+  die 3 "could not read producer_commit from the vendored manifests"
+[[ "$PIN_B" =~ ^[0-9a-f]{40}$ ]] ||
+  die 3 "could not read producer_commit from the vendored manifests"
 [ "$PIN_A" = "$PIN_B" ] ||
   die 3 "the two manifests disagree on producer_commit: $PIN_A vs $PIN_B"
 PIN="$PIN_A"
@@ -59,6 +70,7 @@ if [ -n "$FROM" ]; then
   STORE="$FROM"
 else
   STORE="$WORK/store"
+  trap 'rm -rf "$STORE"' EXIT
   git init --quiet --bare "$STORE"
   git -C "$STORE" fetch --quiet --depth=1 "$PRODUCER_URL" "$PIN" ||
     die 2 "could not fetch $PIN from $PRODUCER_URL"
