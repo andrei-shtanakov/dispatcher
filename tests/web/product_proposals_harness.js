@@ -11,7 +11,9 @@
 //   3. «0 gates waiting» vs «0 bundles» are distinct labels;
 //   4. 404 hides the section; 200 + mirror diagnostics shows an error;
 //   5. the fetch-race guard: a late response for the PREVIOUS project never
-//      renders into the new panel;
+//      renders into the new panel — including when the stale call is parked
+//      in an EARLIER await (governance) at the moment the race guard's
+//      token is taken, not just when it is parked in the pp fetch itself;
 //   6. no local path becomes an href; hostile strings arrive escaped.
 //
 // Usage: node product_proposals_harness.js <path-to-index.html>
@@ -129,7 +131,12 @@ function overviewProjects(names) {
   }));
 }
 
-function defaultRoutes(names, ppRoute) {
+const DEFAULT_GOVERNANCE = () => ok({
+  state: 'no-data', reason: 'no gate_verdicts.jsonl', header: null,
+  artifacts: [], findings: [], unresolvable_findings: [],
+});
+
+function defaultRoutes(names, ppRoute, govRoute) {
   return [
     [u => u.startsWith('/api/overview'),
       () => ok({projects: overviewProjects(names)})],
@@ -150,10 +157,7 @@ function defaultRoutes(names, ppRoute) {
       roadmap_position: null, next_items: [], live_tasks: [], warnings: [],
     })],
     [u => u.endsWith('/spec-runner-config'), () => resp(404, {detail: 'none'})],
-    [u => u.endsWith('/governance'), () => ok({
-      state: 'no-data', reason: 'no gate_verdicts.jsonl', header: null,
-      artifacts: [], findings: [], unresolvable_findings: [],
-    })],
+    [u => u.endsWith('/governance'), govRoute || DEFAULT_GOVERNANCE],
     [u => u.endsWith('/product-proposals'), ppRoute],
   ];
 }
@@ -162,9 +166,9 @@ const drain = async (turns = 5) => {
   for (let i = 0; i < turns; i++) await new Promise(r => setTimeout(r, 0));
 };
 
-async function boot(ppRoute, names = ['impresario']) {
+async function boot(ppRoute, names = ['impresario'], govRoute) {
   const document = new Document(BODY_HTML);
-  const routes = defaultRoutes(names, ppRoute);
+  const routes = defaultRoutes(names, ppRoute, govRoute);
   const ctx = {
     document, console, URL,
     setTimeout, clearTimeout,
@@ -296,6 +300,38 @@ testCase('a late response for the previous project never renders (race guard)', 
     'the stale impresario response must not unhide the widget panel');
   check(screenText(env, 'product-proposals') === '',
     'no stale wait rendered into the new panel');
+});
+
+testCase('a stale call parked in governance (not pp) must not grab a fresh token (race guard II)', async () => {
+  // Final review MUST-FIX: the guard token has to be taken at detail()
+  // entry, before the onboarding/spec-runner-config/governance awaits — not
+  // just before the pp fetch. This delays GOVERNANCE (an EARLIER await),
+  // not product-proposals, to prove the stale call is already behind ppGen
+  // by the time it reaches the pp block, however late it resumes.
+  let releaseGov;
+  const slowGov = new Promise(resolve => { releaseGov = resolve; });
+  const govRoute = u => u.includes('impresario')
+    ? slowGov.then(DEFAULT_GOVERNANCE)
+    : DEFAULT_GOVERNANCE();
+  const ppRoute = u => u.includes('impresario') ? ok(WAITING) : notMirror();
+  const env = await boot(ppRoute, ['impresario', 'widget'], govRoute);
+  // Click impresario WITHOUT awaiting: detail() parks on the slow governance
+  // fetch, i.e. BEFORE it ever reaches the pp block. Awaiting here would
+  // deadlock the case (same discipline as the race-guard case above).
+  const first = env.document
+    .querySelectorAll('#projects .card[data-name]')[0];
+  dispatch(first.querySelector('h2') || first, 'click');
+  await drain();
+  await openDetail(env, 1);   // widget: pp 404 -> hidden
+  releaseGov();               // the stale impresario call resumes LAST
+  await drain();
+  const title = env.document.getElementById('product-proposals-title');
+  check(!title.visible,
+    'a stale call resuming from a delayed governance fetch must not unhide the widget panel');
+  const text = screenText(env, 'product-proposals');
+  check(text === '', 'no stale panel content rendered into the new panel');
+  check(!text.includes('proposal://PP-101'),
+    'the previous project\'s wait must not leak in via a freshly-grabbed token');
 });
 
 testCase('no local path becomes an href; hostile strings arrive escaped', async () => {

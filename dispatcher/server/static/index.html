@@ -789,6 +789,14 @@ async function detail(name, dirName) {
   // into this project's panel when it lands
   taGen += 1;
   taRepo = null;
+  // Final review fix: the pp-race-guard token MUST be taken here, at
+  // detail() entry — not just before the pp fetch. A STALE call can still
+  // be parked in an earlier await (onboarding/spec-runner-config/governance)
+  // when a NEW detail() call starts; taking the token late would let the
+  // stale call resume, grab a FRESH token, and render the wrong project's
+  // waits. Taken here, the stale call's token is already behind ppGen by
+  // the time it reaches the pp block below, so every check there fails shut.
+  const myPp = ++ppGen;
   document.getElementById("detail-name").textContent = "— " + name;
   document.getElementById("detail").textContent = "loading…";
   try {
@@ -844,13 +852,17 @@ async function detail(name, dirName) {
 
   const ppTitle = document.getElementById("product-proposals-title");
   const ppPanel = document.getElementById("product-proposals");
-  ppTitle.hidden = true;
-  ppPanel.textContent = "";
+  // Final review fix: this reset must also be behind the token check — a
+  // STALE call resuming here must not blank the CURRENT project's already-
+  // rendered panel (the reverse of the race the token otherwise guards).
+  if (myPp === ppGen) {
+    ppTitle.hidden = true;
+    ppPanel.textContent = "";
+  }
   // Spec «Web panel»: 404 (not this kind of project / unknown project)
   // hides the section; a 200 report — including mirror-not-detected and
   // mirror-anchors-missing — is RENDERED, error and all. The generation
   // token drops a late response for the previous project.
-  const myPp = ++ppGen;
   try {
     const resp = await fetch(
       "/api/projects/" + encodeURIComponent(name) + "/product-proposals"
