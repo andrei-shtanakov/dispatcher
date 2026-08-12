@@ -183,8 +183,8 @@ jobs:
           esac
           exit "$code"
 
-  # Both impresario contracts, one job: they share a single pin by
-  # construction (one re-vendor script), so one checkout answers for both.
+  # All impresario contracts, one job: they share a single pin by
+  # construction (one re-vendor script), so one checkout answers for all.
   drift-impresario-contracts:
     runs-on: ubuntu-latest
     steps:
@@ -198,7 +198,7 @@ jobs:
           path: _upstream/impresario
       - uses: astral-sh/setup-uv@v8.1.0
       - run: uv sync
-      - name: compare canon against both vendored copies
+      - name: compare canon against all vendored copies
         run: |
           overall=0
           for pair in \

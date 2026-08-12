@@ -3,6 +3,6 @@ commit: 51e3103b5c88989a1d4a01a659d21790a92bb76b
 vendored: 2026-08-12
 note: pinned copy (repo-boundaries vendoring, ADR-ECO-003). Do not edit here —
   re-vendor with scripts/revendor_impresario_contracts.sh, which re-vendors
-  BOTH impresario contract directories from the one commit it is given, so
-  the two manifests can never name different commits. Nothing in shipped
+  ALL impresario contract directories from the one commit it is given, so
+  their manifests can never name different commits. Nothing in shipped
   code may read ../impresario at run time.
