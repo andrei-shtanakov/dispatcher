@@ -214,6 +214,236 @@ def _discover(mirror_root: Path) -> tuple[list[Path], list[Diagnostic]]:
     return bundles, diagnostics
 
 
+def _load_yaml_file(
+    path: Path, mirror_root: Path, code_prefix: str
+) -> tuple[object | None, Diagnostic | None]:
+    """Read one YAML file fail-closed: escape guard, UTF-8, strict parse."""
+    rel = _relpath(path, mirror_root)
+    if not _inside(path, mirror_root):
+        return None, Diagnostic(
+            code=f"{code_prefix}-path-escape",
+            message="resolves outside the mirror root; not read",
+            path=rel,
+        )
+    try:
+        data = _strict_load(path.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as err:
+        return None, Diagnostic(
+            code=f"{code_prefix}-unreadable",
+            message=f"{type(err).__name__}: {err}",
+            path=rel,
+        )
+    return data, None
+
+
+def _load_decisions(
+    bundle_dir: Path, mirror_root: Path, *, classify: bool
+) -> tuple[list[dict[str, object]], list[Diagnostic]]:
+    """Read decisions/*.yaml, collecting ALL problems (never just the first).
+
+    classify=False (untrusted proposal): read/parse errors are still
+    collected, but schema validation — semantic classification — is skipped.
+    An absent decisions/ directory is a valid bundle with no decisions.
+    """
+    decisions_dir = bundle_dir / "decisions"
+    diagnostics: list[Diagnostic] = []
+    records: list[dict[str, object]] = []
+    try:
+        files = sorted(p for p in decisions_dir.iterdir() if p.name.endswith(".yaml"))
+    except FileNotFoundError:
+        return [], []
+    except OSError as err:
+        return [], [
+            Diagnostic(
+                code="decision-unreadable",
+                message=f"cannot list decisions/: {type(err).__name__}: {err}",
+                path=_relpath(decisions_dir, mirror_root),
+            )
+        ]
+    for path in files:
+        data, diag = _load_yaml_file(path, mirror_root, "decision")
+        if diag is not None:
+            diagnostics.append(diag)
+            continue
+        if not classify:
+            continue
+        if not isinstance(data, dict):
+            diagnostics.append(
+                Diagnostic(
+                    code="decision-unreadable",
+                    message="not a YAML mapping",
+                    path=_relpath(path, mirror_root),
+                )
+            )
+        elif not _decision_validator().is_valid(data):
+            diagnostics.append(
+                Diagnostic(
+                    code="decision-schema-invalid",
+                    message="does not match the vendored gate-decision/v1",
+                    path=_relpath(path, mirror_root),
+                )
+            )
+        else:
+            records.append(data)
+    return records, diagnostics
+
+
+def _supersedes_target(record: dict[str, object]) -> str | None:
+    raw = record.get("supersedes")
+    if isinstance(raw, str):
+        return raw.removeprefix("gate-decision://")
+    return None
+
+
+def _supersession_integrity(records: list[dict[str, object]]) -> list[Diagnostic]:
+    """Duplicate ids, dangling supersedes, self/cyclic supersession.
+
+    Runs only over a fully schema-valid decision set; any hit means the
+    decision history is unprovable — the caller classifies unknown.
+    """
+    ids = [str(r["decision_id"]) for r in records]
+    duplicates = sorted({i for i in ids if ids.count(i) > 1})
+    if duplicates:
+        return [
+            Diagnostic(
+                code="decision-id-duplicate",
+                message=f"decision_id {d} appears more than once in the bundle",
+            )
+            for d in duplicates
+        ]
+    chain = {
+        str(r["decision_id"]): target
+        for r in records
+        if (target := _supersedes_target(r)) is not None
+    }
+    diagnostics = [
+        Diagnostic(
+            code="supersedes-dangling",
+            message=f"{source} supersedes {target}, which is not in the bundle",
+        )
+        for source, target in sorted(chain.items())
+        if target not in set(ids)
+    ]
+    cycles: set[frozenset[str]] = set()
+    for start in chain:
+        seen: list[str] = []
+        current: str | None = start
+        while current in chain:
+            if current in seen:
+                cycles.add(frozenset(seen[seen.index(current) :]))
+                break
+            seen.append(current)
+            current = chain[current]
+    diagnostics.extend(
+        Diagnostic(
+            code="supersedes-cycle",
+            message=f"supersession cycle: {', '.join(sorted(members))}",
+        )
+        for members in sorted(cycles, key=sorted)
+    )
+    return diagnostics
+
+
+def _gate_wait(
+    bundle_path: str,
+    proposal: dict[str, object],
+    decisions: list[dict[str, object]],
+) -> GateWait | None:
+    """The version-matched active-approve rule (spec «Classification»)."""
+    gate_id = _STATUS_GATE.get(str(proposal["status"]))
+    if gate_id is None:
+        return None
+    proposal_id = str(proposal["proposal_id"])
+    version = int(proposal["version"])  # type: ignore[arg-type]
+    ref = f"proposal://{proposal_id}"
+    superseded = {
+        target for r in decisions if (target := _supersedes_target(r)) is not None
+    }
+    for record in decisions:
+        subject = record["subject"]
+        assert isinstance(subject, dict)  # schema-guaranteed
+        if (
+            record["decision"] == "approve"
+            and record["gate_id"] == gate_id
+            and subject["kind"] == "product_proposal"
+            and subject["ref"] == ref
+            and subject["version"] == version
+            and str(record["decision_id"]) not in superseded
+        ):
+            return None
+    return GateWait(
+        proposal_id=proposal_id,
+        gate_id=gate_id,
+        gate_label=_GATE_LABEL[gate_id],
+        authority=_GATE_AUTHORITY[gate_id],
+        artifact_ref=ref,
+        bundle_path=bundle_path,
+        version=version,
+        proposal_updated_at=str(proposal["updated_at"]),
+    )
+
+
+def _load_bundle(mirror_root: Path, bundle_dir: Path) -> ProposalBundle:
+    """Classify one bundle; the global conflict pass runs in the caller."""
+    rel = _relpath(bundle_dir, mirror_root) or "."
+    diagnostics: list[Diagnostic] = []
+    proposal: dict[str, object] | None = None
+
+    data, diag = _load_yaml_file(bundle_dir / "proposal.yaml", mirror_root, "proposal")
+    if diag is not None:
+        diagnostics.append(diag)
+    elif not isinstance(data, dict):
+        diagnostics.append(
+            Diagnostic(
+                code="proposal-unreadable",
+                message="not a YAML mapping",
+                path=f"{rel}/proposal.yaml",
+            )
+        )
+    elif not _proposal_validator().is_valid(data):
+        diagnostics.append(
+            Diagnostic(
+                code="proposal-schema-invalid",
+                message="does not match the vendored product-proposal/v1",
+                path=f"{rel}/proposal.yaml",
+            )
+        )
+    else:
+        proposal = data
+
+    decisions, decision_diags = _load_decisions(
+        bundle_dir, mirror_root, classify=proposal is not None
+    )
+    diagnostics.extend(decision_diags)
+    if proposal is not None and not decision_diags:
+        diagnostics.extend(_supersession_integrity(decisions))
+
+    diagnostics.sort(key=lambda d: (d.path or "", d.code, d.message))
+    if any(d.code in _UNREADABLE_CODES for d in diagnostics):
+        state: BundleState = "unreadable"
+    elif diagnostics:
+        state = "unknown"
+    else:
+        state = "ok"
+
+    waits: list[GateWait] = []
+    if state == "ok" and proposal is not None:
+        wait = _gate_wait(rel, proposal, decisions)
+        if wait is not None:
+            waits.append(wait)
+
+    return ProposalBundle(
+        path=rel,
+        state=state,
+        diagnostics=diagnostics,
+        proposal_id=str(proposal["proposal_id"]) if proposal else None,
+        status=str(proposal["status"]) if proposal else None,
+        version=int(proposal["version"]) if proposal else None,  # type: ignore[arg-type]
+        updated_at=str(proposal["updated_at"]) if proposal else None,
+        waits=waits,
+    )
+
+
 def collect_product_proposals(mirror_root: Path) -> ProductProposalsReport:
     """Scan the impresario mirror and classify every proposal bundle.
 

@@ -15,6 +15,7 @@ import yaml
 
 from dispatcher.core.product_proposals import (
     ANCHOR_FILES,
+    ProposalBundle,
     _strict_load,
 )
 
@@ -147,3 +148,386 @@ def test_walk_error_is_a_report_diagnostic_not_zero_bundles(
     bundles, diags = pp._discover(tmp_path)
     assert [d.code for d in diags] == ["walk-error"]
     assert diags[0].path == "locked"
+
+
+def proposal_yaml(
+    pid: str = "PP-101",
+    version: int = 8,
+    status: str = "approved",
+    updated: str = "2026-08-12T04:12:30Z",
+) -> str:
+    return (
+        f"proposal_id: {pid}\n"
+        "idea_ref: idea://IDEA-101\n"
+        f"version: {version}\n"
+        f"status: {status}\n"
+        "iteration: 2\n"
+        "refs:\n"
+        "  exchange_log: exchange-log://XL-101\n"
+        "created_at: '2026-08-12T02:08:53Z'\n"
+        f"updated_at: '{updated}'\n"
+    )
+
+
+def decision_yaml(
+    did: str = "GD-001",
+    gate: str = "qg5_business",
+    version: int = 8,
+    decision: str = "approve",
+    ref: str = "proposal://PP-101",
+    supersedes: str | None = None,
+) -> str:
+    text = (
+        f"decision_id: {did}\n"
+        f"gate_id: {gate}\n"
+        "subject:\n"
+        "  kind: product_proposal\n"
+        f"  ref: {ref}\n"
+        f"  version: {version}\n"
+        f"decision: {decision}\n"
+        "decided_by:\n"
+        "  kind: human\n"
+        "  id: andrei\n"
+        "  role: business_owner\n"
+        "decided_at: '2026-08-12T04:09:21Z'\n"
+        "reason: test\n"
+    )
+    if decision == "recycle":
+        text += "return_to: in_iteration\nrequired_changes:\n- fix\n"
+    if supersedes is not None:
+        text += f"supersedes: gate-decision://{supersedes}\n"
+    return text
+
+
+def make_bundle(
+    root: Path,
+    rel: str = "pilot/pp-101",
+    proposal: str | None = None,
+    decisions: dict[str, str] | None = None,
+) -> Path:
+    bundle = root / rel
+    (bundle / "decisions").mkdir(parents=True, exist_ok=True)
+    _mk(root, f"{rel}/proposal.yaml", proposal or proposal_yaml())
+    for name, text in (decisions or {}).items():
+        _mk(root, f"{rel}/decisions/{name}", text)
+    return bundle
+
+
+def _bundle(root: Path, rel: str = "pilot/pp-101") -> ProposalBundle:
+    from dispatcher.core.product_proposals import _load_bundle
+
+    return _load_bundle(root, root / rel)
+
+
+def test_ready_for_business_with_no_decisions_waits_for_gate_a(
+    tmp_path: Path,
+) -> None:
+    make_bundle(
+        tmp_path, proposal=proposal_yaml(status="ready_for_business", version=6)
+    )
+    b = _bundle(tmp_path)
+    assert b.state == "ok"
+    assert [
+        (w.gate_id, w.gate_label, w.authority, w.artifact_ref, w.version)
+        for w in b.waits
+    ] == [("qg5_business", "Gate A", "business_owner", "proposal://PP-101", 6)]
+    assert b.waits[0].proposal_updated_at == "2026-08-12T04:12:30Z"
+    assert b.waits[0].bundle_path == "pilot/pp-101"
+
+
+def test_business_approved_without_committee_approve_waits_for_gate_b(
+    tmp_path: Path,
+) -> None:
+    make_bundle(
+        tmp_path,
+        proposal=proposal_yaml(status="business_approved", version=7),
+        decisions={"gd-001.yaml": decision_yaml(version=6)},
+    )
+    b = _bundle(tmp_path)
+    assert b.state == "ok"
+    assert [(w.gate_id, w.authority) for w in b.waits] == [
+        ("qg5_committee", "committee_chair")
+    ]
+
+
+def test_terminal_and_iteration_statuses_have_no_wait(tmp_path: Path) -> None:
+    for status in ("draft", "in_iteration", "approved", "on_hold", "killed"):
+        make_bundle(tmp_path, rel=f"p/{status}", proposal=proposal_yaml(status=status))
+        b = _bundle(tmp_path, rel=f"p/{status}")
+        assert b.state == "ok" and b.waits == []
+
+
+def test_regression_recycle_old_approve_does_not_extinguish_new_wait(
+    tmp_path: Path,
+) -> None:
+    """Pinned semantics: after recycle the un-superseded old approve (v6) is
+    history, not permission — the v8 Gate A wait IS shown."""
+    make_bundle(
+        tmp_path,
+        proposal=proposal_yaml(status="ready_for_business", version=8),
+        decisions={"gd-001.yaml": decision_yaml(version=6)},
+    )
+    b = _bundle(tmp_path)
+    assert b.state == "ok"
+    assert [(w.gate_id, w.version) for w in b.waits] == [("qg5_business", 8)]
+
+
+def test_regression_version_matched_approve_extinguishes_before_status_update(
+    tmp_path: Path,
+) -> None:
+    """Pinned semantics (torn write): a version-matched approve already
+    recorded extinguishes the wait even though status has not caught up."""
+    make_bundle(
+        tmp_path,
+        proposal=proposal_yaml(status="ready_for_business", version=8),
+        decisions={"gd-001.yaml": decision_yaml(version=8)},
+    )
+    b = _bundle(tmp_path)
+    assert b.state == "ok" and b.waits == []
+
+
+def test_superseded_version_matched_approve_does_not_extinguish(
+    tmp_path: Path,
+) -> None:
+    make_bundle(
+        tmp_path,
+        proposal=proposal_yaml(status="ready_for_business", version=8),
+        decisions={
+            "gd-001.yaml": decision_yaml(did="GD-001", version=8),
+            "gd-002.yaml": decision_yaml(
+                did="GD-002", version=8, decision="recycle", supersedes="GD-001"
+            ),
+        },
+    )
+    b = _bundle(tmp_path)
+    assert b.state == "ok"
+    assert [w.gate_id for w in b.waits] == ["qg5_business"]
+
+
+def test_other_gate_ref_or_kind_is_history_not_permission(tmp_path: Path) -> None:
+    """A decision for another subject.ref or gate_id never touches the wait."""
+    make_bundle(
+        tmp_path,
+        proposal=proposal_yaml(status="ready_for_business", version=8),
+        decisions={
+            "gd-001.yaml": decision_yaml(version=8, ref="proposal://PP-999"),
+            "gd-002.yaml": decision_yaml(did="GD-002", gate="qg5_committee", version=8),
+        },
+    )
+    b = _bundle(tmp_path)
+    assert [w.gate_id for w in b.waits] == ["qg5_business"]
+
+
+def test_proposal_schema_invalid_is_unreadable(tmp_path: Path) -> None:
+    make_bundle(tmp_path, proposal="proposal_id: PP-101\n")  # misses required
+    b = _bundle(tmp_path)
+    assert b.state == "unreadable"
+    assert [d.code for d in b.diagnostics] == ["proposal-schema-invalid"]
+    assert b.waits == [] and b.proposal_id is None
+
+
+def test_proposal_not_utf8_is_unreadable(tmp_path: Path) -> None:
+    bundle = make_bundle(tmp_path)
+    (bundle / "proposal.yaml").write_bytes(b"\xff\xfe broken")
+    b = _bundle(tmp_path)
+    assert b.state == "unreadable"
+    assert [d.code for d in b.diagnostics] == ["proposal-unreadable"]
+
+
+def test_proposal_oserror_is_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The I/O-error branch, patched instead of chmod (unstable in CI)."""
+    make_bundle(tmp_path)
+    real = Path.read_bytes
+
+    def failing(self: Path) -> bytes:
+        if self.name == "proposal.yaml":
+            raise OSError(5, "Input/output error")
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", failing)
+    b = _bundle(tmp_path)
+    assert b.state == "unreadable"
+    assert [d.code for d in b.diagnostics] == ["proposal-unreadable"]
+
+
+def test_decision_oserror_is_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The decision I/O-error branch — patched, not chmod (spec «Testing»:
+    unreadability is invalid UTF-8; the OSError branch gets its own test)."""
+    make_bundle(
+        tmp_path,
+        proposal=proposal_yaml(status="ready_for_business", version=8),
+        decisions={"gd-001.yaml": decision_yaml(version=8)},
+    )
+    real = Path.read_bytes
+
+    def failing(self: Path) -> bytes:
+        if self.name == "gd-001.yaml":
+            raise OSError(5, "Input/output error")
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", failing)
+    b = _bundle(tmp_path)
+    assert b.state == "unknown"
+    assert [d.code for d in b.diagnostics] == ["decision-unreadable"]
+    assert b.waits == []
+
+
+def test_invalid_decision_makes_bundle_unknown_not_clean(tmp_path: Path) -> None:
+    make_bundle(
+        tmp_path,
+        proposal=proposal_yaml(status="approved"),
+        decisions={"gd-001.yaml": "decision_id: GD-001\n"},  # schema-invalid
+    )
+    b = _bundle(tmp_path)
+    assert b.state == "unknown"
+    assert [d.code for d in b.diagnostics] == ["decision-schema-invalid"]
+    assert b.waits == []
+    assert b.proposal_id == "PP-101"  # proposal fields stay filled
+
+
+def test_all_decision_errors_are_collected_not_just_the_first(
+    tmp_path: Path,
+) -> None:
+    bundle = make_bundle(
+        tmp_path,
+        decisions={
+            "a.yaml": "decision_id: GD-001\n",  # schema-invalid
+            "b.yaml": "x: 1\nx: 2\n",  # duplicate keys -> unreadable
+        },
+    )
+    (bundle / "decisions" / "c.yaml").write_bytes(b"\xff\xfe")  # not UTF-8
+    b = _bundle(tmp_path)
+    assert b.state == "unknown"
+    assert sorted(d.code for d in b.diagnostics) == [
+        "decision-schema-invalid",
+        "decision-unreadable",
+        "decision-unreadable",
+    ]
+
+
+def test_unparseable_proposal_still_collects_decision_read_errors(
+    tmp_path: Path,
+) -> None:
+    """No trusted subject -> no semantic classification of decisions, but
+    their READ errors are still collected; the schema-invalid decision is
+    deliberately NOT reported (that is semantic classification)."""
+    bundle = make_bundle(
+        tmp_path,
+        proposal="status: [broken\n",
+        decisions={"a.yaml": "decision_id: GD-001\n"},
+    )
+    (bundle / "decisions" / "b.yaml").write_bytes(b"\xff\xfe")
+    b = _bundle(tmp_path)
+    assert b.state == "unreadable"
+    assert sorted(d.code for d in b.diagnostics) == [
+        "decision-unreadable",
+        "proposal-unreadable",
+    ]
+
+
+def test_duplicate_decision_id_is_unknown(tmp_path: Path) -> None:
+    make_bundle(
+        tmp_path,
+        proposal=proposal_yaml(status="ready_for_business", version=8),
+        decisions={
+            "a.yaml": decision_yaml(did="GD-001", version=8),
+            "b.yaml": decision_yaml(did="GD-001", version=8, gate="qg5_committee"),
+        },
+    )
+    b = _bundle(tmp_path)
+    assert b.state == "unknown"
+    assert [d.code for d in b.diagnostics] == ["decision-id-duplicate"]
+    assert b.waits == []
+
+
+def test_dangling_supersedes_is_unknown(tmp_path: Path) -> None:
+    make_bundle(
+        tmp_path,
+        decisions={
+            "a.yaml": decision_yaml(did="GD-002", version=8, supersedes="GD-777")
+        },
+    )
+    b = _bundle(tmp_path)
+    assert b.state == "unknown"
+    assert [d.code for d in b.diagnostics] == ["supersedes-dangling"]
+
+
+def test_supersedes_cycle_is_unknown(tmp_path: Path) -> None:
+    make_bundle(
+        tmp_path,
+        decisions={
+            "a.yaml": decision_yaml(did="GD-001", version=8, supersedes="GD-002"),
+            "b.yaml": decision_yaml(did="GD-002", version=8, supersedes="GD-001"),
+        },
+    )
+    b = _bundle(tmp_path)
+    assert b.state == "unknown"
+    assert "supersedes-cycle" in {d.code for d in b.diagnostics}
+
+
+def test_self_supersede_is_unknown(tmp_path: Path) -> None:
+    make_bundle(
+        tmp_path,
+        decisions={
+            "a.yaml": decision_yaml(did="GD-001", version=8, supersedes="GD-001")
+        },
+    )
+    b = _bundle(tmp_path)
+    assert b.state == "unknown"
+    assert "supersedes-cycle" in {d.code for d in b.diagnostics}
+
+
+def test_decision_symlink_escape_is_unknown(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.yaml"
+    outside.write_text(decision_yaml(version=8))
+    mirror = tmp_path / "mirror"
+    bundle = make_bundle(
+        mirror, proposal=proposal_yaml(status="ready_for_business", version=8)
+    )
+    (bundle / "decisions" / "gd-x.yaml").symlink_to(outside)
+    b = _bundle(mirror)
+    assert b.state == "unknown"
+    assert [d.code for d in b.diagnostics] == ["decision-path-escape"]
+    assert b.waits == []
+
+
+def test_proposal_symlink_escape_is_unreadable(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.yaml"
+    outside.write_text(proposal_yaml())
+    mirror = tmp_path / "mirror"
+    (mirror / "pilot" / "pp-101").mkdir(parents=True)
+    (mirror / "pilot" / "pp-101" / "proposal.yaml").symlink_to(outside)
+    b = _bundle(mirror)
+    assert b.state == "unreadable"
+    assert [d.code for d in b.diagnostics] == ["proposal-path-escape"]
+
+
+def test_in_mirror_file_symlink_stays_readable(tmp_path: Path) -> None:
+    """The rule is escape, not symlink-ness: a link resolving inside the
+    mirror is fine."""
+    mirror = tmp_path / "mirror"
+    bundle = make_bundle(
+        mirror,
+        proposal=proposal_yaml(status="ready_for_business", version=8),
+    )
+    real = bundle / "decisions" / "real-gd.txt"
+    real.write_text(decision_yaml(version=8))
+    (bundle / "decisions" / "gd-001.yaml").symlink_to(real)
+    b = _bundle(mirror)
+    assert b.state == "ok" and b.waits == []
+
+
+def test_missing_decisions_dir_is_a_valid_bundle(tmp_path: Path) -> None:
+    mirror = tmp_path / "mirror"
+    _mk(
+        mirror,
+        "pilot/pp-101/proposal.yaml",
+        proposal_yaml(status="ready_for_business", version=6),
+    )
+    b = _bundle(mirror)
+    assert b.state == "ok"
+    assert [w.gate_id for w in b.waits] == ["qg5_business"]
