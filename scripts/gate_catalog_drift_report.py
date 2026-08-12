@@ -50,9 +50,39 @@ UNAVAILABLE = "unavailable"
 _EXIT = {NO_DRIFT: 0, DRIFT: 1, UNAVAILABLE: 2}
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_VENDORED_REL = Path("contracts/steward-gate-catalog/v1")
-_SURFACE_FILE = "gate-catalog.yaml"
-_UPSTREAM_PATH = "profiles/gate-catalog.yaml"
+
+
+@dataclass(frozen=True)
+class ContractSpec:
+    """Everything that distinguishes one single-file steward contract.
+
+    The comparison, classification and reporting machinery below is shared;
+    a sibling contract (steward-roles-catalog/v1 via
+    `scripts/roles_catalog_drift_report.py`) reuses it by passing its own
+    spec instead of keeping a second 300-line copy in step by hand. The
+    module-level default is this file's own contract, so existing callers
+    and the workflow job are unchanged.
+    """
+
+    vendored_rel: str  # e.g. "contracts/steward-gate-catalog/v1"
+    surface_file: str  # the one vendored file, e.g. "gate-catalog.yaml"
+    upstream_path: str  # where the producer keeps it, for the commit log
+    # The shape probe: top-level keys the parsed YAML mapping must carry to
+    # count as this contract at all — a moved upstream layout must classify
+    # as UNAVAILABLE, never as DRIFT.
+    probe_keys: tuple[str, ...]
+    display_name: str  # e.g. "the gate catalog", for report prose
+    revendor_script: str  # the fix a red run points at
+
+
+GATE_CATALOG = ContractSpec(
+    vendored_rel="contracts/steward-gate-catalog/v1",
+    surface_file="gate-catalog.yaml",
+    upstream_path="profiles/gate-catalog.yaml",
+    probe_keys=("version", "obligation_vocabulary"),
+    display_name="the gate catalog",
+    revendor_script="scripts/revendor_steward_gate_catalog.sh",
+)
 
 
 @dataclass(frozen=True)
@@ -73,6 +103,7 @@ def compare(
     upstream_file: Path,
     vendored_dir: Path,
     provenance: dict[str, str],
+    spec: ContractSpec = GATE_CATALOG,
 ) -> Report:
     """Compare upstream's recomputed file hash against the vendored manifest.
 
@@ -119,17 +150,15 @@ def compare(
                 f"(`{type(exc).__name__}`). Nothing was compared.",
             ],
         )
-    if not isinstance(parsed, dict) or not {
-        "version",
-        "obligation_vocabulary",
-    } <= set(parsed):
+    if not isinstance(parsed, dict) or not set(spec.probe_keys) <= set(parsed):
+        probe = " + ".join(f"`{key}`" for key in spec.probe_keys)
         return report(
             UNAVAILABLE,
             [
                 "## Upstream unrecognized",
                 "",
-                f"`{upstream_file}` parses but does not look like the gate "
-                "catalog (no `version` + `obligation_vocabulary` mapping). "
+                f"`{upstream_file}` parses but does not look like "
+                f"{spec.display_name} (no {probe} mapping). "
                 "Nothing was compared — the path may no longer point at the "
                 "contract.",
             ],
@@ -158,7 +187,7 @@ def compare(
             (
                 str(e["sha256"])
                 for e in surface
-                if isinstance(e, dict) and e.get("path") == _SURFACE_FILE
+                if isinstance(e, dict) and e.get("path") == spec.surface_file
             ),
             None,
         )
@@ -169,7 +198,7 @@ def compare(
                 "## Vendored manifest malformed",
                 "",
                 f"`{manifest_path}` is missing `producer_commit` or a "
-                f"`surface` entry for `{_SURFACE_FILE}`. Nothing was "
+                f"`surface` entry for `{spec.surface_file}`. Nothing was "
                 "compared.",
             ],
         )
@@ -190,14 +219,14 @@ def compare(
         [
             "## Upstream drift",
             "",
-            f"- differing content: `{_SURFACE_FILE}`",
+            f"- differing content: `{spec.surface_file}`",
             "",
             "This is advisory. It does not block any pull request, and "
             "nothing was changed automatically.",
             "",
             "**Next step: a deliberate re-vendor PR** — read what upstream "
             "changed and why, and re-vendor at the new commit with "
-            "`scripts/revendor_steward_gate_catalog.sh`. Do not silence "
+            f"`{spec.revendor_script}`. Do not silence "
             "this by hand-editing a hash; the hash is the signal.",
         ],
         pin=pinned_commit,
@@ -262,14 +291,18 @@ def _commits_since_pin(
     return f"{header}\n\n" + "\n".join(f"- `{ln}`" for ln in lines)
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(
+    argv: list[str] | None = None,
+    spec: ContractSpec = GATE_CATALOG,
+    description: str | None = None,
+) -> int:
+    parser = argparse.ArgumentParser(description=description or __doc__)
     parser.add_argument(
         "upstream_file",
         type=Path,
-        help="checked-out upstream profiles/gate-catalog.yaml",
+        help=f"checked-out upstream {spec.upstream_path}",
     )
-    parser.add_argument("--vendored", type=Path, default=_REPO_ROOT / _VENDORED_REL)
+    parser.add_argument("--vendored", type=Path, default=_REPO_ROOT / spec.vendored_rel)
     parser.add_argument(
         "--upstream-root",
         type=Path,
@@ -286,7 +319,7 @@ def main(argv: list[str] | None = None) -> int:
         "ref": args.ref,
     }
     try:
-        report = compare(args.upstream_file, args.vendored, provenance)
+        report = compare(args.upstream_file, args.vendored, provenance, spec)
     except Exception as exc:  # noqa: BLE001 — last-resort net, see below
         # `compare()` guards every OSError it can anticipate. This is the
         # backstop for whatever it did not anticipate: an uncaught exception
@@ -305,7 +338,7 @@ def main(argv: list[str] | None = None) -> int:
             args.upstream_root,
             report.vendored_pin,
             provenance["commit"],
-            _UPSTREAM_PATH,
+            spec.upstream_path,
         )
     print(summary)
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")

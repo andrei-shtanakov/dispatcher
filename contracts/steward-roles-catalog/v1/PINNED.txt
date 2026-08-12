@@ -1,0 +1,8 @@
+source: steward profiles/roles.yaml
+commit: b79c858dc5f5dc7651f15a1cdf3bcd51a1de2d16
+vendored: 2026-08-12
+note: pinned copy (repo-boundaries vendoring, ADR-ECO-003). Do not edit here —
+  re-vendor with scripts/revendor_steward_roles_catalog.sh, which derives every
+  value in this directory from the one commit it is given. Procedure:
+  docs/revendor-steward-roles-catalog.md. Nothing in shipped code may read
+  ../steward at run time.

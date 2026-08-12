@@ -125,6 +125,7 @@ body which provenance mode was used, and paste the script's report.
 
 | Contract | Procedure |
 |---|---|
+| `contracts/steward-roles-catalog/v1` | `docs/revendor-steward-roles-catalog.md` |
 | `contracts/steward-gate-verdicts/v1` | this runbook |
 | `contracts/steward-gate-catalog/v1` | `docs/revendor-steward-gate-catalog.md` |
 | `contracts/github-checker-actions/v1` | `docs/revendor-github-checker-actions.md` |
