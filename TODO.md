@@ -143,7 +143,7 @@
       `core/governance.py` по словарю каталога — значение вне словаря =
       `unreadable`, fail-closed (NFR-02), отсутствующее значение валидно
       (старый producer). Ре-вендор: `docs/revendor-steward-gate-catalog.md`.
-- [ ] Вендор steward roles-catalog v1: пиненая копия `profiles/roles.yaml` @ `b79c858` + подготовка к следующему перепину gate-check @owner:github:andrei-shtanakov @id:vendor-roles-catalog
+- [x] Вендор steward roles-catalog v1: пиненая копия `profiles/roles.yaml` @ `b79c858` + подготовка к следующему перепину gate-check — PR #131 @owner:github:andrei-shtanakov @id:vendor-roles-catalog
       Принятие inbox-issue #128 от steward (ADR-ECO-006, DEC-007 §1). Канон:
       `steward/profiles/roles.yaml` (v1, 6 slug'ов: product, architects, qa,
       tech-lead, stream-owner, owner; `slug_pattern`; состав запинован на
@@ -158,6 +158,13 @@
       канонической форме (legacy `"@product"` = ProfileError, exit 2);
       `role-assignments.yaml` для solo-смоука не нужен; идентичности — точные
       строки без case-folding, канон `github:andrei-shtanakov`.
+      Закрыто PR #131: копия + обе гарантии (copy-integrity в PR-гейте с
+      пином состава v1, scheduled drift-job) + ре-вендор скрипт/runbook.
+      Drift-репортёр не скопирован, а параметризован (`ContractSpec` в
+      `gate_catalog_drift_report.py`, roles — тонкая обёртка). Чек-лист к
+      перепину gate-check записан в
+      `docs/revendor-steward-roles-catalog.md` — сам перепин произойдёт в
+      `@id:revendor-gate-verdicts-obligation-bundle`.
 - [ ] Ре-вендор `gate-verdicts/v1` бандлом steward: README-активация obligation + fixtures с obligation + stale-фраза в SCHEMA @owner:github:andrei-shtanakov @trigger:"steward обновил fixtures+SCHEMA gate-verdicts одним бандлом (inbox #125 п.3) — либо красный drift-steward-gate-verdicts" @id:revendor-gate-verdicts-obligation-bundle
       Из inbox #125 п.2–3: README контракта уже изменён точечно на пине
       `c26ca38` (активация obligation), SCHEMA.json не тронут побайтово —
