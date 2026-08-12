@@ -15,7 +15,6 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).parent.parent
-SCRIPT = REPO_ROOT / "scripts" / "revendor_impresario_contracts.sh"
 DSTS = (
     "contracts/impresario-product-proposal/v1",
     "contracts/impresario-gate-decision/v1",

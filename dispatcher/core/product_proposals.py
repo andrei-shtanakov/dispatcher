@@ -245,12 +245,16 @@ def _load_decisions(
     classify=False (untrusted proposal): read/parse errors are still
     collected, but schema validation — semantic classification — is skipped.
     An absent decisions/ directory is a valid bundle with no decisions.
+    Only the `.yaml` extension is contract, recognized case-insensitively
+    (e.g. `.YAML`); `.yml` is out of contract and is never read.
     """
     decisions_dir = bundle_dir / "decisions"
     diagnostics: list[Diagnostic] = []
     records: list[dict[str, object]] = []
     try:
-        files = sorted(p for p in decisions_dir.iterdir() if p.name.endswith(".yaml"))
+        files = sorted(
+            p for p in decisions_dir.iterdir() if p.suffix.lower() == ".yaml"
+        )
     except FileNotFoundError:
         return [], []
     except OSError as err:
@@ -400,7 +404,7 @@ def _load_bundle(mirror_root: Path, bundle_dir: Path) -> ProposalBundle:
             Diagnostic(
                 code="proposal-unreadable",
                 message="not a YAML mapping",
-                path=f"{rel}/proposal.yaml",
+                path=_relpath(bundle_dir / "proposal.yaml", mirror_root),
             )
         )
     elif not _proposal_validator().is_valid(data):
@@ -408,7 +412,7 @@ def _load_bundle(mirror_root: Path, bundle_dir: Path) -> ProposalBundle:
             Diagnostic(
                 code="proposal-schema-invalid",
                 message="does not match the vendored product-proposal/v1",
-                path=f"{rel}/proposal.yaml",
+                path=_relpath(bundle_dir / "proposal.yaml", mirror_root),
             )
         )
     else:
