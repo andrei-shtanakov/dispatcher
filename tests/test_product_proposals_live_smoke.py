@@ -8,11 +8,12 @@ Locally:
       uv run pytest tests/test_product_proposals_live_smoke.py -v
 
 Asserted against the SERIALIZED public response — attention, diagnostics,
-bundles, waits — not the core function's return value. At the pin the tree
-holds exactly one bundle outside contracts/ (pp-101, approved): a different
-result after a re-vendor is a real contract-behaviour change and must be
-reviewed, not re-pinned away. (contracts/examples/pp-001 doubles as live
-proof of the contracts/-segment exclusion.)
+bundles, waits, loop_status, needs_human — not the core function's return
+value. At the pin the tree holds exactly one bundle outside contracts/ (pp-101,
+approved) with a terminal loop status: a different result after a re-vendor is
+a real contract-behaviour change and must be reviewed, not re-pinned away.
+(contracts/examples/pp-001 doubles as live proof of the contracts/-segment
+exclusion.)
 """
 
 from __future__ import annotations
@@ -55,4 +56,6 @@ async def test_http_surface_on_the_pinned_real_mirror() -> None:
     assert [(b["path"], b["state"], b["status"]) for b in data["bundles"]] == [
         ("pilot/forconcept/pp-101", "ok", "approved")
     ]
+    assert [b["loop_status"] for b in data["bundles"]] == ["ready_for_business"]
     assert data["waits"] == []
+    assert data["needs_human"] == []

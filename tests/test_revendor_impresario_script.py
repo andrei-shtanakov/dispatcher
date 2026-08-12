@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).parent.parent
 DSTS = (
     "contracts/impresario-product-proposal/v1",
     "contracts/impresario-gate-decision/v1",
+    "contracts/impresario-loop-state/v1",
 )
 _GIT_ENV = {
     "GIT_AUTHOR_NAME": "t",
@@ -39,7 +40,7 @@ def _git(repo: Path, *args: str) -> str:
 
 @pytest.fixture
 def producer(tmp_path: Path) -> dict[str, object]:
-    """A miniature impresario: two commits over BOTH contract subdirs.
+    """A miniature impresario: two commits over all three contract subdirs.
 
     The second commit drops a fixture the first had — the file-deleted-
     upstream case a copy-over-the-top re-vendor gets wrong.
@@ -47,13 +48,17 @@ def producer(tmp_path: Path) -> dict[str, object]:
     repo = tmp_path / "impresario"
     pp = repo / "contracts" / "product-proposal" / "v1"
     gd = repo / "contracts" / "gate-decision" / "v1"
+    ls = repo / "contracts" / "loop-state" / "v1"
     (pp / "fixtures").mkdir(parents=True)
     (gd / "fixtures").mkdir(parents=True)
+    (ls / "fixtures").mkdir(parents=True)
     (pp / "schema.json").write_text('{"title": "pp"}\n')
     (pp / "fixtures" / "ok.yaml").write_text("a: 1\n")
     (pp / "fixtures" / "dropped.yaml").write_text("b: 2\n")
     (gd / "schema.json").write_text('{"title": "gd"}\n')
     (gd / "fixtures" / "ok.yaml").write_text("c: 3\n")
+    (ls / "schema.json").write_text('{"title": "ls"}\n')
+    (ls / "fixtures" / "ok.json").write_text('{"a": 1}\n')
     _git(repo, "init", "--quiet")
     _git(repo, "add", "-A")
     _git(repo, "commit", "--quiet", "-m", "one")
@@ -125,8 +130,9 @@ def test_upstream_deleted_file_does_not_survive(
 def test_failure_restores_both_previous_copies(
     producer: dict[str, object], sandbox: Path, tmp_path: Path
 ) -> None:
-    """A commit that has product-proposal/v1 but NO gate-decision/v1: the
-    second extraction fails, and neither live directory may have changed."""
+    """A commit that has product-proposal/v1 but NONE of the three contracts:
+    the second extraction fails, and none of the three live directories may
+    have changed."""
     repo = tmp_path / "half"
     pp = repo / "contracts" / "product-proposal" / "v1"
     pp.mkdir(parents=True)

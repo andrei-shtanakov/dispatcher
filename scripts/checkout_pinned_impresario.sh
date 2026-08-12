@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Extract the impresario mirror at the vendored pin for the live smoke.
 #
-# The pin is READ from the two vendored manifests, which must agree — a
+# The pin is READ from all three vendored manifests, which must agree — a
 # disagreement is exactly the mixed-versions state the PR gate forbids, so
 # it fails here too. PP-101 must exist at that commit: its absence is a
 # provenance FAILURE (the pin does not contain the bundle the smoke is
@@ -48,21 +48,29 @@ import pathlib
 import sys
 
 root = pathlib.Path(sys.argv[1]) / "contracts"
-pins = [
-    json.load(open(root / name / "v1" / "manifest.json"))["producer_commit"]
-    for name in ("impresario-product-proposal", "impresario-gate-decision")
-]
-print(pins[0], pins[1])
+names = (
+    "impresario-product-proposal",
+    "impresario-gate-decision",
+    "impresario-loop-state",
+)
+print(
+    " ".join(
+        json.load(open(root / name / "v1" / "manifest.json"))["producer_commit"]
+        for name in names
+    )
+)
 PY
 )" || die 3 "could not read producer_commit from the vendored manifests"
-read -r PIN_A PIN_B <<< "$PINS"
-[[ "$PIN_A" =~ ^[0-9a-f]{40}$ ]] ||
-  die 3 "could not read producer_commit from the vendored manifests"
-[[ "$PIN_B" =~ ^[0-9a-f]{40}$ ]] ||
-  die 3 "could not read producer_commit from the vendored manifests"
-[ "$PIN_A" = "$PIN_B" ] ||
-  die 3 "the two manifests disagree on producer_commit: $PIN_A vs $PIN_B"
-PIN="$PIN_A"
+read -r -a PIN_LIST <<< "$PINS"
+[ "${#PIN_LIST[@]}" -eq 3 ] ||
+  die 3 "could not read producer_commit from the vendored manifests: $PINS"
+for pin in "${PIN_LIST[@]}"; do
+  [[ "$pin" =~ ^[0-9a-f]{40}$ ]] ||
+    die 3 "not a full 40-hex producer_commit: $pin"
+done
+[ "${PIN_LIST[0]}" = "${PIN_LIST[1]}" ] && [ "${PIN_LIST[1]}" = "${PIN_LIST[2]}" ] ||
+  die 3 "the three manifests disagree on producer_commit: ${PIN_LIST[*]}"
+PIN="${PIN_LIST[0]}"
 
 WORK="$(mktemp -d)"
 if [ -n "$FROM" ]; then

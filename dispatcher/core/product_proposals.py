@@ -40,6 +40,7 @@ from pydantic import BaseModel, Field
 _CONTRACTS = Path(__file__).resolve().parents[2] / "contracts"
 _PROPOSAL_SCHEMA = _CONTRACTS / "impresario-product-proposal" / "v1" / "schema.json"
 _DECISION_SCHEMA = _CONTRACTS / "impresario-gate-decision" / "v1" / "schema.json"
+_LOOP_STATE_SCHEMA = _CONTRACTS / "impresario-loop-state" / "v1" / "schema.json"
 
 ANCHOR_FILES = (
     "contracts/product-proposal/v1/schema.json",
@@ -48,6 +49,20 @@ ANCHOR_FILES = (
 
 GateId = Literal["qg5_business", "qg5_committee"]
 BundleState = Literal["ok", "unreadable", "unknown", "conflict"]
+
+LoopStatus = Literal[
+    "absent",  # no loop.state file — normal, NOT an error
+    "running",  # valid file, stop: null
+    "needs_human",  # valid file, active human wait
+    "ready_for_business",  # valid file, terminal
+    "failed",  # valid file, terminal
+    "unknown",  # loop state untrusted (file problems, or the
+    # bundle is non-ok — the caller's rule)
+]
+_TERMINAL_LOOP: dict[str, LoopStatus] = {
+    "ready_for_business": "ready_for_business",
+    "failed": "failed",
+}
 
 _STATUS_GATE: dict[str, GateId] = {
     "ready_for_business": "qg5_business",
@@ -90,6 +105,22 @@ class GateWait(BaseModel):
     proposal_updated_at: str
 
 
+class LoopWait(BaseModel):
+    """One «the researcher↔creator loop waits for a human» record."""
+
+    loop_id: str
+    # stop.iteration; wait identity = (loop_id, iteration) — a repeated
+    # needs_human after resume is a NEW wait, not a duplicate.
+    iteration: int
+    proposal_id: str
+    reason: str
+    # stop.at — the actual stop time (unlike proposal_updated_at, this one
+    # IS a proven wait-start moment).
+    stopped_at: str
+    # Deterministic tie-break + provenance, NOT part of the identity.
+    bundle_path: str
+
+
 class ProposalBundle(BaseModel):
     """Every discovered bundle, lossless: non-ok rows keep ALL diagnostics."""
 
@@ -103,6 +134,11 @@ class ProposalBundle(BaseModel):
     # Computed ONLY for state == "ok". On any other state an empty list
     # means «suppressed», never «nothing waits».
     waits: list[GateWait] = Field(default_factory=list)
+    # "absent" is normal; "unknown" whenever the file is untrusted OR the
+    # bundle is non-ok. loop_waits computed ONLY for state == "ok" — empty
+    # on any other state means «suppressed», never «no loop wait».
+    loop_status: LoopStatus = "absent"
+    loop_waits: list[LoopWait] = Field(default_factory=list)
 
 
 class ProductProposalsReport(BaseModel):
@@ -111,6 +147,7 @@ class ProductProposalsReport(BaseModel):
     mirror_path: str
     bundles: list[ProposalBundle] = Field(default_factory=list)
     waits: list[GateWait] = Field(default_factory=list)
+    needs_human: list[LoopWait] = Field(default_factory=list)
     diagnostics: list[Diagnostic] = Field(default_factory=list)
     # Any non-ok bundle or report-level diagnostic. A plain GateWait does
     # NOT raise attention — waiting is expected business work.
@@ -159,6 +196,12 @@ def _proposal_validator() -> jsonschema.Draft202012Validator:
 @functools.cache
 def _decision_validator() -> jsonschema.Draft202012Validator:
     schema = json.loads(_DECISION_SCHEMA.read_text(encoding="utf-8"))
+    return jsonschema.Draft202012Validator(schema)
+
+
+@functools.cache
+def _loop_state_validator() -> jsonschema.Draft202012Validator:
+    schema = json.loads(_LOOP_STATE_SCHEMA.read_text(encoding="utf-8"))
     return jsonschema.Draft202012Validator(schema)
 
 
@@ -351,6 +394,90 @@ def _supersession_integrity(records: list[dict[str, object]]) -> list[Diagnostic
     return diagnostics
 
 
+def _json_no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """object_pairs_hook rejecting duplicate keys (plain json.loads keeps
+    the last value silently — the strict-YAML discipline, applied to JSON)."""
+    obj: dict[str, object] = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        obj[key] = value
+    return obj
+
+
+def _load_loop_state(
+    bundle_dir: Path, mirror_root: Path, proposal: dict[str, object] | None
+) -> tuple[LoopStatus, LoopWait | None, list[Diagnostic]]:
+    """Read <bundle>/loop.state fail-closed (spec «Classification»).
+
+    Absent is normal. Any problem yields decision-grade diagnostics (the
+    caller's non-ok rule then forces "unknown"). A wait comes only from a
+    fully validated stop.verdict == needs_human whose proposal_id matches
+    the bundle's proposal — the ONLY producer cross-check replicated here;
+    the other LOOPSTATE_* checks stay with impresario's validator.
+    """
+    path = bundle_dir / "loop.state"
+    rel = _relpath(path, mirror_root)
+
+    def problem(
+        code: str, message: str
+    ) -> tuple[LoopStatus, LoopWait | None, list[Diagnostic]]:
+        return "unknown", None, [Diagnostic(code=code, message=message, path=rel)]
+
+    if not _inside(path, mirror_root):
+        return problem(
+            "loop-state-path-escape",
+            "resolves outside the mirror root; not read",
+        )
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except FileNotFoundError:
+        return "absent", None, []
+    except (OSError, UnicodeDecodeError) as err:
+        return problem("loop-state-unreadable", f"{type(err).__name__}: {err}")
+    try:
+        data = json.loads(text, object_pairs_hook=_json_no_duplicates)
+    except ValueError as err:  # JSONDecodeError and duplicate keys alike
+        return problem("loop-state-unreadable", f"{type(err).__name__}: {err}")
+    if not isinstance(data, dict):
+        return problem("loop-state-unreadable", "not a JSON object")
+    if proposal is None:
+        # No trusted subject: schema validation and the membership check
+        # are semantic classification — skipped; the caller's non-ok rule
+        # owns the final loop_status.
+        return "unknown", None, []
+    if not _loop_state_validator().is_valid(data):
+        return problem(
+            "loop-state-schema-invalid",
+            "does not match the vendored loop-state/v1 (incompatible "
+            "shape; the file carries no version field)",
+        )
+    loop_pid = str(data["proposal_id"])
+    bundle_pid = str(proposal["proposal_id"])
+    if loop_pid != bundle_pid:
+        return problem(
+            "loop-state-proposal-mismatch",
+            f"{rel} belongs to {loop_pid!r}, but this bundle's proposal "
+            f"is {bundle_pid!r}",
+        )
+    stop = data["stop"]
+    if stop is None:
+        return "running", None, []
+    assert isinstance(stop, dict)  # schema-guaranteed
+    verdict = str(stop["verdict"])
+    if verdict in _TERMINAL_LOOP:
+        return _TERMINAL_LOOP[verdict], None, []
+    wait = LoopWait(
+        loop_id=str(data["loop_id"]),
+        iteration=int(stop["iteration"]),  # type: ignore[arg-type]
+        proposal_id=loop_pid,
+        reason=str(stop["reason"]),
+        stopped_at=str(stop["at"]),
+        bundle_path=_relpath(bundle_dir, mirror_root) or ".",
+    )
+    return "needs_human", wait, []
+
+
 def _gate_wait(
     bundle_path: str,
     proposal: dict[str, object],
@@ -425,6 +552,11 @@ def _load_bundle(mirror_root: Path, bundle_dir: Path) -> ProposalBundle:
     if proposal is not None and not decision_diags:
         diagnostics.extend(_supersession_integrity(decisions))
 
+    loop_status, loop_wait, loop_diags = _load_loop_state(
+        bundle_dir, mirror_root, proposal
+    )
+    diagnostics.extend(loop_diags)
+
     diagnostics.sort(key=lambda d: (d.path or "", d.code, d.message))
     if any(d.code in _UNREADABLE_CODES for d in diagnostics):
         state: BundleState = "unreadable"
@@ -439,6 +571,15 @@ def _load_bundle(mirror_root: Path, bundle_dir: Path) -> ProposalBundle:
         if wait is not None:
             waits.append(wait)
 
+    loop_waits: list[LoopWait] = []
+    if state == "ok":
+        if loop_wait is not None:
+            loop_waits.append(loop_wait)
+    else:
+        # Owner-fixed rule: a non-ok bundle's loop state is unclassified —
+        # unconditionally, including when the file is absent.
+        loop_status = "unknown"
+
     return ProposalBundle(
         path=rel,
         state=state,
@@ -448,6 +589,8 @@ def _load_bundle(mirror_root: Path, bundle_dir: Path) -> ProposalBundle:
         version=int(proposal["version"]) if proposal else None,  # type: ignore[arg-type]
         updated_at=str(proposal["updated_at"]) if proposal else None,
         waits=waits,
+        loop_status=loop_status,
+        loop_waits=loop_waits,
     )
 
 
@@ -466,6 +609,8 @@ def _mark_conflicts(bundles: list[ProposalBundle]) -> None:
         for bundle in group:
             bundle.state = "conflict"
             bundle.waits = []
+            bundle.loop_waits = []
+            bundle.loop_status = "unknown"
             bundle.diagnostics.append(
                 Diagnostic(
                     code="proposal-id-conflict",
@@ -505,10 +650,15 @@ def collect_product_proposals(mirror_root: Path) -> ProductProposalsReport:
         (w for b in bundles if b.state == "ok" for w in b.waits),
         key=lambda w: (w.proposal_id, w.gate_id, w.version, w.bundle_path),
     )
+    needs_human = sorted(
+        (w for b in bundles if b.state == "ok" for w in b.loop_waits),
+        key=lambda w: (w.loop_id, w.iteration, w.bundle_path),
+    )
     return ProductProposalsReport(
         mirror_path=str(mirror_root),
         bundles=bundles,
         waits=waits,
+        needs_human=needs_human,
         diagnostics=report_diags,
         attention=bool(report_diags) or any(b.state != "ok" for b in bundles),
     )

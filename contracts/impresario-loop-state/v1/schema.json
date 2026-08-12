@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:impresario:contract:loop-state:v1",
+  "title": "LoopState",
+  "description": "Текущий projection состояния цикла researcher ↔ creator (docs/semantics.md, «Состояние цикла»). Файл loop.state (JSON) в корне loop-workspace. stop: null — активного ожидания нет; stop.verdict = needs_human — активное ожидание человека. История остаётся в immutable evidence (ExchangeLog, trace).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "loop_id",
+    "idea_ref",
+    "idea_input_hash",
+    "proposal_id",
+    "exchange_log_id",
+    "max_iterations",
+    "stop"
+  ],
+  "properties": {
+    "loop_id": {
+      "type": "string",
+      "pattern": "^LOOP-[0-9]{3,}$"
+    },
+    "idea_ref": {
+      "type": "string",
+      "pattern": "^idea://IDEA-[0-9]{3,}$"
+    },
+    "idea_input_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "proposal_id": {
+      "type": "string",
+      "pattern": "^PP-[0-9]{3,}$"
+    },
+    "exchange_log_id": {
+      "type": "string",
+      "pattern": "^XL-[0-9]{3,}$"
+    },
+    "max_iterations": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "stop": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["verdict", "reason", "iteration", "at"],
+          "properties": {
+            "verdict": {
+              "enum": ["ready_for_business", "needs_human", "failed"]
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            },
+            "iteration": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "at": {
+              "$ref": "#/$defs/timestamp"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    }
+  }
+}

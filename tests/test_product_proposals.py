@@ -8,6 +8,7 @@ synthetic bundles built in tmp_path — never from ../impresario (CON-03).
 from __future__ import annotations
 
 import hashlib
+import json as _json
 import os
 from pathlib import Path
 
@@ -825,3 +826,282 @@ def test_report_mirror_path_is_the_scanned_root(tmp_path: Path) -> None:
 
     mirror = make_mirror(tmp_path)
     assert collect_product_proposals(mirror).mirror_path == str(mirror)
+
+
+# Loop-state tests
+
+
+def loop_state_json(
+    pid: str = "PP-101",
+    verdict: str | None = "ready_for_business",
+    iteration: int = 2,
+    reason: str = "done",
+    at: str = "2026-08-12T04:01:21Z",
+) -> str:
+    stop = (
+        None
+        if verdict is None
+        else {"verdict": verdict, "reason": reason, "iteration": iteration, "at": at}
+    )
+    return _json.dumps(
+        {
+            "loop_id": "LOOP-101",
+            "idea_ref": "idea://IDEA-101",
+            "idea_input_hash": "sha256:" + "f" * 64,
+            "proposal_id": pid,
+            "exchange_log_id": "XL-101",
+            "max_iterations": 3,
+            "stop": stop,
+        }
+    )
+
+
+def _loop(
+    tmp_path: Path, text: str | bytes, proposal: str | None = None
+) -> ProposalBundle:
+    bundle = make_bundle(
+        tmp_path,
+        proposal=proposal or proposal_yaml(status="ready_for_business", version=6),
+    )
+    target = bundle / "loop.state"
+    if isinstance(text, bytes):
+        target.write_bytes(text)
+    else:
+        target.write_text(text)
+    return _bundle(tmp_path)
+
+
+def test_loop_state_absent_is_normal(tmp_path: Path) -> None:
+    make_bundle(tmp_path, proposal=proposal_yaml(status="approved"))
+    b = _bundle(tmp_path)
+    assert b.state == "ok"
+    assert b.loop_status == "absent" and b.loop_waits == []
+
+
+def test_loop_state_running_has_no_wait(tmp_path: Path) -> None:
+    b = _loop(tmp_path, loop_state_json(verdict=None))
+    assert b.state == "ok"
+    assert b.loop_status == "running" and b.loop_waits == []
+
+
+def test_loop_state_terminals_are_not_human_waits(tmp_path: Path) -> None:
+    for verdict in ("ready_for_business", "failed"):
+        mirror = Path(str(tmp_path)) / verdict
+        make_bundle(mirror, proposal=proposal_yaml(status="approved"))
+        (mirror / "pilot" / "pp-101" / "loop.state").write_text(
+            loop_state_json(verdict=verdict)
+        )
+        b = _bundle(mirror)
+        assert b.state == "ok"
+        assert b.loop_status == verdict and b.loop_waits == []
+
+
+def test_loop_state_needs_human_yields_one_wait(tmp_path: Path) -> None:
+    b = _loop(
+        tmp_path,
+        loop_state_json(verdict="needs_human", reason="решить exempt-семантику"),
+    )
+    assert b.state == "ok" and b.loop_status == "needs_human"
+    assert [
+        (w.loop_id, w.iteration, w.proposal_id, w.reason, w.stopped_at)
+        for w in b.loop_waits
+    ] == [
+        (
+            "LOOP-101",
+            2,
+            "PP-101",
+            "решить exempt-семантику",
+            "2026-08-12T04:01:21Z",
+        )
+    ]
+    assert b.loop_waits[0].bundle_path == "pilot/pp-101"
+
+
+def test_loop_state_not_json_is_unknown(tmp_path: Path) -> None:
+    b = _loop(tmp_path, "not json {{{")
+    assert b.state == "unknown" and b.loop_status == "unknown"
+    assert [d.code for d in b.diagnostics] == ["loop-state-unreadable"]
+    assert b.waits == [] and b.loop_waits == []
+
+
+def test_loop_state_not_a_json_object_is_unreadable(tmp_path: Path) -> None:
+    """JSON array or other non-object JSON is rejected."""
+    b = _loop(tmp_path, "[1, 2, 3]")
+    assert b.state == "unknown" and b.loop_status == "unknown"
+    assert [d.code for d in b.diagnostics] == ["loop-state-unreadable"]
+    assert b.waits == [] and b.loop_waits == []
+
+
+def test_loop_state_duplicate_json_keys_are_unreadable(tmp_path: Path) -> None:
+    """json.loads keeps the last duplicate silently — fail-closed requires
+    rejection (part of loop-state-unreadable, no separate code)."""
+    text = loop_state_json()[:-1] + ', "proposal_id": "PP-999"}'
+    b = _loop(tmp_path, text)
+    assert b.state == "unknown"
+    assert [d.code for d in b.diagnostics] == ["loop-state-unreadable"]
+
+
+def test_loop_state_not_utf8_is_unreadable(tmp_path: Path) -> None:
+    b = _loop(tmp_path, b"\xff\xfe not utf8")
+    assert [d.code for d in b.diagnostics] == ["loop-state-unreadable"]
+
+
+def test_loop_state_oserror_is_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_bundle(tmp_path, proposal=proposal_yaml(status="approved"))
+    (tmp_path / "pilot" / "pp-101" / "loop.state").write_text(loop_state_json())
+    real = Path.read_bytes
+
+    def failing(self: Path) -> bytes:
+        if self.name == "loop.state":
+            raise OSError(5, "Input/output error")
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", failing)
+    b = _bundle(tmp_path)
+    assert b.state == "unknown"
+    assert [d.code for d in b.diagnostics] == ["loop-state-unreadable"]
+
+
+def test_loop_state_schema_invalid_is_unknown(tmp_path: Path) -> None:
+    b = _loop(tmp_path, '{"loop_id": "LOOP-101"}')
+    assert b.state == "unknown" and b.loop_status == "unknown"
+    assert [d.code for d in b.diagnostics] == ["loop-state-schema-invalid"]
+
+
+def test_loop_state_proposal_mismatch_is_unknown(tmp_path: Path) -> None:
+    b = _loop(tmp_path, loop_state_json(pid="PP-999"))
+    assert b.state == "unknown" and b.loop_status == "unknown"
+    diag = b.diagnostics[0]
+    assert diag.code == "loop-state-proposal-mismatch"
+    assert "PP-999" in diag.message and "PP-101" in diag.message
+    assert diag.path == "pilot/pp-101/loop.state"
+    assert b.waits == [] and b.loop_waits == []
+
+
+def test_loop_state_symlink_escape_is_unknown(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.json"
+    outside.write_text(loop_state_json())
+    mirror = tmp_path / "mirror"
+    bundle = make_bundle(mirror, proposal=proposal_yaml(status="approved"))
+    (bundle / "loop.state").symlink_to(outside)
+    b = _bundle(mirror)
+    assert b.state == "unknown"
+    assert [d.code for d in b.diagnostics] == ["loop-state-path-escape"]
+
+
+def test_loop_state_in_mirror_symlink_stays_readable(tmp_path: Path) -> None:
+    mirror = tmp_path / "mirror"
+    bundle = make_bundle(mirror, proposal=proposal_yaml(status="approved"))
+    real = bundle / "real-loop.json"
+    real.write_text(loop_state_json())
+    (bundle / "loop.state").symlink_to(real)
+    b = _bundle(mirror)
+    assert b.state == "ok" and b.loop_status == "ready_for_business"
+
+
+def test_untrusted_proposal_collects_loop_read_errors_only(
+    tmp_path: Path,
+) -> None:
+    """No trusted subject: read/parse errors collected; schema and the
+    membership check skipped; the non-ok rule owns loop_status."""
+    bundle = make_bundle(tmp_path, proposal="status: [broken\n")
+    (bundle / "loop.state").write_bytes(b"\xff\xfe")
+    b = _bundle(tmp_path)
+    assert b.state == "unreadable"
+    assert sorted(d.code for d in b.diagnostics) == [
+        "loop-state-unreadable",
+        "proposal-unreadable",
+    ]
+    assert b.loop_status == "unknown"
+
+
+def test_untrusted_proposal_skips_loop_semantic_classification(
+    tmp_path: Path,
+) -> None:
+    bundle = make_bundle(tmp_path, proposal="status: [broken\n")
+    (bundle / "loop.state").write_text(loop_state_json(pid="PP-999"))
+    b = _bundle(tmp_path)
+    assert b.state == "unreadable"
+    assert [d.code for d in b.diagnostics] == ["proposal-unreadable"]
+    assert b.loop_status == "unknown"  # no mismatch diagnostic, no trust
+
+
+LS_SCHEMA_FIXTURES = (
+    Path(__file__).parent.parent
+    / "contracts"
+    / "impresario-loop-state"
+    / "v1"
+    / "fixtures"
+)
+
+
+def test_vendored_loop_state_fixtures_split_on_the_schema() -> None:
+    from dispatcher.core.product_proposals import _loop_state_validator
+
+    for name in ("failed.json", "needs-human.json", "ready.json", "running.json"):
+        data = _json.loads((LS_SCHEMA_FIXTURES / "valid" / name).read_text())
+        assert _loop_state_validator().is_valid(data), name
+    for name in (
+        "bad-hash.json",
+        "empty-reason.json",
+        "extra-field.json",
+        "missing-at.json",
+        "unknown-verdict.json",
+    ):
+        data = _json.loads((LS_SCHEMA_FIXTURES / "invalid" / name).read_text())
+        assert not _loop_state_validator().is_valid(data), name
+
+
+# Task 4: needs_human aggregation, conflicts, determinism
+
+
+def test_needs_human_aggregates_and_sorts(tmp_path: Path) -> None:
+    from dispatcher.core.product_proposals import collect_product_proposals
+
+    mirror = make_mirror(tmp_path)
+    for rel, pid, loop in (
+        ("pilot/b", "PP-200", "LOOP-200"),
+        ("pilot/a", "PP-100", "LOOP-100"),
+    ):
+        make_bundle(mirror, rel=rel, proposal=proposal_yaml(pid=pid, status="approved"))
+        state = _json.loads(loop_state_json(pid=pid, verdict="needs_human"))
+        state["loop_id"] = loop
+        (mirror / rel / "loop.state").write_text(_json.dumps(state))
+    report = collect_product_proposals(mirror)
+    assert [(w.loop_id, w.bundle_path) for w in report.needs_human] == [
+        ("LOOP-100", "pilot/a"),
+        ("LOOP-200", "pilot/b"),
+    ]
+    assert report.attention is False  # a plain LoopWait is expected work
+
+
+def test_conflict_suppresses_loop_waits_too(tmp_path: Path) -> None:
+    from dispatcher.core.product_proposals import collect_product_proposals
+
+    mirror = make_mirror(tmp_path)
+    for rel in ("pilot/a", "pilot/b"):
+        make_bundle(mirror, rel=rel, proposal=proposal_yaml(status="approved"))
+        (mirror / rel / "loop.state").write_text(loop_state_json(verdict="needs_human"))
+    report = collect_product_proposals(mirror)
+    assert [b.state for b in report.bundles] == ["conflict", "conflict"]
+    assert report.needs_human == []
+    assert all(b.loop_status == "unknown" for b in report.bundles)
+    assert all(b.loop_waits == [] for b in report.bundles)
+
+
+def test_determinism_and_read_only_hold_with_loop_state(tmp_path: Path) -> None:
+    from dispatcher.core.product_proposals import collect_product_proposals
+
+    mirror = make_mirror(tmp_path)
+    make_bundle(mirror, proposal=proposal_yaml(status="ready_for_business", version=6))
+    (mirror / "pilot" / "pp-101" / "loop.state").write_text(
+        loop_state_json(verdict="needs_human")
+    )
+    before = _tree_state(mirror)
+    first = collect_product_proposals(mirror)
+    second = collect_product_proposals(mirror)
+    assert first.model_dump_json() == second.model_dump_json()
+    assert _tree_state(mirror) == before
+    assert len(first.needs_human) == 1 and len(first.waits) == 1  # both kinds coexist
