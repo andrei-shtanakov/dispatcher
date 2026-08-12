@@ -1,0 +1,37 @@
+{
+  "contract": "impresario-gate-decision",
+  "contract_version": 1,
+  "producer_commit": "28727ff76a3983744596137706c844c95a5ad12b",
+  "surface_note": "sha256 of every vendored file; excludes PINNED.txt and this manifest",
+  "tree_sha256": "c9df63d6845ac977f22ab675466f4b5b69ae5c89a8a54eed9b0077d0e60c700e",
+  "surface": [
+    {
+      "path": "fixtures/invalid/agent-authority.yaml",
+      "sha256": "9a4c6f35dd134c4229fdc7aa3ddc9a606b03338bc7c9f91101e8f601a0cda9cb"
+    },
+    {
+      "path": "fixtures/invalid/qg4-approve.yaml",
+      "sha256": "ba3c2edaff438971fd1fae732bddd8e8b877572031a13a905ebd676f47455f40"
+    },
+    {
+      "path": "fixtures/invalid/recycle-without-return-to.yaml",
+      "sha256": "bd875781f5bd29691420513453f5b4a0a6cba4a456dbff9bf0840fe1bd26b977"
+    },
+    {
+      "path": "fixtures/valid/gd-approve.yaml",
+      "sha256": "15357b6dc0d69fab5d4811a9e8c84c2cf9156eb4eb20a221d95f1cba0c4438a1"
+    },
+    {
+      "path": "fixtures/valid/gd-recycle.yaml",
+      "sha256": "b62a3c62c05e4c7f56e15ad10ec4861c9be91176b61d555b44d18765c75d14ba"
+    },
+    {
+      "path": "fixtures/valid/gd-select.yaml",
+      "sha256": "bfd63edbb56fcbeadbd7bed9bca995bc43b4284a073d5d4fbe62f9e9fc0316f0"
+    },
+    {
+      "path": "schema.json",
+      "sha256": "f68390fa7b6eea9a700ed351b43d4430df98d276a9b137e46ce99db3c58de422"
+    }
+  ]
+}

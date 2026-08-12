@@ -1,0 +1,20 @@
+decision_id: GD-002
+gate_id: qg5_committee
+subject:
+  kind: product_proposal
+  ref: proposal://PP-101
+  version: 7
+decision: approve
+decided_by:
+  kind: human
+  id: andrei
+  role: committee_chair
+decided_at: '2026-08-12T04:12:30Z'
+reason: >-
+  Концепция целостна: scope из трёх пунктов зафиксирован в CD-503,
+  альтернативы закрыты с причинами, критичные допущения отвечены evidence
+  (RP-503), целевые строки дайджеста заданы владельцем.
+artifacts_reviewed:
+- proposal://PP-101
+- research-pack://RP-503
+- concept-draft://CD-503

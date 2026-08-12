@@ -69,7 +69,7 @@ async def test_projects_table_populates(tmp_path: Path) -> None:
     async with app.run_test() as pilot:
         await _settled(app, pilot)
         table = app.query_one("#projects-table", DataTable)
-        assert table.row_count == 5  # 3 detected + 2 undetected collectors
+        assert table.row_count == 6  # 3 detected + 3 undetected collectors
         row = table.get_row("arbiter")
         assert str(row[2]) == "1"  # one decision task in the fixture
 
@@ -113,7 +113,7 @@ async def test_collect_failure_keeps_last_data(tmp_path: Path, monkeypatch) -> N
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await _settled(app, pilot)
-        assert app.query_one("#projects-table", DataTable).row_count == 5
+        assert app.query_one("#projects-table", DataTable).row_count == 6
 
         # Spy on notify calls to guard error toast behavior.
         recorded: list[tuple[str, str]] = []
@@ -137,7 +137,7 @@ async def test_collect_failure_keeps_last_data(tmp_path: Path, monkeypatch) -> N
         await pilot.press("r")
         await _settled(app, pilot)
         # Verify: previous data still on screen
-        assert app.query_one("#projects-table", DataTable).row_count == 5
+        assert app.query_one("#projects-table", DataTable).row_count == 6
         # Verify: error toast fired with correct severity
         error_messages = [msg for msg, sev in recorded if sev == "error"]
         assert len(error_messages) > 0, "Expected at least one error notification"

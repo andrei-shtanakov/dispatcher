@@ -24,7 +24,7 @@ def test_collects_detected_and_undetected(tmp_path: Path) -> None:
     by_name = {s.name: s for s in snapshots}
     assert by_name["arbiter"].detected is True
     assert by_name["atp-platform"].detected is False
-    assert len(snapshots) == 5  # every registered collector gets a row
+    assert len(snapshots) == 6  # every registered collector gets a row
 
 
 def test_ttl_cache_returns_same_object(tmp_path: Path) -> None:

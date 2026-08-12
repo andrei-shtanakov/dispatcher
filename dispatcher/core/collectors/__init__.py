@@ -3,6 +3,7 @@
 from dispatcher.core.collectors.arbiter import ArbiterCollector
 from dispatcher.core.collectors.atp import AtpCollector
 from dispatcher.core.collectors.base import CollectContext, Collector
+from dispatcher.core.collectors.impresario import ImpresarioCollector
 from dispatcher.core.collectors.maestro import MaestroCollector
 from dispatcher.core.collectors.proctor import ProctorCollector
 from dispatcher.core.collectors.spec_runner import SpecRunnerCollector
@@ -13,6 +14,7 @@ COLLECTORS: list[Collector] = [
     ArbiterCollector(),
     SpecRunnerCollector(),
     ProctorCollector(),
+    ImpresarioCollector(),
 ]
 
 __all__ = ["COLLECTORS", "CollectContext", "Collector"]

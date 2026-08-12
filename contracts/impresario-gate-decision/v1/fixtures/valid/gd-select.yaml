@@ -1,0 +1,16 @@
+decision_id: GD-003
+gate_id: qg4_backlog
+subject:
+  kind: ranked_backlog
+  ref: backlog://BL-portfolio
+  version: 3
+decision: select
+selected_idea_ref: idea://IDEA-001
+decided_by:
+  kind: human
+  id: product-owner
+  role: qg4_selector
+decided_at: 2026-08-10T11:00:00Z
+reason: "Top-1 по рангу; подтверждённая боль HD и путь к соответствию стандартам."
+artifacts_reviewed:
+  - backlog://BL-portfolio

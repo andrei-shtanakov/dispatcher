@@ -23,6 +23,11 @@ from dispatcher.core.models import (
     ProjectSnapshot,
 )
 from dispatcher.core.onboarding import OnboardingView, build_onboarding
+from dispatcher.core.product_proposals import (
+    Diagnostic,
+    ProductProposalsReport,
+    collect_product_proposals,
+)
 from dispatcher.core.roadmap import (
     BlockersResponse,
     DriftResponse,
@@ -87,6 +92,37 @@ def governance(cache: SnapshotService, name: str) -> BundleGovernance:
     """
     snap = project(cache, name)
     return collect_governance(Path(snap.path))
+
+
+class NotImpresarioMirrorError(Exception):
+    """The named project exists but is not the impresario mirror."""
+
+
+def product_proposals(cache: SnapshotService, name: str) -> ProductProposalsReport:
+    """Inbox #129: gate_waiting read model for the impresario mirror.
+
+    A pass-through of core/product_proposals (spec «Architecture»): this
+    layer scans nothing and classifies nothing. The undetected mirror is
+    answered here — with a report-level diagnostic, never a scan of an
+    empty path.
+    """
+    snap = project(cache, name)  # ReadLookupError -> 404 project-not-found
+    if snap.name != "impresario":
+        raise NotImpresarioMirrorError(f"{name} is not the impresario mirror")
+    if not snap.detected or not snap.path:
+        return ProductProposalsReport(
+            mirror_path="",
+            diagnostics=[
+                Diagnostic(
+                    code="mirror-not-detected",
+                    message=(
+                        "no impresario mirror was discovered under the configured roots"
+                    ),
+                )
+            ],
+            attention=True,
+        )
+    return collect_product_proposals(Path(snap.path))
 
 
 def errors(

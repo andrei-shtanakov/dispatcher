@@ -10,7 +10,14 @@ from dispatcher.core.discovery import DispatcherConfig, discover, load_config
 
 def test_collectors_registry() -> None:
     names = {c.name for c in COLLECTORS}
-    assert names == {"atp-platform", "Maestro", "arbiter", "spec-runner", "proctor"}
+    assert names == {
+        "atp-platform",
+        "Maestro",
+        "arbiter",
+        "spec-runner",
+        "proctor",
+        "impresario",
+    }
 
 
 def test_load_config_from_file(tmp_path: Path) -> None:

@@ -128,6 +128,11 @@
       `impresario/docs/semantics.md`; живой пример входа:
       `impresario/pilot/forconcept/pp-101/`. Фаза 2 (`needs_human` из
       loop.state) заблокирована на стороне impresario и в scope не входит.
+      Прогресс: PR-1 (вендор @ 28727ff, `core/product_proposals.py`,
+      `collectors/impresario.py`, `GET /api/projects/{name}/product-proposals`,
+      acceptance на пине PP-101, live smoke) — открыт; спека
+      `docs/superpowers/specs/2026-08-12-product-proposal-gate-waiting-design.md`.
+      Закрытие пункта — только после PR-2 (web-панель + Node harness).
 
 ## Кросс-репные контракты
 
