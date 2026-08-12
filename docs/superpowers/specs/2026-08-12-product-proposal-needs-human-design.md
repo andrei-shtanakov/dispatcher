@@ -92,8 +92,9 @@ class ProductProposalsReport(...):
 ```
 
 `loop_status` semantics (owner-fixed): `"absent"` means the file does not
-exist and that is normal; `"unknown"` means the file EXISTS but its state
-is untrusted (path escape, read, JSON, schema, or mismatch); every other
+exist and that is normal; `"unknown"` means the loop state is untrusted —
+typically the file exists but fails path escape / read / JSON / schema /
+mismatch, and unconditionally whenever the bundle is non-`ok`; every other
 value is set only after full validation AND a successful bundle match.
 Whenever the bundle's final state is non-`ok` (for any reason, including
 proposal-level or decision-level diagnostics and conflicts),
