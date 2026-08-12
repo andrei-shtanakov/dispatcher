@@ -572,6 +572,102 @@ def test_yml_extension_is_out_of_contract(tmp_path: Path) -> None:
     assert b.diagnostics == []
 
 
+def test_diagnostics_raw_order_is_the_public_contract(tmp_path: Path) -> None:
+    """Diagnostics are sorted by (path, code, message); pin the literal
+    output order here instead of re-sorting inside the assertion — a
+    sorted() comparison would pass even if the implementation stopped
+    sorting."""
+    bundle = make_bundle(
+        tmp_path,
+        decisions={
+            "a.yaml": "placeholder\n",
+            "b.yaml": "decision_id: GD-001\n",  # schema-invalid
+            "c.yaml": "placeholder\n",
+        },
+    )
+    (bundle / "decisions" / "a.yaml").write_bytes(b"\xff\xfe broken a")
+    (bundle / "decisions" / "c.yaml").write_bytes(b"\xff\xfe broken c")
+    b = _bundle(tmp_path)
+    assert [(d.path, d.code) for d in b.diagnostics] == [
+        ("pilot/pp-101/decisions/a.yaml", "decision-unreadable"),
+        ("pilot/pp-101/decisions/b.yaml", "decision-schema-invalid"),
+        ("pilot/pp-101/decisions/c.yaml", "decision-unreadable"),
+    ]
+
+
+def test_integrity_runs_only_over_fully_valid_decision_set(tmp_path: Path) -> None:
+    """Any decision-grade read/schema diagnostic makes the whole decision
+    history unprovable — supersession integrity is skipped, not partially
+    applied to the valid subset."""
+    make_bundle(
+        tmp_path,
+        decisions={
+            "a.yaml": "decision_id: GD-001\n",  # schema-invalid
+            "b.yaml": decision_yaml(did="GD-002", version=8, supersedes="GD-777"),
+        },
+    )
+    b = _bundle(tmp_path)
+    assert [d.code for d in b.diagnostics] == ["decision-schema-invalid"]
+
+
+def test_gate_wait_requires_product_proposal_subject_kind() -> None:
+    """Unit-test _gate_wait directly with a synthetic subject.kind that
+    bypasses the schema: a mismatched kind must NOT extinguish the wait."""
+    from dispatcher.core.product_proposals import _gate_wait
+
+    proposal: dict[str, object] = {
+        "proposal_id": "PP-101",
+        "status": "ready_for_business",
+        "version": 8,
+        "updated_at": "2026-08-12T04:12:30Z",
+    }
+    record: dict[str, object] = {
+        "decision": "approve",
+        "gate_id": "qg5_business",
+        "decision_id": "GD-001",
+        "subject": {
+            "kind": "ranked_backlog",
+            "ref": "proposal://PP-101",
+            "version": 8,
+        },
+    }
+    wait = _gate_wait("p", proposal, [record])
+    assert wait is not None
+
+
+def test_cross_gate_supersession_disarms_the_approve(tmp_path: Path) -> None:
+    """Owner ruling: ANY record's supersedes disarms the targeted approve,
+    even from a different gate — the Gate A wait is NOT extinguished."""
+    make_bundle(
+        tmp_path,
+        proposal=proposal_yaml(status="ready_for_business", version=8),
+        decisions={
+            "gd-001.yaml": decision_yaml(did="GD-001", version=8),
+            "gd-002.yaml": decision_yaml(
+                did="GD-002", gate="qg5_committee", version=8, supersedes="GD-001"
+            ),
+        },
+    )
+    b = _bundle(tmp_path)
+    assert b.state == "ok"
+    assert [w.gate_id for w in b.waits] == ["qg5_business"]
+
+
+def test_gate_b_version_matched_approve_extinguishes(tmp_path: Path) -> None:
+    """Symmetry with Gate A: a version-matched, non-superseded committee
+    approve extinguishes the Gate B wait."""
+    make_bundle(
+        tmp_path,
+        proposal=proposal_yaml(status="business_approved", version=7),
+        decisions={
+            "gd-002.yaml": decision_yaml(did="GD-002", gate="qg5_committee", version=7)
+        },
+    )
+    b = _bundle(tmp_path)
+    assert b.state == "ok"
+    assert b.waits == []
+
+
 def make_mirror(tmp_path: Path) -> Path:
     """A minimal detectable impresario mirror (both anchors present)."""
     mirror = tmp_path / "impresario"
@@ -591,6 +687,29 @@ def test_missing_anchor_is_anchors_missing_not_zero_bundles(
     assert report.bundles == []
     assert [d.code for d in report.diagnostics] == ["mirror-anchors-missing"]
     assert report.diagnostics[0].path == "docs/semantics.md"
+    assert report.attention is True
+
+
+def test_walk_error_reaches_the_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same failing os.walk as the _discover unit test, but through the
+    public entry point — the diagnostic must survive the full pipeline."""
+    from dispatcher.core import product_proposals as pp
+    from dispatcher.core.product_proposals import collect_product_proposals
+
+    mirror = make_mirror(tmp_path)
+    real_walk = os.walk
+
+    def failing_walk(top, **kwargs):  # type: ignore[no-untyped-def]
+        onerror = kwargs.get("onerror")
+        assert onerror is not None, "walk must pass onerror (spec: fail-loud)"
+        onerror(OSError(13, "Permission denied", str(Path(top) / "locked")))
+        return real_walk(top, **kwargs)
+
+    monkeypatch.setattr(pp.os, "walk", failing_walk)
+    report = collect_product_proposals(mirror)
+    assert [d.code for d in report.diagnostics] == ["walk-error"]
     assert report.attention is True
 
 
