@@ -134,6 +134,14 @@
       harness) — фаза-1 acceptance (web + Node harness) закрыта; спека
       `docs/superpowers/specs/2026-08-12-product-proposal-gate-waiting-design.md`.
 
+- [ ] Parity `product_proposal` в TUI/VSCode/MCP: read-only gate_waiting на остальных поверхностях @owner:github:andrei-shtanakov @id:product-proposal-parity
+      Follow-up фазы 1 (#129: PR #132 collector/API + PR #133 web-панель). Read
+      model готов (`core/product_proposals.py`,
+      `GET /api/projects/{name}/product-proposals`). Перед кодом — короткий
+      design note: состав и семантика parity для TUI, VSCode и MCP (инварианты
+      FR-05/FR-06; отдельно решить про MCP — в фазе 1 был явно вне scope).
+      Реализация отдельной сессией.
+
 ## Кросс-репные контракты
 
 - [x] Вендор steward gate-catalog v1: пиненая копия `profiles/gate-catalog.yaml` + канонический словарь obligation в governance-коллекторе — PR #126 @owner:github:andrei-shtanakov @id:vendor-gate-catalog
