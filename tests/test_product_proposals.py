@@ -7,6 +7,7 @@ synthetic bundles built in tmp_path — never from ../impresario (CON-03).
 
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 
@@ -531,3 +532,128 @@ def test_missing_decisions_dir_is_a_valid_bundle(tmp_path: Path) -> None:
     b = _bundle(mirror)
     assert b.state == "ok"
     assert [w.gate_id for w in b.waits] == ["qg5_business"]
+
+
+def make_mirror(tmp_path: Path) -> Path:
+    """A minimal detectable impresario mirror (both anchors present)."""
+    mirror = tmp_path / "impresario"
+    for rel in ANCHOR_FILES:
+        _mk(mirror, rel, "{}\n" if rel.endswith(".json") else "# semantics\n")
+    return mirror
+
+
+def test_missing_anchor_is_anchors_missing_not_zero_bundles(
+    tmp_path: Path,
+) -> None:
+    mirror = make_mirror(tmp_path)
+    (mirror / "docs" / "semantics.md").unlink()
+    from dispatcher.core.product_proposals import collect_product_proposals
+
+    report = collect_product_proposals(mirror)
+    assert report.bundles == []
+    assert [d.code for d in report.diagnostics] == ["mirror-anchors-missing"]
+    assert report.diagnostics[0].path == "docs/semantics.md"
+    assert report.attention is True
+
+
+def test_zero_bundles_on_a_healthy_mirror_is_explicit_and_calm(
+    tmp_path: Path,
+) -> None:
+    from dispatcher.core.product_proposals import collect_product_proposals
+
+    report = collect_product_proposals(make_mirror(tmp_path))
+    assert report.bundles == [] and report.waits == []
+    assert report.diagnostics == [] and report.attention is False
+
+
+def test_proposal_id_conflict_suppresses_all_participants(tmp_path: Path) -> None:
+    from dispatcher.core.product_proposals import collect_product_proposals
+
+    mirror = make_mirror(tmp_path)
+    make_bundle(
+        mirror,
+        rel="pilot/a",
+        proposal=proposal_yaml(status="ready_for_business", version=6),
+    )
+    make_bundle(
+        mirror,
+        rel="pilot/b",
+        proposal=proposal_yaml(status="approved"),
+        decisions={"bad.yaml": "decision_id: GD-1\n"},  # earlier diagnostic
+    )
+    report = collect_product_proposals(mirror)
+    assert [b.state for b in report.bundles] == ["conflict", "conflict"]
+    assert report.waits == []  # the Gate A wait of pilot/a is suppressed
+    for bundle in report.bundles:
+        conflict = [d for d in bundle.diagnostics if d.code == "proposal-id-conflict"]
+        assert len(conflict) == 1
+        assert "pilot/a" in conflict[0].message and "pilot/b" in conflict[0].message
+    # earlier diagnostics are preserved, not replaced (spec section 1 refinements)
+    b_codes = {d.code for d in report.bundles[1].diagnostics}
+    assert "decision-schema-invalid" in b_codes
+    assert report.attention is True
+
+
+def test_waits_aggregate_and_sort_deterministically(tmp_path: Path) -> None:
+    from dispatcher.core.product_proposals import collect_product_proposals
+
+    mirror = make_mirror(tmp_path)
+    make_bundle(
+        mirror,
+        rel="pilot/z",
+        proposal=proposal_yaml(pid="PP-100", status="business_approved", version=3),
+    )
+    make_bundle(
+        mirror,
+        rel="pilot/a",
+        proposal=proposal_yaml(pid="PP-200", status="ready_for_business", version=1),
+    )
+    report = collect_product_proposals(mirror)
+    assert [b.path for b in report.bundles] == ["pilot/a", "pilot/z"]
+    assert [(w.proposal_id, w.gate_id) for w in report.waits] == [
+        ("PP-100", "qg5_committee"),
+        ("PP-200", "qg5_business"),
+    ]
+    assert report.attention is False  # plain waits are business, not defects
+
+
+def test_repeated_scans_are_byte_identical(tmp_path: Path) -> None:
+    from dispatcher.core.product_proposals import collect_product_proposals
+
+    mirror = make_mirror(tmp_path)
+    make_bundle(mirror, proposal=proposal_yaml(status="ready_for_business", version=6))
+    first = collect_product_proposals(mirror)
+    second = collect_product_proposals(mirror)
+    assert first.model_dump_json() == second.model_dump_json()
+
+
+def _tree_state(root: Path) -> dict[str, str]:
+    return {
+        str(p.relative_to(root)): (
+            hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else "dir"
+        )
+        for p in root.rglob("*")
+    }
+
+
+def test_collect_is_read_only_paths_and_bytes(tmp_path: Path) -> None:
+    """Path SET equality too: creating files/dirs is a violation, not just
+    modifying them (spec «Fail-closed invariants» #4)."""
+    from dispatcher.core.product_proposals import collect_product_proposals
+
+    mirror = make_mirror(tmp_path)
+    make_bundle(
+        mirror,
+        proposal=proposal_yaml(status="ready_for_business", version=8),
+        decisions={"gd-001.yaml": decision_yaml(version=6)},
+    )
+    before = _tree_state(mirror)
+    collect_product_proposals(mirror)
+    assert _tree_state(mirror) == before
+
+
+def test_report_mirror_path_is_the_scanned_root(tmp_path: Path) -> None:
+    from dispatcher.core.product_proposals import collect_product_proposals
+
+    mirror = make_mirror(tmp_path)
+    assert collect_product_proposals(mirror).mirror_path == str(mirror)

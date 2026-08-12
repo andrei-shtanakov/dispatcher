@@ -444,10 +444,64 @@ def _load_bundle(mirror_root: Path, bundle_dir: Path) -> ProposalBundle:
     )
 
 
+def _mark_conflicts(bundles: list[ProposalBundle]) -> None:
+    """Global proposal_id check AFTER all bundles parsed: every participant
+    gets the identical deterministic path list; earlier diagnostics are
+    preserved; conflict outranks every other state and suppresses waits."""
+    by_id: dict[str, list[ProposalBundle]] = {}
+    for bundle in bundles:
+        if bundle.proposal_id is not None:
+            by_id.setdefault(bundle.proposal_id, []).append(bundle)
+    for proposal_id, group in sorted(by_id.items()):
+        if len(group) < 2:
+            continue
+        paths = ", ".join(sorted(b.path for b in group))
+        for bundle in group:
+            bundle.state = "conflict"
+            bundle.waits = []
+            bundle.diagnostics.append(
+                Diagnostic(
+                    code="proposal-id-conflict",
+                    message=(
+                        f"proposal_id {proposal_id} claimed by several bundles: {paths}"
+                    ),
+                )
+            )
+            bundle.diagnostics.sort(key=lambda d: (d.path or "", d.code, d.message))
+
+
 def collect_product_proposals(mirror_root: Path) -> ProductProposalsReport:
     """Scan the impresario mirror and classify every proposal bundle.
 
-    Filled in by Tasks 5–7 of the implementation plan; this stub keeps the
-    module importable while the pieces land test-first.
+    Anchors are re-checked before every scan — a mirror that vanished or
+    degraded after discovery is a visible diagnostic, never «0 bundles».
     """
-    raise NotImplementedError
+    missing = [rel for rel in ANCHOR_FILES if not (mirror_root / rel).is_file()]
+    if missing:
+        return ProductProposalsReport(
+            mirror_path=str(mirror_root),
+            diagnostics=[
+                Diagnostic(
+                    code="mirror-anchors-missing",
+                    message="expected impresario anchor is not a file",
+                    path=rel,
+                )
+                for rel in missing
+            ],
+            attention=True,
+        )
+    bundle_dirs, report_diags = _discover(mirror_root)
+    bundles = [_load_bundle(mirror_root, d) for d in bundle_dirs]
+    _mark_conflicts(bundles)
+    report_diags.sort(key=lambda d: (d.path or "", d.code, d.message))
+    waits = sorted(
+        (w for b in bundles if b.state == "ok" for w in b.waits),
+        key=lambda w: (w.proposal_id, w.gate_id, w.version, w.bundle_path),
+    )
+    return ProductProposalsReport(
+        mirror_path=str(mirror_root),
+        bundles=bundles,
+        waits=waits,
+        diagnostics=report_diags,
+        attention=bool(report_diags) or any(b.state != "ok" for b in bundles),
+    )
