@@ -760,17 +760,34 @@ function renderProductProposals(r) {
   } else if (!suppressed) {
     waits = `<p class="dim">0 gates waiting</p>`;
   }
+  let loops = "";
+  if ((r.needs_human || []).length) {
+    loops = `<table><tr><th>Loop</th><th>Iteration</th><th>Reason</th>
+      <th>Stopped at</th><th>Bundle</th></tr>${
+      r.needs_human.map(l => `<tr>
+        <td>${esc(l.loop_id)}</td>
+        <td>${esc(String(l.iteration))}</td>
+        <td>${esc(l.reason)}</td>
+        <td>${esc(l.stopped_at)}</td>
+        <td>${esc(l.bundle_path)}</td></tr>`).join("")}</table>`;
+  } else if (bundles.length && !suppressed) {
+    // Parallel to «0 gates waiting»: an explicit, distinct label — and
+    // silence when classification is suppressed (unknown ≠ zero).
+    loops = `<p class="dim">0 loops waiting</p>`;
+  }
   const rows = bundles.length ? `
     <ul>${bundles.map(b => `
       <li>${esc(b.path)} · ${esc(productProposalBadge(b.state))}${
         b.status ? ` · ${esc(b.status)}` : ""}${
         b.version != null ? ` · v${esc(String(b.version))}` : ""}${
+        " · "}${b.loop_status === "unknown" ? "❓ " : ""}loop: ${
+        esc(String(b.loop_status))}${
         (b.diagnostics || []).length ? `
         <ul>${b.diagnostics.map(d => `
           <li class="dim">${esc(d.code)}: ${esc(d.message)}${
             d.path ? ` · ${esc(d.path)}` : ""}</li>`).join("")}</ul>` : ""}</li>`
     ).join("")}</ul>` : "";
-  return reportDiags + note + waits + rows;
+  return reportDiags + note + waits + loops + rows;
 }
 
 async function detail(name, dirName) {

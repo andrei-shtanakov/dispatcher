@@ -95,10 +95,11 @@ const OK_BUNDLE = {
   path: 'pilot/forconcept/pp-101', state: 'ok', diagnostics: [],
   proposal_id: 'PP-101', status: 'ready_for_business', version: 6,
   updated_at: '2026-08-12T04:12:30Z', waits: [WAIT],
+  loop_status: 'absent', loop_waits: [],
 };
 const report = (extra = {}) => ({
   mirror_path: '/repos/impresario', bundles: [], waits: [],
-  diagnostics: [], attention: false, ...extra,
+  diagnostics: [], attention: false, needs_human: [], ...extra,
 });
 const WAITING = report({bundles: [OK_BUNDLE], waits: [WAIT]});
 const SUPPRESSED = report({
@@ -112,6 +113,7 @@ const SUPPRESSED = report({
     }],
     proposal_id: 'PP-101', status: 'ready_for_business', version: 6,
     updated_at: '2026-08-12T04:12:30Z', waits: [],
+    loop_status: 'unknown', loop_waits: [],
   }],
 });
 const ANCHORS_MISSING = report({
@@ -121,6 +123,20 @@ const ANCHORS_MISSING = report({
     message: 'expected impresario anchor is not a file',
     path: 'docs/semantics.md',
   }],
+});
+const LOOP_WAIT = {
+  loop_id: 'LOOP-101', iteration: 2, proposal_id: 'PP-101',
+  reason: 'решить exempt-семантику', stopped_at: '2026-08-12T04:01:21Z',
+  bundle_path: 'pilot/forconcept/pp-101',
+};
+const LOOP_WAITING = report({
+  bundles: [{...OK_BUNDLE, status: 'approved', waits: [],
+    loop_status: 'needs_human', loop_waits: [LOOP_WAIT]}],
+  needs_human: [LOOP_WAIT],
+});
+const LOOP_TERMINAL = report({
+  bundles: [{...OK_BUNDLE, status: 'approved', waits: [],
+    loop_status: 'ready_for_business', loop_waits: []}],
 });
 
 function overviewProjects(names) {
@@ -354,6 +370,57 @@ testCase('no local path becomes an href; hostile strings arrive escaped', async 
   check(out.includes('&lt;img'), 'the message is still readable, escaped');
   const waiting = render(env, WAITING);
   check(!waiting.includes('<a '), 'bundle paths render as text, never links');
+});
+
+testCase('a needs_human wait is readable off one screen', async () => {
+  const env = await boot(() => ok(LOOP_WAITING));
+  await openDetail(env);
+  const text = screenText(env, 'product-proposals');
+  check(text.includes('LOOP-101'), `loop id on screen (got: ${text})`);
+  check(text.includes('решить exempt-семантику'), 'reason on screen');
+  check(text.includes('Stopped at'), 'the column is labelled «Stopped at»');
+  check(text.includes('2026-08-12T04:01:21Z'), 'stop.at value on screen');
+  check(text.includes('loop: needs_human'), 'the loop chip names the status');
+  check(!text.includes('0 loops waiting'), 'no zero-label next to a live wait');
+});
+
+testCase('terminal loop: chip + «0 loops waiting», no table', async () => {
+  const env = await boot(() => ok(LOOP_TERMINAL));
+  await openDetail(env);
+  const text = screenText(env, 'product-proposals');
+  check(text.includes('loop: ready_for_business'), 'terminal chip visible');
+  check(text.includes('0 loops waiting'), 'explicit zero-label present');
+  check(!text.includes('Stopped at'), 'no needs_human table for a terminal loop');
+});
+
+testCase('loop: absent is visible, not hidden (owner-fixed)', async () => {
+  const env = await boot(() => ok(WAITING));
+  await openDetail(env);
+  const text = screenText(env, 'product-proposals');
+  check(text.includes('loop: absent'),
+    'absent is an explicit read-model state and stays visible');
+});
+
+testCase('suppressed bundle shows loop: unknown, never «0 loops waiting»', async () => {
+  const env = await boot(() => ok(SUPPRESSED));
+  await openDetail(env);
+  const text = screenText(env, 'product-proposals');
+  check(text.includes('loop: unknown'), 'unknown chip on the suppressed bundle');
+  check(!text.includes('0 loops waiting'),
+    'suppressed loop classification must not read as zero loops waiting');
+});
+
+testCase('a hostile loop reason arrives escaped', async () => {
+  const env = await boot(() => ok(WAITING));
+  const hostile = report({
+    bundles: [{...OK_BUNDLE, status: 'approved', waits: [],
+      loop_status: 'needs_human',
+      loop_waits: [{...LOOP_WAIT, reason: '<img src=x onerror=alert(1)>'}]}],
+    needs_human: [{...LOOP_WAIT, reason: '<img src=x onerror=alert(1)>'}],
+  });
+  const out = render(env, hostile);
+  check(!out.includes('<img'), 'raw markup does not survive esc()');
+  check(out.includes('&lt;img'), 'the reason is still readable, escaped');
 });
 
 // ---- main ------------------------------------------------------------------
