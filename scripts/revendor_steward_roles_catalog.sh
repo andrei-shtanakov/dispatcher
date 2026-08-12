@@ -194,7 +194,8 @@ import pathlib
 import sys
 
 manifest_path, pin, root = sys.argv[1], sys.argv[2], pathlib.Path(sys.argv[3])
-manifest = json.load(open(manifest_path))
+with open(manifest_path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
 if manifest.get("producer_commit") != pin:
     sys.exit(1)
 surface = manifest.get("surface") or []
