@@ -609,6 +609,8 @@ def _mark_conflicts(bundles: list[ProposalBundle]) -> None:
         for bundle in group:
             bundle.state = "conflict"
             bundle.waits = []
+            bundle.loop_waits = []
+            bundle.loop_status = "unknown"
             bundle.diagnostics.append(
                 Diagnostic(
                     code="proposal-id-conflict",
@@ -648,10 +650,15 @@ def collect_product_proposals(mirror_root: Path) -> ProductProposalsReport:
         (w for b in bundles if b.state == "ok" for w in b.waits),
         key=lambda w: (w.proposal_id, w.gate_id, w.version, w.bundle_path),
     )
+    needs_human = sorted(
+        (w for b in bundles if b.state == "ok" for w in b.loop_waits),
+        key=lambda w: (w.loop_id, w.iteration, w.bundle_path),
+    )
     return ProductProposalsReport(
         mirror_path=str(mirror_root),
         bundles=bundles,
         waits=waits,
+        needs_human=needs_human,
         diagnostics=report_diags,
         attention=bool(report_diags) or any(b.state != "ok" for b in bundles),
     )

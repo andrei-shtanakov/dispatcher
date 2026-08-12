@@ -1052,3 +1052,56 @@ def test_vendored_loop_state_fixtures_split_on_the_schema() -> None:
     ):
         data = _json.loads((LS_SCHEMA_FIXTURES / "invalid" / name).read_text())
         assert not _loop_state_validator().is_valid(data), name
+
+
+# Task 4: needs_human aggregation, conflicts, determinism
+
+
+def test_needs_human_aggregates_and_sorts(tmp_path: Path) -> None:
+    from dispatcher.core.product_proposals import collect_product_proposals
+
+    mirror = make_mirror(tmp_path)
+    for rel, pid, loop in (
+        ("pilot/b", "PP-200", "LOOP-200"),
+        ("pilot/a", "PP-100", "LOOP-100"),
+    ):
+        make_bundle(mirror, rel=rel, proposal=proposal_yaml(pid=pid, status="approved"))
+        state = _json.loads(loop_state_json(pid=pid, verdict="needs_human"))
+        state["loop_id"] = loop
+        (mirror / rel / "loop.state").write_text(_json.dumps(state))
+    report = collect_product_proposals(mirror)
+    assert [(w.loop_id, w.bundle_path) for w in report.needs_human] == [
+        ("LOOP-100", "pilot/a"),
+        ("LOOP-200", "pilot/b"),
+    ]
+    assert report.attention is False  # a plain LoopWait is expected work
+
+
+def test_conflict_suppresses_loop_waits_too(tmp_path: Path) -> None:
+    from dispatcher.core.product_proposals import collect_product_proposals
+
+    mirror = make_mirror(tmp_path)
+    for rel in ("pilot/a", "pilot/b"):
+        make_bundle(mirror, rel=rel, proposal=proposal_yaml(status="approved"))
+        (mirror / rel / "loop.state").write_text(loop_state_json(verdict="needs_human"))
+    report = collect_product_proposals(mirror)
+    assert [b.state for b in report.bundles] == ["conflict", "conflict"]
+    assert report.needs_human == []
+    assert all(b.loop_status == "unknown" for b in report.bundles)
+    assert all(b.loop_waits == [] for b in report.bundles)
+
+
+def test_determinism_and_read_only_hold_with_loop_state(tmp_path: Path) -> None:
+    from dispatcher.core.product_proposals import collect_product_proposals
+
+    mirror = make_mirror(tmp_path)
+    make_bundle(mirror, proposal=proposal_yaml(status="ready_for_business", version=6))
+    (mirror / "pilot" / "pp-101" / "loop.state").write_text(
+        loop_state_json(verdict="needs_human")
+    )
+    before = _tree_state(mirror)
+    first = collect_product_proposals(mirror)
+    second = collect_product_proposals(mirror)
+    assert first.model_dump_json() == second.model_dump_json()
+    assert _tree_state(mirror) == before
+    assert len(first.needs_human) == 1 and len(first.waits) == 1  # both kinds coexist
