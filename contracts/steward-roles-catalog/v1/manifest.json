@@ -1,0 +1,13 @@
+{
+  "contract": "steward-roles-catalog",
+  "contract_version": 1,
+  "producer_commit": "b79c858dc5f5dc7651f15a1cdf3bcd51a1de2d16",
+  "surface_note": "sha256 of every vendored file; excludes PINNED.txt and this manifest",
+  "tree_sha256": "5bc2b917cba9400cd8ff4e04ca489b32eab45a96280cbd105264365923d29271",
+  "surface": [
+    {
+      "path": "roles.yaml",
+      "sha256": "7cb62ac9800741c6a785d85152c2846e618585256a95e436bb0992626c6c6293"
+    }
+  ]
+}
