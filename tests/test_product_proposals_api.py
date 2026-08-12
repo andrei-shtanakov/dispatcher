@@ -134,6 +134,7 @@ async def test_partial_result_is_200_with_attention(tmp_path: Path) -> None:
     assert data["waits"][0]["proposal_updated_at"] == "2026-08-12T04:12:30Z"
     assert data["attention"] is True
     assert data["needs_human"] == []
+    assert [b["loop_waits"] for b in data["bundles"]] == [[], []]
 
 
 async def test_needs_human_serializes_through_the_route(tmp_path: Path) -> None:
@@ -168,3 +169,4 @@ async def test_needs_human_serializes_through_the_route(tmp_path: Path) -> None:
     ] == [("LOOP-101", 1, "ждём человека", "2026-08-12T05:00:00Z")]
     # both wait kinds coexist on one bundle: Gate A + loop
     assert [w["gate_id"] for w in data["waits"]] == ["qg5_business"]
+    assert data["bundles"][0]["loop_waits"] == data["needs_human"]
