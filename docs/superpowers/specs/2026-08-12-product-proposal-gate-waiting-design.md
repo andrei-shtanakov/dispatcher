@@ -39,7 +39,7 @@ scope here.
 - diagnostics / fail-loud behaviour for a missing mirror, invalid bundles,
   invalid decisions, and identity conflicts;
 - a read-only GET endpoint;
-- a web panel that leads to the specific proposal/gate and shows why it
+- a web panel that identifies the specific proposal/gate and shows why it
   waits.
 
 **Out of scope:** TUI, VSCode, MCP parity; approve/reject/recycle or any
@@ -110,8 +110,15 @@ commit.
 - Decisions are read ONLY from `<bundle>/decisions/*.yaml`.
 - Exclusions apply to ANY path segment, recursively: segments starting with
   `.` or `_`, and any segment equal to `contracts`.
-- Directory symlinks are not followed; a found `proposal.yaml` must still
-  be inside `mirror_root` after `resolve()`.
+- Directory symlinks are not followed.
+- File symlinks are permitted ONLY when `resolve()` stays inside
+  `mirror_root` — one rule for every read file: a found `proposal.yaml`
+  AND every `decisions/*.yaml`. An escaped file is never read; it still
+  produces evidence (the escape diagnostics below) — every found
+  `proposal.yaml` yields a bundle row no matter what.
+- The walk passes an `onerror` callback (`os.walk(onerror=...)`), so a
+  directory-enumeration failure becomes a `walk-error` report diagnostic
+  instead of being silently swallowed (the default `os.walk` behaviour).
 - Bundles are sorted by normalized relative path; the scan never leaves the
   mirror root.
 
@@ -272,6 +279,8 @@ Codes are the stable public API contract; messages are not.
 |---|---|---|
 | `proposal-unreadable` | `unreadable` | OSError / non-UTF-8 / not YAML / not a mapping |
 | `proposal-schema-invalid` | `unreadable` | fails vendored `product-proposal/v1` |
+| `proposal-path-escape` | `unreadable` | `proposal.yaml` resolves outside `mirror_root`; the file is not read |
+| `decision-path-escape` | `unknown` | a `decisions/*.yaml` resolves outside `mirror_root`; the file is not read |
 | `decision-unreadable` | `unknown` | a `decisions/*.yaml` unreadable / not YAML |
 | `decision-schema-invalid` | `unknown` | fails vendored `gate-decision/v1` |
 | `decision-id-duplicate` | `unknown` | `decision_id` repeated in the bundle |
@@ -326,8 +335,8 @@ A per-project section in `server/static/index.html`, same pattern as the
 governance panel (fetch on project selection):
 
 - waits table: proposal, gate label (Gate A/B), authority, version,
-  «Proposal updated» (`proposal_updated_at`), bundle path — the navigation
-  to the specific proposal/gate;
+  «Proposal updated» (`proposal_updated_at`), bundle path — the
+  copy-friendly identification of the specific proposal/gate;
 - a local mirror path is NEVER turned into an href: `artifact_ref` and the
   relative bundle path render as copy-friendly text. A safe repository-URL
   link may come later, only if a reliable URL source appears — separate
@@ -387,8 +396,10 @@ approve-before-status-update scenarios from «Classification semantics».
 **Unit layers:** one test per diagnostic code; supersession (superseded
 approve → wait present; dangling / self / cycle → `unknown`); Gate B
 symmetric to Gate A; discovery (recursive segment exclusions, symlinked
-dir not followed, `resolve()` escape rejected, deterministic order,
-walk-error → report diagnostic); `proposal_id` conflict (all participants
+dir not followed, `proposal-path-escape` and `decision-path-escape` on
+file symlinks resolving outside the mirror while an in-mirror file symlink
+stays readable, deterministic order, walk-error → report diagnostic via
+`onerror`); `proposal_id` conflict (all participants
 `conflict`, identical deterministic path list, earlier diagnostics
 preserved); duplicate YAML keys rejected; the read-only invariant (path
 set + hashes).
