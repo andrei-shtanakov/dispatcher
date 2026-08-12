@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import functools
 import json
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -158,6 +159,59 @@ def _proposal_validator() -> jsonschema.Draft202012Validator:
 def _decision_validator() -> jsonschema.Draft202012Validator:
     schema = json.loads(_DECISION_SCHEMA.read_text(encoding="utf-8"))
     return jsonschema.Draft202012Validator(schema)
+
+
+def _relpath(path: Path, mirror_root: Path) -> str:
+    try:
+        return path.relative_to(mirror_root).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _inside(path: Path, root: Path) -> bool:
+    """True when `path` still resolves inside `root` (symlink escape guard)."""
+    try:
+        return path.resolve().is_relative_to(root.resolve())
+    except OSError:
+        return False
+
+
+def _excluded(name: str) -> bool:
+    return name.startswith((".", "_")) or name == "contracts"
+
+
+def _discover(mirror_root: Path) -> tuple[list[Path], list[Diagnostic]]:
+    """Find proposal-bundle roots: every directory holding a proposal.yaml.
+
+    Exclusions apply to ANY path segment; directory symlinks are pruned; an
+    enumeration failure becomes a walk-error diagnostic via onerror — the
+    default os.walk behaviour is to swallow it, which would read as
+    «0 bundles» (spec: fail-loud).
+    """
+    diagnostics: list[Diagnostic] = []
+
+    def onerror(err: OSError) -> None:
+        target = getattr(err, "filename", None) or str(mirror_root)
+        diagnostics.append(
+            Diagnostic(
+                code="walk-error",
+                message=f"{type(err).__name__}: {err}",
+                path=_relpath(Path(target), mirror_root),
+            )
+        )
+
+    bundles: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(
+        mirror_root, topdown=True, onerror=onerror, followlinks=False
+    ):
+        here = Path(dirpath)
+        dirnames[:] = sorted(
+            d for d in dirnames if not _excluded(d) and not (here / d).is_symlink()
+        )
+        if "proposal.yaml" in filenames:
+            bundles.append(here)
+    bundles.sort(key=lambda p: _relpath(p, mirror_root))
+    return bundles, diagnostics
 
 
 def collect_product_proposals(mirror_root: Path) -> ProductProposalsReport:
