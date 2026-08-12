@@ -221,9 +221,20 @@ pinned PP-101:
    return value.
 
 **Live smoke**: expectations extended — the pp-101 bundle additionally
-shows `loop_status == "ready_for_business"` and `needs_human == []`;
-the checkout script is unchanged (it reads the pin from the manifests,
-which now name `51e3103`, and its manifest-agreement check spans three).
+shows `loop_status == "ready_for_business"` and `needs_human == []`.
+`scripts/checkout_pinned_impresario.sh` is EXTENDED to three manifests
+(today it hardcodes two and compares `PIN_A`/`PIN_B`): the pin is read as
+a LIST over all three vendored manifests; every entry is validated as a
+full 40-hex commit id; the set of pins must be exactly one value — any
+disagreement (including only `loop-state` differing) is a provenance
+FAILURE (exit 3) BEFORE any checkout happens. The «two vendored
+manifests» / «the two manifests disagree» comments are updated to three.
+The checkout script gains a regression test (sandbox `--from` discipline
+of `tests/test_revendor_impresario_script.py`): a sandbox where ONLY the
+loop-state manifest names a different pin must fail with the provenance
+error and perform no checkout; the agreement-pass direction is covered by
+the live smoke itself, which uses the pin only after the three-way
+agreement check succeeds.
 
 **JS harness** (extend `tests/web/product_proposals_harness.js`):
 a needs_human row is readable off one screen (loop id, iteration, reason,
