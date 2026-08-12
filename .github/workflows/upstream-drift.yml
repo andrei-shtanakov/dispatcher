@@ -182,3 +182,46 @@ jobs:
             *) echo "::error::reporter failed with $code" ;;
           esac
           exit "$code"
+
+  # Both impresario contracts, one job: they share a single pin by
+  # construction (one re-vendor script), so one checkout answers for both.
+  drift-impresario-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # The MOVING default branch on purpose — drift can only be seen against
+      # where upstream actually is now; the resolved SHA is in the run log.
+      - uses: actions/checkout@v6
+        with:
+          repository: andrei-shtanakov/impresario
+          ref: master
+          path: _upstream/impresario
+      - uses: astral-sh/setup-uv@v8.1.0
+      - run: uv sync
+      - name: compare canon against both vendored copies
+        run: |
+          overall=0
+          for pair in \
+            "contracts/product-proposal/v1|contracts/impresario-product-proposal/v1" \
+            "contracts/gate-decision/v1|contracts/impresario-gate-decision/v1"; do
+            src="${pair%%|*}"; dst="${pair##*|}"
+            set +e
+            uv run python scripts/upstream_drift_report.py \
+              "_upstream/impresario/$src" \
+              --vendored "$dst" \
+              --upstream-root _upstream/impresario \
+              --ref master \
+              --canon-probe schema.json
+            code=$?
+            set -e
+            # 0 no drift · 1 drift · 2 canon unavailable. Unavailable and
+            # any machinery failure are red too: unknown must not look green.
+            case "$code" in
+              0) echo "no upstream drift: $dst" ;;
+              1) echo "::error::upstream drift in $dst — a deliberate re-vendor PR is due" ;;
+              2) echo "::error::canon unavailable for $src — nothing was compared (not 'no drift')" ;;
+              *) echo "::error::reporter failed with $code for $dst" ;;
+            esac
+            [ "$code" -gt "$overall" ] && overall=$code
+          done
+          exit "$overall"
