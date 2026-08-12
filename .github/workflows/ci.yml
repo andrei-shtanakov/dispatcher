@@ -61,6 +61,10 @@ jobs:
       # tests/test_governance_live_smoke.py FAILS without it, never skips.
       - name: install the pinned steward binary (governance live smoke)
         run: scripts/install_pinned_steward.sh >> "$GITHUB_PATH"
+      # Same discipline for the product-proposals live smoke (inbox #129):
+      # the real impresario tree at the vendored pin, or the test FAILS.
+      - name: checkout pinned impresario (product-proposals live smoke)
+        run: echo "IMPRESARIO_PINNED_DIR=$(scripts/checkout_pinned_impresario.sh)" >> "$GITHUB_ENV"
       - run: uv run pytest tests/ -v
 
   plan-fields:
