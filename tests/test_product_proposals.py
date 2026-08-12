@@ -534,6 +534,44 @@ def test_missing_decisions_dir_is_a_valid_bundle(tmp_path: Path) -> None:
     assert [w.gate_id for w in b.waits] == ["qg5_business"]
 
 
+def test_uppercase_yaml_decision_is_read(tmp_path: Path) -> None:
+    """Only .yaml is contract, recognized case-insensitively — the .YAML
+    file is read, and a schema-invalid decision proves it (fail-closed)."""
+    make_bundle(
+        tmp_path,
+        proposal=proposal_yaml(status="ready_for_business", version=8),
+        decisions={"GD-001.YAML": "decision_id: GD-001\n"},
+    )
+    b = _bundle(tmp_path)
+    assert b.state == "unknown"
+    assert [d.code for d in b.diagnostics] == ["decision-schema-invalid"]
+
+
+def test_uppercase_yaml_valid_approve_extinguishes(tmp_path: Path) -> None:
+    make_bundle(
+        tmp_path,
+        proposal=proposal_yaml(status="ready_for_business", version=8),
+        decisions={"GD-001.YAML": decision_yaml(version=8)},
+    )
+    b = _bundle(tmp_path)
+    assert b.state == "ok"
+    assert b.waits == []
+
+
+def test_yml_extension_is_out_of_contract(tmp_path: Path) -> None:
+    """.yml is not .yaml — out of contract, not read, no diagnostic."""
+    make_bundle(
+        tmp_path,
+        proposal=proposal_yaml(status="approved"),
+        decisions={},
+    )
+    bundle = tmp_path / "pilot" / "pp-101"
+    (bundle / "decisions" / "gd.yml").write_bytes(b"\xff\xfe broken")
+    b = _bundle(tmp_path)
+    assert b.state == "ok"
+    assert b.diagnostics == []
+
+
 def make_mirror(tmp_path: Path) -> Path:
     """A minimal detectable impresario mirror (both anchors present)."""
     mirror = tmp_path / "impresario"

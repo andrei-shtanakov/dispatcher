@@ -245,12 +245,16 @@ def _load_decisions(
     classify=False (untrusted proposal): read/parse errors are still
     collected, but schema validation — semantic classification — is skipped.
     An absent decisions/ directory is a valid bundle with no decisions.
+    Only the `.yaml` extension is contract, recognized case-insensitively
+    (e.g. `.YAML`); `.yml` is out of contract and is never read.
     """
     decisions_dir = bundle_dir / "decisions"
     diagnostics: list[Diagnostic] = []
     records: list[dict[str, object]] = []
     try:
-        files = sorted(p for p in decisions_dir.iterdir() if p.name.endswith(".yaml"))
+        files = sorted(
+            p for p in decisions_dir.iterdir() if p.suffix.lower() == ".yaml"
+        )
     except FileNotFoundError:
         return [], []
     except OSError as err:
