@@ -103,6 +103,32 @@
       повреждено/устарело/нерезолвимо не рендерится как pass), M-02 (блокер
       бандла виден с одного экрана).
 
+## Product-governance (impresario)
+
+- [ ] Read-only `gate_waiting`: какие product-решения ждут человека — фаза 1, contract-backed состояния @owner:github:andrei-shtanakov @id:product-proposal-gate-waiting
+      Принятие inbox-issue #129 от impresario (ADR-ECO-006). Отдельный вид
+      сущности `product_proposal` — не маскировать под PR-review/merge-gate:
+      другая authority-модель (роли гейтов) и lifecycle (supersedes-цепочки,
+      recycle). Состояния фазы 1: `status: ready_for_business` без активного
+      approve `qg5_business` → ждёт Gate A (`business_owner`);
+      `status: business_approved` без активного approve `qg5_committee` → ждёт
+      Gate B (`committee_chair`); «активное» = не перекрытое supersedes-цепочкой
+      (семантика evidence-проверки steward#64). Поля записи: `gate_id`,
+      `authority`, `artifact_ref` (`proposal://PP-<id>` + путь workspace),
+      `since`/freshness от `updated_at`, dedup identity =
+      `proposal_id`+`gate_id`+`version`. Строго read-only (ARCH-C3/D1: producer
+      решает — dispatcher рендерит). Схемы `product-proposal/v1` +
+      `gate-decision/v1` вендорятся пиненой копией (пин на момент реализации;
+      copy-integrity PR-гейт + upstream-drift, прецедент steward#65).
+      Fail-closed: нечитаемый/невалидный proposal или decision = unknown, не
+      «ничего не ждёт». Acceptance: копия бандла PP-101 со
+      `status: ready_for_business` и снятым GD-001 → ровно одна запись
+      (Gate A, business_owner, proposal://PP-101); настоящий approved бандл →
+      ноль; нечитаемый decision-файл → unknown. Семантика контрактов (SSOT):
+      `impresario/docs/semantics.md`; живой пример входа:
+      `impresario/pilot/forconcept/pp-101/`. Фаза 2 (`needs_human` из
+      loop.state) заблокирована на стороне impresario и в scope не входит.
+
 ## Кросс-репные контракты
 
 - [x] Вендор steward gate-catalog v1: пиненая копия `profiles/gate-catalog.yaml` + канонический словарь obligation в governance-коллекторе — PR #126 @owner:github:andrei-shtanakov @id:vendor-gate-catalog
@@ -117,6 +143,21 @@
       `core/governance.py` по словарю каталога — значение вне словаря =
       `unreadable`, fail-closed (NFR-02), отсутствующее значение валидно
       (старый producer). Ре-вендор: `docs/revendor-steward-gate-catalog.md`.
+- [ ] Вендор steward roles-catalog v1: пиненая копия `profiles/roles.yaml` @ `b79c858` + подготовка к следующему перепину gate-check @owner:github:andrei-shtanakov @id:vendor-roles-catalog
+      Принятие inbox-issue #128 от steward (ADR-ECO-006, DEC-007 §1). Канон:
+      `steward/profiles/roles.yaml` (v1, 6 slug'ов: product, architects, qa,
+      tech-lead, stream-owner, owner; `slug_pattern`; состав запинован на
+      `version`) @ `b79c858dc5f5dc7651f15a1cdf3bcd51a1de2d16` (master после
+      steward#56). Копия — рядом с gate-verdicts/gate-catalog по паттерну
+      #125/#127: copy-integrity в PR-гейте + upstream-drift отдельным
+      scheduled-workflow. К следующему перепину бинаря gate-check (иначе
+      live-смоук уйдёт в exit 2 — спроектированный отказ, не баг):
+      `roles.yaml` — обязательный сосед профиля на каждом прогоне (вендоренная
+      копия и есть правильный сосед; минимальный каталог из одного `owner` не
+      резолвит роли тестового бандла); тестовый профиль смоука — в
+      канонической форме (legacy `"@product"` = ProfileError, exit 2);
+      `role-assignments.yaml` для solo-смоука не нужен; идентичности — точные
+      строки без case-folding, канон `github:andrei-shtanakov`.
 - [ ] Ре-вендор `gate-verdicts/v1` бандлом steward: README-активация obligation + fixtures с obligation + stale-фраза в SCHEMA @owner:github:andrei-shtanakov @trigger:"steward обновил fixtures+SCHEMA gate-verdicts одним бандлом (inbox #125 п.3) — либо красный drift-steward-gate-verdicts" @id:revendor-gate-verdicts-obligation-bundle
       Из inbox #125 п.2–3: README контракта уже изменён точечно на пине
       `c26ca38` (активация obligation), SCHEMA.json не тронут побайтово —
