@@ -1,4 +1,4 @@
-source: impresario contracts/gate-decision/v1
+source: impresario contracts/loop-state/v1
 commit: 51e3103b5c88989a1d4a01a659d21790a92bb76b
 vendored: 2026-08-12
 note: pinned copy (repo-boundaries vendoring, ADR-ECO-003). Do not edit here —

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Re-vendor BOTH impresario contracts at one producer commit.
+# Re-vendor all impresario contracts at one producer commit.
 #
-# The pin is the ONE input. contracts/impresario-product-proposal/v1 and
-# contracts/impresario-gate-decision/v1 are always re-vendored together from
-# the same SHA, so the two manifests can never name different commits — the
-# machine-readable anti-mix guarantee the PR-gate test asserts.
+# The pin is the ONE input. contracts/impresario-product-proposal/v1,
+# contracts/impresario-gate-decision/v1, and contracts/impresario-loop-state/v1
+# are always re-vendored together from the same SHA, so the three manifests can
+# never name different commits — the machine-readable anti-mix guarantee the
+# PR-gate test asserts.
 #
 # Both directories are staged and fully verified before either is touched;
 # the swap is same-filesystem renames with a restoring trap. A failure
@@ -31,6 +32,7 @@ PRODUCER_URL="https://github.com/andrei-shtanakov/impresario"
 CONTRACTS=(
   "contracts/product-proposal/v1|contracts/impresario-product-proposal/v1|impresario-product-proposal"
   "contracts/gate-decision/v1|contracts/impresario-gate-decision/v1|impresario-gate-decision"
+  "contracts/loop-state/v1|contracts/impresario-loop-state/v1|impresario-loop-state"
 )
 
 die() { echo "revendor: $2" >&2; exit "$1"; }
@@ -187,7 +189,7 @@ for entry in "${CONTRACTS[@]}"; do
 done
 
 cat >&2 << EOF
-re-vendored both impresario contracts at $NEW_PIN
+re-vendored all impresario contracts at $NEW_PIN
   provenance: $PROVENANCE
               $PROVENANCE_NOTE
   next:       uv run pytest tests/test_impresario_contracts_vendor.py \\

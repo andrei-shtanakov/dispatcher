@@ -19,13 +19,14 @@ from pathlib import Path
 import pytest
 
 CONTRACTS_ROOT = Path(__file__).parent.parent / "contracts"
-PRODUCER_COMMIT = "28727ff76a3983744596137706c844c95a5ad12b"
+PRODUCER_COMMIT = "51e3103b5c88989a1d4a01a659d21790a92bb76b"
 _EXCLUDED_NAMES = {"PINNED.txt", "manifest.json"}
 VENDORED = {
     "impresario-product-proposal": CONTRACTS_ROOT
     / "impresario-product-proposal"
     / "v1",
     "impresario-gate-decision": CONTRACTS_ROOT / "impresario-gate-decision" / "v1",
+    "impresario-loop-state": CONTRACTS_ROOT / "impresario-loop-state" / "v1",
 }
 EXPECTED_SURFACES = {
     "impresario-product-proposal": {
@@ -43,6 +44,18 @@ EXPECTED_SURFACES = {
         "fixtures/invalid/agent-authority.yaml",
         "fixtures/invalid/qg4-approve.yaml",
         "fixtures/invalid/recycle-without-return-to.yaml",
+    },
+    "impresario-loop-state": {
+        "schema.json",
+        "fixtures/invalid/bad-hash.json",
+        "fixtures/invalid/empty-reason.json",
+        "fixtures/invalid/extra-field.json",
+        "fixtures/invalid/missing-at.json",
+        "fixtures/invalid/unknown-verdict.json",
+        "fixtures/valid/failed.json",
+        "fixtures/valid/needs-human.json",
+        "fixtures/valid/ready.json",
+        "fixtures/valid/running.json",
     },
 }
 
@@ -68,7 +81,7 @@ def test_manifest_names_the_pin_and_contract(name: str) -> None:
 
 
 def test_both_manifests_share_one_producer_commit() -> None:
-    """The anti-mix guarantee: the two contracts can never silently sit at
+    """The anti-mix guarantee: the three contracts can never silently sit at
     different upstream commits — pin and provenance are machine-readable."""
     pins = {_manifest(root)["producer_commit"] for root in VENDORED.values()}
     assert pins == {PRODUCER_COMMIT}

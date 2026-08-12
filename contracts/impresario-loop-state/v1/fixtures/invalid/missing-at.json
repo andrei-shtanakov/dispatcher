@@ -1,0 +1,13 @@
+{
+  "loop_id": "LOOP-001",
+  "idea_ref": "idea://IDEA-001",
+  "idea_input_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "proposal_id": "PP-001",
+  "exchange_log_id": "XL-001",
+  "max_iterations": 2,
+  "stop": {
+    "verdict": "needs_human",
+    "reason": "max_iterations reached with open critical items: gap: exempt semantics",
+    "iteration": 1
+  }
+}

@@ -203,7 +203,8 @@ jobs:
           overall=0
           for pair in \
             "contracts/product-proposal/v1|contracts/impresario-product-proposal/v1" \
-            "contracts/gate-decision/v1|contracts/impresario-gate-decision/v1"; do
+            "contracts/gate-decision/v1|contracts/impresario-gate-decision/v1" \
+            "contracts/loop-state/v1|contracts/impresario-loop-state/v1"; do
             src="${pair%%|*}"; dst="${pair##*|}"
             set +e
             uv run python scripts/upstream_drift_report.py \

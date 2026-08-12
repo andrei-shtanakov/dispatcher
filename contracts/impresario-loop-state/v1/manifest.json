@@ -1,0 +1,49 @@
+{
+  "contract": "impresario-loop-state",
+  "contract_version": 1,
+  "producer_commit": "51e3103b5c88989a1d4a01a659d21790a92bb76b",
+  "surface_note": "sha256 of every vendored file; excludes PINNED.txt and this manifest",
+  "tree_sha256": "fd90502b2d2f1859c4a193b9fc17e6759f9a6293a397013522844e863166783c",
+  "surface": [
+    {
+      "path": "fixtures/invalid/bad-hash.json",
+      "sha256": "d5971368fe6628bdc3090b3c28ce7b03fa8348fc1d636adfcbc19738f9641f6c"
+    },
+    {
+      "path": "fixtures/invalid/empty-reason.json",
+      "sha256": "63723fa5677b36d929b63e826f1d8be15f294b6d2573f07ededecd7e67d42703"
+    },
+    {
+      "path": "fixtures/invalid/extra-field.json",
+      "sha256": "04449dc6cb4ae84ed568316da52481185ca29aab9c11444e0ad17ef251c721b0"
+    },
+    {
+      "path": "fixtures/invalid/missing-at.json",
+      "sha256": "9f8893b2797f7e99194a512d7d41f99b23dff124f4dbe78db4f1659647521c00"
+    },
+    {
+      "path": "fixtures/invalid/unknown-verdict.json",
+      "sha256": "2ba7c7c7429d9be3d49651fc51115ecabf364416f48e718f552253090e57cd98"
+    },
+    {
+      "path": "fixtures/valid/failed.json",
+      "sha256": "d9813d34862f2eeee4232982b07e0f39444596a31a34eeb9ea46730a59a088e6"
+    },
+    {
+      "path": "fixtures/valid/needs-human.json",
+      "sha256": "a9fa88549e43e5d9b8e4b23b087b9271899741a7658f81bcb12ebde5000ce216"
+    },
+    {
+      "path": "fixtures/valid/ready.json",
+      "sha256": "55cafa1d825461502fb657e6214afc2ad4ab4827007dcaafc30da1dabfe91d44"
+    },
+    {
+      "path": "fixtures/valid/running.json",
+      "sha256": "98f83423496a3883c1f97856fb264cea7dc5c172cd763d3b8e683c0e0d57bafd"
+    },
+    {
+      "path": "schema.json",
+      "sha256": "dddc48321eb8a5cba1b32c50c545902d797271c211322de47db69bfa5fc1746f"
+    }
+  ]
+}

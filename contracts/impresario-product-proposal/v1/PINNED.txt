@@ -1,5 +1,5 @@
 source: impresario contracts/product-proposal/v1
-commit: 28727ff76a3983744596137706c844c95a5ad12b
+commit: 51e3103b5c88989a1d4a01a659d21790a92bb76b
 vendored: 2026-08-12
 note: pinned copy (repo-boundaries vendoring, ADR-ECO-003). Do not edit here —
   re-vendor with scripts/revendor_impresario_contracts.sh, which re-vendors

@@ -1,0 +1,14 @@
+{
+  "loop_id": "LOOP-001",
+  "idea_ref": "idea://IDEA-001",
+  "idea_input_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "proposal_id": "PP-001",
+  "exchange_log_id": "XL-001",
+  "max_iterations": 2,
+  "stop": {
+    "verdict": "ready_for_business",
+    "reason": "no open critical assumptions/gaps and no open requests",
+    "iteration": 1,
+    "at": "2026-08-12T04:01:21Z"
+  }
+}
