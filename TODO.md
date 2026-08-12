@@ -105,7 +105,7 @@
 
 ## Product-governance (impresario)
 
-- [ ] Read-only `gate_waiting`: какие product-решения ждут человека — фаза 1, contract-backed состояния @owner:github:andrei-shtanakov @id:product-proposal-gate-waiting
+- [x] Read-only `gate_waiting`: какие product-решения ждут человека — фаза 1, contract-backed состояния — PR #132, #133 @owner:github:andrei-shtanakov @id:product-proposal-gate-waiting
       Принятие inbox-issue #129 от impresario (ADR-ECO-006). Отдельный вид
       сущности `product_proposal` — не маскировать под PR-review/merge-gate:
       другая authority-модель (роли гейтов) и lifecycle (supersedes-цепочки,
@@ -128,11 +128,11 @@
       `impresario/docs/semantics.md`; живой пример входа:
       `impresario/pilot/forconcept/pp-101/`. Фаза 2 (`needs_human` из
       loop.state) заблокирована на стороне impresario и в scope не входит.
-      Прогресс: PR-1 (вендор @ 28727ff, `core/product_proposals.py`,
+      Прогресс: PR-1 (#132, вендор @ 28727ff, `core/product_proposals.py`,
       `collectors/impresario.py`, `GET /api/projects/{name}/product-proposals`,
-      acceptance на пине PP-101, live smoke) — открыт; спека
+      acceptance на пине PP-101, live smoke) + PR-2 (#133, web-панель + Node
+      harness) — фаза-1 acceptance (web + Node harness) закрыта; спека
       `docs/superpowers/specs/2026-08-12-product-proposal-gate-waiting-design.md`.
-      Закрытие пункта — только после PR-2 (web-панель + Node harness).
 
 ## Кросс-репные контракты
 

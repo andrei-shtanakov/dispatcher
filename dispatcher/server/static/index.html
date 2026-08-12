@@ -154,6 +154,8 @@
   <div id="detail">click a project card…</div>
   <h3 id="governance-title" hidden>Governance bundle</h3>
   <div id="governance"></div>
+  <h3 id="product-proposals-title" hidden>Product proposals</h3>
+  <div id="product-proposals"></div>
   <div id="merge-gate-open"><label>PR #
     <input id="mg-pr-input" type="number" min="1" inputmode="numeric"></label>
     <button id="mg-open-gate" type="button">Open merge gate</button>
@@ -718,6 +720,59 @@ function renderGovernance(g) {
   return badge + provenance + artifacts + findings;
 }
 
+// Inbox #129 phase 1: read-only rendering of product-proposal gate waits.
+// Producer decides — dispatcher renders; this layer never re-classifies.
+function productProposalBadge(state) {
+  // Non-ok states MUST read as «classification suppressed», never as
+  // «0 gates waiting»: a non-ok bundle's empty waits are suppressed, not
+  // absent (spec: fail-closed invariant 1). "✅ ok" is the only green word.
+  const marks = {
+    "ok": "✅ ok",
+    "unreadable": "✖ classification suppressed — unreadable",
+    "unknown": "❓ classification suppressed — unknown",
+    "conflict": "⛔ classification suppressed — conflict",
+  };
+  return marks[state] || `✖ classification suppressed — ${state}`;
+}
+
+function renderProductProposals(r) {
+  const reportDiags = (r.diagnostics || []).length ? `
+    <ul>${r.diagnostics.map(d => `
+      <li><b>⚠ ${esc(d.code)}</b>: ${esc(d.message)}${
+        d.path ? ` · ${esc(d.path)}` : ""}</li>`).join("")}</ul>` : "";
+  const bundles = r.bundles || [];
+  const suppressed = bundles.filter(b => b.state !== "ok").length;
+  const note = suppressed ? `<p><b>⚠ ${suppressed} bundle(s): classification
+    suppressed</b> — their waits are unknown, not zero</p>` : "";
+  let waits = "";
+  if ((r.waits || []).length) {
+    waits = `<table><tr><th>Proposal</th><th>Gate</th><th>Authority</th>
+      <th>Version</th><th>Proposal updated</th><th>Bundle</th></tr>${
+      r.waits.map(w => `<tr>
+        <td>${esc(w.artifact_ref)}</td>
+        <td>${esc(w.gate_label)} (${esc(w.gate_id)})</td>
+        <td><b>${esc(w.authority)}</b></td>
+        <td>v${esc(String(w.version))}</td>
+        <td>${esc(w.proposal_updated_at)}</td>
+        <td>${esc(w.bundle_path)}</td></tr>`).join("")}</table>`;
+  } else if (!bundles.length) {
+    if (!(r.diagnostics || []).length) waits = `<p class="dim">0 bundles</p>`;
+  } else if (!suppressed) {
+    waits = `<p class="dim">0 gates waiting</p>`;
+  }
+  const rows = bundles.length ? `
+    <ul>${bundles.map(b => `
+      <li>${esc(b.path)} · ${esc(productProposalBadge(b.state))}${
+        b.status ? ` · ${esc(b.status)}` : ""}${
+        b.version != null ? ` · v${esc(String(b.version))}` : ""}${
+        (b.diagnostics || []).length ? `
+        <ul>${b.diagnostics.map(d => `
+          <li class="dim">${esc(d.code)}: ${esc(d.message)}${
+            d.path ? ` · ${esc(d.path)}` : ""}</li>`).join("")}</ul>` : ""}</li>`
+    ).join("")}</ul>` : "";
+  return reportDiags + note + waits + rows;
+}
+
 async function detail(name, dirName) {
   const section = document.getElementById("detail-section");
   section.hidden = false;
@@ -734,6 +789,14 @@ async function detail(name, dirName) {
   // into this project's panel when it lands
   taGen += 1;
   taRepo = null;
+  // Final review fix: the pp-race-guard token MUST be taken here, at
+  // detail() entry — not just before the pp fetch. A STALE call can still
+  // be parked in an earlier await (onboarding/spec-runner-config/governance)
+  // when a NEW detail() call starts; taking the token late would let the
+  // stale call resume, grab a FRESH token, and render the wrong project's
+  // waits. Taken here, the stale call's token is already behind ppGen by
+  // the time it reaches the pp block below, so every check there fails shut.
+  const myPp = ++ppGen;
   document.getElementById("detail-name").textContent = "— " + name;
   document.getElementById("detail").textContent = "loading…";
   try {
@@ -785,6 +848,42 @@ async function detail(name, dirName) {
   } catch {
     // unknown project is already surfaced by the onboarding block above;
     // an unreachable endpoint must not take the rest of the panel down
+  }
+
+  const ppTitle = document.getElementById("product-proposals-title");
+  const ppPanel = document.getElementById("product-proposals");
+  // Final review fix: this reset must also be behind the token check — a
+  // STALE call resuming here must not blank the CURRENT project's already-
+  // rendered panel (the reverse of the race the token otherwise guards).
+  if (myPp === ppGen) {
+    ppTitle.hidden = true;
+    ppPanel.textContent = "";
+  }
+  // Spec «Web panel»: 404 (not this kind of project / unknown project)
+  // hides the section; a 200 report — including mirror-not-detected and
+  // mirror-anchors-missing — is RENDERED, error and all. The generation
+  // token drops a late response for the previous project.
+  try {
+    const resp = await fetch(
+      "/api/projects/" + encodeURIComponent(name) + "/product-proposals"
+    );
+    if (myPp === ppGen && resp.ok) {
+      const report = await resp.json();
+      if (myPp === ppGen) {
+        ppTitle.hidden = false;
+        ppPanel.innerHTML = renderProductProposals(report);
+      }
+    } else if (myPp === ppGen && resp.status !== 404) {
+      ppTitle.hidden = false;
+      ppPanel.textContent = "product-proposals endpoint failed: " + resp.status;
+    }
+  } catch (err) {
+    // A network failure is fail-loud (unknown must not look like «no
+    // waits») — unlike a 404, which states «not this kind of project».
+    if (myPp === ppGen) {
+      ppTitle.hidden = false;
+      ppPanel.textContent = String(err);
+    }
   }
   section.scrollIntoView({behavior: "smooth", block: "nearest"});
 }
@@ -1468,6 +1567,9 @@ let taRepo = null;
 // about. Every async entry takes a generation, and after every await work
 // whose generation is stale returns WITHOUT touching shared state.
 let taGen = 0;
+// Inbox #129 PR-2: generation counter for the product-proposals panel —
+// a late response for the PREVIOUS project must never render here.
+let ppGen = 0;
 // A create POST is in flight. Distinct from the generation: a lookup started
 // mid-flight must not merely lose a race, it must not run at all — the
 // mutation is already on the wire and this screen cannot describe its result
