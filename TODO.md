@@ -134,14 +134,16 @@
       harness) — фаза-1 acceptance (web + Node harness) закрыта; спека
       `docs/superpowers/specs/2026-08-12-product-proposal-gate-waiting-design.md`.
 
-- [ ] Parity `product_proposal` в TUI/VSCode/MCP: read-only gate_waiting на остальных поверхностях @owner:github:andrei-shtanakov @id:product-proposal-parity
-      Follow-up фазы 1 (#129: PR #132 collector/API + PR #133 web-панель). Read
-      model готов (`core/product_proposals.py`,
-      `GET /api/projects/{name}/product-proposals`). Перед кодом — короткий
-      design note: состав и семантика parity для TUI, VSCode и MCP (инварианты
-      FR-05/FR-06; отдельно решить про MCP — в фазе 1 был явно вне scope).
-      Реализация отдельной сессией. Parity включает и `needs_human`/loop-статусы
-      фазы 2.
+- [x] Parity `product_proposal` в TUI/VSCode/MCP: read-only gate_waiting на остальных поверхностях — PR #138 @owner:github:andrei-shtanakov @id:product-proposal-parity
+      Follow-up фазы 1 (#129: PR #132 collector/API + PR #133 web-панель),
+      включает `needs_human`/loop-статусы фазы 2. Все поверхности — тонкие
+      рендереры над `read_api.product_proposals`: MCP-тул `product_proposals`
+      (пин whitelist 15→16, стабильные error-codes), секции в TUI
+      `ProjectDetailScreen`, formatting-only секция в onboarding-доке VSCode
+      (независимые запросы + generation guard). Правило нулевых состояний
+      закреплено кросс-поверхностно (web приведён к нему же): уверенный
+      «0 gates/loops waiting» — только при все-ok бандлах без report-level
+      diagnostics.
 
 - [x] Read-only `needs_human` из loop-state/v1 — фаза 2 gate_waiting — PR #137 @owner:github:andrei-shtanakov @id:product-proposal-needs-human
       Принятие inbox-issue #136 от impresario (ADR-ECO-006), продолжение
