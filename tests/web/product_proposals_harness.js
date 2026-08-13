@@ -275,6 +275,23 @@ testCase('«0 gates waiting» and «0 bundles» are distinct labels', async () =
   check(!out.includes('0 bundles'), 'the two labels do not blur');
 });
 
+testCase('a report-level diagnostic forbids the confident zero', async () => {
+  // Zero-state rule (refined for cross-surface parity): «0 gates/loops
+  // waiting» needs a FULLY classified scan — all-ok bundles AND no
+  // report-level diagnostic. A degraded scan renders as incomplete.
+  const env = await boot(() => ok(report({
+    attention: true,
+    bundles: [{...OK_BUNDLE, state: 'ok', status: 'approved', waits: []}],
+    diagnostics: [{code: 'scan-degraded', message: 'one pilot dir was lost'}],
+  })));
+  await openDetail(env);
+  const text = screenText(env, 'product-proposals');
+  check(text.includes('scan-degraded'), 'the diagnostic code is shown');
+  check(!text.includes('0 gates waiting'),
+    'a degraded scan must not read as a confident global zero');
+  check(!text.includes('0 loops waiting'), 'same for the loops label');
+});
+
 testCase('404 not-impresario-mirror hides the section', async () => {
   const env = await boot(notMirror, ['widget']);
   await openDetail(env);

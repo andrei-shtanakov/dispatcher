@@ -1,6 +1,7 @@
 /** Typed client for the dispatcher HTTP API. Must stay vscode-free. */
 
 import type { OnboardingView } from "./onboarding";
+import type { ProductProposalsReport } from "./productProposals";
 
 export interface Counts {
   tasks: number;
@@ -281,5 +282,24 @@ export class ApiClient {
     return this.get<OnboardingView>(
       `/api/projects/${encodeURIComponent(name)}/onboarding`,
     );
+  }
+
+  /** `null` means 404 — «not this kind of project / unknown project» —
+   * the caller hides the section (web-panel parity). Any other failure
+   * throws: unknown must not look like «no waits». */
+  async getProductProposals(
+    name: string,
+  ): Promise<ProductProposalsReport | null> {
+    const path = `/api/projects/${encodeURIComponent(name)}/product-proposals`;
+    const resp = await fetch(`${this.baseUrl}${path}`, {
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (resp.status === 404) {
+      return null;
+    }
+    if (!resp.ok) {
+      await this.raise(resp, `GET ${path}`);
+    }
+    return (await resp.json()) as ProductProposalsReport;
   }
 }

@@ -1,11 +1,19 @@
 """FR-05: the MCP server over the read facade (DESIGN-703..706)."""
 
+import json
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
-from conftest import make_arbiter, make_atp, make_maestro_home, make_spec_runner
+from conftest import (
+    make_arbiter,
+    make_atp,
+    make_impresario,
+    make_maestro_home,
+    make_spec_runner,
+    seed_impresario_wait,
+)
 from fastapi.encoders import jsonable_encoder
 from fastmcp import Client
 from fastmcp.client.client import CallToolResult
@@ -35,6 +43,7 @@ EXPECTED_TOOLS = {
     "sync_status",
     "spec_runner_configs",
     "onboarding",
+    "product_proposals",
 }
 
 # A minimal roadmap item so the fixture workspace's /api/roadmap is
@@ -92,6 +101,32 @@ def _config(tmp_path: Path) -> DispatcherConfig:
     make_atp(tmp_path)
     make_arbiter(tmp_path)
     make_spec_runner(tmp_path)
+    # impresario mirror with one Gate-A wait, one needs_human loop and one
+    # unreadable bundle — the product_proposals parity row must compare a
+    # POPULATED report (waits + needs_human + a suppressed bundle), not {}.
+    mirror = make_impresario(tmp_path)
+    bundle = seed_impresario_wait(mirror)
+    (bundle / "loop.state").write_text(
+        json.dumps(
+            {
+                "loop_id": "LOOP-101",
+                "idea_ref": "idea://IDEA-101",
+                "idea_input_hash": "sha256:" + "f" * 64,
+                "proposal_id": "PP-101",
+                "exchange_log_id": "XL-101",
+                "max_iterations": 3,
+                "stop": {
+                    "verdict": "needs_human",
+                    "reason": "ждём человека",
+                    "iteration": 1,
+                    "at": "2026-08-12T05:00:00Z",
+                },
+            }
+        )
+    )
+    broken = mirror / "pilot" / "pp-999"
+    broken.mkdir(parents=True)
+    (broken / "proposal.yaml").write_bytes(b"\xff\xfe")
     db = make_maestro_home(tmp_path)
     vault = tmp_path / "prograph-vault" / "authored" / "roadmaps"
     vault.mkdir(parents=True)
@@ -163,6 +198,11 @@ PARITY: list[tuple[str, dict, str]] = [
     ("roadmap_blockers", {}, "/api/roadmap/blockers"),
     ("spec_runner_configs", {}, "/api/spec-runner-configs"),
     ("onboarding", {"project": "arbiter"}, "/api/projects/arbiter/onboarding"),
+    (
+        "product_proposals",
+        {"project": "impresario"},
+        "/api/projects/impresario/product-proposals",
+    ),
 ]
 
 
@@ -193,6 +233,12 @@ async def test_tool_json_equals_http_json(tmp_path: Path) -> None:
                 # fixture must exercise both verdicts, not compare empty lists
                 flags = {n["actionable"] for n in tool_json["next_items"]}
                 assert flags == {True, False}
+            if tool_name == "product_proposals":
+                # fixture must exercise waits, needs_human AND a suppressed
+                # bundle — an empty report would compare vacuously
+                assert [w["gate_id"] for w in tool_json["waits"]] == ["qg5_business"]
+                assert [w["loop_id"] for w in tool_json["needs_human"]] == ["LOOP-101"]
+                assert "unreadable" in {b["state"] for b in tool_json["bundles"]}
 
 
 async def test_roadmap_item_parity_found(tmp_path: Path) -> None:
@@ -262,6 +308,49 @@ async def test_lookup_errors_carry_http_detail_text(tmp_path: Path) -> None:
             await client.call_tool("onboarding", {"project": "no-such"})
 
 
+async def test_product_proposals_errors_carry_stable_codes(tmp_path: Path) -> None:
+    """The CODE is the contract (the human message is not): both 404
+    families surface as ToolError carrying the same structured code the
+    HTTP route sends in its detail object."""
+    async with Client(build_server(_config(tmp_path))) as client:
+        with pytest.raises(ToolError, match='"code": "project-not-found"'):
+            await client.call_tool("product_proposals", {"project": "nonesuch"})
+        with pytest.raises(ToolError, match='"code": "not-impresario-mirror"'):
+            await client.call_tool("product_proposals", {"project": "arbiter"})
+
+
+async def test_product_proposals_mirror_not_detected_is_a_report(
+    tmp_path: Path,
+) -> None:
+    """No impresario under the roots → a SUCCESSFUL report carrying the
+    report-level diagnostic and attention=true — never a tool error."""
+    make_arbiter(tmp_path)  # some OTHER project, so discovery runs fine
+    config = DispatcherConfig(roots=(tmp_path,))
+    async with Client(build_server(config)) as client:
+        result = await client.call_tool("product_proposals", {"project": "impresario"})
+    data = _tool_json(result)
+    assert [d["code"] for d in data["diagnostics"]] == ["mirror-not-detected"]
+    assert data["attention"] is True
+
+
+async def test_product_proposals_anchors_missing_is_a_report(
+    tmp_path: Path,
+) -> None:
+    """Mirror degrades within the cache TTL → mirror-anchors-missing as a
+    successful attention report, not an MCP error."""
+    make_arbiter(tmp_path)
+    mirror = make_impresario(tmp_path)
+    config = DispatcherConfig(roots=(tmp_path,))
+    async with Client(build_server(config)) as client:
+        first = await client.call_tool("product_proposals", {"project": "impresario"})
+        assert _tool_json(first)["diagnostics"] == []
+        (mirror / "docs" / "semantics.md").unlink()
+        result = await client.call_tool("product_proposals", {"project": "impresario"})
+    data = _tool_json(result)
+    assert [d["code"] for d in data["diagnostics"]] == ["mirror-anchors-missing"]
+    assert data["attention"] is True
+
+
 async def test_serializers_agree_for_every_read_model(tmp_path: Path) -> None:
     """review 2's guard: jsonable_encoder == model_dump(mode='json') on
     POPULATED instances — datetimes are the sensitive spot."""
@@ -286,6 +375,7 @@ async def test_serializers_agree_for_every_read_model(tmp_path: Path) -> None:
         read_api.sync_status(sync_cache, start_fetch=False),
         *read_api.spec_runner_configs(config),
         read_api.onboarding(cache, dirs, "arbiter"),
+        read_api.product_proposals(cache, "impresario"),
     ]
     for obj in objects:
         assert jsonable_encoder(obj) == obj.model_dump(mode="json"), type(obj)

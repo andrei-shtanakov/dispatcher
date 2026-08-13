@@ -10,6 +10,7 @@ from textual.widgets import Footer, Header, Static
 
 from dispatcher.core.models import ProjectSnapshot
 from dispatcher.core.onboarding import OnboardingView
+from dispatcher.core.product_proposals import ProductProposalsReport
 
 
 def _section(title: str, lines: list[str]) -> str:
@@ -136,17 +137,116 @@ def _onboarding_sections(view: OnboardingView) -> list[tuple[str, list[str]]]:
     ]
 
 
+_STATE_MARKS = {"ok": "✅", "unreadable": "✖", "unknown": "❓", "conflict": "⛔"}
+
+
+def _pp_badge(state: str) -> str:
+    """Web-parity badge: '✅ ok' is the only green word — every other
+    state reads as «classification suppressed», never as zero waits."""
+    if state == "ok":
+        return "✅ ok"
+    return f"{_STATE_MARKS.get(state, '✖')} classification suppressed — {state}"
+
+
+def _pp_sections(report: ProductProposalsReport) -> list[tuple[str, list[str]]]:
+    """Producer decides — this renderer never re-classifies (inbox #129).
+
+    Zero-state rule (spec, refined for parity): «0 bundles» only on a
+    healthy empty scan; «0 gates/loops waiting» only when at least one
+    bundle exists, ALL bundles are ok AND there is no report-level
+    diagnostic — anything less than a fully classified scan renders as
+    incomplete, never as a confident global zero.
+    """
+    suppressed = sum(1 for b in report.bundles if b.state != "ok")
+    certain = bool(report.bundles) and not suppressed and not report.diagnostics
+    note = (
+        [
+            escape(
+                f"⚠ {suppressed} bundle(s): classification suppressed — "
+                "their waits are unknown, not zero"
+            )
+        ]
+        if suppressed
+        else []
+    )
+
+    def zero_state(label: str) -> list[str]:
+        if certain:
+            return [escape(label)]
+        if not report.bundles and not report.diagnostics:
+            return ["0 bundles"]
+        return ["classification incomplete — waits unknown, not zero"]
+
+    gate_lines = note + [
+        escape(
+            f"{w.artifact_ref} · {w.gate_label} ({w.gate_id}) · "
+            f"{w.authority} · v{w.version} · updated {w.proposal_updated_at} "
+            f"· {w.bundle_path}"
+        )
+        for w in report.waits
+    ]
+    loop_lines = note + [
+        escape(
+            f"{w.loop_id} · iteration {w.iteration} · {w.reason} · "
+            f"stopped {w.stopped_at} · {w.bundle_path}"
+        )
+        for w in report.needs_human
+    ]
+    bundle_lines = [
+        escape(
+            f"{b.path} · {_pp_badge(b.state)}"
+            + (f" · {b.status}" if b.status else "")
+            + (f" · v{b.version}" if b.version is not None else "")
+            + f" · loop: {b.loop_status}"
+        )
+        for b in report.bundles
+    ]
+    sections = []
+    if report.diagnostics:
+        sections.append(
+            (
+                "product proposals — diagnostics",
+                [
+                    escape(
+                        f"⚠ {d.code}: {d.message}" + (f" · {d.path}" if d.path else "")
+                    )
+                    for d in report.diagnostics
+                ],
+            )
+        )
+    sections.extend(
+        [
+            (
+                "product proposals — gate waits",
+                gate_lines or zero_state("0 gates waiting"),
+            ),
+            (
+                "product proposals — loop waits (needs_human)",
+                loop_lines or zero_state("0 loops waiting"),
+            ),
+            ("product proposals — bundles", bundle_lines),
+        ]
+    )
+    return sections
+
+
 class ProjectDetailScreen(Screen[None]):
     """Read-only drill-down into one project's snapshot."""
 
     BINDINGS = [("escape,q", "app.pop_screen", "Back")]
 
     def __init__(
-        self, snap: ProjectSnapshot, onboarding: OnboardingView | None = None
+        self,
+        snap: ProjectSnapshot,
+        onboarding: OnboardingView | None = None,
+        product_proposals: ProductProposalsReport | None = None,
+        product_proposals_error: str | None = None,
     ) -> None:
         super().__init__()
         self._snap = snap
         self._onboarding = onboarding
+        self._product_proposals = product_proposals
+        self._product_proposals_error = product_proposals_error
 
     def _render_texts(self) -> list[str]:
         """Static bodies in render order (plain list — unit-testable)."""
@@ -164,6 +264,20 @@ class ProjectDetailScreen(Screen[None]):
             )
             extra = [w for w in view.warnings if w not in set(s.warnings)]
             texts.append(_section("onboarding warnings", [escape(w) for w in extra]))
+        # fail-loud: a broken collect renders as an error section — unknown
+        # must never look like «no product-governance waits»
+        if self._product_proposals_error is not None:
+            texts.append(
+                _section(
+                    "product proposals — error",
+                    [escape(self._product_proposals_error)],
+                )
+            )
+        elif self._product_proposals is not None:
+            texts.extend(
+                _section(title, lines)
+                for title, lines in _pp_sections(self._product_proposals)
+            )
         texts.extend(_section(title, lines) for title, lines in _sections(s))
         return texts
 

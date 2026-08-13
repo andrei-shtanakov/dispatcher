@@ -31,6 +31,8 @@ with warnings.catch_warnings():
 
 import pytest
 
+from dispatcher.core.product_proposals import ANCHOR_FILES
+
 
 @pytest.fixture
 def anyio_backend() -> str:
@@ -287,3 +289,31 @@ def assert_no_secret_reachable(
         assert secret not in repr(vars(node)), f"vars() at depth {depth}"
         node = node.__cause__ or node.__context__
         depth += 1
+
+
+def make_impresario(root: Path) -> Path:
+    """The impresario mirror: content-detected via its anchor files."""
+    mirror = root / "impresario"
+    for rel in ANCHOR_FILES:
+        p = mirror / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x\n")
+    return mirror
+
+
+def seed_impresario_wait(mirror: Path) -> Path:
+    """One ok bundle whose proposal waits at Gate A; returns the bundle dir."""
+    bundle = mirror / "pilot" / "pp-101"
+    (bundle / "decisions").mkdir(parents=True)
+    (bundle / "proposal.yaml").write_text(
+        "proposal_id: PP-101\n"
+        "idea_ref: idea://IDEA-101\n"
+        "version: 6\n"
+        "status: ready_for_business\n"
+        "iteration: 2\n"
+        "refs:\n"
+        "  exchange_log: exchange-log://XL-101\n"
+        "created_at: '2026-08-12T02:08:53Z'\n"
+        "updated_at: '2026-08-12T04:12:30Z'\n"
+    )
+    return bundle
