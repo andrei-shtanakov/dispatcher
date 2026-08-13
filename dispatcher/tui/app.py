@@ -578,15 +578,7 @@ class DispatcherApp(App[None]):
             name = str(event.row_key.value)
             snap = self._snapshot(name)
             if snap is not None and snap.detected:
-                onboarding = (
-                    build_onboarding(snap, self._roadmap, self._contracts)
-                    if self._roadmap is not None
-                    else None
-                )
-                report, report_error = self._product_proposals(name)
-                self.push_screen(
-                    ProjectDetailScreen(snap, onboarding, report, report_error)
-                )
+                self._open_project_detail(snap)
         elif event.data_table.id == "errors-table":
             idx = event.cursor_row
             if 0 <= idx < len(self._shown_errors):
@@ -597,6 +589,23 @@ class DispatcherApp(App[None]):
                 self.push_screen(
                     ConfigEditScreen(self._configs[idx], self._config_runner)
                 )
+
+    @work(thread=True, group="project-detail", exclusive=True)
+    def _open_project_detail(self, snap: ProjectSnapshot) -> None:
+        """Detail-screen data off the event loop: the product-proposals
+        collect walks the mirror on disk (Copilot PR #138), which must not
+        freeze row selection. Own worker group — the default group's
+        exclusive `_collect` must not cancel a pending detail open."""
+        onboarding = (
+            build_onboarding(snap, self._roadmap, self._contracts)
+            if self._roadmap is not None
+            else None
+        )
+        report, report_error = self._product_proposals(snap.name)
+        self.call_from_thread(
+            self.push_screen,
+            ProjectDetailScreen(snap, onboarding, report, report_error),
+        )
 
     def _product_proposals(
         self, name: str

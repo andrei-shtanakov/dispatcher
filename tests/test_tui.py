@@ -292,6 +292,9 @@ async def test_enter_opens_project_detail(tmp_path: Path) -> None:
         table.focus()
         await pilot.pause()
         await pilot.press("enter")  # cursor starts on row 0 = arbiter
+        # the detail screen is pushed from a thread worker (the
+        # product-proposals collect walks the disk) — wait for it
+        await _settled(app, pilot)
         assert isinstance(app.screen, ProjectDetailScreen)
         assert app.screen._snap.name == "arbiter"
         # Verify the rendered header actually contains the collected_at and

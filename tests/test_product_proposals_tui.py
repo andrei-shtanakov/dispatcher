@@ -166,6 +166,10 @@ async def _open_detail(app: DispatcherApp, pilot, name: str) -> None:
     rows = [str(table.get_row_at(i)[0]).strip() for i in range(table.row_count)]
     table.move_cursor(row=rows.index(name))
     await pilot.press("enter")
+    # the detail screen is pushed from a thread worker (Copilot PR #138:
+    # the mirror walk must not block the event loop) — wait for it
+    await app.workers.wait_for_complete()
+    await pilot.pause()
 
 
 async def test_impresario_detail_shows_gate_wait(tmp_path: Path) -> None:
