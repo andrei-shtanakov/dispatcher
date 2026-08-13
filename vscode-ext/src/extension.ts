@@ -6,7 +6,9 @@ import { ApiClient, ApiError } from "./api";
 import { ServerManager } from "./server";
 import type { ActionOutcome, SpecRunnerConfigEntry, SyncStatusResponse } from "./api";
 import { createStatusBar } from "./status";
-import { renderOnboardingMarkdown } from "./onboarding";
+import type { OnboardingView } from "./onboarding";
+import { composeProjectDoc } from "./productProposals";
+import type { ProductProposalsReport } from "./productProposals";
 import {
   applyEdit,
   diffLines,
@@ -302,25 +304,51 @@ export function activate(context: vscode.ExtensionContext): void {
       "onboarding not loaded — run “Dispatcher: Project Onboarding”",
   };
 
+  // Late-response guard: a re-run of the command for the SAME project
+  // must own the document — a slower older run resuming after it would
+  // otherwise overwrite the fresher content.
+  const onboardingGen = new Map<string, number>();
+
+  function errorText(reason: unknown): string {
+    return reason instanceof ApiError ? reason.detail : String(reason);
+  }
+
   async function showOnboarding(name: string): Promise<void> {
-    try {
-      const view = await client().getOnboarding(name);
-      if (typeof view?.project?.name !== "string") {
-        void vscode.window.showErrorMessage("malformed onboarding response");
-        return;
-      }
-      const uri = vscode.Uri.parse(
-        `dispatcher-onboarding:/${encodeURIComponent(name)}.md`,
-      );
-      onboardingDocs.set(uri.path, renderOnboardingMarkdown(view));
-      onboardingChanged.fire(uri); // re-run refreshes the SAME document
-      const doc = await vscode.workspace.openTextDocument(uri);
-      await vscode.commands.executeCommand("markdown.showPreview", doc.uri);
-    } catch (err) {
-      void vscode.window.showErrorMessage(
-        err instanceof ApiError ? err.detail : String(err),
-      );
+    const uri = vscode.Uri.parse(
+      `dispatcher-onboarding:/${encodeURIComponent(name)}.md`,
+    );
+    const myGen = (onboardingGen.get(uri.path) ?? 0) + 1;
+    onboardingGen.set(uri.path, myGen);
+    // The two requests are INDEPENDENT: one failing must not take the
+    // other down — each side lands in the doc as content or as its own
+    // fail-loud error line (composeProjectDoc).
+    const api = client();
+    const [ob, pp] = await Promise.allSettled([
+      api.getOnboarding(name),
+      api.getProductProposals(name),
+    ]);
+    if (onboardingGen.get(uri.path) !== myGen) {
+      return; // a newer run already owns this document
     }
+    let onboarding: { view?: OnboardingView; error?: string };
+    if (ob.status !== "fulfilled") {
+      onboarding = { error: errorText(ob.reason) };
+    } else if (typeof ob.value?.project?.name !== "string") {
+      onboarding = { error: "malformed onboarding response" };
+    } else {
+      onboarding = { view: ob.value };
+    }
+    const proposals: {
+      report?: ProductProposalsReport | null;
+      error?: string;
+    } =
+      pp.status === "fulfilled"
+        ? { report: pp.value }
+        : { error: errorText(pp.reason) };
+    onboardingDocs.set(uri.path, composeProjectDoc(name, onboarding, proposals));
+    onboardingChanged.fire(uri); // re-run refreshes the SAME document
+    const doc = await vscode.workspace.openTextDocument(uri);
+    await vscode.commands.executeCommand("markdown.showPreview", doc.uri);
   }
 
   async function onboardingCommand(node?: ProjectNode): Promise<void> {

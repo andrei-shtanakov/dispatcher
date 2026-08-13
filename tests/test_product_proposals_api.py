@@ -11,22 +11,12 @@ from pathlib import Path
 
 import httpx
 import pytest
-from conftest import make_arbiter
+from conftest import make_arbiter, make_impresario, seed_impresario_wait
 
 from dispatcher.core.discovery import DispatcherConfig
-from dispatcher.core.product_proposals import ANCHOR_FILES
 from dispatcher.server.app import create_app
 
 pytestmark = pytest.mark.anyio
-
-
-def make_impresario(root: Path) -> Path:
-    mirror = root / "impresario"
-    for rel in ANCHOR_FILES:
-        p = mirror / rel
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text("x\n")
-    return mirror
 
 
 def _client(tmp_path: Path) -> httpx.AsyncClient:
@@ -37,19 +27,7 @@ def _client(tmp_path: Path) -> httpx.AsyncClient:
 
 
 def _seed_wait(mirror: Path) -> None:
-    bundle = mirror / "pilot" / "pp-101"
-    (bundle / "decisions").mkdir(parents=True)
-    (bundle / "proposal.yaml").write_text(
-        "proposal_id: PP-101\n"
-        "idea_ref: idea://IDEA-101\n"
-        "version: 6\n"
-        "status: ready_for_business\n"
-        "iteration: 2\n"
-        "refs:\n"
-        "  exchange_log: exchange-log://XL-101\n"
-        "created_at: '2026-08-12T02:08:53Z'\n"
-        "updated_at: '2026-08-12T04:12:30Z'\n"
-    )
+    seed_impresario_wait(mirror)
 
 
 async def test_unknown_project_is_404_project_not_found(tmp_path: Path) -> None:

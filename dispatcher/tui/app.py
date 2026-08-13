@@ -20,6 +20,7 @@ from textual.widgets import (
     TabPane,
 )
 
+from dispatcher.core import read_api
 from dispatcher.core.actions import (
     Action,
     ActionBusyError,
@@ -30,6 +31,7 @@ from dispatcher.core.contracts import check_contracts
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.models import ContractStatus, ErrorEvent, ProjectSnapshot
 from dispatcher.core.onboarding import build_onboarding
+from dispatcher.core.product_proposals import ProductProposalsReport
 from dispatcher.core.roadmap import (
     RoadmapResponse,
     SummaryResponse,
@@ -576,12 +578,7 @@ class DispatcherApp(App[None]):
             name = str(event.row_key.value)
             snap = self._snapshot(name)
             if snap is not None and snap.detected:
-                onboarding = (
-                    build_onboarding(snap, self._roadmap, self._contracts)
-                    if self._roadmap is not None
-                    else None
-                )
-                self.push_screen(ProjectDetailScreen(snap, onboarding))
+                self._open_project_detail(snap)
         elif event.data_table.id == "errors-table":
             idx = event.cursor_row
             if 0 <= idx < len(self._shown_errors):
@@ -592,6 +589,39 @@ class DispatcherApp(App[None]):
                 self.push_screen(
                     ConfigEditScreen(self._configs[idx], self._config_runner)
                 )
+
+    @work(thread=True, group="project-detail", exclusive=True)
+    def _open_project_detail(self, snap: ProjectSnapshot) -> None:
+        """Detail-screen data off the event loop: the product-proposals
+        collect walks the mirror on disk (Copilot PR #138), which must not
+        freeze row selection. Own worker group — the default group's
+        exclusive `_collect` must not cancel a pending detail open."""
+        onboarding = (
+            build_onboarding(snap, self._roadmap, self._contracts)
+            if self._roadmap is not None
+            else None
+        )
+        report, report_error = self._product_proposals(snap.name)
+        self.call_from_thread(
+            self.push_screen,
+            ProjectDetailScreen(snap, onboarding, report, report_error),
+        )
+
+    def _product_proposals(
+        self, name: str
+    ) -> tuple[ProductProposalsReport | None, str | None]:
+        """(report, error) for the detail screen, through the read facade —
+        the SAME lookup/negative-snapshot/anchor semantics every other
+        surface gets; this layer scans nothing and classifies nothing.
+        """
+        try:
+            return read_api.product_proposals(self._service, name), None
+        except (read_api.NotImpresarioMirrorError, read_api.ReadLookupError):
+            # web parity: the 404 families mean «not this kind of project /
+            # unknown project» — no section, not an error
+            return None, None
+        except Exception as err:  # noqa: BLE001 — fail-loud, never fail-clean
+            return None, str(err)
 
     def action_project_errors(self) -> None:
         tabs = self.query_one(TabbedContent)

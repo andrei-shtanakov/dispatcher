@@ -757,7 +757,10 @@ function renderProductProposals(r) {
         <td>${esc(w.bundle_path)}</td></tr>`).join("")}</table>`;
   } else if (!bundles.length) {
     if (!(r.diagnostics || []).length) waits = `<p class="dim">0 bundles</p>`;
-  } else if (!suppressed) {
+  } else if (!suppressed && !(r.diagnostics || []).length) {
+    // A confident global zero needs a FULLY classified scan: a report-level
+    // diagnostic (degraded scan) suppresses it the same way a non-ok
+    // bundle does — unknown, not zero.
     waits = `<p class="dim">0 gates waiting</p>`;
   }
   let loops = "";
@@ -770,9 +773,10 @@ function renderProductProposals(r) {
         <td>${esc(l.reason)}</td>
         <td>${esc(l.stopped_at)}</td>
         <td>${esc(l.bundle_path)}</td></tr>`).join("")}</table>`;
-  } else if (bundles.length && !suppressed) {
+  } else if (bundles.length && !suppressed && !(r.diagnostics || []).length) {
     // Parallel to «0 gates waiting»: an explicit, distinct label — and
-    // silence when classification is suppressed (unknown ≠ zero).
+    // silence when classification is suppressed or the scan is degraded
+    // (unknown ≠ zero).
     loops = `<p class="dim">0 loops waiting</p>`;
   }
   const rows = bundles.length ? `

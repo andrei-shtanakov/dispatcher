@@ -9,6 +9,7 @@ selection surface — keep them precise when editing.
 
 from __future__ import annotations
 
+import json
 from typing import Annotated, Any
 
 from fastmcp import FastMCP
@@ -212,5 +213,31 @@ def build_server(
             )
         except read_api.ReadLookupError as err:
             raise ToolError(str(err)) from err
+
+    @mcp.tool
+    def product_proposals(
+        project: Annotated[
+            str,
+            Field(description="The impresario mirror's collector name"),
+        ],
+    ) -> dict[str, Any]:
+        """Product-governance waits for the impresario mirror: which
+        proposals wait at a human gate (gate_waiting) and which
+        researcher-creator loops wait for a human (needs_human), plus
+        every discovered bundle with its classification state. A non-ok
+        bundle means classification suppressed — unknown, not zero waits.
+        Errors carry a JSON detail whose stable `code` is
+        'project-not-found' or 'not-impresario-mirror' (the message text
+        is not a contract)."""
+        try:
+            return read_api.product_proposals(cache, project).model_dump(mode="json")
+        except read_api.ReadLookupError as err:
+            raise ToolError(
+                json.dumps({"code": "project-not-found", "message": str(err)})
+            ) from err
+        except read_api.NotImpresarioMirrorError as err:
+            raise ToolError(
+                json.dumps({"code": "not-impresario-mirror", "message": str(err)})
+            ) from err
 
     return mcp
