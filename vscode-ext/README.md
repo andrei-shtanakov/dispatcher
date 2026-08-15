@@ -2,9 +2,9 @@
 
 Ecosystem monitoring sidebar for VS Code over the
 [dispatcher](https://github.com/andrei-shtanakov/dispatcher) HTTP API — the
-read plane of the polyrepo workspace. The extension only *shows* state and
-*launches PR-only actions* on an explicit click; it never writes to a
-watched repo's working tree.
+read plane of the polyrepo workspace. The extension only *shows* state;
+every mutation is launched by an explicit human click, never on the
+extension's own initiative.
 
 ## Features
 
@@ -28,9 +28,11 @@ watched repo's working tree.
   `dispatcher.projectDir` is set, the extension spawns
   `uv run dispatcher serve` for you.
 
-All mutations (pull, open PR, config edit) are whitelist actions executed
-by the dispatcher server via `github-checker`, gated on an explicit human
-click in the UI.
+Watched-repo mutations (pull, open PR, config edit) are whitelist actions
+executed by the dispatcher server via `github-checker`; the config edit
+goes through `propose-pr` and never touches the live tree. Track/Ignore
+decisions write only the dispatcher's own tracking sidecar
+(`POST /api/sync/track`), never a watched repo.
 
 ## Requirements
 
