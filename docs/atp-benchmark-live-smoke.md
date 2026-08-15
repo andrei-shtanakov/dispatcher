@@ -72,12 +72,12 @@ In a second terminal, from the dispatcher repo:
 uv run dispatcher serve
 ```
 
-The server will start on `http://localhost:8000` by default. The benchmark
+The server will start on `http://localhost:8787` by default. The benchmark
 view panel is not fetched yet until the web UI loads.
 
 ### 4. Open the web UI and observe initial state
 
-Navigate to `http://localhost:8000` in your browser.
+Navigate to `http://localhost:8787` in your browser.
 
 You should see the benchmark view panel. It should display:
 
@@ -102,8 +102,9 @@ Verify:
 
 In the terminal running the eco server (step 1), press `Ctrl+C` to stop it.
 
-**Observe the benchmark view panel** over the next 2–5 seconds. The panel
-should:
+**Observe the benchmark view panel** over the next ~20 seconds (the UI polls
+every 10 seconds; the service fetch throttle is 60 seconds, so expect the
+full transition within ~2 poll cycles). The panel should:
 
 - Transition to a state indicating the server is unavailable (e.g.,
   `unavailable` or similar).
@@ -146,7 +147,7 @@ If any of these fail, check:
 - `dispatcher/core/collectors/atp.py` for state classification errors.
 - The web panel JavaScript in `dispatcher/server/static/` for render bugs.
 - The browser console for client-side errors.
-- The server logs (`http://localhost:8000` startup messages) for HTTP errors.
+- The server logs (`http://localhost:8787` startup messages) for HTTP errors.
 
 ## Related surfaces
 
