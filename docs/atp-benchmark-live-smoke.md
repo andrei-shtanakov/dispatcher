@@ -9,7 +9,7 @@ against a real eco server and handles network state transitions correctly.
   confirm the panel integrates correctly with a running eco server.
 - **Manually**, after any significant change to benchmark fetch logic or
   panel rendering (e.g., changes to `core/benchmarks.py`,
-  `core/collectors/atp.py`, or the web panel component).
+  `core/benchmark_service.py`, or the web panel component).
 
 ## The guarantee
 
@@ -17,8 +17,10 @@ The procedure verifies one sentence:
 
 > The benchmark view panel displays live benchmark data from the eco server,
 > renders the list correctly, can open a leaderboard, and transitions to
-> `unavailable` (never to "0 benchmarks") when the server stops within ~2
-> poll cycles.
+> `unavailable` (never to "0 benchmarks") when the server stops, within the
+> worst-case bound of the fetch throttle plus the UI poll (~80s: up to 60s
+> for the service's per-fetch throttle to clear, plus up to two 10s UI
+> polls — one to start the next fetch, one to render its result).
 
 ## Prerequisites
 
@@ -36,8 +38,15 @@ In one terminal, boot the ATP eco server with the required configuration:
 cd ../atp-platform
 ATP_SECRET_KEY=test-key-for-schema-only \
 ATP_SERVER_PROFILE=eco \
-  uv run uvicorn atp.dashboard.v2.factory:app --port 8600
+  uv run uvicorn --factory \
+    atp.dashboard.v2.factory:create_app --port 8600
 ```
+
+`factory.py` has no module-level `app` — only the `create_app()` factory
+function, so `uvicorn` must be invoked with `--factory` against
+`create_app` (not `app`). `create_app(config=None)` reads its
+configuration from the environment on each call, so the env vars above are
+picked up correctly.
 
 **Do not run migrations or seed the database.** The eco server schema is
 generated on startup; a real database is not needed for this smoke test.
@@ -81,11 +90,15 @@ Navigate to `http://localhost:8787` in your browser.
 
 You should see the benchmark view panel. It should display:
 
-- **State label**: `not fetched yet` (or similar) initially, before the first
-  poll completes.
-- **After ~1 second**: the panel transitions to showing a list of benchmarks
-  (empty if none exist on the eco server, or populated if the server has
-  seeded data).
+- **State label**: `not fetched yet` (or similar) on the very first render —
+  the page's initial `refresh()` call fires immediately on load, but the
+  background fetch it kicks off has not completed yet, so this first render
+  always shows the not-fetched-yet state.
+- **On the next poll (~10 seconds later)**: the panel transitions to showing
+  a list of benchmarks (empty if none exist on the eco server, or populated
+  if the server has seeded data) — the background fetch that started on load
+  is normally done well within 10 seconds against a local server, so the
+  next poll picks up its result.
 
 ### 5. Verify benchmark list rendering
 
@@ -102,9 +115,11 @@ Verify:
 
 In the terminal running the eco server (step 1), press `Ctrl+C` to stop it.
 
-**Observe the benchmark view panel** over the next ~20 seconds (the UI polls
-every 10 seconds; the service fetch throttle is 60 seconds, so expect the
-full transition within ~2 poll cycles). The panel should:
+**Observe the benchmark view panel** over the next ~80 seconds worst case:
+the last successful fetch keeps the report `ok` (stale) until the service's
+60-second fetch throttle clears, then the next 10-second UI poll starts a
+new fetch (which fails fast against the stopped server), and the following
+10-second poll renders the resulting `unavailable` report. The panel should:
 
 - Transition to a state indicating the server is unavailable (e.g.,
   `unavailable` or similar).
@@ -114,7 +129,8 @@ full transition within ~2 poll cycles). The panel should:
 
 ### 7. Restart the eco server and re-confirm
 
-Restart the eco server using the command from step 1. Within ~2 poll cycles,
+Restart the eco server using the command from step 1. By the same worst-case
+~80-second bound as step 6 (60s fetch throttle + up to two 10s UI polls),
 the panel should:
 
 - Transition back to showing benchmarks.
@@ -143,8 +159,8 @@ All of the following must be true:
 
 If any of these fail, check:
 
-- `dispatcher/core/benchmarks.py` for fetch logic errors.
-- `dispatcher/core/collectors/atp.py` for state classification errors.
+- `dispatcher/core/benchmarks.py` for fetch and state-classification errors.
+- `dispatcher/core/benchmark_service.py` for freshness/throttle errors.
 - The web panel JavaScript in `dispatcher/server/static/` for render bugs.
 - The browser console for client-side errors.
 - The server logs (`http://localhost:8787` startup messages) for HTTP errors.

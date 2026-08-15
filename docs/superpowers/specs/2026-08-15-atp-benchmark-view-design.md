@@ -245,6 +245,11 @@ next to Sync:
   `run_count`, `user_id`), sorted by `best_score` desc as delivered.
 - Refresh rides the page's **existing polling cycle** — no second timer —
   with a stale-response guard by the `ppGen` generation-counter precedent.
+
+  (Amended 2026-08-15, final review PR-2: the generation-counter guard is
+  unnecessary for this panel — the endpoint is global and parameterless,
+  refresh() renders the current selection against a full report; the ppGen
+  precedent applies to per-entity fetches only.)
 - Zero-state rules (cross-surface rule from product-proposals, applied from
   day one):
   - the section is **hidden** entirely when `status == "unconfigured"`;
@@ -315,6 +320,11 @@ Pinned copy per the nine-contract house pattern:
   `unavailable`; valid-JSON-wrong-shape → `unreadable`.
 - **Web harness** (`tests/web/`): panel rules under Node — hidden on
   `unconfigured`, zero-state rules, error rendering, stale-guard.
+
+  (Amended 2026-08-15, final review PR-2: no stale-guard assertion is
+  shipped — the generation-counter guard is unnecessary for this panel, see
+  the amendment in §8; the ppGen precedent applies to per-entity fetches
+  only.)
 - **Live smoke:** *not in CI.* A real eco server needs a database and
   seeding; the cost is not proportionate to phase 1. Manual runbook
   `docs/atp-benchmark-live-smoke.md` (boot eco server from the neighbor
