@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from dispatcher.core.benchmark_service import BenchmarkService
+from dispatcher.core.benchmarks import BenchmarksStatus, unconfigured_report
 from dispatcher.core.contracts import check_contracts
 from dispatcher.core.correlation import WorkItemsResponse, build_work_items
 from dispatcher.core.discovery import DispatcherConfig
@@ -253,6 +255,17 @@ def onboarding(
 def sync_status(sync_cache: SyncService, *, start_fetch: bool = True) -> SyncStatus:
     """Sync verdicts + freshness; start_fetch=False for agent surfaces."""
     return sync_cache.get(start_fetch=start_fetch)
+
+
+def benchmarks(service: BenchmarkService | None) -> BenchmarksStatus:
+    """Spec §7: the one shape both surfaces return.
+
+    No configured service (config.benchmarks_url is None) is answered HERE
+    with the unconfigured report, so the route has exactly one return type.
+    """
+    if service is None:
+        return BenchmarksStatus(report=unconfigured_report(), fetch_in_flight=False)
+    return service.get()
 
 
 def spec_runner_configs(

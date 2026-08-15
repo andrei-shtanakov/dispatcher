@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 from conftest import make_arbiter, make_atp, make_proctor, make_spec_runner
 
 from dispatcher.core.collectors import COLLECTORS
@@ -87,3 +88,53 @@ def test_load_config_suggest_claude_cli(tmp_path: Path) -> None:
     assert cfg.suggest_claude_cli == Path("/opt/bin/claude")
     cfg_file.write_text("")
     assert load_config(cfg_file).suggest_claude_cli is None
+
+
+def _write(tmp_path: Path, body: str) -> Path:
+    p = tmp_path / "dispatcher.toml"
+    p.write_text(body)
+    return p
+
+
+def test_absent_benchmarks_section_yields_none(tmp_path: Path) -> None:
+    config = load_config(_write(tmp_path, "roots = []\n"))
+    assert config.benchmarks_url is None
+
+
+def test_valid_url_is_kept_with_trailing_slash_stripped(tmp_path: Path) -> None:
+    config = load_config(
+        _write(tmp_path, '[benchmarks]\nurl = "http://127.0.0.1:8000/"\n')
+    )
+    assert config.benchmarks_url == "http://127.0.0.1:8000"
+
+
+def test_base_path_is_allowed(tmp_path: Path) -> None:
+    config = load_config(
+        _write(tmp_path, '[benchmarks]\nurl = "https://host.example/atp/"\n')
+    )
+    assert config.benchmarks_url == "https://host.example/atp"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "ftp://host",  # wrong scheme
+        "http://",  # no host
+        "/api",  # not absolute
+        "http://host/x?query=1",  # query forbidden
+        "http://host/x#frag",  # fragment forbidden
+        "http://user:pw@host/",  # userinfo forbidden
+    ],
+)
+def test_invalid_url_is_a_load_time_error(tmp_path: Path, bad: str) -> None:
+    path = _write(tmp_path, f'[benchmarks]\nurl = "{bad}"\n')
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_non_table_benchmarks_section_is_a_load_time_error(tmp_path: Path) -> None:
+    """A present-but-malformed section errors instead of silently
+    disabling the feature (spec §3: invalid value = load-time error)."""
+    path = _write(tmp_path, "benchmarks = 5\n")
+    with pytest.raises(ValueError, match=r"\[benchmarks\] must be a TOML table"):
+        load_config(path)

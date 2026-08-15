@@ -19,6 +19,8 @@ from dispatcher.core.actions import (
     ActionRejectedError,
     ActionRunner,
 )
+from dispatcher.core.benchmark_service import BenchmarkService
+from dispatcher.core.benchmarks import BenchmarksStatus
 from dispatcher.core.correlation import WorkItemsResponse
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.governance import BundleGovernance
@@ -165,6 +167,7 @@ def create_app(
     snapshot_service: SnapshotService | None = None,
     sync_service: SyncService | None = None,
     suggest_runner: SuggestRunner | None = None,
+    benchmark_service: BenchmarkService | None = None,
 ) -> FastAPI:
     """Build the API app for the given configuration."""
     app = FastAPI(title="Dispatcher", version="0.1.0")
@@ -176,6 +179,13 @@ def create_app(
     actions = ActionRunner(config)
     spec_runner_config_actions = SpecRunnerConfigActionRunner(config)
     suggest = suggest_runner if suggest_runner is not None else SuggestRunner(config)
+    benchmarks_service = (
+        benchmark_service
+        if benchmark_service is not None
+        else (
+            BenchmarkService(config.benchmarks_url) if config.benchmarks_url else None
+        )
+    )
     _suggest_audit = logging.getLogger("dispatcher.actions.spec_runner_config")
     # CSRF-токен на процесс: SOP не даст чужой странице его прочитать,
     # значит POST с токеном мог отправить только наш UI (DESIGN-204)
@@ -292,6 +302,11 @@ def create_app(
     def sync() -> SyncStatus:
         """Verdict table + top line + freshness metadata (corner spinner)."""
         return read_api.sync_status(sync_cache)
+
+    @app.get("/api/benchmarks", response_model=BenchmarksStatus)
+    def benchmarks_view() -> BenchmarksStatus:
+        """Spec §7: global read-only report; state lives in the body (200 always)."""
+        return read_api.benchmarks(benchmarks_service)
 
     @app.get("/api/sync/hosts", response_model=SyncHostsResponse)
     def sync_hosts() -> SyncHostsResponse:

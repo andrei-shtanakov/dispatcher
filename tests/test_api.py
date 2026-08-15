@@ -1798,3 +1798,42 @@ def test_every_action_endpoint_shares_one_response_model(tmp_path: Path) -> None
         "/api/actions/request-task",
         "/api/actions/update-spec-runner-config",
     }
+
+
+async def test_benchmarks_unconfigured_shape_is_pinned(tmp_path: Path) -> None:
+    """No [benchmarks].url → the exact unconfigured wire body (spec §3, §7)."""
+    async with _client(tmp_path) as client:
+        resp = await client.get("/api/benchmarks")
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "report": {
+            "status": "unconfigured",
+            "url": None,
+            "fetched_at": None,
+            "error": None,
+            "benchmarks": [],
+            "leaderboards": {},
+        },
+        "fetch_in_flight": False,
+    }
+
+
+async def test_benchmarks_route_serves_injected_service_report(
+    tmp_path: Path,
+) -> None:
+    from dispatcher.core.benchmark_service import BenchmarkService
+    from dispatcher.core.benchmarks import initial_report
+
+    service = BenchmarkService(
+        "http://atp.test", fetcher=lambda url: initial_report(url)
+    )
+    make_atp(tmp_path)
+    config = DispatcherConfig(roots=(tmp_path,), maestro_db=make_maestro_home(tmp_path))
+    app = create_app(config, benchmark_service=service)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/benchmarks")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["report"]["status"] == "unavailable"
+    assert body["report"]["url"] == "http://atp.test"

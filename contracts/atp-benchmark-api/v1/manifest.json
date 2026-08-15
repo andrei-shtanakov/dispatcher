@@ -1,0 +1,25 @@
+{
+  "contract": "atp-benchmark-api",
+  "contract_version": 1,
+  "producer_commit": "da3a264e0ec73811b5f066e47a343f2e91600b91",
+  "surface_note": "sha256 of every vendored file; excludes PINNED.txt and this manifest",
+  "tree_sha256": "da388349d1857abde8b854a9c384db47c55724a09ec1e7c1aaabf317c7c3d0a2",
+  "surface": [
+    {
+      "path": "fixtures/benchmarks.json",
+      "sha256": "c45339c6ebd5a491a7b9f62c9b024bf6fe32cc143c2def14b8dabaf2b9d02768"
+    },
+    {
+      "path": "fixtures/leaderboard-empty.json",
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    {
+      "path": "fixtures/leaderboard.json",
+      "sha256": "9d117ad9293a70a14608389664b3d0944eb8f56897e78e4f8a8ba6e788926675"
+    },
+    {
+      "path": "openapi.json",
+      "sha256": "d546ec8fb2e065e69a5a9e4b56a1ae507564192ae929ec87d69d64394a4804ee"
+    }
+  ]
+}

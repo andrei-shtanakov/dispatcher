@@ -308,6 +308,7 @@ source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "fastmcp" },
+    { name = "httpx" },
     { name = "jsonschema" },
     { name = "plan-fields" },
     { name = "pydantic" },
@@ -331,6 +332,7 @@ dev = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.139.0" },
     { name = "fastmcp", specifier = ">=2.14.5,<3" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "plan-fields", editable = "packages/plan-fields" },
     { name = "pydantic", specifier = ">=2.13.4" },
