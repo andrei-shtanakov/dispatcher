@@ -179,8 +179,12 @@ def create_app(
     actions = ActionRunner(config)
     spec_runner_config_actions = SpecRunnerConfigActionRunner(config)
     suggest = suggest_runner if suggest_runner is not None else SuggestRunner(config)
-    benchmarks_service = benchmark_service or (
-        BenchmarkService(config.benchmarks_url) if config.benchmarks_url else None
+    benchmarks_service = (
+        benchmark_service
+        if benchmark_service is not None
+        else (
+            BenchmarkService(config.benchmarks_url) if config.benchmarks_url else None
+        )
     )
     _suggest_audit = logging.getLogger("dispatcher.actions.spec_runner_config")
     # CSRF-токен на процесс: SOP не даст чужой странице его прочитать,
