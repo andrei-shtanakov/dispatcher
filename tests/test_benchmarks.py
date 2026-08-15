@@ -180,3 +180,22 @@ def test_wire_model_roundtrips() -> None:
     )
     report = fetch_report(BASE, transport=transport)
     assert BenchmarksReport.model_validate(report.model_dump()) == report
+
+
+def test_read_api_benchmarks_without_service_is_unconfigured() -> None:
+    from dispatcher.core import read_api
+
+    status = read_api.benchmarks(None)
+    assert status.report.status == "unconfigured"
+    assert status.fetch_in_flight is False
+
+
+def test_read_api_benchmarks_passes_through_the_service() -> None:
+    from dispatcher.core import read_api
+    from dispatcher.core.benchmark_service import BenchmarkService
+
+    service = BenchmarkService(
+        "http://atp.test", fetcher=lambda url: initial_report(url)
+    )
+    status = read_api.benchmarks(service)
+    assert status.report.url == "http://atp.test"
