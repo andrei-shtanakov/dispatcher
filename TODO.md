@@ -157,6 +157,27 @@
       «0 loops waiting». Acceptance #136 на пинованной копии PP-101.
       Producer-side `LOOPSTATE_*` кросс-чеки остаются за impresario.
 
+## ATP benchmark view (eco-профиль atp-platform)
+
+- [ ] ATP benchmark view: рендерить benchmark runs + leaderboard eco-сервера atp-platform через Benchmark API @owner:github:andrei-shtanakov @id:atp-benchmark-view
+      Принятие inbox-issue #139 от atp-platform (ADR-ECO-006); слаг запроса
+      `atp-eco-benchmark-view` переименован при принятии («eco» — внутреннее
+      имя серверного профиля продюсера, вид в планах dispatcher называем по
+      сущности), `slug:` в теле issue поправлен. ATP поставляет API-only
+      профиль (`ATP_SERVER_PROFILE=eco`, atp-platform#287/#288) без HTML UI;
+      решение Andrei — поверхность отображения выступает dispatcher. Контракт
+      стабильный: `GET /api/v1/benchmarks`, `GET /api/v1/runs/{id}/...`
+      (статус пока отдаёт только `total_score`; экспорт `score_components` —
+      отдельный пункт atp-platform/TODO.md), leaderboard-эндпоинты; SDK
+      `atp-platform-sdk>=2.0.0` (`leaderboard_sync()`, `status_sync()`);
+      аутентификация токенами `atp_u_*` / `atp_a_*`; маркер профиля —
+      `GET /` → `{"profile": "eco"}`, `/openapi.json` доступен. Спека профиля:
+      atp-platform `docs/superpowers/specs/2026-08-14-eco-server-profile-design.md`.
+      Внимание при дизайне: это новый для dispatcher класс источника — живой
+      HTTP API с токенной авторизацией, а не on-disk артефакты; строго
+      read-only (D1), контракт вендорить пиненой копией (`/openapi.json`),
+      спека в `docs/superpowers/specs/` до реализации.
+
 ## Кросс-репные контракты
 
 - [x] Вендор steward gate-catalog v1: пиненая копия `profiles/gate-catalog.yaml` + канонический словарь obligation в governance-коллекторе — PR #126 @owner:github:andrei-shtanakov @id:vendor-gate-catalog
