@@ -158,18 +158,49 @@ if [ -d "$DST/fixtures" ]; then
     die 2 "could not carry over fixtures from $DST/fixtures"
 fi
 
-cat > "$STAGING/PINNED.txt" << EOF
-source: atp-platform packages/atp-dashboard/atp/dashboard/v2/factory.py
-        (create_app().openapi(), ATP_SERVER_PROFILE=eco), pruned to the
-        two GET paths dispatcher consumes
-commit: $NEW_PIN
-vendored: $(date -u +%Y-%m-%d)
+# The fixtures themselves are carried over by bytes above; the record of
+# where those bytes came from (ORM-seeded vs. real endpoint capture, etc.)
+# lives only in the previous PINNED.txt's "fixtures:" block and is not
+# derivable from the pin, so it must be carried over too — otherwise a
+# re-vendor silently drops the provenance note while keeping the fixture
+# bytes it describes. No previous PINNED.txt (first bootstrap) means no
+# block to carry, not an error.
+FIXTURES_BLOCK=""
+if [ -f "$DST/PINNED.txt" ]; then
+  FIXTURES_BLOCK="$(python3 - "$DST/PINNED.txt" << 'PY'
+import re
+import sys
+
+lines = open(sys.argv[1]).read().splitlines()
+block: list[str] = []
+in_block = False
+for line in lines:
+    if in_block and (line.startswith(" ") or line.startswith("\t")):
+        block.append(line)
+        continue
+    in_block = re.match(r"^fixtures:", line) is not None
+    if in_block:
+        block.append(line)
+print("\n".join(block))
+PY
+  )" || die 2 "could not read fixtures provenance from $DST/PINNED.txt"
+fi
+
+{
+  printf 'source: atp-platform packages/atp-dashboard/atp/dashboard/v2/factory.py\n'
+  printf '        (create_app().openapi(), ATP_SERVER_PROFILE=eco), pruned to the\n'
+  printf '        two GET paths dispatcher consumes\n'
+  printf 'commit: %s\n' "$NEW_PIN"
+  printf 'vendored: %s\n' "$(date -u +%Y-%m-%d)"
+  [ -z "$FIXTURES_BLOCK" ] || printf '%s\n' "$FIXTURES_BLOCK"
+  cat << 'EOF'
 note: pinned copy (repo-boundaries vendoring, ADR-ECO-003). Do not edit here —
   re-vendor with scripts/revendor_atp_benchmark_api.sh, which derives every
   value in this directory from the one commit it is given. Procedure:
   docs/revendor-atp-benchmark-api.md. Nothing in shipped code may read
   ../atp-platform at run time.
 EOF
+} > "$STAGING/PINNED.txt"
 
 python3 "$REPO_ROOT/scripts/vendor_manifest.py" \
   --producer-commit "$NEW_PIN" --root "$STAGING" \

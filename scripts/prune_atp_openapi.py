@@ -51,7 +51,13 @@ def prune(full: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def main() -> None:
+def main() -> int:
+    if len(sys.argv) != 3:
+        print(
+            "usage: prune_atp_openapi.py <full-openapi.json> <out-pruned.json>",
+            file=sys.stderr,
+        )
+        return 2
     src, dst = sys.argv[1], sys.argv[2]
     with open(src) as fh:
         full = json.load(fh)
@@ -59,7 +65,8 @@ def main() -> None:
     with open(dst, "w") as fh:
         json.dump(pruned, fh, indent=2, sort_keys=True)
         fh.write("\n")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
