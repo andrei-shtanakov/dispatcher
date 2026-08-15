@@ -159,7 +159,7 @@
 
 ## ATP benchmark view (eco-профиль atp-platform)
 
-- [x] ATP benchmark view: рендерить benchmark runs + leaderboard eco-сервера atp-platform через Benchmark API — PR #143 (спека+план), #144 (core), PR-2 (номер после открытия) @owner:github:andrei-shtanakov @id:atp-benchmark-view
+- [x] ATP benchmark view: рендерить benchmark runs + leaderboard eco-сервера atp-platform через Benchmark API — PR #143 (спека+план), #144 (core), #145 (web-панель) @owner:github:andrei-shtanakov @id:atp-benchmark-view
       Принятие inbox-issue #139 от atp-platform (ADR-ECO-006); слаг запроса
       `atp-eco-benchmark-view` переименован при принятии («eco» — внутреннее
       имя серверного профиля продюсера, вид в планах dispatcher называем по
@@ -179,8 +179,8 @@
       спека в `docs/superpowers/specs/` до реализации.
       Завершено: PR #143 (спека + план), PR #144 (вендор atp-benchmark-api/v1,
       core/benchmarks.py, BenchmarkService, GET /api/benchmarks, интеграция),
-      PR-2 (web-панель + list rendering + leaderboard navigation + live-smoke
-      runbook). Явно не входит в scope: токен-авторизация (фаза 2
+      PR #145 (web-панель + list rendering + leaderboard navigation +
+      live-smoke runbook). Явно не входит в scope: токен-авторизация (фаза 2
       run-status), TUI/VSCode/MCP parity — отдельные пункты плана.
 
 ## Кросс-репные контракты
