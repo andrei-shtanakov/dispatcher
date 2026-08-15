@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "publisher": "andrei-shtanakov",
   "license": "MIT",
+  "icon": "icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/andrei-shtanakov/dispatcher"
