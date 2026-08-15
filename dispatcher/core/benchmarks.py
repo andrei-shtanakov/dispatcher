@@ -13,7 +13,7 @@ from typing import Literal
 from urllib.parse import quote
 
 import httpx
-from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 _TIMEOUT_SECONDS = 10.0  # per-phase idle timeout, NOT a wall-clock deadline (§6)
 _ERROR_LIMIT = 300
@@ -52,7 +52,7 @@ class LeaderboardState(BaseModel):
     """One benchmark's leaderboard with its own fail-closed status (§4)."""
 
     status: Literal["ok", "unavailable", "unreadable"]
-    rows: list[LeaderboardRow] = []
+    rows: list[LeaderboardRow] = Field(default_factory=list)
     error: str | None = None
 
 
@@ -69,8 +69,9 @@ class BenchmarksReport(BaseModel):
     url: str | None
     fetched_at: datetime | None
     error: str | None
-    benchmarks: list[BenchmarkInfo] = []
-    leaderboards: dict[str, LeaderboardState] = {}  # keys: str(benchmark_id)
+    benchmarks: list[BenchmarkInfo] = Field(default_factory=list)
+    # keys: str(benchmark_id)
+    leaderboards: dict[str, LeaderboardState] = Field(default_factory=dict)
 
 
 class BenchmarksStatus(BaseModel):

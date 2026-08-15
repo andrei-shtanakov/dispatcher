@@ -84,7 +84,11 @@ def load_config(config_path: Path | None = None) -> DispatcherConfig:
     raw_suggest = data.get("suggest_claude_cli")
     suggest_claude_cli = Path(raw_suggest).expanduser() if raw_suggest else None
     raw_benchmarks = data.get("benchmarks", {})
-    raw_url = raw_benchmarks.get("url") if isinstance(raw_benchmarks, dict) else None
+    if not isinstance(raw_benchmarks, dict):
+        # A present-but-malformed section must error, not silently disable
+        # the feature (spec §3: invalid value = load-time error).
+        raise ValueError(f"[benchmarks] must be a TOML table, got: {raw_benchmarks!r}")
+    raw_url = raw_benchmarks.get("url")
     benchmarks_url = _validate_benchmarks_url(raw_url) if raw_url is not None else None
     return DispatcherConfig(
         roots=roots,

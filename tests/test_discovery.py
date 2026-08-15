@@ -130,3 +130,11 @@ def test_invalid_url_is_a_load_time_error(tmp_path: Path, bad: str) -> None:
     path = _write(tmp_path, f'[benchmarks]\nurl = "{bad}"\n')
     with pytest.raises(ValueError):
         load_config(path)
+
+
+def test_non_table_benchmarks_section_is_a_load_time_error(tmp_path: Path) -> None:
+    """A present-but-malformed section errors instead of silently
+    disabling the feature (spec §3: invalid value = load-time error)."""
+    path = _write(tmp_path, "benchmarks = 5\n")
+    with pytest.raises(ValueError, match=r"\[benchmarks\] must be a TOML table"):
+        load_config(path)

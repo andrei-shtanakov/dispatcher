@@ -32,7 +32,18 @@ def _collect_refs(node: Any, found: set[str]) -> None:
 
 
 def prune(full: dict[str, Any]) -> dict[str, Any]:
-    paths = {p: {"get": full["paths"][p]["get"]} for p in KEPT_PATHS}
+    paths: dict[str, Any] = {}
+    for kept_path in KEPT_PATHS:
+        entry = full.get("paths", {}).get(kept_path)
+        if entry is None or "get" not in entry:
+            # A missing consumed route means the producer moved the surface;
+            # name it instead of dying with a bare KeyError — the drift job's
+            # red Regenerate step should be diagnosable from its log.
+            raise SystemExit(
+                f"prune: GET {kept_path} not found in the source openapi — "
+                "the consumed surface moved upstream"
+            )
+        paths[kept_path] = {"get": entry["get"]}
     schemas: dict[str, Any] = full.get("components", {}).get("schemas", {})
     kept: set[str] = set()
     frontier: set[str] = set()
