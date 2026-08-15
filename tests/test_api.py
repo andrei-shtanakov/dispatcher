@@ -719,6 +719,67 @@ async def test_spec_runner_config_noop_reaches_client(
         assert data["detail"] == "no-op"
 
 
+async def test_spec_runner_config_success_serialises_the_additive_fields(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An ok=True body carries branch/base_branch/commit_sha/changed_paths.
+
+    The four fields were added for `propose-pr --edit` (DESIGN-402), and the
+    golden wire test above only sees them as nulls on an unset outcome — a
+    projection that silently dropped a set value would still pass it. This
+    pins the values on a success body (accepted follow-up of PR #40).
+    """
+    import subprocess
+
+    from dispatcher.core.actions import ActionOutcome
+    from dispatcher.core.spec_runner_config_actions import (
+        SpecRunnerConfigActionRunner,
+    )
+
+    def ok_run(self, repo_dir, candidate):
+        return ActionOutcome(
+            action="update-spec-runner-config",
+            dir=repo_dir,
+            ok=True,
+            pr_url="https://github.com/o/alpha/pull/7",
+            branch="config/alpha-spec-runner",
+            base_branch="main",
+            commit_sha="abc1234",
+            changed_paths=["project.yaml"],
+        )
+
+    monkeypatch.setattr(SpecRunnerConfigActionRunner, "run", ok_run)
+
+    repo = tmp_path / "alpha"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    (repo / "project.yaml").write_text(
+        "project: alpha\nspec_runner:\n  max_retries: 3\nworkstreams: []\n"
+    )
+    config = DispatcherConfig(roots=(tmp_path,))
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        base_mtime = (repo / "project.yaml").stat().st_mtime
+        resp = await client.post(
+            "/api/actions/update-spec-runner-config",
+            headers={"X-Action-Token": token},
+            json={
+                "dir": "alpha",
+                "typed": {"max_retries": 9},
+                "base_mtime": base_mtime,
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["branch"] == "config/alpha-spec-runner"
+        assert data["base_branch"] == "main"
+        assert data["commit_sha"] == "abc1234"
+        assert data["changed_paths"] == ["project.yaml"]
+
+
 async def test_spec_runner_configs_list_reaches_non_overview_projects(
     tmp_path: Path,
 ) -> None:
