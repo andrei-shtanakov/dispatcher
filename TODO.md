@@ -386,8 +386,11 @@
       закрытии `@id:render-outside-block-fail-closed`). Истина — acceptance:
       canary-секрет в фикстурном `project.yaml`, тест обходит tb-кадры и
       `f_locals` и не находит канарейку — обход ловит оба измеренных канала.
-- [ ] README + иконка для `vscode-ext/` @owner:github:andrei-shtanakov @id:vscode-ext-readme
-      Страница расширения показывает «No README available».
+- [x] README + иконка для `vscode-ext/` — PR #142 @owner:github:andrei-shtanakov @id:vscode-ext-readme
+      Страница расширения показывала «No README available». README сверен
+      с `src/`; иконка — сгенерированный 256×256 PNG (pulse-мотив), поле
+      `icon` в манифесте; `npm run package` подтверждает включение обоих
+      файлов в VSIX.
 - [x] `detail()` (`dispatcher/server/static/index.html`) брал `repoDir` из display-имени коллектора и кормил им четыре directory-keyed места — PR #111 @owner:github:andrei-shtanakov @id:spec-runner-config-dir-name-mismatch
       Найдено при зачистке merge-gate-console (2026-07-30), закрыто 2026-08-02.
       `detail(name, dirName)` уже получал оба значения — merge-gate брал `dirName`
