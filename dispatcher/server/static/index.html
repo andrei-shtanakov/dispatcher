@@ -439,16 +439,19 @@ function renderBenchmarks(status) {
   if (r.status === "unconfigured") { section.hidden = true; return; }
   section.hidden = false;
   const when = r.fetched_at ? new Date(r.fetched_at).toLocaleTimeString() : "—";
-  const spin = status.fetch_in_flight ? " ⚙" : "";
+  const spin = status.fetch_in_flight ? ' <span class="spin">⚙</span>' : "";
   document.getElementById("benchmarks-status").innerHTML =
     `${esc(r.url ?? "")} · fetched ${esc(when)}${spin}` +
     (r.error ? ` · <span class="err">${esc(r.error)}</span>` : "");
   const list = document.getElementById("benchmarks-list");
   if (r.status !== "ok") {
     // unavailable/unreadable — explicit unknown, NEVER an empty list.
-    // fetched_at:null + error:null is "not fetched yet", not a failure.
-    list.innerHTML = `<div class="warn">benchmarks unknown: ${
-      r.error ? esc(r.status) : "not fetched yet"}</div>`;
+    // Not-fetched-yet is the full contract pair (fetched_at:null AND
+    // error:null, §5) — keying on error alone would mislabel a real
+    // failure that somehow lost its message.
+    const notFetched = r.fetched_at === null && r.error === null;
+    list.innerHTML = `<div class="warn">${
+      notFetched ? "not fetched yet" : `benchmarks unknown: ${esc(r.status)}`}</div>`;
     document.getElementById("benchmarks-leaderboard").innerHTML = "";
     return;
   }
