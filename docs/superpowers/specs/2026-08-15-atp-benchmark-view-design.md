@@ -60,8 +60,12 @@ benchmarks_url: str | None = None
 url = "http://127.0.0.1:8000"
 ```
 
-- Must parse as `http://` or `https://`; trailing slash stripped. A value
-  failing that check is a config error at load time, not a silent `None`.
+- Validation (config error at load time, never a silent `None`): an
+  **absolute** URL with scheme `http` or `https`, a non-empty host, and no
+  query, fragment, or userinfo. A **base path is allowed** (reverse-proxy
+  deployments like `https://host/atp`); the trailing slash is stripped and
+  request URLs are formed as `{base}` + `/api/v1/...` — with the stripped
+  base this join is unambiguous.
 - Absent section/key → `None` → the feature is off: no `BenchmarkService` is
   constructed, the web panel is hidden, and `GET /api/benchmarks` reports
   `status: "unconfigured"`.
@@ -71,9 +75,13 @@ url = "http://127.0.0.1:8000"
 ## 4. Data model & classification — `dispatcher/core/benchmarks.py`
 
 Strict Pydantic models for exactly the two consumed responses. Model config:
-`extra="ignore"` — the producer's contract blesses additive evolution, so
-unknown fields must not break us; a missing or wrongly-typed **required**
-field must (fail-closed → `unreadable`).
+`ConfigDict(extra="ignore", strict=True)` — the two halves carry different
+guarantees. `extra="ignore"`: the producer's contract blesses additive
+evolution, so unknown fields must not break us. `strict=True`: no lax
+coercion — a string `"123"` where an `int` is declared is a wrongly-typed
+field, and a missing or wrongly-typed **required** field fails the model
+(fail-closed → `unreadable`). Pydantic's strict-mode table still accepts an
+int for a `float` field (`best_score`), which is the one coercion we want.
 
 ```python
 class BenchmarkInfo(BaseModel):        # mirrors ATP BenchmarkResponse
@@ -118,7 +126,9 @@ class BenchmarksReport(BaseModel):
                                        # where it is null; always null on ok
     benchmarks: list[BenchmarkInfo]    # meaningful only when status == "ok";
                                        # always [] otherwise
-    leaderboards: dict[int, LeaderboardState]  # keyed by benchmark id;
+    leaderboards: dict[str, LeaderboardState]  # keyed by str(benchmark_id) —
+                                               # JSON object keys are strings,
+                                               # so the wire type says so too;
                                                # populated only when status == "ok"
 ```
 
@@ -126,7 +136,10 @@ Classification rules:
 
 - `unconfigured` — `benchmarks_url is None`. Terminal; nothing else applies.
 - `unavailable` — transport error, timeout, or non-2xx on
-  `GET /api/v1/benchmarks`.
+  `GET /api/v1/benchmarks`; **also** the initial not-fetched-yet state (no
+  attempt has completed), distinguished by `fetched_at: null` +
+  `error: null` (§5) — readers and tests must not treat that state as a
+  real failure.
 - `unreadable` — 2xx but the body fails validation. No partial rendering: a
   list where item 3 is garbage is `unreadable`, not "the two good ones".
 - `ok` — the benchmark list parsed. Leaderboards then carry **per-benchmark**
@@ -184,13 +197,20 @@ failure, which always carries an `error`.
 - Dependency: `httpx>=0.27` — dispatcher's first HTTP client, and the only
   new dependency of this feature.
 - A synchronous `httpx.Client` used **only inside the fetch thread**, created
-  per fetch cycle with `timeout=10.0` (httpx applies it to each phase:
-  connect, read, write, pool — a single request cannot hang the cycle for
-  more than a few multiples of it) and closed at cycle end. No client object
-  escapes the service.
-- Requests per cycle: `GET {base}/api/v1/benchmarks`, then per benchmark
-  `GET {base}/api/v1/benchmarks/{id}/leaderboard`. Benchmark counts are
-  small; ATP's 120/min rate limit is not approachable at one cycle/minute.
+  per fetch cycle with `timeout=10.0` and closed at cycle end. This is
+  httpx's **per-phase idle timeout** (connect, read, write, pool), not a
+  wall-clock deadline: a source that keeps trickling bytes can hold a
+  request open longer. No wall-clock deadline is implemented in phase 1 —
+  accepted (see §12): a slow cycle only grows staleness, it can never block
+  render (NFR-02), and the thread is a daemon. No client object escapes the
+  service.
+- Requests per cycle are **sequential**: `GET {base}/api/v1/benchmarks`,
+  then per benchmark `GET {base}/api/v1/benchmarks/{id}/leaderboard`. There
+  is **no cap on the number of leaderboard requests** in phase 1 — the bound
+  on load is sequential execution plus the 60s cycle throttle, not a
+  guaranteed request budget. A `429` from ATP is a non-2xx like any other:
+  `unavailable` for that leaderboard (or for the whole report when it is the
+  benchmarks list that 429s).
 - **URL construction (pinned by design review):** the benchmark id is the
   validated `int` field of `BenchmarkInfo`, rendered with `str(int)` and
   joined as a single path segment via URL-safe quoting (`urllib.parse.quote`
@@ -262,11 +282,17 @@ Pinned copy per the nine-contract house pattern:
   manifest↔on-disk agreement both directions + reproducible `tree_sha256`.
 - **Upstream drift** (guarantee B): a scheduled advisory workflow checking
   out atp-platform at its default branch, regenerating the **pruned**
-  OpenAPI the same way, and comparing tree hashes — drift is defined by the
-  regenerated artifact, not by hashing producer source files (refactors that
-  don't move the contract must not alarm). Exit codes 0/1/2;
-  `unavailable ≠ no drift` (a red generation step means "fix the
-  observation", never "assume in sync"). Not required, not on PR.
+  OpenAPI the same way, and comparing the **sha256 of the pruned
+  `openapi.json` alone** — the pruning script writes canonical bytes
+  (sorted keys, fixed indentation), so file digests compare directly. The
+  directory `tree_sha256` (which also covers fixtures and the manifest)
+  belongs to copy-integrity and is **not** the drift artifact: the drift job
+  regenerates only the OpenAPI and must not be alarmed by consumer-side
+  files it cannot regenerate. Drift is defined by the regenerated artifact,
+  not by hashing producer source files (refactors that don't move the
+  contract must not alarm). Exit codes 0/1/2; `unavailable ≠ no drift` (a
+  red generation step means "fix the observation", never "assume in sync").
+  Not required, not on PR.
 
 ## 10. Testing
 
@@ -310,6 +336,10 @@ with the PR numbers.
 - **No CI live smoke** against a real eco server (§10). The integration stub
   proves the consumer path; it cannot prove the producer still serves this
   shape — that is the drift workflow's job, plus the manual runbook.
+- **No wall-clock deadline on fetch requests** (§6). httpx's per-phase idle
+  timeout does not bound a slowly-trickling response; a pathological source
+  can prolong a fetch cycle. Consequence is bounded staleness growth, never
+  a blocked render; revisit if it is ever observed in practice.
 - **Whole-report replacement** (§5) means a transient network blip hides
   previously-fetched data until the next successful cycle (≤ ~60s). Chosen
   over a stale-data tier: less state, and "unknown" is the honest answer
