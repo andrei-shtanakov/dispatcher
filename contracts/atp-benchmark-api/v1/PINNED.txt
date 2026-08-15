@@ -1,0 +1,10 @@
+source: atp-platform packages/atp-dashboard/atp/dashboard/v2/factory.py
+        (create_app().openapi(), ATP_SERVER_PROFILE=eco), pruned to the
+        two GET paths dispatcher consumes
+commit: da3a264e0ec73811b5f066e47a343f2e91600b91
+vendored: 2026-08-15
+note: pinned copy (repo-boundaries vendoring, ADR-ECO-003). Do not edit here —
+  re-vendor with scripts/revendor_atp_benchmark_api.sh, which derives every
+  value in this directory from the one commit it is given. Procedure:
+  docs/revendor-atp-benchmark-api.md. Nothing in shipped code may read
+  ../atp-platform at run time.

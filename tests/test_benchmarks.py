@@ -199,3 +199,31 @@ def test_read_api_benchmarks_passes_through_the_service() -> None:
     )
     status = read_api.benchmarks(service)
     assert status.report.url == "http://atp.test"
+
+
+def test_vendored_fixtures_parse_as_ok() -> None:
+    """The pinned contract and the consumer models must agree, forever (§10)."""
+    import json
+    from pathlib import Path
+
+    fixtures = (
+        Path(__file__).parent.parent
+        / "contracts"
+        / "atp-benchmark-api"
+        / "v1"
+        / "fixtures"
+    )
+    from dispatcher.core.benchmarks import _BENCHMARKS_ADAPTER, _ROWS_ADAPTER
+
+    assert _BENCHMARKS_ADAPTER.validate_python(
+        json.loads((fixtures / "benchmarks.json").read_text())
+    )
+    assert _ROWS_ADAPTER.validate_python(
+        json.loads((fixtures / "leaderboard.json").read_text())
+    )
+    assert (
+        _ROWS_ADAPTER.validate_python(
+            json.loads((fixtures / "leaderboard-empty.json").read_text())
+        )
+        == []
+    )

@@ -1,0 +1,227 @@
+{
+  "components": {
+    "schemas": {
+      "BenchmarkResponse": {
+        "description": "Schema for returning a benchmark.",
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "family_tag": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Family Tag"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
+          "tasks_count": {
+            "title": "Tasks Count",
+            "type": "integer"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "tasks_count",
+          "tags",
+          "version",
+          "family_tag",
+          "created_at"
+        ],
+        "title": "BenchmarkResponse",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "atp__dashboard__benchmark__schemas__LeaderboardEntry": {
+        "description": "Schema for a leaderboard row.",
+        "properties": {
+          "agent_name": {
+            "title": "Agent Name",
+            "type": "string"
+          },
+          "best_score": {
+            "title": "Best Score",
+            "type": "number"
+          },
+          "run_count": {
+            "title": "Run Count",
+            "type": "integer"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "user_id",
+          "agent_name",
+          "best_score",
+          "run_count"
+        ],
+        "title": "LeaderboardEntry",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "ATP Dashboard",
+    "version": "0.2.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/benchmarks": {
+      "get": {
+        "description": "List all benchmarks.",
+        "operationId": "list_benchmarks_api_v1_benchmarks_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/BenchmarkResponse"
+                  },
+                  "title": "Response List Benchmarks Api V1 Benchmarks Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Benchmarks",
+        "tags": [
+          "benchmarks"
+        ]
+      }
+    },
+    "/api/v1/benchmarks/{benchmark_id}/leaderboard": {
+      "get": {
+        "description": "Get best scores per agent for a benchmark.",
+        "operationId": "get_leaderboard_api_v1_benchmarks__benchmark_id__leaderboard_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "title": "Benchmark Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/atp__dashboard__benchmark__schemas__LeaderboardEntry"
+                  },
+                  "title": "Response Get Leaderboard Api V1 Benchmarks  Benchmark Id  Leaderboard Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Leaderboard",
+        "tags": [
+          "benchmarks"
+        ]
+      }
+    }
+  }
+}
