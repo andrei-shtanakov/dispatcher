@@ -181,7 +181,25 @@
       core/benchmarks.py, BenchmarkService, GET /api/benchmarks, интеграция),
       PR #145 (web-панель + list rendering + leaderboard navigation +
       live-smoke runbook). Явно не входит в scope: токен-авторизация (фаза 2
-      run-status), TUI/VSCode/MCP parity — отдельные пункты плана.
+      run-status), TUI/VSCode/MCP parity — отдельные пункты ниже.
+
+- [ ] Benchmark run-status — фаза 2: статус ранов через токен-гейтед `GET /api/v1/runs/{id}/status` @owner:github:andrei-shtanakov @id:atp-benchmark-runs-phase2
+      Продолжение `atp-benchmark-view` (спека 2026-08-15, §2 non-goals).
+      Эндпоинт токен-гейтед И owner-scoped: виден только владелец токена,
+      значит нужны (а) **первый хранимый секрет dispatcher** — паттерна нет,
+      ближайший прецедент 0600 git-ignored sidecar (`dispatcher-sync.toml`),
+      решение о месте хранения токена `atp_u_*` — часть дизайна; (б) история
+      обнаружения run-id (список ранов у публичной поверхности отсутствует).
+      `score_components` в статусе — отдельный пункт atp-platform/TODO.md.
+      Начинать со спеки; ре-вендор контракта расширит пруненный openapi.
+
+- [ ] Parity панели Benchmarks: TUI/VSCode/MCP поверх `read_api.benchmarks` @owner:github:andrei-shtanakov @id:atp-benchmark-view-parity
+      Прецедент — product-proposal parity (#138): все поверхности — тонкие
+      рендереры над той же read_api-функцией. Заготовки из финального ревью
+      #144/#145: `read_api.benchmarks` понадобится `start_fetch`-passthrough
+      (у `sync_status` он есть); MCP-тул — расширение whitelist 16→17 со
+      стабильными error-codes; правило нулевых состояний переносится
+      кросс-поверхностно как есть (уверенный «0» — только при ok).
 
 ## Кросс-репные контракты
 
