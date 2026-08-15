@@ -251,8 +251,12 @@
       (тот же коммит, на который запинен вендоренный контракт). Сюита — 650 passed,
       0 skipped. Отдельно от этого пункта CI-сторона закрыта в
       `@id:design-405-level-3-never-runs`.
-- [ ] Route-level тест сериализации `ok=True` для четырёх additive-полей `ActionOutcome` @owner:github:andrei-shtanakov @id:action-outcome-serialization-test
-      Принятый follow-up PR #40.
+- [x] Route-level тест сериализации `ok=True` для четырёх additive-полей `ActionOutcome` — PR #141 @owner:github:andrei-shtanakov @id:action-outcome-serialization-test
+      Принятый follow-up PR #40. Пин значений `branch`/`base_branch`/
+      `commit_sha`/`changed_paths` на успешном теле
+      `update-spec-runner-config`: golden-тест провода видел их только как
+      `null` на незаполненном outcome, потерю установленного значения он бы
+      пропустил.
 - [x] ruamel: standalone-комментарий сразу после блока `spec_runner` теряется при ре-рендере `project.yaml` — PR #113 @owner:github:andrei-shtanakov @id:ruamel-standalone-comment-loss
       Закрыто 2026-08-03. Формулировка пункта занижала масштаб: одна строка
       (`doc["spec_runner"] = new_block`, свежий plain dict поверх загруженной
