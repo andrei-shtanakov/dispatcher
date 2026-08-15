@@ -177,6 +177,11 @@
       HTTP API с токенной авторизацией, а не on-disk артефакты; строго
       read-only (D1), контракт вендорить пиненой копией (`/openapi.json`),
       спека в `docs/superpowers/specs/` до реализации.
+      Прогресс: спека + план (PR #143); PR-1 — ветка
+      feat/atp-benchmark-view-core (PR откроется после финального ревью):
+      вендор atp-benchmark-api/v1, core/benchmarks.py, BenchmarkService,
+      GET /api/benchmarks, стаб-интеграция, drift-workflow. Осталось: PR-2
+      web-панель.
 
 ## Кросс-репные контракты
 

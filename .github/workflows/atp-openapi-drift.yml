@@ -1,0 +1,84 @@
+name: atp-openapi-drift (advisory)
+
+# Guarantee B for contracts/atp-benchmark-api/v1 (spec §9,
+# docs/revendor-atp-benchmark-api.md "When this runs"). Regenerates the
+# pruned openapi.json by booting the eco app from a fresh checkout of
+# atp-platform's default branch and compares it against the vendored pin.
+#
+# Deliberately NOT a pull-request check and never a required one: a commit
+# in a neighbouring repository must not be able to redden this repository's
+# PRs. The PR gate is guarantee A — the vendored copy matches its own
+# manifest — which lives in tests/test_atp_benchmark_api_vendor.py and needs
+# no network.
+#
+# A red run here means a human owes a deliberate re-vendor PR
+# (scripts/revendor_atp_benchmark_api.sh). Nothing is updated automatically,
+# and the fix is never to edit the expected hash.
+on:
+  schedule:
+    - cron: "17 5 * * 1" # weekly; advisory, not required, never on PR
+  workflow_dispatch: {} # no inputs: always the default branch, not caller-supplied
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # atp-platform's default branch (main) — the MOVING head on purpose:
+      # pinning this checkout to PINNED.txt's commit would make this a
+      # second run of guarantee A, comparing the copy against the bytes it
+      # was made from. Drift can only be seen against where upstream
+      # actually is now. No `ref:` override is needed since `main` already
+      # is the default; the resolved commit is echoed below so the run
+      # still says exactly what it looked at.
+      - uses: actions/checkout@v6
+        with:
+          repository: andrei-shtanakov/atp-platform
+          path: atp-platform-canon
+
+      - uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Regenerate pruned openapi from canon default branch
+        run: |
+          set -euo pipefail
+          echo "canon commit: $(git -C atp-platform-canon rev-parse HEAD)"
+          # ATP_SECRET_KEY: create_app()'s config load fails closed without
+          # one. Schema generation touches no database and no real secret,
+          # so a fixed, clearly-a-placeholder value is fine here.
+          #
+          # The schema is written straight to a file from inside the
+          # interpreter, not captured off stdout: atp's own logging setup
+          # (LOGGER_DUMP) writes informational lines to stdout too, which
+          # would otherwise interleave with the JSON and make it
+          # unparseable.
+          ATP_SERVER_PROFILE=eco ATP_SECRET_KEY="atp-openapi-drift-placeholder-key" \
+            uv run --project atp-platform-canon python - full.json << 'PY'
+          import json
+          import sys
+          from atp.dashboard.v2.factory import create_app
+
+          with open(sys.argv[1], "w") as fh:
+              json.dump(create_app().openapi(), fh)
+          PY
+          python3 scripts/prune_atp_openapi.py full.json regenerated.json
+
+      - name: Compare against the vendored pin
+        run: |
+          set +e
+          python3 scripts/atp_openapi_drift_report.py regenerated.json
+          code=$?
+          set -e
+          # 0 no drift · 1 drift · 2 unavailable. Unavailable is red too: an
+          # upstream nobody could observe is unknown, and unknown that looks
+          # green is exactly the failure this workstream keeps removing.
+          case "$code" in
+            0) echo "no upstream drift" ;;
+            1) echo "::error::upstream drift — a deliberate re-vendor PR is due" ;;
+            2) echo "::error::unavailable — nothing was compared (not 'no drift')" ;;
+            *) echo "::error::reporter failed with $code" ;;
+          esac
+          exit "$code"

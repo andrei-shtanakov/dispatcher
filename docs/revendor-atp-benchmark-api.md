@@ -9,24 +9,33 @@ no separate creation document to consult.
 
 ## When this runs
 
-**Manually, after a change to `atp.dashboard.benchmark.schemas` or the
-`/api/v1/benchmarks*` routes has been accepted in atp-platform — usually
-noticed because a field dispatcher wants to consume is missing, or because
-the fixture-pin test (`tests/test_benchmarks.py::test_vendored_fixtures_parse_as_ok`)
-or the copy-integrity test starts failing against a hand-authored fixture
-that no longer matches reality.**
+**Two independent triggers, both guarantees from day one:**
 
-Unlike the git-object vendors (steward, github-checker), this contract has
-**no scheduled upstream-drift job**: `openapi.json` here is not a blob that
-exists in atp-platform's tree, it is *generated* by booting the eco app and
-calling `.openapi()` — there is nothing in the producer repo for a drift
-job to diff against without itself booting the app. Re-vendoring is
-triggered by a consuming need (a new field, a shape change discovered in
-integration), not by a red drift run.
+- **Manually**, after a change to `atp.dashboard.benchmark.schemas` or the
+  `/api/v1/benchmarks*` routes has been accepted in atp-platform — usually
+  noticed because a field dispatcher wants to consume is missing, or
+  because the fixture-pin test
+  (`tests/test_benchmarks.py::test_vendored_fixtures_parse_as_ok`) or the
+  copy-integrity test starts failing against a hand-authored fixture that
+  no longer matches reality.
+- **Automatically, advisory**: `.github/workflows/atp-openapi-drift.yml`
+  runs weekly (`workflow_dispatch` also available) and boots the eco app
+  from a fresh checkout of atp-platform's default branch to regenerate the
+  pruned `openapi.json`, then compares it against the vendored pin with
+  `scripts/atp_openapi_drift_report.py` (exit codes: `0` no drift · `1`
+  drift · `2` unavailable — a red `Regenerate` step is the exit-2 class,
+  read as "observation broken", never as "no drift"). Unlike the
+  git-object vendors, there is no blob in atp-platform's tree to diff
+  against without booting the app, so this job pays that cost itself
+  instead of skipping the check. It is **not a pull-request check and
+  never required**: a commit in atp-platform must not be able to redden
+  dispatcher's PRs. A red run means a human owes a deliberate re-vendor PR
+  — nothing here writes to the vendored copy.
 
 Do not start from a green test suite as evidence that the pin is current:
 the suite proves the vendored copy matches its own manifest, which stays
-true forever no matter how far upstream travels.
+true forever no matter how far upstream travels. The drift job is the
+thing that actually looks at where upstream is now.
 
 ## The guarantee
 
@@ -174,7 +183,7 @@ live-captured or authored).
 
 | Contract | Procedure |
 |---|---|
-| `contracts/atp-benchmark-api/v1` | this runbook |
+| `contracts/atp-benchmark-api/v1` | this runbook + the scheduled `atp-openapi-drift.yml` (its own job) |
 | `contracts/steward-gate-catalog/v1` | `docs/revendor-steward-gate-catalog.md` |
 | `contracts/steward-roles-catalog/v1` | `docs/revendor-steward-roles-catalog.md` |
 | `contracts/steward-gate-verdicts/v1` | `docs/revendor-steward-gate-verdicts.md` |
