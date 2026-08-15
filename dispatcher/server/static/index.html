@@ -146,6 +146,11 @@
   <div id="sync-proposals"></div>
   <div id="sync-hosts" class="fresh">loading…</div></section>
 
+<section id="benchmarks-section" hidden><h2>Benchmarks
+  <span id="benchmarks-status" class="fresh"></span></h2>
+  <div id="benchmarks-list"></div>
+  <div id="benchmarks-leaderboard"></div></section>
+
 <section><h2>Projects</h2>
 <div class="grid" id="projects"></div></section>
 
@@ -426,6 +431,75 @@ function renderSync(sync) {
     }).join("") || "no sync data";
 }
 
+let benchSelected = null;  // benchmark id (string) whose leaderboard is open
+
+function renderBenchmarks(status) {
+  const section = document.getElementById("benchmarks-section");
+  const r = status.report;
+  if (r.status === "unconfigured") { section.hidden = true; return; }
+  section.hidden = false;
+  const when = r.fetched_at ? new Date(r.fetched_at).toLocaleTimeString() : "—";
+  const spin = status.fetch_in_flight ? ' <span class="spin">⚙</span>' : "";
+  document.getElementById("benchmarks-status").innerHTML =
+    `${esc(r.url ?? "")} · fetched ${esc(when)}${spin}` +
+    (r.error ? ` · <span class="err">${esc(r.error)}</span>` : "");
+  const list = document.getElementById("benchmarks-list");
+  if (r.status !== "ok") {
+    // unavailable/unreadable — explicit unknown, NEVER an empty list.
+    // Not-fetched-yet is the full contract pair (fetched_at:null AND
+    // error:null, §5) — keying on error alone would mislabel a real
+    // failure that somehow lost its message.
+    const notFetched = r.fetched_at === null && r.error === null;
+    list.innerHTML = `<div class="warn">${
+      notFetched ? "not fetched yet" : `benchmarks unknown: ${esc(r.status)}`}</div>`;
+    document.getElementById("benchmarks-leaderboard").innerHTML = "";
+    return;
+  }
+  if (!r.benchmarks.length) {
+    list.innerHTML = `<div class="fresh">0 benchmarks</div>`;  // confident: ok
+    document.getElementById("benchmarks-leaderboard").innerHTML = "";
+    return;
+  }
+  list.innerHTML = r.benchmarks.map(b => `
+    <button class="bench" data-bench="${esc(String(b.id))}">
+      ${esc(b.name)} v${esc(b.version)} · ${esc(String(b.tasks_count))} tasks
+      ${(b.tags || []).map(t => `<span class="badge dim">${esc(t)}</span>`).join("")}
+    </button>`).join("");
+  renderLeaderboard(r);
+}
+
+function renderLeaderboard(r) {
+  const box = document.getElementById("benchmarks-leaderboard");
+  if (benchSelected === null || !(benchSelected in (r.leaderboards || {}))) {
+    box.innerHTML = "";
+    return;
+  }
+  const lb = r.leaderboards[benchSelected];
+  if (lb.status !== "ok") {
+    box.innerHTML = `<div class="warn">leaderboard unknown (${esc(lb.status)}):
+      ${esc(lb.error ?? "")}</div>`;
+    return;
+  }
+  if (!lb.rows.length) {
+    box.innerHTML = `<div class="fresh">0 entries</div>`;  // confident: ok
+    return;
+  }
+  box.innerHTML = `<div class="tablewrap"><table><thead><tr><th>agent</th>
+    <th>best</th><th>runs</th><th>user</th></tr></thead><tbody>` +
+    lb.rows.map(row => `
+    <tr><td>${esc(row.agent_name)}</td><td>${esc(String(row.best_score))}</td>
+    <td>${esc(String(row.run_count))}</td>
+    <td>${esc(String(row.user_id))}</td></tr>`).join("") +
+    "</tbody></table></div>";
+}
+
+document.getElementById("benchmarks-list").addEventListener("click", (ev) => {
+  const btn = ev.target.closest("button[data-bench]");
+  if (!btn) return;
+  benchSelected = btn.dataset.bench;
+  refresh();
+});
+
 function renderSummary(summary) {
   document.querySelector("#roadmap-summary tbody").innerHTML =
     (summary.projects || []).map(p => `
@@ -500,12 +574,15 @@ async function refresh() {
         ? "" : `&project=${encodeURIComponent(errorsProject)}`)
       + (errorsService === null
         ? "" : `&service=${encodeURIComponent(errorsService)}`);
-    const [ov, errors, models, contracts, roadmap, sync, summary] =
+    const [ov, errors, models, contracts, roadmap, sync, summary, benchmarks] =
       await Promise.all([
       get("/api/overview"), get(errorsUrl),
       get("/api/models"), get("/api/contracts"), get("/api/roadmap"),
-      get("/api/sync"), get("/api/roadmap/summary")]);
+      get("/api/sync"), get("/api/roadmap/summary"), get("/api/benchmarks")]);
     renderSync(sync);
+    // one global section, one writer, one polling loop — refresh() itself
+    // IS the stale-response guard; no generation counter needed here.
+    renderBenchmarks(benchmarks);
     renderSummary(summary);
     document.getElementById("projects").innerHTML = ov.projects.map(p => `
       <div class="card ${p.detected ? "" : "off"}"

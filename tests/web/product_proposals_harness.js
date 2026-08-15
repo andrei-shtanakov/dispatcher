@@ -165,6 +165,11 @@ function defaultRoutes(names, ppRoute, govRoute) {
       fetch_in_flight: false,
       report: {top_line: 'ok', top_reason: null, proposals: [], hosts: []},
     })],
+    [u => u.startsWith('/api/benchmarks'), () => ok({
+      fetch_in_flight: false,
+      report: {status: 'unconfigured', url: null, fetched_at: null,
+        error: null, benchmarks: [], leaderboards: {}},
+    })],
     [u => u.startsWith('/api/actions/session'), () => ok({token: 'test-token'})],
     [u => u.startsWith('/api/spec-runner-config/suggest-availability'),
       () => ok({available: false, detail: 'n/a'})],

@@ -28,6 +28,8 @@ def test_get_serves_initial_report_instantly_without_calling_the_fetcher() -> No
 
     service = BenchmarkService(BASE, fetcher=slow_fetcher)
     status = service.get()
+    # the spinner's data source: a fetch is running while the render is stale
+    assert status.fetch_in_flight is True
     # the render path returned BEFORE the fetch finished
     assert status.report.status == "unavailable"
     assert status.report.fetched_at is None and status.report.error is None

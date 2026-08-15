@@ -1,7 +1,6 @@
 """End-to-end over a real socket: FastAPI stub serving the vendored
 fixtures → real httpx client → ok report (spec §10). Failure paths:
-connection refused → unavailable; 500 → unavailable; wrong shape →
-unreadable."""
+connection refused → unavailable; wrong shape → unreadable."""
 
 from __future__ import annotations
 
@@ -80,7 +79,7 @@ def test_connection_refused_is_unavailable() -> None:
     assert report.error is not None
 
 
-def test_500_is_unavailable_and_wrong_shape_is_unreadable() -> None:
+def test_wrong_shape_is_unreadable() -> None:
     app = FastAPI()
 
     @app.get("/api/v1/benchmarks")
