@@ -338,8 +338,9 @@ with the PR numbers.
   shape — that is the drift workflow's job, plus the manual runbook.
 - **No wall-clock deadline on fetch requests** (§6). httpx's per-phase idle
   timeout does not bound a slowly-trickling response; a pathological source
-  can prolong a fetch cycle. Consequence is bounded staleness growth, never
-  a blocked render; revisit if it is ever observed in practice.
+  can prolong a fetch cycle. Consequence is potentially unbounded staleness
+  growth, but never a blocked render; revisit if it is ever observed in
+  practice.
 - **Whole-report replacement** (§5) means a transient network blip hides
   previously-fetched data until the next successful cycle (≤ ~60s). Chosen
   over a stale-data tier: less state, and "unknown" is the honest answer
