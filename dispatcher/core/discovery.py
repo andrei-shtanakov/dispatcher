@@ -5,6 +5,7 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dispatcher.core.collectors.base import Collector
 
@@ -35,6 +36,9 @@ class DispatcherConfig:
     # (DESIGN-902). Distinct from spec_runner.claude_command in project.yaml
     # (that configures spec-runner; this configures dispatcher itself).
     suggest_claude_cli: Path | None = None
+    # Base URL of one ATP eco server (spec 2026-08-15 §3). None → the
+    # benchmark view is off: no service, hidden panel, "unconfigured" report.
+    benchmarks_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,23 @@ class DiscoveredProject:
     name: str
     path: Path
     collector: Collector
+
+
+def _validate_benchmarks_url(raw: object) -> str:
+    """Spec §3: absolute http(s) URL, host required, no query/fragment/
+    userinfo; base path allowed; trailing slash stripped."""
+    if not isinstance(raw, str):
+        raise ValueError("benchmarks.url must be a string")
+    parts = urlsplit(raw)
+    if parts.scheme not in ("http", "https"):
+        raise ValueError(f"benchmarks.url must be http(s), got: {raw!r}")
+    if not parts.hostname:
+        raise ValueError(f"benchmarks.url must include a host: {raw!r}")
+    if parts.query or parts.fragment or parts.username or parts.password:
+        raise ValueError(
+            f"benchmarks.url must not carry query/fragment/userinfo: {raw!r}"
+        )
+    return raw.rstrip("/")
 
 
 def load_config(config_path: Path | None = None) -> DispatcherConfig:
@@ -62,6 +83,9 @@ def load_config(config_path: Path | None = None) -> DispatcherConfig:
     ).expanduser()
     raw_suggest = data.get("suggest_claude_cli")
     suggest_claude_cli = Path(raw_suggest).expanduser() if raw_suggest else None
+    raw_benchmarks = data.get("benchmarks", {})
+    raw_url = raw_benchmarks.get("url") if isinstance(raw_benchmarks, dict) else None
+    benchmarks_url = _validate_benchmarks_url(raw_url) if raw_url is not None else None
     return DispatcherConfig(
         roots=roots,
         maestro_db=maestro_db,
@@ -69,6 +93,7 @@ def load_config(config_path: Path | None = None) -> DispatcherConfig:
         roadmap_dirs=roadmap_dirs,
         tracking_file=tracking_file,
         suggest_claude_cli=suggest_claude_cli,
+        benchmarks_url=benchmarks_url,
     )
 
 
