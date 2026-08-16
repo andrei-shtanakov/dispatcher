@@ -183,7 +183,7 @@
       live-smoke runbook). Явно не входит в scope: токен-авторизация (фаза 2
       run-status), TUI/VSCode/MCP parity — отдельные пункты ниже.
 
-- [ ] Benchmark run-status — фаза 2: статус ранов через токен-гейтед `GET /api/v1/runs/{id}/status` @owner:github:andrei-shtanakov @id:atp-benchmark-runs-phase2
+- [x] Benchmark run-status — фаза 2: статус ранов через токен-гейтед `GET /api/v1/runs/{id}/status` — PR #150 (спека), #151 (re-vendor+core), #152 (web) @owner:github:andrei-shtanakov @id:atp-benchmark-runs-phase2
       Продолжение `atp-benchmark-view` (спека 2026-08-15, §2 non-goals).
       Эндпоинт токен-гейтед И owner-scoped: виден только владелец токена,
       значит нужны (а) **первый хранимый секрет dispatcher** — паттерна нет,
@@ -194,12 +194,19 @@
       (у продюсера уже приземлилось: `RunStatusResponse` @ `da3a264` несёт
       `score_semantics`+`score_components` — спека фазы 2 потребляет сразу).
       Начинать со спеки; ре-вендор контракта расширит пруненный openapi.
-      Прогресс: PR-1 — спека
+      Закрыто цепочкой: PR #150 — спека
       `docs/superpowers/specs/2026-08-16-atp-benchmark-run-status-design.md`
-      (token_file 0600-гейт + канарейка секретности; ручной ввод run-id по
-      прецеденту merge-gate #93; клик-driven fetch без фонового поллинга
-      секрета; словарь состояний вкл. честный `not_found` = «нет или не
-      твой»). Дальше: PR-2 re-vendor+core, PR-3 web-панель.
+      (token_file 0600-гейт + lstat/анти-симлинк + канарейка секретности;
+      ручной ввод run-id по прецеденту merge-gate #93; клик-driven fetch
+      без фонового поллинга секрета; честный `not_found` = «нет или не
+      твой»); PR #151 — re-vendor (третий путь + securitySchemes в prune,
+      authored-фикстуры) + core (конфиг/ридер/модели/сервис/маршрут
+      `GET /api/benchmarks/runs/{id}`, канарейка по всем состояниям,
+      отравленный fetcher пинует «секрет не ездит в фоне»); PR #152 —
+      Run-status row в web-панели Benchmarks (formatting-only, серверные
+      формулировки вербатим, in-flight lock, Node-харнес) + расширение
+      live-smoke ранбука фазой 2. MCP-тула нет и не будет без отдельного
+      дизайна (X-02: тул-вызов — действие агента, не клик человека).
 
 - [ ] Parity панели Benchmarks: TUI/VSCode/MCP поверх `read_api.benchmarks` @owner:github:andrei-shtanakov @id:atp-benchmark-view-parity
       Прецедент — product-proposal parity (#138): все поверхности — тонкие

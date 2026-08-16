@@ -149,7 +149,11 @@
 <section id="benchmarks-section" hidden><h2>Benchmarks
   <span id="benchmarks-status" class="fresh"></span></h2>
   <div id="benchmarks-list"></div>
-  <div id="benchmarks-leaderboard"></div></section>
+  <div id="benchmarks-leaderboard"></div>
+  <div id="run-status-row"><label>Run #
+    <input id="run-status-input" type="number" min="1" inputmode="numeric"></label>
+    <button id="run-status-check" type="button">Check status</button></div>
+  <div id="run-status-result"></div></section>
 
 <section><h2>Projects</h2>
 <div class="grid" id="projects"></div></section>
@@ -500,6 +504,76 @@ document.getElementById("benchmarks-list").addEventListener("click", (ev) => {
   if (!btn) return;
   benchSelected = btn.dataset.bench;
   refresh();
+});
+
+// Phase-2 run-status (spec 2026-08-16 §7): click-driven; the token is
+// server-side only — this page never sees it. FORMATTING ONLY: every
+// non-ok state renders the server's own status word + error line verbatim
+// (the not_found wording «run not found, or not owned by this token» and
+// the token_* reasons are the server's SSOT, never re-worded here). This
+// panel has no zero state — exactly one run or one explicit non-ok state.
+let runStatusGen = 0;
+
+function renderRunStatus(report) {
+  // Shallow key:value list; nested values stay readable as JSON, escaped.
+  const kv = obj => Object.entries(obj || {}).map(([k, v]) =>
+    `<li>${esc(k)}: ${esc(typeof v === "object" && v !== null
+      ? JSON.stringify(v) : String(v))}</li>`).join("");
+  if (report.status !== "ok") {
+    return `<div class="warn">${esc(report.status)}: ${
+      esc(report.error ?? "")}</div>`;
+  }
+  const run = report.run;
+  const head = `<p><b>run ${esc(String(run.id))}</b> ·
+    <span class="badge">${esc(run.status)}</span> ·
+    task ${esc(String(run.current_task_index))}/${esc(String(run.tasks_count))} ·
+    score ${run.total_score == null ? "—" : esc(String(run.total_score))}</p>`;
+  const components = Object.keys(run.score_components || {}).length
+    ? `<p class="dim">score components</p><ul>${kv(run.score_components)}</ul>`
+    : "";
+  const semantics = Object.keys(run.score_semantics || {}).length
+    ? `<details><summary class="dim">score semantics</summary>
+       <ul>${kv(run.score_semantics)}</ul></details>`
+    : "";
+  return head + components + semantics;
+}
+
+document.getElementById("run-status-check").addEventListener("click", async () => {
+  const input = document.getElementById("run-status-input");
+  const box = document.getElementById("run-status-result");
+  const btn = document.getElementById("run-status-check");
+  const runId = Number(input.value);
+  if (!Number.isInteger(runId) || runId < 1) {
+    box.innerHTML = `<div class="warn">enter a run id (a positive integer)</div>`;
+    return;
+  }
+  // The disabled button already prevents stacked requests; the generation
+  // token is the per-run_id stale guard the spec asks for anyway — a late
+  // response must never render under a newer question.
+  const myGen = ++runStatusGen;
+  btn.disabled = true;
+  box.innerHTML = `<span class="spin">⚙</span> checking run ${
+    esc(String(runId))}…`;
+  try {
+    const resp = await fetch(
+      "/api/benchmarks/runs/" + encodeURIComponent(String(runId)));
+    if (myGen !== runStatusGen) return;
+    if (!resp.ok) {
+      box.innerHTML = `<div class="warn">run-status endpoint failed: ${
+        esc(String(resp.status))}</div>`;
+      return;
+    }
+    const report = await resp.json();
+    if (myGen !== runStatusGen) return;
+    box.innerHTML = renderRunStatus(report);
+  } catch (err) {
+    // Fail-loud: a network failure must not read as «no such run».
+    if (myGen === runStatusGen) {
+      box.innerHTML = `<div class="warn">${esc(String(err))}</div>`;
+    }
+  } finally {
+    if (myGen === runStatusGen) btn.disabled = false;
+  }
 });
 
 function renderSummary(summary) {
