@@ -9,6 +9,7 @@ import { createStatusBar } from "./status";
 import type { OnboardingView } from "./onboarding";
 import { composeProjectDoc } from "./productProposals";
 import type { ProductProposalsReport } from "./productProposals";
+import type { RunsSnapshot } from "./runs";
 import {
   applyEdit,
   diffLines,
@@ -323,9 +324,10 @@ export function activate(context: vscode.ExtensionContext): void {
     // other down — each side lands in the doc as content or as its own
     // fail-loud error line (composeProjectDoc).
     const api = client();
-    const [ob, pp] = await Promise.allSettled([
+    const [ob, pp, rn] = await Promise.allSettled([
       api.getOnboarding(name),
       api.getProductProposals(name),
+      api.getProjectRuns(name),
     ]);
     if (onboardingGen.get(uri.path) !== myGen) {
       return; // a newer run already owns this document
@@ -345,7 +347,14 @@ export function activate(context: vscode.ExtensionContext): void {
       pp.status === "fulfilled"
         ? { report: pp.value }
         : { error: errorText(pp.reason) };
-    onboardingDocs.set(uri.path, composeProjectDoc(name, onboarding, proposals));
+    const runs: { snap?: RunsSnapshot | null; error?: string } =
+      rn.status === "fulfilled"
+        ? { snap: rn.value }
+        : { error: errorText(rn.reason) };
+    onboardingDocs.set(
+      uri.path,
+      composeProjectDoc(name, onboarding, proposals, runs),
+    );
     onboardingChanged.fire(uri); // re-run refreshes the SAME document
     const doc = await vscode.workspace.openTextDocument(uri);
     await vscode.commands.executeCommand("markdown.showPreview", doc.uri);

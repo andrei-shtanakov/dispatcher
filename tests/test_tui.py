@@ -307,6 +307,53 @@ async def test_enter_opens_project_detail(tmp_path: Path) -> None:
         assert not isinstance(app.screen, ProjectDetailScreen)
 
 
+def test_detail_renders_orchestration_runs() -> None:
+    """TODO maestro-runs-panel-parity: formatting-only over snapshot.runs;
+    the collector's status word survives verbatim inside the badge."""
+    from dispatcher.core.models import OrchestrationRunInfo
+    from dispatcher.tui.detail import ProjectDetailScreen
+
+    snap = ProjectSnapshot(
+        name="Maestro",
+        path="/w/maestro",
+        runs=[
+            OrchestrationRunInfo(
+                repo_key="github.com/acme/app",
+                run_id="01NEW",
+                status="interrupted",
+                started_at="2026-08-12T00:00:00",
+                source="/x/state.db",
+            ),
+            OrchestrationRunInfo(
+                repo_key="legacy", status="legacy", source="/x/maestro.db"
+            ),
+        ],
+    )
+    rendered = "\n".join(ProjectDetailScreen(snap)._render_texts())
+    assert "orchestration runs" in rendered
+    assert "github.com/acme/app · 01NEW · ⚠ interrupted / unknown" in rendered
+    assert "legacy · — · 🗄 legacy" in rendered
+
+
+def test_detail_degraded_enumeration_is_not_a_confident_zero() -> None:
+    """Zero-state rule: empty runs + a `runs `-prefixed warning renders as
+    unknown — «(none)» is reserved for a clean enumeration."""
+    from dispatcher.tui.detail import ProjectDetailScreen
+
+    degraded = ProjectSnapshot(
+        name="Maestro",
+        path="/w/maestro",
+        warnings=["runs enumeration: cannot list /x/projects: denied"],
+    )
+    rendered = "\n".join(ProjectDetailScreen(degraded)._render_texts())
+    assert "run enumeration degraded" in rendered
+    assert "not zero" in rendered
+
+    clean = ProjectSnapshot(name="Maestro", path="/w/maestro")
+    rendered_clean = "\n".join(ProjectDetailScreen(clean)._render_texts())
+    assert "run enumeration degraded" not in rendered_clean
+
+
 async def test_detail_renders_onboarding_sections(tmp_path: Path) -> None:
     # fixture: snapshot + synthetic OnboardingView (the builder is already
     # pinned by its own unit tests — here only the section rendering is

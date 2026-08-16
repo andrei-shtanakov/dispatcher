@@ -87,10 +87,10 @@ class MaestroCollector:
             # change — zero runs render as zero runs, not as a warning.
             return []
         sources: list[Path] = []
-        for repo_key, project_dir in _project_dirs(projects):
+        for repo_key, project_dir in _project_dirs(projects, snap):
             holder = _holder_run_id(project_dir / "locks")
             runs: list[tuple[OrchestrationRunInfo, Path]] = []
-            for run_dir in _subdirs(project_dir / "runs"):
+            for run_dir in _subdirs(project_dir / "runs", snap):
                 db = run_dir / "state.db"
                 if not db.is_file():
                     continue
@@ -193,25 +193,33 @@ class MaestroCollector:
         )
 
 
-def _project_dirs(projects: Path) -> list[tuple[str, Path]]:
+def _project_dirs(projects: Path, snap: ProjectSnapshot) -> list[tuple[str, Path]]:
     """(repo_key, project dir) pairs; `_local` keys are two segments."""
     out: list[tuple[str, Path]] = []
-    for host in _subdirs(projects):
+    for host in _subdirs(projects, snap):
         if host.name == "_local":
-            out.extend((f"_local/{repo.name}", repo) for repo in _subdirs(host))
+            out.extend((f"_local/{repo.name}", repo) for repo in _subdirs(host, snap))
             continue
-        for owner in _subdirs(host):
+        for owner in _subdirs(host, snap):
             out.extend(
                 (f"{host.name}/{owner.name}/{repo.name}", repo)
-                for repo in _subdirs(owner)
+                for repo in _subdirs(owner, snap)
             )
     return sorted(out)
 
 
-def _subdirs(path: Path) -> list[Path]:
+def _subdirs(path: Path, snap: ProjectSnapshot | None = None) -> list[Path]:
+    """List subdirectories; an unreadable directory must WARN, not read as
+    empty — a silently swallowed OSError here is how «0 runs» would lie
+    (the `runs `/`run ` warning prefixes are the surfaces' degradation
+    signal — see the prefix pin in tests/test_maestro.py)."""
+    if not path.is_dir():
+        return []
     try:
         return sorted(d for d in path.iterdir() if d.is_dir())
-    except OSError:
+    except OSError as err:
+        if snap is not None:
+            snap.warnings.append(f"runs enumeration: cannot list {path}: {err}")
         return []
 
 

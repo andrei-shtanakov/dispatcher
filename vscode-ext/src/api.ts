@@ -2,6 +2,7 @@
 
 import type { OnboardingView } from "./onboarding";
 import type { ProductProposalsReport } from "./productProposals";
+import type { RunsSnapshot } from "./runs";
 
 export interface Counts {
   tasks: number;
@@ -301,5 +302,23 @@ export class ApiClient {
       await this.raise(resp, `GET ${path}`);
     }
     return (await resp.json()) as ProductProposalsReport;
+  }
+
+  /** Snapshot subset for the Orchestration-runs section (TODO
+   * maestro-runs-panel-parity). `null` means 404 — unknown project, the
+   * caller omits the section. Any other failure throws: unknown must not
+   * look like «no runs». */
+  async getProjectRuns(name: string): Promise<RunsSnapshot | null> {
+    const path = `/api/projects/${encodeURIComponent(name)}`;
+    const resp = await fetch(`${this.baseUrl}${path}`, {
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (resp.status === 404) {
+      return null;
+    }
+    if (!resp.ok) {
+      await this.raise(resp, `GET ${path}`);
+    }
+    return (await resp.json()) as RunsSnapshot;
   }
 }

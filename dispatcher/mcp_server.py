@@ -60,8 +60,12 @@ def build_server(
         ],
     ) -> dict[str, Any]:
         """Full snapshot of ONE project: schema checks, models, tasks,
-        test results, configs, errors, warnings. Errors with
-        'unknown project: <name>' if the name is not monitored."""
+        orchestration runs (Maestro per-run state, #147 — `runs[].status`
+        is fail-closed: no terminal record reads as 'interrupted', never
+        as in-progress; empty `runs` is only a confident zero when no
+        warning starts with 'run '/'runs '), test results, configs,
+        errors, warnings. Errors with 'unknown project: <name>' if the
+        name is not monitored."""
         try:
             return read_api.project(cache, name).model_dump(mode="json")
         except read_api.ReadLookupError as err:

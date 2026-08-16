@@ -18,6 +18,48 @@ def _section(title: str, lines: list[str]) -> str:
     return f"[bold]{title}[/bold]\n{body}"
 
 
+# TODO maestro-runs-panel-parity: identical badge words across web/TUI/
+# VSCode. Formatting only — the collector classified (#147, fail-closed);
+# this layer never re-classifies.
+_RUN_BADGES = {
+    "running": "▶ running",
+    "suspended": "⏸ suspended (waiting on a human)",
+    "interrupted": "⚠ interrupted / unknown",
+    "completed": "✅ completed",
+    "failed": "⛔ failed",
+    "cancelled": "∅ cancelled",
+    "superseded": "↻ superseded",
+    "legacy": "🗄 legacy (frozen pre-#147 file)",
+    "unreadable": "✖ unreadable",
+}
+
+
+def _run_badge(status: str) -> str:
+    return _RUN_BADGES.get(status, f"✖ {status}")
+
+
+def _is_run_warning(w: str) -> bool:
+    """The collector's degradation signal (prefix pinned in
+    tests/test_maestro.py): `run <id>: …` / `runs enumeration: …`."""
+    return w.startswith(("run ", "runs "))
+
+
+def _runs_lines(s: ProjectSnapshot) -> list[str]:
+    """Zero-state rule: a bare «(none)» is a confident zero and is only
+    allowed on a clean enumeration — a degraded one says unknown."""
+    lines = [
+        escape(
+            f"{r.repo_key} · {r.run_id or '—'} · {_run_badge(r.status)} "
+            f"({r.started_at or '?'} → {r.ended_at or '…'})"
+            + (f" · {r.reason}" if r.reason else "")
+        )
+        for r in s.runs
+    ]
+    if not lines and any(_is_run_warning(w) for w in s.warnings):
+        return ["⚠ unknown — run enumeration degraded (see warnings), not zero"]
+    return lines
+
+
 def _sections(s: ProjectSnapshot) -> list[tuple[str, list[str]]]:
     """Every ProjectSnapshot field, pre-escaped for Rich markup."""
     return [
@@ -52,6 +94,7 @@ def _sections(s: ProjectSnapshot) -> list[tuple[str, list[str]]]:
                 for t in s.tasks
             ],
         ),
+        ("orchestration runs", _runs_lines(s)),
         (
             "test runs",
             [

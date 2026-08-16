@@ -11,6 +11,8 @@
 
 import { mdEscape, renderOnboardingMarkdown } from "./onboarding";
 import type { OnboardingView } from "./onboarding";
+import { renderRunsMarkdown } from "./runs";
+import type { RunsSnapshot } from "./runs";
 
 export interface PpDiagnostic {
   code?: string | null;
@@ -157,14 +159,16 @@ export function renderProductProposalsMarkdown(
   return lines.join("\n");
 }
 
-/** The whole project doc from two INDEPENDENT fetches: one failing must
- * not take the other down. `report: null` means 404 — «not this kind of
- * project» — and hides the section; an error string is rendered
- * fail-loud instead of silently dropping the section. */
+/** The whole project doc from INDEPENDENT fetches: one failing must
+ * not take the others down. `report`/`snap: null` means 404 — «not this
+ * kind of project / unknown project» — and hides the section; an error
+ * string is rendered fail-loud instead of silently dropping the section
+ * (for runs: unknown must not look like «no runs»). */
 export function composeProjectDoc(
   name: string,
   onboarding: { view?: OnboardingView; error?: string },
   proposals: { report?: ProductProposalsReport | null; error?: string },
+  runs?: { snap?: RunsSnapshot | null; error?: string },
 ): string {
   const parts: string[] = [];
   if (onboarding.view !== undefined) {
@@ -182,6 +186,14 @@ export function composeProjectDoc(
     );
   } else if (proposals.report != null) {
     parts.push(renderProductProposalsMarkdown(proposals.report));
+  }
+  if (runs?.error !== undefined) {
+    parts.push("## Orchestration runs", `⚠ runs failed: ${text(runs.error)}`);
+  } else if (runs?.snap != null) {
+    const section = renderRunsMarkdown(runs.snap);
+    if (section !== null) {
+      parts.push(section);
+    }
   }
   return parts.join("\n\n");
 }

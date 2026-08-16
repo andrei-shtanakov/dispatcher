@@ -231,6 +231,43 @@ def test_legacy_db_labeled_legacy_and_tasks_kept(tmp_path: Path) -> None:
     assert any(t.task_id == "M-1" for t in snap.tasks)
 
 
+def test_unreadable_runs_dir_warns_never_silent_zero(tmp_path: Path) -> None:
+    home = _maestro_home(tmp_path)
+    make_maestro_run(home, _ACME, "01P", started_at="2026-08-12T00:00:00")
+    runs_dir = home.joinpath("projects", *_ACME, "runs")
+    runs_dir.chmod(0o000)
+    try:
+        snap = _collect_runs(tmp_path)
+    finally:
+        runs_dir.chmod(0o700)
+    assert snap.runs == []
+    assert any(w.startswith("runs enumeration:") for w in snap.warnings)
+
+
+def test_run_warning_prefixes_are_pinned(tmp_path: Path) -> None:
+    """Surfaces distinguish «degraded» from «clean zero» by the `run `/
+    `runs ` warning prefixes — every enumeration/classification warning
+    must carry one, or a broken tree renders as a confident «0 runs»."""
+    home = _maestro_home(tmp_path)
+    make_maestro_run(
+        home, _ACME, "01W", started_at="2026-08-12T00:00:00", with_run_row=False
+    )
+    bad = home.joinpath("projects", *_ACME, "runs", "01V", "state.db")
+    bad.parent.mkdir(parents=True)
+    bad.write_bytes(b"garbage")
+    locks = home.joinpath("projects", *_ACME, "locks")
+    locks.mkdir()
+    snap = _collect_runs(tmp_path)
+    run_warnings = [
+        w
+        for w in snap.warnings
+        if w not in ("agents catalog not available (atp-platform?)",)
+        and "maestro.db not found" not in w
+    ]
+    assert run_warnings, "expected classification warnings"
+    assert all(w.startswith(("run ", "runs ")) for w in run_warnings)
+
+
 def test_no_maestro_home_skips_enumeration(tmp_path: Path) -> None:
     home = _maestro_home(tmp_path)
     make_maestro_run(home, _ACME, "01Z", started_at="2026-08-12T00:00:00")
