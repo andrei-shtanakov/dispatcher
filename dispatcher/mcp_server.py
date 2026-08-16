@@ -17,10 +17,13 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from dispatcher.core import read_api
+from dispatcher.core.benchmark_service import BenchmarkService
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.roadmap import default_roadmap_dirs
 from dispatcher.core.service import SnapshotService
 from dispatcher.core.sync_service import SyncService
+
+_BENCHMARKS_WAIT_SECONDS = 20.0
 
 
 def build_server(
@@ -28,6 +31,7 @@ def build_server(
     *,
     snapshot_service: SnapshotService | None = None,
     sync_service: SyncService | None = None,
+    benchmark_service: BenchmarkService | None = None,
 ) -> FastMCP:
     """The dispatcher MCP server; service injection mirrors create_app."""
     # explicit is-None: mirrors create_app's DI contract exactly
@@ -35,6 +39,16 @@ def build_server(
         snapshot_service if snapshot_service is not None else SnapshotService(config)
     )
     sync_cache = sync_service if sync_service is not None else SyncService(config)
+    # Deliberately built WITHOUT token_file: no MCP tool may spend the
+    # stored secret on an agent's initiative (phase-2 spec §2, X-02) — the
+    # capability is absent by construction, not merely unused.
+    benchmarks_service = (
+        benchmark_service
+        if benchmark_service is not None
+        else (
+            BenchmarkService(config.benchmarks_url) if config.benchmarks_url else None
+        )
+    )
     roadmap_dirs = config.roadmap_dirs or default_roadmap_dirs(config.roots)
     mcp: FastMCP = FastMCP(
         "dispatcher",
@@ -189,6 +203,25 @@ def build_server(
         return read_api.sync_status(sync_cache, start_fetch=False).model_dump(
             mode="json"
         )
+
+    @mcp.tool
+    def benchmarks() -> dict[str, Any]:
+        """ATP benchmark list + per-benchmark leaderboards of the ONE
+        configured eco server, with fail-closed states: `unconfigured`
+        (feature off), `unavailable`/`unreadable` = unknown, NEVER an
+        empty-but-ok answer; an empty list is only trustworthy when
+        `report.status` is 'ok'. Divergence from sync_status, on purpose:
+        this tool MAY start one throttled (60s) read-only GET of the eco
+        server's PUBLIC surface and wait briefly for it — the cache is
+        in-memory per process, so a never-fetching stdio tool would always
+        answer 'not fetched yet'. It never touches the token-gated
+        run-status surface (the service here is built without a token by
+        construction)."""
+        status = read_api.benchmarks(benchmarks_service)
+        if benchmarks_service is not None and status.fetch_in_flight:
+            benchmarks_service.wait_for_fetch(timeout=_BENCHMARKS_WAIT_SECONDS)
+            status = read_api.benchmarks(benchmarks_service, start_fetch=False)
+        return status.model_dump(mode="json")
 
     @mcp.tool
     def spec_runner_configs() -> list[dict[str, Any]]:

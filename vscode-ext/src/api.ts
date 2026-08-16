@@ -123,6 +123,44 @@ export interface SyncStatusResponse {
   last_fetch_error: string | null;
 }
 
+export interface BenchmarkInfo {
+  id: number;
+  name: string;
+  description: string;
+  tasks_count: number;
+  tags: string[];
+  version: string;
+  family_tag: string | null;
+  created_at: string;
+}
+
+export interface LeaderboardRow {
+  user_id: number;
+  agent_name: string;
+  best_score: number;
+  run_count: number;
+}
+
+export interface LeaderboardState {
+  status: string; // ok | unavailable | unreadable
+  rows: LeaderboardRow[];
+  error: string | null;
+}
+
+export interface BenchmarksReport {
+  status: string; // unconfigured | ok | unavailable | unreadable
+  url: string | null;
+  fetched_at: string | null;
+  error: string | null;
+  benchmarks: BenchmarkInfo[];
+  leaderboards: Record<string, LeaderboardState>;
+}
+
+export interface BenchmarksStatusResponse {
+  report: BenchmarksReport;
+  fetch_in_flight: boolean;
+}
+
 export interface ActionOutcome {
   action: string;
   dir: string;
@@ -238,6 +276,10 @@ export class ApiClient {
 
   sync(): Promise<SyncStatusResponse> {
     return this.get("/api/sync");
+  }
+
+  benchmarks(): Promise<BenchmarksStatusResponse> {
+    return this.get("/api/benchmarks");
   }
 
   pull(dir: string): Promise<ActionOutcome> {

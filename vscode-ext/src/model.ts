@@ -1,8 +1,11 @@
 /** Pure view-model mappers and decisions. Must stay vscode-free. */
 
 import type {
+  BenchmarkInfo,
+  BenchmarksStatusResponse,
   ErrorEvent,
   EvidenceResult,
+  LeaderboardRow,
   OverviewEntry,
   OverviewResponse,
   ProjectDetail,
@@ -272,4 +275,80 @@ export function shouldSpawn(opts: {
     opts.projectDir.trim() !== "" &&
     !opts.alreadyTried
   );
+}
+
+// ---- Benchmarks view (TODO atp-benchmark-view-parity) ----------------------
+// Pure node-building for tree.ts's BenchmarksProvider — kept here, vscode-
+// free, so vitest can pin the zero-state rules the way the web harness
+// does: a confident «0 benchmarks» / «0 entries» only when the (report /
+// that leaderboard's) status is 'ok'; unavailable/unreadable renders as
+// explicit unknown, never as an empty list. `unconfigured` never reaches
+// these functions — extension.ts hides the whole view via the
+// dispatcher.benchmarksConfigured context (web hides the section).
+
+export type BenchmarkNode =
+  | { kind: "bench"; bench: BenchmarkInfo }
+  | { kind: "lbrow"; row: LeaderboardRow }
+  | { kind: "state"; text: string; warn: boolean }
+  | { kind: "offline" };
+
+export function benchmarkRootNodes(
+  status: BenchmarksStatusResponse | null,
+): BenchmarkNode[] {
+  if (status === null) {
+    return [{ kind: "offline" }];
+  }
+  const r = status.report;
+  if (r.status !== "ok") {
+    const notFetched = r.fetched_at === null && r.error === null;
+    return [
+      {
+        kind: "state",
+        text: notFetched
+          ? "not fetched yet"
+          : `benchmarks unknown: ${r.status}` +
+            (r.error ? ` — ${r.error}` : ""),
+        warn: !notFetched,
+      },
+    ];
+  }
+  if (r.benchmarks.length === 0) {
+    return [{ kind: "state", text: "0 benchmarks", warn: false }];
+  }
+  return r.benchmarks.map((bench) => ({ kind: "bench", bench }));
+}
+
+export function benchmarkChildNodes(
+  status: BenchmarksStatusResponse | null,
+  bench: BenchmarkInfo,
+): BenchmarkNode[] {
+  const lb = status?.report.leaderboards[String(bench.id)];
+  if (lb === undefined) {
+    return [{ kind: "state", text: "leaderboard unknown", warn: true }];
+  }
+  if (lb.status !== "ok") {
+    return [
+      {
+        kind: "state",
+        text:
+          `leaderboard unknown (${lb.status})` +
+          (lb.error ? `: ${lb.error}` : ""),
+        warn: true,
+      },
+    ];
+  }
+  if (lb.rows.length === 0) {
+    return [{ kind: "state", text: "0 entries", warn: false }];
+  }
+  return lb.rows.map((row) => ({ kind: "lbrow", row }));
+}
+
+export function benchmarkDescription(b: BenchmarkInfo): string {
+  return (
+    `${b.tasks_count} tasks` + (b.tags.length ? ` · ${b.tags.join(", ")}` : "")
+  );
+}
+
+export function leaderboardRowDescription(r: LeaderboardRow): string {
+  return `best ${r.best_score} · ${r.run_count} runs · user ${r.user_id}`;
 }

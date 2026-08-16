@@ -476,14 +476,20 @@ function renderBenchmarks(status) {
 
 function renderLeaderboard(r) {
   const box = document.getElementById("benchmarks-leaderboard");
-  if (benchSelected === null || !(benchSelected in (r.leaderboards || {}))) {
+  if (benchSelected === null) {
     box.innerHTML = "";
+    return;
+  }
+  if (!(benchSelected in (r.leaderboards || {}))) {
+    // A selected benchmark with no leaderboard entry is unknown, not an
+    // empty box that reads like «0 entries» (zero-state rule).
+    box.innerHTML = `<div class="warn">leaderboard unknown</div>`;
     return;
   }
   const lb = r.leaderboards[benchSelected];
   if (lb.status !== "ok") {
-    box.innerHTML = `<div class="warn">leaderboard unknown (${esc(lb.status)}):
-      ${esc(lb.error ?? "")}</div>`;
+    box.innerHTML = `<div class="warn">leaderboard unknown (${esc(lb.status)})${
+      lb.error ? `: ${esc(lb.error)}` : ""}</div>`;
     return;
   }
   if (!lb.rows.length) {

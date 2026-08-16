@@ -44,6 +44,7 @@ EXPECTED_TOOLS = {
     "spec_runner_configs",
     "onboarding",
     "product_proposals",
+    "benchmarks",
 }
 
 # A minimal roadmap item so the fixture workspace's /api/roadmap is
@@ -203,6 +204,9 @@ PARITY: list[tuple[str, dict, str]] = [
         {"project": "impresario"},
         "/api/projects/impresario/product-proposals",
     ),
+    # Unconfigured on both surfaces (the fixture config has no
+    # [benchmarks].url) — the stable shape both must serve identically.
+    ("benchmarks", {}, "/api/benchmarks"),
 ]
 
 
@@ -284,6 +288,36 @@ async def test_sync_status_parity_report_payload(tmp_path: Path) -> None:
     # by the comparison either:
     direct = sync_cache.get(start_fetch=False)
     assert _tool_json(tool_result)["report"] == direct.model_dump(mode="json")["report"]
+
+
+async def test_benchmarks_tool_kicks_waits_and_reports(tmp_path: Path) -> None:
+    """Designed divergence from sync_status (documented in the tool): the
+    cache is in-memory per process, so the tool may start ONE throttled
+    read-only fetch of the PUBLIC surface and wait for it. The token-gated
+    run-status fetcher must never be touched — pinned with a poisoned
+    fetcher AND by construction (the default service carries no token)."""
+    from datetime import UTC, datetime
+
+    from dispatcher.core.benchmark_service import BenchmarkService
+    from dispatcher.core.benchmarks import BenchmarksReport
+
+    def fetcher(url: str) -> BenchmarksReport:
+        return BenchmarksReport(
+            status="ok", url=url, fetched_at=datetime.now(UTC), error=None
+        )
+
+    def poisoned(base_url, run_id, token_file):
+        raise AssertionError("the MCP tool touched the token-gated path")
+
+    service = BenchmarkService(
+        "http://atp.test", fetcher=fetcher, run_status_fetcher=poisoned
+    )
+    server = build_server(_config(tmp_path), benchmark_service=service)
+    async with Client(server) as client:
+        result = await client.call_tool("benchmarks", {})
+    body = _tool_json(result)
+    assert body["report"]["status"] == "ok"
+    assert body["fetch_in_flight"] is False
 
 
 async def test_numeric_constraints_mirror_http(tmp_path: Path) -> None:

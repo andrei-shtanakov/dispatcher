@@ -27,6 +27,8 @@ from dispatcher.core.actions import (
     ActionRejectedError,
     ActionRunner,
 )
+from dispatcher.core.benchmark_service import BenchmarkService
+from dispatcher.core.benchmarks import BenchmarksStatus
 from dispatcher.core.contracts import check_contracts
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.models import ContractStatus, ErrorEvent, ProjectSnapshot
@@ -161,11 +163,24 @@ class DispatcherApp(App[None]):
         *,
         action_runner: ActionRunner | None = None,
         config_runner: SpecRunnerConfigActionRunner | None = None,
+        benchmark_service: BenchmarkService | None = None,
     ) -> None:
         super().__init__()
         self._config = config
         self._service = SnapshotService(config)
         self._sync_service = SyncService(config)
+        # explicit is-None: mirrors create_app's DI contract. Built without
+        # token_file on purpose — the TUI renders the public benchmark
+        # surface only (run-status stays a web click, phase-2 spec §2).
+        self._benchmark_service = (
+            benchmark_service
+            if benchmark_service is not None
+            else (
+                BenchmarkService(config.benchmarks_url)
+                if config.benchmarks_url
+                else None
+            )
+        )
         self._action_runner = action_runner or ActionRunner(config)
         self._config_runner = config_runner or SpecRunnerConfigActionRunner(config)
         self._roadmap_dirs = config.roadmap_dirs or default_roadmap_dirs(config.roots)
@@ -177,6 +192,8 @@ class DispatcherApp(App[None]):
         self._sync_rows: list[SyncRow] = []
         self._configs: list[ProjectSpecRunnerConfig] = []
         self._summary: SummaryResponse | None = None
+        self._benchmarks: BenchmarksStatus | None = None
+        self._bench_row_ids: list[str] = []
         self._errors_days: int | None = ERRORS_DAYS_DEFAULT
         self._errors_project: str | None = None
         self._errors_service: str | None = None
@@ -203,6 +220,9 @@ class DispatcherApp(App[None]):
                 yield DataTable(id="roadmap-table", cursor_type="row")
             with TabPane("Config", id="tab-config"):
                 yield DataTable(id="config-table", cursor_type="row")
+            with TabPane("Benchmarks", id="tab-benchmarks"):
+                yield DataTable(id="benchmarks-table", cursor_type="row")
+                yield DataTable(id="benchmark-lb-table", cursor_type="row")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -243,6 +263,16 @@ class DispatcherApp(App[None]):
         self.query_one("#config-table", DataTable).add_columns(
             "dir", "project", "explicit fields", "extra"
         )
+        self.query_one("#benchmarks-table", DataTable).add_columns(
+            "benchmark", "version", "tasks", "tags"
+        )
+        self.query_one("#benchmark-lb-table", DataTable).add_columns(
+            "agent", "best", "runs", "user"
+        )
+        if self._benchmark_service is None:
+            # Cross-surface rule: unconfigured HIDES the surface (web
+            # hides the section) — not an empty tab.
+            self.query_one(TabbedContent).hide_tab("tab-benchmarks")
         self.set_interval(10.0, self.action_refresh)
         self.action_refresh()
 
@@ -263,6 +293,7 @@ class DispatcherApp(App[None]):
             roadmap = build_roadmap(self._roadmap_dirs, snapshots, contracts)
             summary = build_summary(roadmap, contracts)
             sync = self._sync_service.get()
+            benchmarks = read_api.benchmarks(self._benchmark_service)
             configs, _ = discover_project_configs(self._config.roots)
         except Exception as err:  # noqa: BLE001 — keep last data on screen
             self.call_from_thread(
@@ -270,7 +301,15 @@ class DispatcherApp(App[None]):
             )
             return
         self.call_from_thread(
-            self._apply, snapshots, warnings, contracts, roadmap, summary, sync, configs
+            self._apply,
+            snapshots,
+            warnings,
+            contracts,
+            roadmap,
+            summary,
+            sync,
+            configs,
+            benchmarks,
         )
 
     def _apply(
@@ -282,6 +321,7 @@ class DispatcherApp(App[None]):
         summary: SummaryResponse,
         sync: SyncStatus,
         configs: list[ProjectSpecRunnerConfig],
+        benchmarks: BenchmarksStatus,
     ) -> None:
         self._snapshots = snapshots
         self._warnings = warnings
@@ -290,6 +330,7 @@ class DispatcherApp(App[None]):
         self._summary = summary
         self._sync = sync
         self._configs = configs
+        self._benchmarks = benchmarks
         # «шестерёнка в углу»: индикатор фонового fetch живёт в sub-title
         fetching = " · ⚙ fetching" if sync.fetch_in_flight else ""
         self.sub_title = (
@@ -302,6 +343,7 @@ class DispatcherApp(App[None]):
         self._render_contracts()
         self._render_roadmap()
         self._render_config()
+        self._render_benchmarks()
 
     def _render_sync(self) -> None:
         table = self.query_one("#sync-table", DataTable)
@@ -566,6 +608,100 @@ class DispatcherApp(App[None]):
                 str(explicit),
                 "yes" if cfg.extra_executor_config else "—",
             )
+
+    def _render_benchmarks(self) -> None:
+        """TODO atp-benchmark-view-parity: thin renderer over
+        read_api.benchmarks — web zero-state rules carried over verbatim:
+        a confident «0» only on ok; non-ok = explicit unknown, never an
+        empty list; unconfigured hides the tab (on_mount)."""
+        if self._benchmark_service is None or self._benchmarks is None:
+            return
+        table = self.query_one("#benchmarks-table", DataTable)
+        table.clear()
+        self._bench_row_ids = []
+        report = self._benchmarks.report
+        spin = " ⚙" if self._benchmarks.fetch_in_flight else ""
+        self.query_one(TabbedContent).get_tab(
+            "tab-benchmarks"
+        ).label = f"Benchmarks · {report.status}{spin}"
+        if report.status != "ok":
+            not_fetched = report.fetched_at is None and report.error is None
+            table.add_row(
+                Text(
+                    "not fetched yet"
+                    if not_fetched
+                    else f"benchmarks unknown: {report.status}"
+                    + (f" — {report.error}" if report.error else ""),
+                    style="dim" if not_fetched else "bold yellow",
+                ),
+                "—",
+                "—",
+                "—",
+            )
+            self._render_benchmark_leaderboard(None)
+            return
+        if not report.benchmarks:
+            table.add_row(Text("0 benchmarks", style="dim"), "—", "—", "—")
+            self._render_benchmark_leaderboard(None)
+            return
+        for bench in report.benchmarks:
+            table.add_row(
+                bench.name,
+                bench.version,
+                str(bench.tasks_count),
+                ", ".join(bench.tags),
+            )
+            self._bench_row_ids.append(str(bench.id))
+        cursor = table.cursor_row if 0 <= table.cursor_row else 0
+        selected = (
+            self._bench_row_ids[cursor]
+            if 0 <= cursor < len(self._bench_row_ids)
+            else self._bench_row_ids[0]
+        )
+        self._render_benchmark_leaderboard(selected)
+
+    def _render_benchmark_leaderboard(self, bench_id: str | None) -> None:
+        table = self.query_one("#benchmark-lb-table", DataTable)
+        table.clear()
+        if bench_id is None or self._benchmarks is None:
+            return
+        state = self._benchmarks.report.leaderboards.get(bench_id)
+        if state is None:
+            # A benchmark with no leaderboard entry is unknown, not an
+            # empty table that reads like «0 entries» (zero-state rule).
+            table.add_row(
+                Text("leaderboard unknown", style="bold yellow"), "—", "—", "—"
+            )
+            return
+        if state.status != "ok":
+            table.add_row(
+                Text(
+                    f"leaderboard unknown ({state.status})"
+                    + (f": {state.error}" if state.error else ""),
+                    style="bold yellow",
+                ),
+                "—",
+                "—",
+                "—",
+            )
+            return
+        if not state.rows:
+            table.add_row(Text("0 entries", style="dim"), "—", "—", "—")
+            return
+        for row in state.rows:
+            table.add_row(
+                row.agent_name,
+                str(row.best_score),
+                str(row.run_count),
+                str(row.user_id),
+            )
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        if event.data_table.id != "benchmarks-table":
+            return
+        idx = event.cursor_row
+        if 0 <= idx < len(self._bench_row_ids):
+            self._render_benchmark_leaderboard(self._bench_row_ids[idx])
 
     def action_toggle_days(self) -> None:
         self._errors_days = (
