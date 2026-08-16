@@ -1,7 +1,23 @@
-"""Collector for Maestro: task DB in ~/.maestro, catalog models, logs."""
+"""Collector for Maestro: per-project run DBs, catalog models, logs.
+
+Maestro's orchestration state lives one database per run (#147, producer
+design maestro `2026-08-15-maestro-state-layout-design.md`):
+
+    <maestro_home>/projects/<host>/<owner>/<repo>/runs/<run-id>/state.db
+    <maestro_home>/projects/_local/<name>-<hash>/runs/<run-id>/state.db
+    <maestro_home>/projects/<...>/locks/orchestrate.holder
+    <maestro_home>/maestro.db          # legacy, frozen, forensics only
+
+Classification is fail-closed: `running` needs positive evidence (the holder
+sidecar written under the held stage lock, and its pid alive); a run with no
+terminal record is `interrupted`, never in-progress — inferring liveness from
+a missing terminal record is exactly the lie #147 removes.
+"""
 
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 
 from dispatcher.core.collectors.base import (
@@ -20,15 +36,28 @@ from dispatcher.core.collectors.base import (
 from dispatcher.core.models import (
     ConfigSummary,
     ModelInUse,
+    OrchestrationRunInfo,
     ProjectSnapshot,
     TaskInfo,
 )
 
 _EXPECTED_SCHEMA = "2"
+_RUN_ROW_SQL = (
+    "SELECT run_id, started_at, outcome, ended_at, reason, suspended_at "
+    "FROM run LIMIT 1"
+)
+_TASKS_SQL = (
+    "SELECT id, title, status, agent_type, created_at, "
+    "started_at, completed_at FROM tasks "
+    "ORDER BY created_at DESC LIMIT 50"
+)
+_COSTS_SQL = (
+    "SELECT task_id, SUM(estimated_cost_usd) AS cost FROM task_costs GROUP BY task_id"
+)
 
 
 class MaestroCollector:
-    """Reads Maestro's CLI state DB and routable models from the catalog."""
+    """Reads Maestro's per-run state DBs and routable models from the catalog."""
 
     name = "Maestro"
 
@@ -37,53 +66,76 @@ class MaestroCollector:
 
     def collect(self, path: Path, ctx: CollectContext) -> ProjectSnapshot:
         snap = ProjectSnapshot(name=self.name, path=str(path))
-        self._collect_db(ctx.maestro_db, snap)
+        run_dbs = self._collect_runs(ctx.maestro_home, snap)
+        self._collect_legacy_db(ctx.maestro_db, snap)
         self._collect_catalog_models(ctx.catalog_path, snap)
         self._collect_config(path / "executor.config.yaml", snap)
         snap.errors.extend(read_otel_errors(path / "logs"))
-        sources = [path / "executor.config.yaml", path / "logs"]
+        sources = [path / "executor.config.yaml", path / "logs", *run_dbs]
         if ctx.maestro_db is not None:
             sources.append(ctx.maestro_db)
         snap.freshness = newest_mtime(sources)
         return snap
 
-    def _collect_db(self, db: Path | None, snap: ProjectSnapshot) -> None:
+    def _collect_runs(self, home: Path | None, snap: ProjectSnapshot) -> list[Path]:
+        """Enumerate per-project run DBs; returns them for freshness."""
+        if home is None:
+            return []
+        projects = home / "projects"
+        if not projects.is_dir():
+            # Normal on a machine where Maestro has not run since the layout
+            # change — zero runs render as zero runs, not as a warning.
+            return []
+        dbs: list[Path] = []
+        for repo_key, project_dir in _project_dirs(projects):
+            holder = _holder_run_id(project_dir / "locks")
+            runs: list[tuple[OrchestrationRunInfo, Path]] = []
+            for run_dir in _subdirs(project_dir / "runs"):
+                db = run_dir / "state.db"
+                if not db.is_file():
+                    continue
+                dbs.append(db)
+                runs.append(
+                    (_classify_run(db, repo_key, run_dir.name, holder, snap), db)
+                )
+            runs.sort(
+                key=lambda r: (r[0].started_at or "", r[0].run_id or ""),
+                reverse=True,
+            )
+            snap.runs.extend(info for info, _ in runs)
+            if runs:
+                newest_db = runs[0][1]
+                self._collect_run_tasks(newest_db, snap)
+                snap.errors.extend(read_otel_errors(newest_db.parent / "logs"))
+        return dbs
+
+    def _collect_run_tasks(self, db: Path, snap: ProjectSnapshot) -> None:
+        try:
+            costs = {r["task_id"]: r["cost"] for r in read_rows(db, _COSTS_SQL)}
+            rows = read_rows(db, _TASKS_SQL)
+        except SourceReadError as err:
+            snap.warnings.append(str(err))
+            return
+        snap.tasks.extend(_task_info(r, costs, db) for r in rows)
+
+    def _collect_legacy_db(self, db: Path | None, snap: ProjectSnapshot) -> None:
+        """The frozen pre-#147 single file: kept visible, labeled legacy."""
         if db is None or not db.is_file():
             snap.warnings.append(
                 "maestro.db not found (~/.maestro/maestro.db; "
                 "set maestro_db in dispatcher.toml)"
             )
             return
+        snap.runs.append(
+            OrchestrationRunInfo(repo_key="legacy", status="legacy", source=str(db))
+        )
         try:
             ver = read_rows(db, "SELECT MAX(version) AS v FROM schema_migrations")
             found = None if ver[0]["v"] is None else str(ver[0]["v"])
             snap.schema_versions.append(version_check(db.name, found, _EXPECTED_SCHEMA))
-            costs = {
-                r["task_id"]: r["cost"]
-                for r in read_rows(
-                    db,
-                    "SELECT task_id, SUM(estimated_cost_usd) AS cost "
-                    "FROM task_costs GROUP BY task_id",
-                )
-            }
-            rows = read_rows(
-                db,
-                "SELECT id, title, status, agent_type, created_at, "
-                "started_at, completed_at FROM tasks "
-                "ORDER BY created_at DESC LIMIT 50",
-            )
-            snap.tasks = [
-                TaskInfo(
-                    task_id=coerce_str(r["id"]),
-                    title=f"{r['title']} [{r['agent_type']}]",
-                    status=coerce_str(r["status"]),
-                    started_at=_opt_str(r["started_at"]),
-                    completed_at=_opt_str(r["completed_at"]),
-                    cost_usd=costs.get(r["id"]),
-                    source=str(db),
-                )
-                for r in rows
-            ]
+            costs = {r["task_id"]: r["cost"] for r in read_rows(db, _COSTS_SQL)}
+            rows = read_rows(db, _TASKS_SQL)
+            snap.tasks.extend(_task_info(r, costs, db) for r in rows)
         except SourceReadError as err:
             snap.warnings.append(str(err))
             return
@@ -135,6 +187,119 @@ class MaestroCollector:
                 summary=mask_secrets(shallow_summary(data)),
             )
         )
+
+
+def _project_dirs(projects: Path) -> list[tuple[str, Path]]:
+    """(repo_key, project dir) pairs; `_local` keys are two segments."""
+    out: list[tuple[str, Path]] = []
+    for host in _subdirs(projects):
+        if host.name == "_local":
+            out.extend((f"_local/{repo.name}", repo) for repo in _subdirs(host))
+            continue
+        for owner in _subdirs(host):
+            out.extend(
+                (f"{host.name}/{owner.name}/{repo.name}", repo)
+                for repo in _subdirs(owner)
+            )
+    return sorted(out)
+
+
+def _subdirs(path: Path) -> list[Path]:
+    try:
+        return sorted(d for d in path.iterdir() if d.is_dir())
+    except OSError:
+        return []
+
+
+def _classify_run(
+    db: Path,
+    repo_key: str,
+    run_id: str,
+    holder_run_id: str | None,
+    snap: ProjectSnapshot,
+) -> OrchestrationRunInfo:
+    """Producer design §B.3, fail-closed. Order: terminal, running, pause."""
+    unreadable = OrchestrationRunInfo(
+        repo_key=repo_key, run_id=run_id, status="unreadable", source=str(db)
+    )
+    try:
+        rows = read_rows(db, _RUN_ROW_SQL)
+    except SourceReadError as err:
+        snap.warnings.append(f"run {run_id}: {err}")
+        return unreadable
+    if not rows:
+        # A visible run directory always carries its `run` row (producer
+        # design §D rename-into-place) — its absence reads as corruption,
+        # not as legacy.
+        snap.warnings.append(f"run {run_id}: no run row in {db.name}")
+        return unreadable
+    row = rows[0]
+    outcome = row["outcome"]
+    if outcome is not None:
+        status = str(outcome)
+    elif holder_run_id is not None and holder_run_id == run_id:
+        status = "running"
+    elif row["suspended_at"] is not None:
+        status = "suspended"
+    else:
+        status = "interrupted"
+    return OrchestrationRunInfo(
+        repo_key=repo_key,
+        run_id=run_id,
+        status=status,
+        started_at=_opt_str(row["started_at"]),
+        ended_at=_opt_str(row["ended_at"]),
+        reason=_opt_str(row["reason"]),
+        source=str(db),
+    )
+
+
+def _holder_run_id(locks: Path) -> str | None:
+    """The run the held orchestrate lock attributes liveness to, or None.
+
+    The holder sidecar is unlinked on clean release but survives a crash, so
+    it never grants liveness alone: the recorded pid must also be alive.
+    (Probing the flock itself would mean momentarily *taking* it — a
+    read-plane process interfering with producer control flow; the pid check
+    is the nearest non-interfering evidence. Fail-closed on anything odd.)
+    """
+    try:
+        data = json.loads((locks / "orchestrate.holder").read_text())
+        run_id = data["run_id"]
+        pid = data["pid"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not isinstance(run_id, str) or not isinstance(pid, int):
+        return None
+    return run_id if _pid_alive(pid) else None
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:  # 0/negative would signal a process group, not a process
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _task_info(
+    row: dict[str, object], costs: dict[object, float], db: Path
+) -> TaskInfo:
+    return TaskInfo(
+        task_id=coerce_str(row["id"]),
+        title=f"{row['title']} [{row['agent_type']}]",
+        status=coerce_str(row["status"]),
+        started_at=_opt_str(row["started_at"]),
+        completed_at=_opt_str(row["completed_at"]),
+        cost_usd=costs.get(row["id"]),
+        source=str(db),
+    )
 
 
 def _opt_str(value: object) -> str | None:

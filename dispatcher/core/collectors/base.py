@@ -37,6 +37,9 @@ class CollectContext:
 
     home: Path
     maestro_db: Path | None = None
+    # Maestro home holding `projects/<...>/runs/<id>/state.db` (#147).
+    # None disables run enumeration (embedding/tests back-compat).
+    maestro_home: Path | None = None
     catalog_path: Path | None = None
 
 

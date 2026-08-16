@@ -27,6 +27,10 @@ class DispatcherConfig:
 
     roots: tuple[Path, ...]
     maestro_db: Path = field(default_factory=lambda: _DEFAULT_MAESTRO_DB)
+    # Maestro home for per-project run enumeration (#147). None → derived
+    # beside the legacy db (`maestro_db.parent`), which keeps configs that
+    # only set maestro_db — and every test tree — hermetic.
+    maestro_home: Path | None = None
     port: int = DEFAULT_PORT
     # Empty tuple → derived from roots (prograph-vault/authored/roadmaps).
     roadmap_dirs: tuple[Path, ...] = ()
@@ -39,6 +43,13 @@ class DispatcherConfig:
     # Base URL of one ATP eco server (spec 2026-08-15 §3). None → the
     # benchmark view is off: no service, hidden panel, "unconfigured" report.
     benchmarks_url: str | None = None
+
+    @property
+    def effective_maestro_home(self) -> Path:
+        """Home for `projects/<host>/<owner>/<repo>/runs/` enumeration."""
+        if self.maestro_home is not None:
+            return self.maestro_home
+        return self.maestro_db.parent
 
 
 @dataclass(frozen=True)
@@ -77,6 +88,8 @@ def load_config(config_path: Path | None = None) -> DispatcherConfig:
     if not roots:
         roots = (_monorepo_fallback_root(),)
     maestro_db = Path(data.get("maestro_db", str(_DEFAULT_MAESTRO_DB))).expanduser()
+    raw_home = data.get("maestro_home")
+    maestro_home = Path(raw_home).expanduser() if raw_home else None
     roadmap_dirs = tuple(Path(p).expanduser() for p in data.get("roadmap_dirs", []))
     tracking_file = Path(
         data.get("tracking_file", str(path.parent / "dispatcher-sync.toml"))
@@ -93,6 +106,7 @@ def load_config(config_path: Path | None = None) -> DispatcherConfig:
     return DispatcherConfig(
         roots=roots,
         maestro_db=maestro_db,
+        maestro_home=maestro_home,
         port=int(data.get("port", DEFAULT_PORT)),
         roadmap_dirs=roadmap_dirs,
         tracking_file=tracking_file,

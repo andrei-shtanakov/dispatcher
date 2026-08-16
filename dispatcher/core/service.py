@@ -69,6 +69,7 @@ class SnapshotService:
         ctx = CollectContext(
             home=Path.home(),
             maestro_db=self._config.maestro_db,
+            maestro_home=self._config.effective_maestro_home,
             catalog_path=(
                 None
                 if atp_root is None
