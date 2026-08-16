@@ -66,7 +66,16 @@ def prune(full: dict[str, Any]) -> dict[str, Any]:
         for requirement in entry["get"].get("security", []):
             scheme_names.update(requirement)
     all_schemes: dict[str, Any] = full.get("components", {}).get("securitySchemes", {})
-    kept_schemes = {n: all_schemes[n] for n in sorted(scheme_names & set(all_schemes))}
+    missing_schemes = scheme_names - set(all_schemes)
+    if missing_schemes:
+        # Same reasoning as the missing-path branch: a named-but-undefined
+        # scheme means the producer moved the surface — fail loudly so the
+        # drift job's red step is diagnosable, never a dangling document.
+        raise SystemExit(
+            "prune: security scheme(s) named by kept operations are not in "
+            f"components.securitySchemes: {', '.join(sorted(missing_schemes))}"
+        )
+    kept_schemes = {n: all_schemes[n] for n in sorted(scheme_names)}
     if kept_schemes:
         components["securitySchemes"] = kept_schemes
     return {

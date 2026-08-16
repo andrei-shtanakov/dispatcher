@@ -318,7 +318,8 @@ def create_app(
         run_id: Annotated[int, FastapiPath(ge=1)],
     ) -> RunStatusReport:
         """Phase-2 §5: token-gated run status, ONE outbound GET on explicit
-        human action (precedent: GET /api/pr-detail). 200 always; state —
+        human action (precedent: GET /api/pr-detail). Every valid run_id
+        (ge=1; below that FastAPI answers 422) gets a 200 whose state —
         including every token-file failure mode — lives in the body."""
         return read_api.benchmark_run_status(benchmarks_service, run_id)
 

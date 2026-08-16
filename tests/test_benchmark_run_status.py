@@ -94,10 +94,17 @@ def test_missing_and_directory_and_content_failures(tmp_path: Path) -> None:
     assert failure[0] == "token_file_unreadable"
 
 
-def test_trailing_newline_is_stripped(tmp_path: Path) -> None:
-    token, failure = read_token_file(_token_file(tmp_path, content=CANARY + "\n"))
-    assert failure is None
-    assert token == CANARY
+def test_trailing_whitespace_is_stripped_leading_refuses(tmp_path: Path) -> None:
+    # Spec §3.3: trailing whitespace (incl. extra blank lines) is stripped;
+    # LEADING whitespace is not silently "fixed" — a token the operator
+    # never wrote must not be sent.
+    for content in (CANARY + "\n", CANARY + "\n\n", CANARY + " \n"):
+        token, failure = read_token_file(_token_file(tmp_path, content=content))
+        assert failure is None, repr(content)
+        assert token == CANARY
+    token, failure = read_token_file(_token_file(tmp_path, content=" " + CANARY))
+    assert token is None and failure is not None
+    assert failure[0] == "token_file_unreadable"
 
 
 # ---- classification (§5 table) ---------------------------------------------

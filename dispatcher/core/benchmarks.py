@@ -298,7 +298,11 @@ def read_token_file(path: Path) -> tuple[str, None] | tuple[None, _TokenFailure]
             "token_file_unreadable",
             _one_line(f"{type(err).__name__} reading token file: {path}"),
         )
-    token = text.strip()
+    # Spec §3.3 verbatim: exactly one non-empty line after stripping
+    # TRAILING whitespace only. rstrip (not strip) is load-bearing: a
+    # leading space would survive into the token and must refuse below —
+    # silently "fixing" it would send a token the operator never wrote.
+    token = text.rstrip()
     if not token or any(ch.isspace() for ch in token):
         return None, (
             "token_file_unreadable",

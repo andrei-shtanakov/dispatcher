@@ -64,6 +64,44 @@ def test_pinned_txt_names_the_same_commit() -> None:
     assert match.group(1) == PRODUCER_COMMIT
 
 
+def test_prune_fails_loudly_on_an_undefined_security_scheme() -> None:
+    """A kept operation naming a scheme absent from securitySchemes means
+    the producer moved the surface — the prune must die diagnosably, never
+    emit a dangling document (Copilot review PR #151)."""
+    from typing import Any
+
+    import pytest
+    from prune_atp_openapi import KEPT_PATHS, prune
+
+    schemes: dict[str, Any] = {}
+    paths: dict[str, Any] = {
+        p: {"get": {"responses": {"200": {"description": "ok"}}}} for p in KEPT_PATHS
+    }
+    paths[KEPT_PATHS[-1]]["get"]["security"] = [{"GhostScheme": []}]
+    full: dict[str, Any] = {
+        "openapi": "3.1.0",
+        "info": {"title": "t", "version": "1"},
+        "paths": paths,
+        "components": {"schemas": {}, "securitySchemes": schemes},
+    }
+    with pytest.raises(SystemExit, match="GhostScheme"):
+        prune(full)
+    schemes["GhostScheme"] = {"type": "http"}
+    pruned = prune(full)
+    assert pruned["components"]["securitySchemes"] == {"GhostScheme": {"type": "http"}}
+
+
+def test_vendored_openapi_names_no_undefined_security_scheme() -> None:
+    """The shipped pruned document itself must not dangle."""
+    import json
+
+    doc = json.loads((VENDORED_ROOT / "openapi.json").read_text())
+    defined = set(doc.get("components", {}).get("securitySchemes", {}))
+    for entry in doc["paths"].values():
+        for requirement in entry["get"].get("security", []):
+            assert set(requirement) <= defined
+
+
 def test_the_expected_surface_is_present() -> None:
     """The openapi.json + fixtures are what `dispatcher.core.benchmarks`
     stands on; a re-vendor that gained or lost a file must fail here, not
