@@ -11,18 +11,22 @@ from __future__ import annotations
 import threading
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Callable
 
 from dispatcher.core.benchmarks import (
     BenchmarksReport,
     BenchmarksStatus,
+    RunStatusReport,
     fetch_report,
+    fetch_run_status,
     initial_report,
 )
 
 _FETCH_MIN_INTERVAL_SECONDS = 60.0
 
 Fetcher = Callable[[str], BenchmarksReport]
+RunStatusFetcher = Callable[[str | None, int, Path | None], RunStatusReport]
 
 
 def _one_line(text: str) -> str:
@@ -32,9 +36,21 @@ def _one_line(text: str) -> str:
 class BenchmarkService:
     """Thread-safe cached report + at-most-one background fetch run."""
 
-    def __init__(self, base_url: str, *, fetcher: Fetcher = fetch_report) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        token_file: Path | None = None,
+        fetcher: Fetcher = fetch_report,
+        run_status_fetcher: RunStatusFetcher = fetch_run_status,
+    ) -> None:
         self._base_url = base_url
+        # Phase 2: the PATH to the token, never the token — the file is
+        # read per request inside fetch_run_status (rotation needs no
+        # restart, no long-lived object holds the secret).
+        self._token_file = token_file
         self._fetcher = fetcher
+        self._run_status_fetcher = run_status_fetcher
         self._lock = threading.Lock()
         self._report: BenchmarksReport = initial_report(base_url)
         self._fetch_thread: threading.Thread | None = None
@@ -64,6 +80,12 @@ class BenchmarkService:
         self._fetch_monotonic = now
         self._fetch_thread = threading.Thread(target=self._fetch_run, daemon=True)
         self._fetch_thread.start()
+
+    def run_status(self, run_id: int) -> RunStatusReport:
+        """Phase-2 §5: synchronous click-driven fetch; stateless — no cache
+        tier, no lock, and the periodic background cycle never calls this
+        (the secret must not ride an unattended loop)."""
+        return self._run_status_fetcher(self._base_url, run_id, self._token_file)
 
     def wait_for_fetch(self, timeout: float | None = None) -> bool:
         """Block until the background run finishes (tests); True if idle."""

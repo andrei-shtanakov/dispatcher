@@ -73,4 +73,6 @@ def test_the_expected_surface_is_present() -> None:
         "fixtures/benchmarks.json",
         "fixtures/leaderboard.json",
         "fixtures/leaderboard-empty.json",
+        "fixtures/run-status-completed.json",
+        "fixtures/run-status-in-progress.json",
     }

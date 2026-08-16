@@ -1837,3 +1837,44 @@ async def test_benchmarks_route_serves_injected_service_report(
     body = resp.json()
     assert body["report"]["status"] == "unavailable"
     assert body["report"]["url"] == "http://atp.test"
+
+
+async def test_run_status_unconfigured_shape_is_pinned(tmp_path: Path) -> None:
+    """Phase-2 §5/§6: no [benchmarks].url → the exact wire body; 200 always."""
+    async with _client(tmp_path) as client:
+        resp = await client.get("/api/benchmarks/runs/9")
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "status": "unconfigured",
+        "run_id": 9,
+        "fetched_at": None,
+        "error": "no [benchmarks].url configured",
+        "run": None,
+    }
+
+
+async def test_run_status_rejects_non_positive_run_id(tmp_path: Path) -> None:
+    async with _client(tmp_path) as client:
+        resp = await client.get("/api/benchmarks/runs/0")
+    assert resp.status_code == 422
+
+
+async def test_run_status_route_passes_through_the_service(tmp_path: Path) -> None:
+    from dispatcher.core.benchmark_service import BenchmarkService
+    from dispatcher.core.benchmarks import fetch_run_status, initial_report
+
+    service = BenchmarkService(
+        "http://atp.test",
+        fetcher=lambda url: initial_report(url),
+        run_status_fetcher=lambda url, run_id, tf: fetch_run_status(url, run_id, None),
+    )
+    make_atp(tmp_path)
+    config = DispatcherConfig(roots=(tmp_path,), maestro_db=make_maestro_home(tmp_path))
+    app = create_app(config, benchmark_service=service)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/benchmarks/runs/5")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "token_unconfigured"
+    assert body["run_id"] == 5

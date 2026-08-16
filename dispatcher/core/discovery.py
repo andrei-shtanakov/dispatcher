@@ -43,6 +43,9 @@ class DispatcherConfig:
     # Base URL of one ATP eco server (spec 2026-08-15 §3). None → the
     # benchmark view is off: no service, hidden panel, "unconfigured" report.
     benchmarks_url: str | None = None
+    # PATH to the ATP user-token file (phase-2 spec 2026-08-16 §3) — the
+    # config never carries the token itself. None → run-status is off.
+    benchmarks_token_file: Path | None = None
 
     @property
     def effective_maestro_home(self) -> Path:
@@ -103,6 +106,27 @@ def load_config(config_path: Path | None = None) -> DispatcherConfig:
         raise ValueError(f"[benchmarks] must be a TOML table, got: {raw_benchmarks!r}")
     raw_url = raw_benchmarks.get("url")
     benchmarks_url = _validate_benchmarks_url(raw_url) if raw_url is not None else None
+    if "token" in raw_benchmarks:
+        # Phase-2 §3: dispatcher.toml must stay secret-free — an inline
+        # token must fail loudly, not work quietly.
+        raise ValueError(
+            "[benchmarks].token is not a config key: dispatcher.toml never "
+            "carries the secret itself — put the token in a 0600 file and "
+            "point [benchmarks].token_file at it"
+        )
+    raw_token_file = raw_benchmarks.get("token_file")
+    if raw_token_file is not None and not isinstance(raw_token_file, str):
+        raise ValueError(
+            f"[benchmarks].token_file must be a string path, got: {raw_token_file!r}"
+        )
+    benchmarks_token_file = (
+        Path(raw_token_file).expanduser() if raw_token_file else None
+    )
+    if benchmarks_token_file is not None and benchmarks_url is None:
+        raise ValueError(
+            "[benchmarks].token_file without [benchmarks].url is a "
+            "misconfiguration: a token with nothing to spend it on"
+        )
     return DispatcherConfig(
         roots=roots,
         maestro_db=maestro_db,
@@ -112,6 +136,7 @@ def load_config(config_path: Path | None = None) -> DispatcherConfig:
         tracking_file=tracking_file,
         suggest_claude_cli=suggest_claude_cli,
         benchmarks_url=benchmarks_url,
+        benchmarks_token_file=benchmarks_token_file,
     )
 
 

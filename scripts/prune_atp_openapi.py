@@ -1,8 +1,10 @@
 """Prune an ATP eco openapi.json to the surface dispatcher consumes.
 
-Spec §9: keep exactly the two consumed GET paths and the component schemas
-they transitively reference; write canonical bytes (sorted keys, indent 2,
-trailing newline) so upstream-drift can compare file digests directly.
+Phase-1 spec §9 + phase-2 spec §8: keep exactly the consumed GET paths,
+the component schemas they transitively reference, and the security
+schemes the kept operations name; write canonical bytes (sorted keys,
+indent 2, trailing newline) so upstream-drift can compare file digests
+directly.
 
 Usage: prune_atp_openapi.py <full-openapi.json> <out-pruned.json>
 """
@@ -16,6 +18,7 @@ from typing import Any
 KEPT_PATHS = (
     "/api/v1/benchmarks",
     "/api/v1/benchmarks/{benchmark_id}/leaderboard",
+    "/api/v1/runs/{run_id}/status",
 )
 
 
@@ -54,11 +57,23 @@ def prune(full: dict[str, Any]) -> dict[str, Any]:
             continue
         kept.add(name)
         _collect_refs(schemas[name], frontier)
+    components: dict[str, Any] = {"schemas": {n: schemas[n] for n in sorted(kept)}}
+    # Security requirement objects name schemes by key, not by $ref — carry
+    # the named securitySchemes so the pruned document does not dangle
+    # (phase-2: the run-status operation is Bearer-gated).
+    scheme_names: set[str] = set()
+    for entry in paths.values():
+        for requirement in entry["get"].get("security", []):
+            scheme_names.update(requirement)
+    all_schemes: dict[str, Any] = full.get("components", {}).get("securitySchemes", {})
+    kept_schemes = {n: all_schemes[n] for n in sorted(scheme_names & set(all_schemes))}
+    if kept_schemes:
+        components["securitySchemes"] = kept_schemes
     return {
         "openapi": full["openapi"],
         "info": {"title": full["info"]["title"], "version": full["info"]["version"]},
         "paths": paths,
-        "components": {"schemas": {n: schemas[n] for n in sorted(kept)}},
+        "components": components,
     }
 
 

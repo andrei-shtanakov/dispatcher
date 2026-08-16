@@ -1,15 +1,24 @@
 """ATP benchmark read model: fetch cycle + fail-closed classification.
 
-Spec: docs/superpowers/specs/2026-08-15-atp-benchmark-view-design.md
-(§4 models, §5 time semantics, §6 client rules). Phase 1 consumes only the
-public eco-server surface — GET /api/v1/benchmarks and
+Phase 1 (spec 2026-08-15: §4 models, §5 time semantics, §6 client rules)
+consumes the public eco-server surface — GET /api/v1/benchmarks and
 GET /api/v1/benchmarks/{id}/leaderboard — with no tokens anywhere.
+
+Phase 2 (spec 2026-08-16-atp-benchmark-run-status-design.md) adds the
+token-gated GET /api/v1/runs/{id}/status: a single synchronous
+click-driven fetch. The token is dispatcher's first stored secret — read
+per request from `[benchmarks].token_file` under the §3 fail-closed rules,
+sent only in the Authorization header, and never echoed into any report,
+error line or log (pinned by the canary test).
 """
 
 from __future__ import annotations
 
+import os
+import stat
 from datetime import UTC, datetime
-from typing import Literal
+from pathlib import Path
+from typing import Any, Literal
 from urllib.parse import quote
 
 import httpx
@@ -79,6 +88,55 @@ class BenchmarksStatus(BaseModel):
 
     report: BenchmarksReport
     fetch_in_flight: bool
+
+
+class RunStatusInfo(BaseModel):
+    """Mirror of ATP `RunStatusResponse` (phase-2 §6).
+
+    `status` is the producer's own vocabulary passed through verbatim —
+    the run's lifecycle is the producer's judgment; the report classifies
+    only our read of it. `completed_tasks` is deliberately not mirrored
+    (§2 non-goals); `extra="ignore"` drops it.
+    """
+
+    model_config = _STRICT
+
+    id: int
+    status: str
+    current_task_index: int
+    tasks_count: int
+    total_score: float | None
+    score_semantics: dict[str, Any]
+    score_components: dict[str, Any]
+
+
+RunStatusStatusLiteral = Literal[
+    "unconfigured",
+    "token_unconfigured",
+    "token_file_missing",
+    "token_file_insecure",
+    "token_file_unreadable",
+    "unauthorized",
+    "not_found",
+    "unavailable",
+    "unreadable",
+    "ok",
+]
+
+
+class RunStatusReport(BaseModel):
+    """The wire report of GET /api/benchmarks/runs/{run_id} (phase-2 §6).
+
+    `fetched_at` is null exactly for the config/token states where no
+    request was made; `error` is set iff status != "ok" (config/token
+    states carry the human-readable reason there too).
+    """
+
+    status: RunStatusStatusLiteral
+    run_id: int
+    fetched_at: datetime | None
+    error: str | None
+    run: RunStatusInfo | None = None
 
 
 _BENCHMARKS_ADAPTER = TypeAdapter(list[BenchmarkInfo])
@@ -194,3 +252,144 @@ def fetch_report(
         return done(
             status="ok", error=None, benchmarks=benchmarks, leaderboards=leaderboards
         )
+
+
+_TokenFailure = tuple[str, str]  # (RunStatusStatusLiteral value, one-line reason)
+
+
+def read_token_file(path: Path) -> tuple[str, None] | tuple[None, _TokenFailure]:
+    """Read the ATP token under the phase-2 §3 fail-closed rules.
+
+    lstat, not stat: a symlink is rejected outright — the permission gate
+    is ambiguous through a link (the link's own mode is 0777; gating the
+    target invites a check-vs-open race), and a token reached through a
+    symlink into a dotfiles checkout is the layout this design must not
+    encourage. Every refusal names the mode/path, never the content.
+    """
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return None, ("token_file_missing", f"token file does not exist: {path}")
+    except OSError as err:
+        return None, (
+            "token_file_unreadable",
+            _one_line(f"{type(err).__name__} stat-ing token file: {path}"),
+        )
+    if stat.S_ISLNK(st.st_mode):
+        return None, (
+            "token_file_insecure",
+            f"token file is a symlink: {path} — use a regular file",
+        )
+    if not stat.S_ISREG(st.st_mode):
+        return None, (
+            "token_file_unreadable",
+            f"token file is not a regular file: {path}",
+        )
+    mode = stat.S_IMODE(st.st_mode)
+    if mode & 0o077:
+        return None, (
+            "token_file_insecure",
+            f"token file is group/other-accessible (0{mode:o}): {path} — chmod 600",
+        )
+    try:
+        text = path.read_text()
+    except OSError as err:
+        return None, (
+            "token_file_unreadable",
+            _one_line(f"{type(err).__name__} reading token file: {path}"),
+        )
+    token = text.strip()
+    if not token or any(ch.isspace() for ch in token):
+        return None, (
+            "token_file_unreadable",
+            f"token file must hold exactly one non-empty line: {path}",
+        )
+    return token, None
+
+
+def fetch_run_status(
+    base_url: str | None,
+    run_id: int,
+    token_file: Path | None,
+    *,
+    transport: httpx.BaseTransport | None = None,
+) -> RunStatusReport:
+    """One synchronous, click-driven, token-gated GET (phase-2 §5).
+
+    The token travels only in the Authorization header; redirects stay
+    disabled so the header cannot travel anywhere but the configured
+    server. Error lines carry status code / exception class / URL only —
+    never a response body and never the token (canary-pinned).
+    """
+
+    def done(
+        status: str,
+        *,
+        error: str | None = None,
+        run: RunStatusInfo | None = None,
+        fetched: bool = True,
+    ) -> RunStatusReport:
+        return RunStatusReport(
+            status=status,  # type: ignore[arg-type]
+            run_id=run_id,
+            fetched_at=datetime.now(UTC) if fetched else None,
+            error=error,
+            run=run,
+        )
+
+    if base_url is None:
+        return done(
+            "unconfigured", error="no [benchmarks].url configured", fetched=False
+        )
+    if token_file is None:
+        return done(
+            "token_unconfigured",
+            error="no [benchmarks].token_file configured",
+            fetched=False,
+        )
+    token, failure = read_token_file(token_file)
+    if failure is not None:
+        status, reason = failure
+        return done(status, error=reason, fetched=False)
+    segment = quote(str(int(run_id)), safe="")
+    url = f"{base_url}/api/v1/runs/{segment}/status"
+    with httpx.Client(
+        timeout=_TIMEOUT_SECONDS, follow_redirects=False, transport=transport
+    ) as client:
+        try:
+            resp = client.get(url, headers={"Authorization": f"Bearer {token}"})
+        except httpx.HTTPError as err:
+            return done(
+                "unavailable",
+                error=_one_line(f"{type(err).__name__}: {err} ({url})"),
+            )
+    if resp.status_code in (401, 403):
+        return done(
+            "unauthorized",
+            error=_one_line(f"HTTP {resp.status_code} ({url}) — token rejected"),
+        )
+    if resp.status_code == 404:
+        # The producer deliberately conflates a missing run and another
+        # owner's run (anti-enumeration); the honest rendering keeps both.
+        return done(
+            "not_found",
+            error=_one_line(
+                f"HTTP 404 ({url}) — run not found, or not owned by this token"
+            ),
+        )
+    if resp.status_code // 100 != 2:
+        return done("unavailable", error=_one_line(f"HTTP {resp.status_code} ({url})"))
+    try:
+        payload = resp.json()
+    except ValueError:
+        return done("unreadable", error=_one_line(f"response is not JSON ({url})"))
+    try:
+        run = RunStatusInfo.model_validate(payload)
+    except ValidationError as err:
+        return done(
+            "unreadable",
+            error=_one_line(
+                f"run status failed validation: {err.error_count()} error(s)"
+            ),
+        )
+    return done("ok", run=run)

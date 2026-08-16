@@ -1,8 +1,11 @@
 # Runbook: re-vendor `atp-benchmark-api/v1`
 
 Canonical procedure for moving dispatcher's vendored copy of the ATP eco
-server's openapi surface — pruned to the two `GET` paths
-`dispatcher.core.benchmarks` consumes — to a new producer commit. The copy
+server's openapi surface — pruned to the `GET` paths
+`dispatcher.core.benchmarks` consumes (`KEPT_PATHS` in
+`scripts/prune_atp_openapi.py` is the authoritative list; since phase 2 it
+includes the token-gated `/api/v1/runs/{run_id}/status`) — to a new
+producer commit. The copy
 was first created by this same script (2026-08-15, spec
 `docs/superpowers/specs/2026-08-15-atp-benchmark-view-design.md`); there is
 no separate creation document to consult.
@@ -88,8 +91,9 @@ checkout, verifies the worktree's `HEAD` is exactly that commit, boots the
 eco app (`ATP_SERVER_PROFILE=eco`, a fixed placeholder `ATP_SECRET_KEY` —
 schema generation touches no database and no real secret) and calls
 `create_app().openapi()`, prunes the result with
-`scripts/prune_atp_openapi.py` to the two consumed `GET` paths and their
-transitively-referenced component schemas, carries the existing
+`scripts/prune_atp_openapi.py` to the consumed `GET` paths, their
+transitively-referenced component schemas and the security schemes the
+kept operations name, carries the existing
 `fixtures/*.json` over unchanged, regenerates `manifest.json` from the same
 SHA (via `scripts/vendor_manifest.py --contract atp-benchmark-api
 --contract-version 1`), checks the manifest records that SHA and its
