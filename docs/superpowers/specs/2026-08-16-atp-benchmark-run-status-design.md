@@ -77,9 +77,14 @@ token_file = "~/.config/dispatcher/atp-token"
 
 **Read rules (fail-closed, pinned by tests):**
 
-1. Must be a regular file (no symlink following surprises are attempted
-   beyond `Path.read_text` semantics; a directory/absent path is a distinct
-   error state).
+1. Must be a regular file **by `lstat`** (`S_ISREG` on the unfollowed
+   path): symlinks are **rejected**, classified `token_file_insecure`. Two
+   reasons, both load-bearing: the §3.2 permission gate is ambiguous
+   through a link (the link's own mode is 0777; gating the target invites
+   a check-vs-open race), and a token reached through a symlink into a
+   dotfiles checkout is exactly the layout this design must not
+   encourage. An absent path is `token_file_missing`; a
+   directory/other-non-regular is `token_file_unreadable`.
 2. Permission gate: `stat.S_IMODE & 0o077 == 0` — group/other access of any
    kind refuses the token (`token_file_insecure`), same spirit as SSH key
    handling. Refusal message names the mode, never the content.
@@ -229,7 +234,9 @@ same commit this spec was verified against).
 ## 9. Testing
 
 - **Token-file gate units**: each §3 failure mode; the permission gate at
-  0600/0400 (pass) vs 0640/0604/0644 (refuse); single-line rule.
+  0600/0400 (pass) vs 0640/0604/0644 (refuse); a symlink to an otherwise
+  valid 0600 file refuses (`token_file_insecure` — the lstat rule, not the
+  target's mode); single-line rule.
 - **Canary test (the secrecy pin)**: a fixture token; run every state the
   service can produce (mock transport for 200/401/404/500/garbage/refused);
   assert the canary substring appears in **no** serialized report and no
