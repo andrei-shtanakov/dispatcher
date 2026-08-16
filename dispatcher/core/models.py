@@ -48,6 +48,25 @@ class TaskInfo(BaseModel):
     source: str
 
 
+class OrchestrationRunInfo(BaseModel):
+    """One Maestro orchestration run (per-project, per-run state layout).
+
+    `status` is fail-closed (#147): `running` requires positive evidence
+    (holder sidecar + live pid); a run with no terminal record is
+    `interrupted`, never in-progress. Vocabulary: running | interrupted |
+    suspended | completed | cancelled | superseded | failed | legacy |
+    unreadable.
+    """
+
+    repo_key: str  # "<host>/<owner>/<repo>", "_local/<name>", or "legacy"
+    run_id: str | None = None  # runs/<id> directory name; None: legacy db
+    status: str
+    started_at: str | None = None
+    ended_at: str | None = None
+    reason: str | None = None
+    source: str
+
+
 class TestRunSummary(BaseModel):
     """A test/benchmark run result."""
 
@@ -131,6 +150,7 @@ class ProjectSnapshot(BaseModel):
     schema_versions: list[SchemaVersionCheck] = Field(default_factory=list)
     models: list[ModelInUse] = Field(default_factory=list)
     tasks: list[TaskInfo] = Field(default_factory=list)
+    runs: list[OrchestrationRunInfo] = Field(default_factory=list)
     test_results: list[TestRunSummary] = Field(default_factory=list)
     configs: list[ConfigSummary] = Field(default_factory=list)
     errors: list[ErrorEvent] = Field(default_factory=list)

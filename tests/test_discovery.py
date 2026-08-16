@@ -39,6 +39,22 @@ def test_load_config_defaults(tmp_path: Path) -> None:
     assert conf.maestro_db.name == "maestro.db"
 
 
+def test_load_config_maestro_home(tmp_path: Path) -> None:
+    cfg = tmp_path / "dispatcher.toml"
+    cfg.write_text(f'roots = ["{tmp_path}"]\nmaestro_home = "{tmp_path}/mh"\n')
+    conf = load_config(cfg)
+    assert conf.maestro_home == tmp_path / "mh"
+    assert conf.effective_maestro_home == tmp_path / "mh"
+
+
+def test_maestro_home_defaults_beside_legacy_db(tmp_path: Path) -> None:
+    # Hermeticity: a config (or test) that only sets maestro_db must never
+    # make the collector enumerate the real ~/.maestro/projects.
+    conf = DispatcherConfig(roots=(tmp_path,), maestro_db=tmp_path / "m" / "x.db")
+    assert conf.maestro_home is None
+    assert conf.effective_maestro_home == tmp_path / "m"
+
+
 def test_discover_finds_projects(tmp_path: Path) -> None:
     make_arbiter(tmp_path)
     make_spec_runner(tmp_path)

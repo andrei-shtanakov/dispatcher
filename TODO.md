@@ -201,6 +201,33 @@
       стабильными error-codes; правило нулевых состояний переносится
       кросс-поверхностно как есть (уверенный «0» — только при ok).
 
+## Maestro state (per-project run DBs)
+
+- [x] Maestro per-project run DBs: коллектор перечисляет `~/.maestro/projects/**/runs/<id>/state.db` вместо одного пути, fail-closed статусы ранов, legacy-файл помечен — PR #148 @owner:github:andrei-shtanakov @id:maestro-per-project-run-dbs
+      Принятие inbox-issue #147 от maestro (ADR-ECO-006). Продюсерская сторона
+      уже приземлилась (maestro `a4caef0`, спека
+      `2026-08-15-maestro-state-layout-design.md` rev 3) — текст issue
+      (`runs/<run-id>.db`) устарел относительно неё: ран — **директория**
+      (`runs/<id>/state.db`), `_local`-ключи двухсегментные. Load-bearing
+      пункт: ран без терминальной записи — `interrupted`, никогда не
+      «running»; `running` только по позитивному свидетельству
+      (`orchestrate.holder` + живой pid — осознанное ужесточение
+      относительно holder-only `resolve_runs` самого maestro: holder
+      переживает SIGKILL; пробовать сам flock нельзя — это взятие лока
+      read-плоскостью). `unreadable` ≠ `legacy` (§D: видимый ран обязан
+      нести run row). Новое аддитивное поле `ProjectSnapshot.runs`;
+      конфиг-ключ `maestro_home` (дефолт — родитель `maestro_db`,
+      герметичность тестов). Спека:
+      `docs/superpowers/specs/2026-08-16-maestro-per-project-run-dbs-design.md`.
+- [ ] Runs-панель: рендер `ProjectSnapshot.runs` на web/TUI/VSCode + MCP-паритет @owner:github:andrei-shtanakov @id:maestro-runs-panel-parity
+      Follow-up #147/PR #148 по цепочечному прецеденту atp-benchmark-view
+      (#144 core → #145 web → parity). Поле уже отдаётся
+      `GET /api/projects/{name}` и MCP-passthrough; задачи newest-ранa уже
+      видны в существующих tasks-секциях. Панель должна показывать статус
+      ранов (`interrupted`/`suspended`/`running`/terminal/`legacy`/
+      `unreadable`) per repo_key; правило нулевых состояний — уверенный
+      «0 runs» только при читаемом `projects/`-дереве без warnings.
+
 ## Кросс-репные контракты
 
 - [x] Вендор steward gate-catalog v1: пиненая копия `profiles/gate-catalog.yaml` + канонический словарь obligation в governance-коллекторе — PR #126 @owner:github:andrei-shtanakov @id:vendor-gate-catalog

@@ -47,6 +47,71 @@ def _db(path: Path, script: str) -> None:
     conn.close()
 
 
+def make_maestro_run(
+    home: Path,
+    repo_parts: tuple[str, ...],
+    run_id: str,
+    *,
+    started_at: str,
+    outcome: str | None = None,
+    ended_at: str | None = None,
+    suspended_at: str | None = None,
+    with_run_row: bool = True,
+    task_id: str | None = None,
+) -> Path:
+    """A per-run `state.db` under `<home>/projects/<...>/runs/<run_id>/`.
+
+    `repo_parts` mirrors maestro's `RepoKey.as_path_parts()`: three segments
+    for a remote key, two (`("_local", "<name>-<hash>")`) for a local one.
+    Returns the state.db path.
+    """
+    db = home.joinpath("projects", *repo_parts, "runs", run_id, "state.db")
+    quoted_or_null = [
+        "NULL" if v is None else f"'{v}'" for v in (outcome, ended_at, suspended_at)
+    ]
+    row = (
+        f"INSERT INTO run VALUES ('{run_id}', '{'/'.join(repo_parts)}', "
+        f"'{started_at}', {quoted_or_null[0]}, {quoted_or_null[1]}, NULL, "
+        f"{quoted_or_null[2]}, NULL, 1);"
+        if with_run_row
+        else ""
+    )
+    task = (
+        f"INSERT INTO tasks VALUES ('{task_id}', 'Run task', 'in_progress', "
+        f"'claude_code', '{started_at}', '{started_at}', NULL);"
+        if task_id is not None
+        else ""
+    )
+    _db(
+        db,
+        f"""
+        CREATE TABLE run (
+            run_id TEXT PRIMARY KEY, repo_key TEXT NOT NULL,
+            started_at TEXT NOT NULL, outcome TEXT, ended_at TEXT,
+            reason TEXT, suspended_at TEXT, suspend_reason TEXT,
+            singleton INTEGER NOT NULL DEFAULT 1);
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY, title TEXT, status TEXT, agent_type TEXT,
+            created_at TEXT, started_at TEXT, completed_at TEXT);
+        CREATE TABLE task_costs (
+            id INTEGER PRIMARY KEY, task_id TEXT, estimated_cost_usd REAL);
+        {row}
+        {task}
+        """,
+    )
+    return db
+
+
+def write_holder(
+    home: Path, repo_parts: tuple[str, ...], run_id: str, pid: int
+) -> Path:
+    """The `orchestrate.holder` sidecar maestro writes under the held lock."""
+    path = home.joinpath("projects", *repo_parts, "locks", "orchestrate.holder")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"pid": pid, "run_id": run_id}))
+    return path
+
+
 def write_otel_error_log(project_root: Path) -> None:
     """One run dir with one ERROR record.
 
