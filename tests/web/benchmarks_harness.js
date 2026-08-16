@@ -295,6 +295,30 @@ testCase('clicking a benchmark with an unavailable leaderboard: «leaderboard un
     'a failed leaderboard fetch must not read as a confident zero');
 });
 
+testCase('a selected benchmark with NO leaderboard entry: unknown, not empty', async () => {
+  // Zero-state rule (Copilot review PR #153): an empty box after selecting
+  // a benchmark reads like «0 entries» — a missing entry must say unknown.
+  const NO_LB_ENTRY = {
+    fetch_in_flight: false,
+    report: {
+      status: 'ok', url: 'https://bench.example/api',
+      fetched_at: '2026-08-15T10:00:00Z', error: null,
+      benchmarks: [BENCH],
+      leaderboards: {},
+    },
+  };
+  const env = await boot(() => ok(NO_LB_ENTRY));
+  const btn = env.document.querySelector('#benchmarks-list button[data-bench]');
+  if (!btn) throw new Error('no benchmark button rendered');
+  await Promise.all(dispatch(btn, 'click'));
+  await drain();
+  const boxText = textOf(env, 'benchmarks-leaderboard');
+  check(boxText.includes('leaderboard unknown'),
+    `missing entry says leaderboard unknown (got: ${boxText})`);
+  check(!boxText.includes('0 entries'),
+    'a missing leaderboard entry must not read as a confident zero');
+});
+
 testCase('a hostile benchmark name arrives escaped, no element created', async () => {
   const env = await boot(() => ok(OK_HOSTILE_NAME));
   const list = env.document.getElementById('benchmarks-list');

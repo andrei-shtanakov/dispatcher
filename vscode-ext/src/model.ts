@@ -330,7 +330,9 @@ export function benchmarkChildNodes(
     return [
       {
         kind: "state",
-        text: `leaderboard unknown (${lb.status}): ${lb.error ?? ""}`,
+        text:
+          `leaderboard unknown (${lb.status})` +
+          (lb.error ? `: ${lb.error}` : ""),
         warn: true,
       },
     ];

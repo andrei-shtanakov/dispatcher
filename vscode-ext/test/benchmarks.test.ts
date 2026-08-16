@@ -107,6 +107,15 @@ describe("benchmarkChildNodes", () => {
     expect(text).not.toContain("0 entries");
   });
 
+  it("a null error carries no trailing colon (Copilot review PR #153)", () => {
+    const s = status({
+      benchmarks: [BENCH],
+      leaderboards: { "7": lb({ status: "unreadable", error: null }) },
+    });
+    const text = (benchmarkChildNodes(s, BENCH)[0] as { text: string }).text;
+    expect(text).toBe("leaderboard unknown (unreadable)");
+  });
+
   it("a missing leaderboard entry is unknown, not empty", () => {
     const s = status({ benchmarks: [BENCH] });
     expect(benchmarkChildNodes(s, BENCH)).toEqual([

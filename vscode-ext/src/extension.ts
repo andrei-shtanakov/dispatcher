@@ -76,6 +76,14 @@ export function activate(context: vscode.ExtensionContext): void {
   const roadmap = new RoadmapProvider();
   const sync = new SyncProvider();
   const benchmarks = new BenchmarksProvider();
+  // Visibility starts TRUE: unknown ≠ «feature off». If the very first
+  // poll fails, the view stays visible with the offline node; only an
+  // explicit `unconfigured` response hides it (Copilot review PR #153).
+  void vscode.commands.executeCommand(
+    "setContext",
+    "dispatcher.benchmarksConfigured",
+    true,
+  );
   const status = createStatusBar();
 
   let polling = false;
@@ -98,6 +106,7 @@ export function activate(context: vscode.ExtensionContext): void {
         errors.setData(null);
         roadmap.setData(null);
         sync.setData(null);
+        benchmarks.setData(null);
         status.update(null);
         await server.ensureRunning();
         return;

@@ -667,11 +667,17 @@ class DispatcherApp(App[None]):
             return
         state = self._benchmarks.report.leaderboards.get(bench_id)
         if state is None:
+            # A benchmark with no leaderboard entry is unknown, not an
+            # empty table that reads like «0 entries» (zero-state rule).
+            table.add_row(
+                Text("leaderboard unknown", style="bold yellow"), "—", "—", "—"
+            )
             return
         if state.status != "ok":
             table.add_row(
                 Text(
-                    f"leaderboard unknown ({state.status}): {state.error or ''}",
+                    f"leaderboard unknown ({state.status})"
+                    + (f": {state.error}" if state.error else ""),
                     style="bold yellow",
                 ),
                 "—",

@@ -1296,3 +1296,15 @@ async def test_benchmarks_zero_states_are_confident_only_on_ok(
         cell = str(lb_table.get_row_at(0)[0])
         assert "leaderboard unknown (unavailable)" in cell
         assert "0 entries" not in cell
+
+    # A benchmark with NO leaderboard entry at all is unknown too — an
+    # empty table would read like «0 entries» (Copilot review PR #153).
+    app3 = _bench_app(
+        tmp_path / "c", _bench_service(_ok_report([bench], {}))
+    )
+    (tmp_path / "c").mkdir(exist_ok=True)
+    async with app3.run_test() as pilot:
+        await _settled(app3, pilot)
+        lb_table = app3.query_one("#benchmark-lb-table", DataTable)
+        assert lb_table.row_count == 1
+        assert "leaderboard unknown" in str(lb_table.get_row_at(0)[0])
