@@ -81,11 +81,11 @@ class MaestroCollector:
         """Enumerate per-project run DBs; returns freshness sources."""
         if home is None:
             return []
+        # No is_dir() guard: an ABSENT projects/ is normal (Maestro has not
+        # run since the layout change) and reads as clean-zero inside
+        # _subdirs; an UNREADABLE one must warn there, and is_dir() would
+        # swallow that stat error into a silent zero.
         projects = home / "projects"
-        if not projects.is_dir():
-            # Normal on a machine where Maestro has not run since the layout
-            # change — zero runs render as zero runs, not as a warning.
-            return []
         sources: list[Path] = []
         for repo_key, project_dir in _project_dirs(projects, snap):
             holder = _holder_run_id(project_dir / "locks")
@@ -212,11 +212,15 @@ def _subdirs(path: Path, snap: ProjectSnapshot | None = None) -> list[Path]:
     """List subdirectories; an unreadable directory must WARN, not read as
     empty — a silently swallowed OSError here is how «0 runs» would lie
     (the `runs `/`run ` warning prefixes are the surfaces' degradation
-    signal — see the prefix pin in tests/test_maestro.py)."""
-    if not path.is_dir():
-        return []
+    signal — see the prefix pin in tests/test_maestro.py).
+
+    No `is_dir()` pre-check on purpose: it swallows stat errors into
+    False, which would reintroduce exactly that silent zero. Only a
+    genuinely absent path is clean-empty; every other OSError warns."""
     try:
         return sorted(d for d in path.iterdir() if d.is_dir())
+    except (FileNotFoundError, NotADirectoryError):
+        return []
     except OSError as err:
         if snap is not None:
             snap.warnings.append(f"runs enumeration: cannot list {path}: {err}")

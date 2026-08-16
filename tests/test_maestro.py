@@ -244,6 +244,21 @@ def test_unreadable_runs_dir_warns_never_silent_zero(tmp_path: Path) -> None:
     assert any(w.startswith("runs enumeration:") for w in snap.warnings)
 
 
+def test_stat_denied_projects_dir_warns_not_silent_zero(tmp_path: Path) -> None:
+    """Copilot review PR #149: `is_dir()` swallows stat errors into False,
+    so an unreadable HOME (no exec bit → projects/ cannot even be stat-ed)
+    read as a clean zero. Only a genuinely absent path is clean-empty."""
+    home = _maestro_home(tmp_path)
+    make_maestro_run(home, _ACME, "01Q", started_at="2026-08-12T00:00:00")
+    home.chmod(0o600)  # projects/ becomes unstat-able, not absent
+    try:
+        snap = _collect_runs(tmp_path)
+    finally:
+        home.chmod(0o700)
+    assert snap.runs == []
+    assert any(w.startswith("runs enumeration:") for w in snap.warnings)
+
+
 def test_run_warning_prefixes_are_pinned(tmp_path: Path) -> None:
     """Surfaces distinguish «degraded» from «clean zero» by the `run `/
     `runs ` warning prefixes — every enumeration/classification warning
