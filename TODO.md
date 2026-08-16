@@ -190,8 +190,16 @@
       ближайший прецедент 0600 git-ignored sidecar (`dispatcher-sync.toml`),
       решение о месте хранения токена `atp_u_*` — часть дизайна; (б) история
       обнаружения run-id (список ранов у публичной поверхности отсутствует).
-      `score_components` в статусе — отдельный пункт atp-platform/TODO.md.
+      ~~`score_components` в статусе — отдельный пункт atp-platform/TODO.md~~
+      (у продюсера уже приземлилось: `RunStatusResponse` @ `da3a264` несёт
+      `score_semantics`+`score_components` — спека фазы 2 потребляет сразу).
       Начинать со спеки; ре-вендор контракта расширит пруненный openapi.
+      Прогресс: PR-1 — спека
+      `docs/superpowers/specs/2026-08-16-atp-benchmark-run-status-design.md`
+      (token_file 0600-гейт + канарейка секретности; ручной ввод run-id по
+      прецеденту merge-gate #93; клик-driven fetch без фонового поллинга
+      секрета; словарь состояний вкл. честный `not_found` = «нет или не
+      твой»). Дальше: PR-2 re-vendor+core, PR-3 web-панель.
 
 - [ ] Parity панели Benchmarks: TUI/VSCode/MCP поверх `read_api.benchmarks` @owner:github:andrei-shtanakov @id:atp-benchmark-view-parity
       Прецедент — product-proposal parity (#138): все поверхности — тонкие
