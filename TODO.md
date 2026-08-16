@@ -208,13 +208,22 @@
       live-smoke ранбука фазой 2. MCP-тула нет и не будет без отдельного
       дизайна (X-02: тул-вызов — действие агента, не клик человека).
 
-- [ ] Parity панели Benchmarks: TUI/VSCode/MCP поверх `read_api.benchmarks` @owner:github:andrei-shtanakov @id:atp-benchmark-view-parity
+- [x] Parity панели Benchmarks: TUI/VSCode/MCP поверх `read_api.benchmarks` — PR #153 @owner:github:andrei-shtanakov @id:atp-benchmark-view-parity
       Прецедент — product-proposal parity (#138): все поверхности — тонкие
-      рендереры над той же read_api-функцией. Заготовки из финального ревью
-      #144/#145: `read_api.benchmarks` понадобится `start_fetch`-passthrough
-      (у `sync_status` он есть); MCP-тул — расширение whitelist 16→17 со
-      стабильными error-codes; правило нулевых состояний переносится
-      кросс-поверхностно как есть (уверенный «0» — только при ok).
+      рендереры над той же read_api-функцией с `start_fetch`-passthrough.
+      TUI: вкладка Benchmarks (скрыта на unconfigured — hide_tab, как web
+      скрывает секцию), таблицы список+leaderboard, статус в лейбле вкладки.
+      VSCode: view `dispatcherBenchmarks` (скрыт через when-контекст
+      `dispatcher.benchmarksConfigured`), узлы — чистые функции в model.ts
+      под vitest. MCP: whitelist 16→17, тул `benchmarks`; осознанное
+      расхождение с no-fetch паттерном sync_status — кэш BenchmarkService
+      in-memory per-process, standalone stdio-процесс с start_fetch=False
+      вечно отдавал бы «not fetched yet», поэтому тул делает kick-and-wait
+      ОДНОГО троттленного read-only GET ПУБЛИЧНОЙ поверхности; сервис MCP
+      строится без token_file (token-gated путь недоступен по построению,
+      пин отравленным fetcher'ом). Правило нулевых состояний перенесено
+      как есть: уверенный «0 benchmarks»/«0 entries» — только при ok;
+      not-fetched-yet (fetched_at+error оба null) — не failure.
 
 ## Maestro state (per-project run DBs)
 

@@ -45,6 +45,11 @@
         {
           "id": "dispatcherSync",
           "name": "Sync"
+        },
+        {
+          "id": "dispatcherBenchmarks",
+          "name": "Benchmarks",
+          "when": "dispatcher.benchmarksConfigured"
         }
       ]
     },

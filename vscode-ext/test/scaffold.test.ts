@@ -17,7 +17,14 @@ describe("manifest", () => {
       "dispatcherErrors",
       "dispatcherRoadmap",
       "dispatcherSync",
+      "dispatcherBenchmarks",
     ]);
+    // Benchmarks is the one view with a visibility condition: web hides
+    // the section on `unconfigured`, this view hides via the context key.
+    const benchmarksView = manifest.contributes.views.dispatcher.find(
+      (v: { id: string }) => v.id === "dispatcherBenchmarks",
+    );
+    expect(benchmarksView.when).toBe("dispatcher.benchmarksConfigured");
     const commands = manifest.contributes.commands.map(
       (c: { command: string }) => c.command,
     );

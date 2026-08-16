@@ -46,11 +46,11 @@ async def _settled(app: DispatcherApp, pilot) -> None:
     await pilot.pause()
 
 
-async def test_app_boots_with_seven_tabs(tmp_path: Path) -> None:
+async def test_app_boots_with_eight_tabs(tmp_path: Path) -> None:
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await _settled(app, pilot)
-        assert len(app.query(TabPane)) == 7
+        assert len(app.query(TabPane)) == 8
         for table_id in (
             "sync-table",
             "roadmap-summary-table",
@@ -60,6 +60,8 @@ async def test_app_boots_with_seven_tabs(tmp_path: Path) -> None:
             "contracts-table",
             "roadmap-table",
             "config-table",
+            "benchmarks-table",
+            "benchmark-lb-table",
         ):
             assert len(app.query_one(f"#{table_id}", DataTable).columns) > 0
 
@@ -1043,12 +1045,12 @@ def _add_config_project(tmp_path: Path) -> Path:
     return repo
 
 
-async def test_boots_with_seven_tabs_incl_config(tmp_path: Path) -> None:
+async def test_boots_with_eight_tabs_incl_config(tmp_path: Path) -> None:
     _add_config_project(tmp_path)
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await _settled(app, pilot)
-        assert len(app.query(TabPane)) == 7
+        assert len(app.query(TabPane)) == 8
         table = app.query_one("#config-table", DataTable)
         assert table.row_count == 1  # steward listed
 
@@ -1156,3 +1158,141 @@ def _app_with_config_runner(tmp_path: Path, runner) -> DispatcherApp:
         DispatcherConfig(roots=(tmp_path,), maestro_db=db),
         config_runner=runner,
     )
+
+
+# ---- Benchmarks tab (TODO atp-benchmark-view-parity) -----------------------
+
+
+def _bench_service(report):
+    """A BenchmarkService pre-warmed to a fixed report (no live fetches)."""
+    from dispatcher.core.benchmark_service import BenchmarkService
+
+    service = BenchmarkService("http://atp.test", fetcher=lambda url: report)
+    service.get()
+    assert service.wait_for_fetch(timeout=5)
+    return service
+
+
+def _ok_report(benchmarks=(), leaderboards=None):
+    from datetime import UTC, datetime
+
+    from dispatcher.core.benchmarks import BenchmarksReport
+
+    return BenchmarksReport(
+        status="ok",
+        url="http://atp.test",
+        fetched_at=datetime.now(UTC),
+        error=None,
+        benchmarks=list(benchmarks),
+        leaderboards=leaderboards or {},
+    )
+
+
+def _bench_app(tmp_path: Path, service) -> DispatcherApp:
+    make_arbiter(tmp_path)
+    return DispatcherApp(
+        DispatcherConfig(roots=(tmp_path,), maestro_db=tmp_path / "no.db"),
+        benchmark_service=service,
+    )
+
+
+async def test_benchmarks_tab_hidden_when_unconfigured(tmp_path: Path) -> None:
+    # Cross-surface rule: unconfigured HIDES the surface (web hides the
+    # section) — the tab must not sit there as an empty husk.
+    app = _app(tmp_path)  # no benchmarks service
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        tab = app.query_one(TabbedContent).get_tab("tab-benchmarks")
+        assert tab.display is False
+
+
+async def test_benchmarks_tab_renders_ok_report(tmp_path: Path) -> None:
+    from dispatcher.core.benchmarks import (
+        BenchmarkInfo,
+        LeaderboardRow,
+        LeaderboardState,
+    )
+
+    bench = BenchmarkInfo(
+        id=7,
+        name="atp-core",
+        description="d",
+        tasks_count=42,
+        tags=["core"],
+        version="1.2",
+        family_tag=None,
+        created_at="2026-08-01T00:00:00Z",
+    )
+    lb = LeaderboardState(
+        status="ok",
+        rows=[LeaderboardRow(user_id=1, agent_name="bot", best_score=0.9, run_count=3)],
+    )
+    app = _bench_app(tmp_path, _bench_service(_ok_report([bench], {"7": lb})))
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        tab = app.query_one(TabbedContent).get_tab("tab-benchmarks")
+        assert tab.display is True
+        assert "Benchmarks · ok" in str(tab.label)
+        table = app.query_one("#benchmarks-table", DataTable)
+        assert table.row_count == 1
+        assert str(table.get_row_at(0)[0]) == "atp-core"
+        lb_table = app.query_one("#benchmark-lb-table", DataTable)
+        assert lb_table.row_count == 1
+        assert str(lb_table.get_row_at(0)[0]) == "bot"
+
+
+async def test_benchmarks_non_ok_is_explicit_unknown(tmp_path: Path) -> None:
+    from datetime import UTC, datetime
+
+    from dispatcher.core.benchmarks import BenchmarksReport
+
+    report = BenchmarksReport(
+        status="unavailable",
+        url="http://atp.test",
+        fetched_at=datetime.now(UTC),
+        error="ConnectError: refused",
+    )
+    app = _bench_app(tmp_path, _bench_service(report))
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        table = app.query_one("#benchmarks-table", DataTable)
+        assert table.row_count == 1
+        cell = str(table.get_row_at(0)[0])
+        assert "benchmarks unknown: unavailable" in cell
+        assert "ConnectError" in cell
+
+
+async def test_benchmarks_zero_states_are_confident_only_on_ok(
+    tmp_path: Path,
+) -> None:
+    from dispatcher.core.benchmarks import BenchmarkInfo, LeaderboardState
+
+    bench = BenchmarkInfo(
+        id=7,
+        name="atp-core",
+        description="d",
+        tasks_count=42,
+        tags=[],
+        version="1.2",
+        family_tag=None,
+        created_at="2026-08-01T00:00:00Z",
+    )
+    empty_ok = _ok_report()
+    app = _bench_app(tmp_path, _bench_service(empty_ok))
+    async with app.run_test() as pilot:
+        await _settled(app, pilot)
+        table = app.query_one("#benchmarks-table", DataTable)
+        assert "0 benchmarks" in str(table.get_row_at(0)[0])
+
+    lb_unavailable = LeaderboardState(status="unavailable", error="timeout")
+    app2 = _bench_app(
+        tmp_path / "b",
+        _bench_service(_ok_report([bench], {"7": lb_unavailable})),
+    )
+    (tmp_path / "b").mkdir(exist_ok=True)
+    async with app2.run_test() as pilot:
+        await _settled(app2, pilot)
+        lb_table = app2.query_one("#benchmark-lb-table", DataTable)
+        cell = str(lb_table.get_row_at(0)[0])
+        assert "leaderboard unknown (unavailable)" in cell
+        assert "0 entries" not in cell

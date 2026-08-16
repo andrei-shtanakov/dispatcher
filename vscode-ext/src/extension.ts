@@ -20,6 +20,7 @@ import {
 } from "./configFlow";
 import type { FlowState } from "./configFlow";
 import {
+  BenchmarksProvider,
   ErrorsProvider,
   ProjectsProvider,
   RoadmapProvider,
@@ -74,6 +75,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const errors = new ErrorsProvider();
   const roadmap = new RoadmapProvider();
   const sync = new SyncProvider();
+  const benchmarks = new BenchmarksProvider();
   const status = createStatusBar();
 
   let polling = false;
@@ -105,11 +107,13 @@ export function activate(context: vscode.ExtensionContext): void {
       // медленный /api/sync не задерживает статус-бар и не мигает им
       status.update(overview, lastSync);
       server.markOnline();
-      const [events, roadmapData, syncData] = await Promise.allSettled([
-        api.errors(),
-        api.roadmap(),
-        api.sync(),
-      ]);
+      const [events, roadmapData, syncData, benchData] =
+        await Promise.allSettled([
+          api.errors(),
+          api.roadmap(),
+          api.sync(),
+          api.benchmarks(),
+        ]);
       errors.setData(events.status === "fulfilled" ? events.value : null);
       roadmap.setData(
         roadmapData.status === "fulfilled" ? roadmapData.value : null,
@@ -118,6 +122,20 @@ export function activate(context: vscode.ExtensionContext): void {
       // не гасит остальные вьюхи (тот же принцип, что errors/roadmap)
       lastSync = syncData.status === "fulfilled" ? syncData.value : null;
       sync.setData(lastSync);
+      // Cross-surface rule (web hides the section, TUI hides the tab):
+      // `unconfigured` hides the whole view via the context key. A failed
+      // fetch keeps the last-known visibility and shows the offline node —
+      // unknown must not read as «feature off».
+      if (benchData.status === "fulfilled") {
+        benchmarks.setData(benchData.value);
+        void vscode.commands.executeCommand(
+          "setContext",
+          "dispatcher.benchmarksConfigured",
+          benchData.value.report.status !== "unconfigured",
+        );
+      } else {
+        benchmarks.setData(null);
+      }
       status.update(overview, lastSync);
     } finally {
       polling = false;
@@ -391,6 +409,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerTreeDataProvider("dispatcherErrors", errors),
     vscode.window.registerTreeDataProvider("dispatcherRoadmap", roadmap),
     vscode.window.registerTreeDataProvider("dispatcherSync", sync),
+    vscode.window.registerTreeDataProvider("dispatcherBenchmarks", benchmarks),
     status.item,
     vscode.commands.registerCommand("dispatcher.refresh", () => void poll()),
     vscode.commands.registerCommand(

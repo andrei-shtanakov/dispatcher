@@ -262,15 +262,19 @@ def sync_status(sync_cache: SyncService, *, start_fetch: bool = True) -> SyncSta
     return sync_cache.get(start_fetch=start_fetch)
 
 
-def benchmarks(service: BenchmarkService | None) -> BenchmarksStatus:
-    """Spec §7: the one shape both surfaces return.
+def benchmarks(
+    service: BenchmarkService | None, *, start_fetch: bool = True
+) -> BenchmarksStatus:
+    """Spec §7: the one shape every surface returns.
 
     No configured service (config.benchmarks_url is None) is answered HERE
     with the unconfigured report, so the route has exactly one return type.
+    `start_fetch=False` reports the cached state without kicking the
+    background cycle (mirrors `sync_status` — the parity passthrough).
     """
     if service is None:
         return BenchmarksStatus(report=unconfigured_report(), fetch_in_flight=False)
-    return service.get()
+    return service.get(start_fetch=start_fetch)
 
 
 def benchmark_run_status(

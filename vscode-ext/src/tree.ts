@@ -3,6 +3,7 @@
 import * as vscode from "vscode";
 import type {
   ApiClient,
+  BenchmarksStatusResponse,
   ErrorEvent,
   EvidenceResult,
   HostPanel,
@@ -25,7 +26,12 @@ import {
   syncAgeLabel,
   syncItemContext,
   syncVerdictIcon,
+  benchmarkChildNodes,
+  benchmarkDescription,
+  benchmarkRootNodes,
+  leaderboardRowDescription,
 } from "./model";
+import type { BenchmarkNode } from "./model";
 
 export type ProjectNode =
   | { kind: "project"; entry: OverviewEntry }
@@ -344,6 +350,70 @@ export class SyncProvider implements vscode.TreeDataProvider<SyncNode> {
     }
     const live = node.panel.source === "live";
     return node.panel.verdicts.map((v) => ({ kind: "verdict", v, live }));
+  }
+
+  dispose(): void {
+    this.changed.dispose();
+  }
+}
+
+/** TODO atp-benchmark-view-parity: thin renderer over GET /api/benchmarks.
+ * The node-building (and the cross-surface zero-state rules) live in
+ * model.ts, vscode-free, where vitest pins them; this class only maps
+ * nodes to TreeItems. `unconfigured` never reaches this provider —
+ * extension.ts hides the whole view via the
+ * dispatcher.benchmarksConfigured context (web hides the section, the
+ * TUI hides the tab). */
+export class BenchmarksProvider
+  implements vscode.TreeDataProvider<BenchmarkNode>
+{
+  private readonly changed = new vscode.EventEmitter<void>();
+  readonly onDidChangeTreeData = this.changed.event;
+  private status: BenchmarksStatusResponse | null = null; // null = offline
+
+  setData(status: BenchmarksStatusResponse | null): void {
+    this.status = status;
+    this.changed.fire();
+  }
+
+  getTreeItem(node: BenchmarkNode): vscode.TreeItem {
+    if (node.kind === "offline") {
+      return offlineItem();
+    }
+    if (node.kind === "state") {
+      const item = new vscode.TreeItem(node.text);
+      item.iconPath = node.warn
+        ? new vscode.ThemeIcon(
+            "warning",
+            new vscode.ThemeColor("testing.iconQueued"),
+          )
+        : new vscode.ThemeIcon("info");
+      return item;
+    }
+    if (node.kind === "bench") {
+      const b = node.bench;
+      const item = new vscode.TreeItem(
+        `${b.name} v${b.version}`,
+        vscode.TreeItemCollapsibleState.Collapsed,
+      );
+      item.description = benchmarkDescription(b);
+      item.tooltip = b.description;
+      item.iconPath = new vscode.ThemeIcon("beaker");
+      return item;
+    }
+    const item = new vscode.TreeItem(node.row.agent_name);
+    item.description = leaderboardRowDescription(node.row);
+    item.iconPath = new vscode.ThemeIcon("dashboard");
+    return item;
+  }
+
+  getChildren(node?: BenchmarkNode): BenchmarkNode[] {
+    if (node !== undefined) {
+      return node.kind === "bench"
+        ? benchmarkChildNodes(this.status, node.bench)
+        : [];
+    }
+    return benchmarkRootNodes(this.status);
   }
 
   dispose(): void {

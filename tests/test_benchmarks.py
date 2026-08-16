@@ -201,6 +201,25 @@ def test_read_api_benchmarks_passes_through_the_service() -> None:
     assert status.report.url == "http://atp.test"
 
 
+def test_read_api_start_fetch_false_reports_without_fetching() -> None:
+    """The parity passthrough: agent/cached surfaces must be able to read
+    the state without kicking the background cycle."""
+    from dispatcher.core import read_api
+    from dispatcher.core.benchmark_service import BenchmarkService
+
+    calls: list[str] = []
+
+    def spy(url: str):
+        calls.append(url)
+        return initial_report(url)
+
+    service = BenchmarkService("http://atp.test", fetcher=spy)
+    status = read_api.benchmarks(service, start_fetch=False)
+    assert service.wait_for_fetch(timeout=5)
+    assert calls == []
+    assert status.fetch_in_flight is False
+
+
 def test_vendored_fixtures_parse_as_ok() -> None:
     """The pinned contract and the consumer models must agree, forever (§10)."""
     import json
