@@ -209,6 +209,20 @@ def test_garbage_db_is_unreadable(tmp_path: Path) -> None:
     assert snap.runs[0].status == "unreadable"
 
 
+def test_freshness_covers_newest_run_logs(tmp_path: Path) -> None:
+    home = _maestro_home(tmp_path)
+    db = make_maestro_run(home, _ACME, "01F", started_at="2026-08-12T00:00:00")
+    logs = db.parent / "logs"
+    logs.mkdir()
+    # Telemetry can land under the run's logs/ after the last state.db
+    # write; stamp the dir ahead of every other source to prove it feeds
+    # freshness (2_000_000_000 = 2033-05-18T03:33:20Z).
+    os.utime(logs, (2_000_000_000, 2_000_000_000))
+    snap = _collect_runs(tmp_path)
+    assert snap.freshness is not None
+    assert snap.freshness.startswith("2033-05-18")
+
+
 def test_legacy_db_labeled_legacy_and_tasks_kept(tmp_path: Path) -> None:
     legacy = make_maestro_home(tmp_path)
     snap = _collect_runs(tmp_path, maestro_db=legacy)

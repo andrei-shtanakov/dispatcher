@@ -78,7 +78,7 @@ class MaestroCollector:
         return snap
 
     def _collect_runs(self, home: Path | None, snap: ProjectSnapshot) -> list[Path]:
-        """Enumerate per-project run DBs; returns them for freshness."""
+        """Enumerate per-project run DBs; returns freshness sources."""
         if home is None:
             return []
         projects = home / "projects"
@@ -86,7 +86,7 @@ class MaestroCollector:
             # Normal on a machine where Maestro has not run since the layout
             # change — zero runs render as zero runs, not as a warning.
             return []
-        dbs: list[Path] = []
+        sources: list[Path] = []
         for repo_key, project_dir in _project_dirs(projects):
             holder = _holder_run_id(project_dir / "locks")
             runs: list[tuple[OrchestrationRunInfo, Path]] = []
@@ -94,7 +94,7 @@ class MaestroCollector:
                 db = run_dir / "state.db"
                 if not db.is_file():
                     continue
-                dbs.append(db)
+                sources.append(db)
                 runs.append(
                     (_classify_run(db, repo_key, run_dir.name, holder, snap), db)
                 )
@@ -106,8 +106,12 @@ class MaestroCollector:
             if runs:
                 newest_db = runs[0][1]
                 self._collect_run_tasks(newest_db, snap)
-                snap.errors.extend(read_otel_errors(newest_db.parent / "logs"))
-        return dbs
+                logs_dir = newest_db.parent / "logs"
+                snap.errors.extend(read_otel_errors(logs_dir))
+                # Everything read must feed freshness: telemetry can land
+                # under the run's logs/ after the last state.db write.
+                sources.append(logs_dir)
+        return sources
 
     def _collect_run_tasks(self, db: Path, snap: ProjectSnapshot) -> None:
         try:
