@@ -161,6 +161,8 @@
   <div id="governance"></div>
   <h3 id="product-proposals-title" hidden>Product proposals</h3>
   <div id="product-proposals"></div>
+  <h3 id="runs-title" hidden>Orchestration runs</h3>
+  <div id="runs"></div>
   <div id="merge-gate-open"><label>PR #
     <input id="mg-pr-input" type="number" min="1" inputmode="numeric"></label>
     <button id="mg-open-gate" type="button">Open merge gate</button>
@@ -871,6 +873,50 @@ function renderProductProposals(r) {
   return reportDiags + note + waits + loops + rows;
 }
 
+// TODO maestro-runs-panel-parity: read-only rendering of Maestro
+// orchestration runs (#147). Formatting only — the collector classified
+// fail-closed; this layer never re-classifies. Badge words are identical
+// across web/TUI/VSCode.
+function runBadge(status) {
+  const marks = {
+    "running": "▶ running",
+    "suspended": "⏸ suspended (waiting on a human)",
+    "interrupted": "⚠ interrupted / unknown",
+    "completed": "✅ completed",
+    "failed": "⛔ failed",
+    "cancelled": "∅ cancelled",
+    "superseded": "↻ superseded",
+    "legacy": "🗄 legacy (frozen pre-#147 file)",
+    "unreadable": "✖ unreadable",
+  };
+  return marks[status] || `✖ ${status}`;
+}
+
+// The collector's degradation signal: warning prefixes `run ` (one run's
+// classification) / `runs ` (enumeration) — pinned in tests/test_maestro.py.
+function runWarnings(snap) {
+  return (snap.warnings || []).filter(
+    w => w.startsWith("run ") || w.startsWith("runs "));
+}
+
+function renderRuns(snap) {
+  // Zero-state rule: runs=[] with a degradation warning is UNKNOWN, not
+  // zero; runs=[] on a clean read renders nothing (the panel is hidden by
+  // the caller — most projects have no orchestration runs at all).
+  const degraded = runWarnings(snap);
+  const note = degraded.length ? `<p><b>⚠ run enumeration degraded</b> —
+    the list may be incomplete, missing runs are unknown, not zero:</p>
+    <ul>${degraded.map(w => `<li class="dim">${esc(w)}</li>`).join("")}</ul>`
+    : "";
+  const rows = (snap.runs || []).length ? `
+    <ul>${snap.runs.map(r => `
+      <li>${esc(r.repo_key)} · ${esc(r.run_id ?? "—")} ·
+        ${esc(runBadge(r.status))}
+        (${esc(r.started_at ?? "?")} → ${esc(r.ended_at ?? "…")})${
+        r.reason ? ` · ${esc(r.reason)}` : ""}</li>`).join("")}</ul>` : "";
+  return note + rows;
+}
+
 async function detail(name, dirName) {
   const section = document.getElementById("detail-section");
   section.hidden = false;
@@ -1005,6 +1051,39 @@ async function detail(name, dirName) {
     if (myPp === ppGen) {
       ppTitle.hidden = false;
       ppPanel.textContent = String(err);
+    }
+  }
+  const runsTitle = document.getElementById("runs-title");
+  const runsPanel = document.getElementById("runs");
+  // B1: reset behind the token check, same as governance/pp above — a
+  // stale call must not blank the CURRENT project's rendered panel.
+  if (myDetail === detailGen) {
+    runsTitle.hidden = true;
+    runsPanel.textContent = "";
+  }
+  try {
+    const resp = await fetch("/api/projects/" + encodeURIComponent(name));
+    if (myDetail === detailGen && resp.ok) {
+      const snap = await resp.json();
+      if (myDetail === detailGen) {
+        // Hidden when there is nothing to say: no runs AND a clean
+        // enumeration (most projects have no orchestration runs). Any
+        // degradation warning forces the panel open — unknown ≠ zero.
+        if ((snap.runs || []).length || runWarnings(snap).length) {
+          runsTitle.hidden = false;
+          runsPanel.innerHTML = renderRuns(snap);
+        }
+      }
+    } else if (myDetail === detailGen && resp.status !== 404) {
+      runsTitle.hidden = false;
+      runsPanel.textContent = "runs endpoint failed: " + resp.status;
+    }
+  } catch (err) {
+    // Fail-loud, like product-proposals: a network failure must not read
+    // as «no runs».
+    if (myDetail === detailGen) {
+      runsTitle.hidden = false;
+      runsPanel.textContent = String(err);
     }
   }
   section.scrollIntoView({behavior: "smooth", block: "nearest"});

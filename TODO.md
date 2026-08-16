@@ -219,14 +219,21 @@
       конфиг-ключ `maestro_home` (дефолт — родитель `maestro_db`,
       герметичность тестов). Спека:
       `docs/superpowers/specs/2026-08-16-maestro-per-project-run-dbs-design.md`.
-- [ ] Runs-панель: рендер `ProjectSnapshot.runs` на web/TUI/VSCode + MCP-паритет @owner:github:andrei-shtanakov @id:maestro-runs-panel-parity
+- [x] Runs-панель: рендер `ProjectSnapshot.runs` на web/TUI/VSCode + MCP-паритет — PR #149 @owner:github:andrei-shtanakov @id:maestro-runs-panel-parity
       Follow-up #147/PR #148 по цепочечному прецеденту atp-benchmark-view
-      (#144 core → #145 web → parity). Поле уже отдаётся
-      `GET /api/projects/{name}` и MCP-passthrough; задачи newest-ранa уже
-      видны в существующих tasks-секциях. Панель должна показывать статус
-      ранов (`interrupted`/`suspended`/`running`/terminal/`legacy`/
-      `unreadable`) per repo_key; правило нулевых состояний — уверенный
-      «0 runs» только при читаемом `projects/`-дереве без warnings.
+      (#144 core → #145 web → parity). Все поверхности — formatting-only
+      поверх fail-closed классификации коллектора: web `#runs`-панель
+      (detailGen guard, fail-loud, скрыта на 404 и чистом нуле), TUI-секция
+      `orchestration runs`, VSCode — независимый третий fetch + markdown
+      (`src/runs.ts`). MCP — осознанно БЕЗ 17-го тула: снапшот с `runs` уже
+      отдаёт тул `project` (в отличие от product-proposals, где отдельный
+      тул оправдан вычисляемым report). Кросс-поверхностные пины: слова
+      бейджей идентичны везде; незнакомый статус продюсера — `✖ <status>`
+      вербатим, не молча зелёный; правило нулевых состояний — чистый ноль
+      скрывает секцию, любой warning с префиксом `run `/`runs ` (пин
+      `test_run_warning_prefixes_are_pinned`) открывает её как
+      «unknown, not zero». Дыра закрыта в core: нечитаемая директория при
+      енумерировании теперь warning, а не молчаливый ноль. Спека §7a.
 
 ## Кросс-репные контракты
 

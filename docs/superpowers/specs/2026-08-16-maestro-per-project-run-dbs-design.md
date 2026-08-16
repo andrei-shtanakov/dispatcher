@@ -121,11 +121,38 @@ covers legacy + every enumerated `state.db` + repo-local sources as before.
 
 ## 7. Out of scope (follow-ups in TODO.md)
 
-- Web/TUI/VSCode/MCP **rendering** of the `runs` field (surfaces today show tasks,
-  which already reflect the new layout; a dedicated runs section follows the
-  established core→web→parity chain, precedent atp-benchmark-view #144/#145).
+- ~~Web/TUI/VSCode/MCP **rendering** of the `runs` field~~ — closed by
+  `@id:maestro-runs-panel-parity` (see §7a).
 - Retention/size reporting of `~/.maestro` (producer-side non-goal too).
 - Reconciling the legacy database (never migrated, producer decision).
+
+## 7a. Runs panel parity (follow-up, closed)
+
+All surfaces are formatting-only renderers over `ProjectSnapshot.runs`; none
+re-classifies. Cross-surface pins:
+
+- **Badge words are identical** on web (`runBadge`), TUI (`_RUN_BADGES`) and
+  VSCode (`runs.ts`): `▶ running`, `⏸ suspended (waiting on a human)`,
+  `⚠ interrupted / unknown`, `✅ completed`, `⛔ failed`, `∅ cancelled`,
+  `↻ superseded`, `🗄 legacy (frozen pre-#147 file)`, `✖ unreadable`; an
+  unrecognized producer status renders `✖ <status>` verbatim, never silently
+  green.
+- **Degradation signal**: warnings the collector emits for run
+  enumeration/classification carry the `run ` / `runs ` prefix (pinned by
+  `test_run_warning_prefixes_are_pinned`); to make the signal complete, an
+  unreadable directory during enumeration now warns
+  (`runs enumeration: cannot list …`) instead of silently reading as empty.
+- **Zero-state rule**: zero runs on a CLEAN read hides the section (web,
+  VSCode) or renders the generic `(none)` (TUI whole-snapshot dump) — most
+  projects have no orchestration runs; any `run `/`runs `-prefixed warning
+  forces the section open and reads as *unknown, not zero*. A fetch failure
+  is fail-loud on web/VSCode (unknown must not look like «no runs»); a 404
+  hides the section (unknown project is surfaced elsewhere).
+- **MCP**: no 17th tool — the `project` tool already serves the full
+  snapshot, `runs` included (unlike product-proposals, where a computed
+  report justified a dedicated tool); its description documents the
+  fail-closed status semantics. The tool↔HTTP parity test covers the field
+  by construction.
 
 ## 8. Testing
 
