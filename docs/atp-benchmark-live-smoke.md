@@ -165,6 +165,45 @@ If any of these fail, check:
 - The browser console for client-side errors.
 - The server logs (`http://localhost:8787` startup messages) for HTTP errors.
 
+## Phase 2 — run status (token-gated)
+
+Extends the smoke to the Run-status row (spec
+`2026-08-16-atp-benchmark-run-status-design.md`). Needs a minted user
+token and at least one run.
+
+1. Mint a token and start a run against the seeded benchmark (SDK or the
+   authenticated HTTP flow: `POST /api/v1/benchmarks/{id}/start`, then
+   drive `next-task`/`submit` to completion — or leave it `in_progress`,
+   both states are worth seeing). Note the run id from the start response.
+2. Store the token — the file rules are the product, exercise them:
+
+   ```bash
+   printf '%s\n' "$ATP_TOKEN" > /tmp/atp-token && chmod 600 /tmp/atp-token
+   ```
+
+   and add to the scratch `dispatcher.toml`:
+
+   ```toml
+   [benchmarks]
+   url = "http://127.0.0.1:8000"
+   token_file = "/tmp/atp-token"
+   ```
+
+3. In the Benchmarks panel enter the run id → **Check status**.
+
+Exit criteria (all must hold):
+
+1. ✓ The run renders: producer status word verbatim, `task i/n`, score,
+   and score components for a completed run.
+2. ✓ `chmod 644 /tmp/atp-token` → the panel answers
+   `token_file_insecure … chmod 600` — a configuration answer, not a
+   missing run. `chmod 600` restores it.
+3. ✓ A run id that does not exist (or a second user's run) renders the
+   two-sided wording «run not found, or not owned by this token».
+4. ✓ Commenting out `token_file` → `token_unconfigured`.
+5. ✓ The token string appears nowhere in the page, the report JSON
+   (`curl localhost:8787/api/benchmarks/runs/<id>`), or dispatcher logs.
+
 ## Related surfaces
 
 | Runbook | Purpose |
