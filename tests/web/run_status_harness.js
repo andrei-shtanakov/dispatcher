@@ -257,10 +257,15 @@ testCase('in-flight: button disabled, one request per click, then re-enabled',
     dispatch(btn, 'click');
     await drain();
     check(btn.disabled === true, 'button disabled while the request runs');
-    // A second click while disabled must not stack a request. The DOM stub
-    // does not suppress listeners on disabled buttons the way a browser
-    // does, so assert through the guard's observable effect: the request
-    // count stays 1 after release.
+    // The SECOND click, issued while the request is still in flight. The
+    // DOM stub mirrors the browser here: dispatch() on a disabled control
+    // is suppressed (returns no handler promises) — which is exactly the
+    // no-stacking guarantee the disabled button provides.
+    const second = dispatch(btn, 'click');
+    check(second.length === 0, 'a click on the disabled button is suppressed');
+    await drain();
+    check(env.calls.length === 1,
+      `no second request while in flight (got: ${env.calls.length})`);
     release();
     await drain();
     check(btn.disabled === false, 'button re-enabled after the response');
