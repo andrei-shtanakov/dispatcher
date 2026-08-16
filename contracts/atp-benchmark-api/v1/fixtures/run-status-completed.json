@@ -1,0 +1,36 @@
+{
+  "id": 42,
+  "status": "completed",
+  "current_task_index": 3,
+  "tasks_count": 3,
+  "total_score": 87.5,
+  "score_semantics": {
+    "schema_version": 1,
+    "kind": "aggregated_evaluation",
+    "level": "run",
+    "unit": "percent",
+    "range": {"min": 0.0, "max": 100.0},
+    "quality_signal": true,
+    "aggregation": {"function": "mean", "over": "task_score"},
+    "coverage": {"tasks_submitted": 3, "tasks_evaluated": 3, "tasks_total": 3},
+    "caveats": [],
+    "note": "mean of weighted per-task evaluation scores"
+  },
+  "score_components": {"contains": 91.7, "regex": 83.3},
+  "completed_tasks": [
+    {
+      "task_index": 0,
+      "score": 95.0,
+      "eval_results": [
+        {
+          "record_version": 1,
+          "assertion_type": "contains",
+          "status": "applied",
+          "score": 95.0
+        }
+      ]
+    },
+    {"task_index": 1, "score": 80.0, "eval_results": null},
+    {"task_index": 2, "score": 87.5, "eval_results": []}
+  ]
+}

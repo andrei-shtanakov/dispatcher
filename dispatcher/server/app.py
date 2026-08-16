@@ -5,9 +5,10 @@ from __future__ import annotations
 import logging
 import secrets
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import Path as FastapiPath
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -20,7 +21,7 @@ from dispatcher.core.actions import (
     ActionRunner,
 )
 from dispatcher.core.benchmark_service import BenchmarkService
-from dispatcher.core.benchmarks import BenchmarksStatus
+from dispatcher.core.benchmarks import BenchmarksStatus, RunStatusReport
 from dispatcher.core.correlation import WorkItemsResponse
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.governance import BundleGovernance
@@ -183,7 +184,11 @@ def create_app(
         benchmark_service
         if benchmark_service is not None
         else (
-            BenchmarkService(config.benchmarks_url) if config.benchmarks_url else None
+            BenchmarkService(
+                config.benchmarks_url, token_file=config.benchmarks_token_file
+            )
+            if config.benchmarks_url
+            else None
         )
     )
     _suggest_audit = logging.getLogger("dispatcher.actions.spec_runner_config")
@@ -307,6 +312,16 @@ def create_app(
     def benchmarks_view() -> BenchmarksStatus:
         """Spec §7: global read-only report; state lives in the body (200 always)."""
         return read_api.benchmarks(benchmarks_service)
+
+    @app.get("/api/benchmarks/runs/{run_id}", response_model=RunStatusReport)
+    def benchmark_run_status_view(
+        run_id: Annotated[int, FastapiPath(ge=1)],
+    ) -> RunStatusReport:
+        """Phase-2 §5: token-gated run status, ONE outbound GET on explicit
+        human action (precedent: GET /api/pr-detail). Every valid run_id
+        (ge=1; below that FastAPI answers 422) gets a 200 whose state —
+        including every token-file failure mode — lives in the body."""
+        return read_api.benchmark_run_status(benchmarks_service, run_id)
 
     @app.get("/api/sync/hosts", response_model=SyncHostsResponse)
     def sync_hosts() -> SyncHostsResponse:

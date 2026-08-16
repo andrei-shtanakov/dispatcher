@@ -73,6 +73,109 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "RunStatusResponse": {
+        "description": "Schema for detailed run status with completed tasks.",
+        "properties": {
+          "completed_tasks": {
+            "items": {
+              "$ref": "#/components/schemas/TaskResultResponse"
+            },
+            "title": "Completed Tasks",
+            "type": "array"
+          },
+          "current_task_index": {
+            "title": "Current Task Index",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "score_components": {
+            "additionalProperties": true,
+            "title": "Score Components",
+            "type": "object"
+          },
+          "score_semantics": {
+            "additionalProperties": true,
+            "title": "Score Semantics",
+            "type": "object"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "tasks_count": {
+            "title": "Tasks Count",
+            "type": "integer"
+          },
+          "total_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Score"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "current_task_index",
+          "tasks_count",
+          "total_score",
+          "score_semantics",
+          "score_components",
+          "completed_tasks"
+        ],
+        "title": "RunStatusResponse",
+        "type": "object"
+      },
+      "TaskResultResponse": {
+        "description": "Schema for returning a single task result.",
+        "properties": {
+          "eval_results": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eval Results"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "task_index": {
+            "title": "Task Index",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "task_index",
+          "score",
+          "eval_results"
+        ],
+        "title": "TaskResultResponse",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -141,6 +244,17 @@
         ],
         "title": "LeaderboardEntry",
         "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "OAuth2PasswordBearer": {
+        "flows": {
+          "password": {
+            "scopes": {},
+            "tokenUrl": "/api/auth/token"
+          }
+        },
+        "type": "oauth2"
       }
     }
   },
@@ -218,6 +332,54 @@
           }
         },
         "summary": "Get Leaderboard",
+        "tags": [
+          "benchmarks"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/status": {
+      "get": {
+        "description": "Get run status with completed tasks (owner-only).",
+        "operationId": "get_run_status_api_v1_runs__run_id__status_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "summary": "Get Run Status",
         "tags": [
           "benchmarks"
         ]

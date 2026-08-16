@@ -1,0 +1,23 @@
+{
+  "id": 43,
+  "status": "in_progress",
+  "current_task_index": 1,
+  "tasks_count": 3,
+  "total_score": null,
+  "score_semantics": {
+    "schema_version": 1,
+    "kind": "completion_rate",
+    "level": "run",
+    "unit": "percent",
+    "range": {"min": 0.0, "max": 100.0},
+    "quality_signal": false,
+    "aggregation": {"function": "mean", "over": "task_score"},
+    "coverage": {"tasks_submitted": 1, "tasks_evaluated": 0, "tasks_total": 3},
+    "caveats": ["no evaluator ran; the score reflects completion only"],
+    "note": "share of submitted tasks marked complete"
+  },
+  "score_components": {},
+  "completed_tasks": [
+    {"task_index": 0, "score": 100.0, "eval_results": null}
+  ]
+}

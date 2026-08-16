@@ -47,6 +47,36 @@ def test_load_config_maestro_home(tmp_path: Path) -> None:
     assert conf.effective_maestro_home == tmp_path / "mh"
 
 
+def test_load_config_benchmarks_token_file(tmp_path: Path) -> None:
+    cfg = tmp_path / "dispatcher.toml"
+    cfg.write_text(
+        f'roots = ["{tmp_path}"]\n[benchmarks]\nurl = "http://127.0.0.1:8000"\n'
+        f'token_file = "{tmp_path}/atp-token"\n'
+    )
+    conf = load_config(cfg)
+    assert conf.benchmarks_token_file == tmp_path / "atp-token"
+
+
+def test_inline_benchmarks_token_is_a_loud_load_error(tmp_path: Path) -> None:
+    # Phase-2 §3: dispatcher.toml never carries the secret itself.
+    cfg = tmp_path / "dispatcher.toml"
+    cfg.write_text(
+        f'roots = ["{tmp_path}"]\n[benchmarks]\nurl = "http://127.0.0.1:8000"\n'
+        'token = "atp_u_oops"\n'
+    )
+    with pytest.raises(ValueError, match="token_file"):
+        load_config(cfg)
+
+
+def test_token_file_without_url_is_a_load_error(tmp_path: Path) -> None:
+    cfg = tmp_path / "dispatcher.toml"
+    cfg.write_text(
+        f'roots = ["{tmp_path}"]\n[benchmarks]\ntoken_file = "{tmp_path}/t"\n'
+    )
+    with pytest.raises(ValueError, match="nothing to spend"):
+        load_config(cfg)
+
+
 def test_maestro_home_defaults_beside_legacy_db(tmp_path: Path) -> None:
     # Hermeticity: a config (or test) that only sets maestro_db must never
     # make the collector enumerate the real ~/.maestro/projects.

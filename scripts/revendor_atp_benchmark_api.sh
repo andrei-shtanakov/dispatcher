@@ -189,7 +189,7 @@ fi
 {
   printf 'source: atp-platform packages/atp-dashboard/atp/dashboard/v2/factory.py\n'
   printf '        (create_app().openapi(), ATP_SERVER_PROFILE=eco), pruned to the\n'
-  printf '        two GET paths dispatcher consumes\n'
+  printf '        GET paths dispatcher consumes (scripts/prune_atp_openapi.py)\n'
   printf 'commit: %s\n' "$NEW_PIN"
   printf 'vendored: %s\n' "$(date -u +%Y-%m-%d)"
   [ -z "$FIXTURES_BLOCK" ] || printf '%s\n' "$FIXTURES_BLOCK"

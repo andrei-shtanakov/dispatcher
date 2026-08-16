@@ -11,7 +11,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from dispatcher.core.benchmark_service import BenchmarkService
-from dispatcher.core.benchmarks import BenchmarksStatus, unconfigured_report
+from dispatcher.core.benchmarks import (
+    BenchmarksStatus,
+    RunStatusReport,
+    fetch_run_status,
+    unconfigured_report,
+)
 from dispatcher.core.contracts import check_contracts
 from dispatcher.core.correlation import WorkItemsResponse, build_work_items
 from dispatcher.core.discovery import DispatcherConfig
@@ -266,6 +271,20 @@ def benchmarks(service: BenchmarkService | None) -> BenchmarksStatus:
     if service is None:
         return BenchmarksStatus(report=unconfigured_report(), fetch_in_flight=False)
     return service.get()
+
+
+def benchmark_run_status(
+    service: BenchmarkService | None, run_id: int
+) -> RunStatusReport:
+    """Phase-2 §5: one click-driven token-gated fetch, one return shape.
+
+    No configured service → the unconfigured report is synthesized here
+    (fetch_run_status with base_url=None constructs no client and touches
+    no network), so the route has exactly one type to return.
+    """
+    if service is None:
+        return fetch_run_status(None, run_id, None)
+    return service.run_status(run_id)
 
 
 def spec_runner_configs(
