@@ -1,0 +1,29 @@
+{
+  "contract": "impresario-ranked-backlog",
+  "contract_version": 1,
+  "producer_commit": "a9d11fa75bb101d2919dc9f99e075270de5d7976",
+  "surface_note": "sha256 of every vendored file; excludes PINNED.txt and this manifest",
+  "tree_sha256": "31a156aeb8f715dc98d82c135a8cf8ffe363ca08f9f2c35f8ca70141b7524e74",
+  "surface": [
+    {
+      "path": "fixtures/invalid/excluded-blocker-without-ref.yaml",
+      "sha256": "a286f65bf9b95d26680305ac38764f82918cb3a770d9a08b8b75819d01186e90"
+    },
+    {
+      "path": "fixtures/invalid/item-unknown-score.yaml",
+      "sha256": "aecfe6c739fbd598174794f0bc11e7cd84690c68642cbe2265e8f6e11b1a6999"
+    },
+    {
+      "path": "fixtures/invalid/item-with-blocker.yaml",
+      "sha256": "64415ab3e8fd5036a2ac639c04875eaf7ff1b90726d4dbe1871cf23178a3f5a6"
+    },
+    {
+      "path": "fixtures/valid/bl-portfolio.yaml",
+      "sha256": "df0a09ed51f216553dc31429af6010695dda26c158e0a0415ec6ff0074217632"
+    },
+    {
+      "path": "schema.json",
+      "sha256": "5337bfc7f636d5b43c27813d285db84ba8ff3b07627570db59cce06fe52db40a"
+    }
+  ]
+}

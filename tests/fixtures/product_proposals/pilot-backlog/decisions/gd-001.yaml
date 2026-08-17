@@ -1,0 +1,17 @@
+decision_id: GD-001
+gate_id: qg4_backlog
+subject:
+  kind: ranked_backlog
+  ref: backlog://BL-ecosystem
+  version: 1
+decision: select
+selected_idea_ref: idea://IDEA-101
+decided_by:
+  kind: human
+  id: andrei
+  role: qg4_selector
+decided_at: '2026-08-12T01:55:12Z'
+reason: Наивысший воспроизводимый rank (4.67, high), прямое соответствие стратегическим и
+  стандартным якорям и наиболее сильная доказательная база среди ранжированных идей.
+artifacts_reviewed:
+- backlog://BL-ecosystem

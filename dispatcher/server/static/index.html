@@ -950,7 +950,43 @@ function renderProductProposals(r) {
           <li class="dim">${esc(d.code)}: ${esc(d.message)}${
             d.path ? ` · ${esc(d.path)}` : ""}</li>`).join("")}</ul>` : ""}</li>`
     ).join("")}</ul>` : "";
-  return reportDiags + note + waits + loops + rows;
+  // Inbox #154 phase 3: the backlog-level QG-4 wait — same fail-closed
+  // rendering discipline (non-ok = «suppressed», never «0 waits»; a
+  // confident zero needs a fully classified scan).
+  const backlogs = r.backlog_bundles || [];
+  const suppressedBacklogs = backlogs.filter(b => b.state !== "ok").length;
+  const backlogNote = suppressedBacklogs ? `<p><b>⚠ ${suppressedBacklogs}
+    backlog(s): classification suppressed</b> — their waits are unknown,
+    not zero</p>` : "";
+  let backlogWaits = "";
+  if ((r.backlog_waits || []).length) {
+    backlogWaits = `<table><tr><th>Backlog</th><th>Gate</th><th>Authority</th>
+      <th>Version</th><th>Backlog updated</th><th>Selectable</th>
+      <th>Path</th></tr>${
+      r.backlog_waits.map(w => `<tr>
+        <td>${esc(w.artifact_ref)}</td>
+        <td>${esc(w.gate_label)} (${esc(w.gate_id)})</td>
+        <td><b>${esc(w.authority)}</b></td>
+        <td>v${esc(String(w.version))}</td>
+        <td>${esc(w.backlog_updated_at)}</td>
+        <td>${(w.selectable_idea_refs || []).map(esc).join(", ")}</td>
+        <td>${esc(w.artifact_path)}</td></tr>`).join("")}</table>`;
+  } else if (backlogs.length && !suppressedBacklogs
+      && !(r.diagnostics || []).length) {
+    backlogWaits = `<p class="dim">0 backlog gates waiting</p>`;
+  }
+  const backlogRows = backlogs.length ? `
+    <ul>${backlogs.map(b => `
+      <li>${esc(b.path)} · backlog · ${esc(productProposalBadge(b.state))}${
+        b.backlog_id ? ` · ${esc(b.backlog_id)}` : ""}${
+        b.version != null ? ` · v${esc(String(b.version))}` : ""}${
+        (b.diagnostics || []).length ? `
+        <ul>${b.diagnostics.map(d => `
+          <li class="dim">${esc(d.code)}: ${esc(d.message)}${
+            d.path ? ` · ${esc(d.path)}` : ""}</li>`).join("")}</ul>` : ""}</li>`
+    ).join("")}</ul>` : "";
+  return reportDiags + note + waits + loops + rows
+    + backlogNote + backlogWaits + backlogRows;
 }
 
 // TODO maestro-runs-panel-parity: read-only rendering of Maestro

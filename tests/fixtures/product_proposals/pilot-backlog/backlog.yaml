@@ -1,0 +1,117 @@
+id: BL-ecosystem
+version: 4
+updated_at: '2026-08-17T02:42:23Z'
+policy:
+  policy_version: scoring/v1
+  weights:
+    fit_strategy: 0.3333
+    fit_market: 0.3333
+    fit_standards: 0.3334
+  priority_thresholds:
+    high: 4.0
+    medium: 2.5
+  strategy_ref: strategy://ecosystem/2026
+  standards_ref: standards://ecosystem
+items:
+- rank: 1
+  idea_ref: idea://IDEA-101
+  title: 'Robin: полнопокрывающие дайджесты экосистемы'
+  source_kind: internal
+  status: selected
+  priority: high
+  score: 4.67
+  fit_strategy: 5
+  fit_market: 4
+  fit_standards: 5
+  strategy_blocker: false
+  standards_blocker: false
+  assessment_ref: assessment://ASMT-109
+- rank: 2
+  idea_ref: idea://IDEA-104
+  title: 'Dispatcher: read-only обзор ожидающих product-гейтов'
+  source_kind: internal
+  status: selected
+  priority: high
+  score: 4.67
+  fit_strategy: 5
+  fit_market: 4
+  fit_standards: 5
+  strategy_blocker: false
+  standards_blocker: false
+  assessment_ref: assessment://ASMT-112
+- rank: 3
+  idea_ref: idea://IDEA-103
+  title: Провайдеро-независимый слой моделей на базе arbiter
+  source_kind: strategy
+  status: new
+  priority: high
+  score: 4.33
+  fit_strategy: 5
+  fit_market: 4
+  fit_standards: 4
+  strategy_blocker: false
+  standards_blocker: false
+  assessment_ref: assessment://ASMT-111
+- rank: 4
+  idea_ref: idea://IDEA-106
+  title: 'ATP: сервис бенчмаркинга агентов для routing-решений'
+  source_kind: strategy
+  status: new
+  priority: high
+  score: 4.33
+  fit_strategy: 5
+  fit_market: 4
+  fit_standards: 4
+  strategy_blocker: false
+  standards_blocker: false
+  assessment_ref: assessment://ASMT-114
+- rank: 5
+  idea_ref: idea://IDEA-107
+  title: Kapelle как переиспользуемый battle-test harness двухагентных циклов
+  source_kind: rd
+  status: new
+  priority: high
+  score: 4.0
+  fit_strategy: 5
+  fit_market: 3
+  fit_standards: 4
+  strategy_blocker: false
+  standards_blocker: false
+  assessment_ref: assessment://ASMT-115
+- rank: 6
+  idea_ref: idea://IDEA-102
+  title: 'fleet-plan-check: сквозная проверка планов по флоту репо'
+  source_kind: internal
+  status: new
+  priority: medium
+  score: 3.0
+  fit_strategy: 3
+  fit_market: 2
+  fit_standards: 4
+  strategy_blocker: false
+  standards_blocker: false
+  assessment_ref: assessment://ASMT-110
+- rank: 7
+  idea_ref: idea://IDEA-108
+  title: 'spec-runner: параллельное исполнение независимых задач (H-2)'
+  source_kind: rd
+  status: new
+  priority: medium
+  score: 2.67
+  fit_strategy: 3
+  fit_market: 2
+  fit_standards: 3
+  strategy_blocker: false
+  standards_blocker: false
+  assessment_ref: assessment://ASMT-116
+pending_unknown:
+- idea_ref: idea://IDEA-105
+  title: 'Maestro: распределённое исполнение (фазы 1–3)'
+  fit_strategy: 4
+  fit_market: unknown
+  fit_standards: 4
+  missing_inputs:
+  - fit_market = unknown
+  assessment_ref: assessment://ASMT-113
+excluded: []
+last_run_id: RUN-004

@@ -259,10 +259,12 @@ def build_server(
         ],
     ) -> dict[str, Any]:
         """Product-governance waits for the impresario mirror: which
-        proposals wait at a human gate (gate_waiting) and which
-        researcher-creator loops wait for a human (needs_human), plus
-        every discovered bundle with its classification state. A non-ok
-        bundle means classification suppressed — unknown, not zero waits.
+        proposals wait at a human gate (gate_waiting), which
+        researcher-creator loops wait for a human (needs_human), and
+        whether the current RankedBacklog version waits for its QG-4
+        selection (backlog_waits), plus every discovered bundle with its
+        classification state. A non-ok bundle means classification
+        suppressed — unknown, not zero waits.
         Errors carry a JSON detail whose stable `code` is
         'project-not-found' or 'not-impresario-mirror' (the message text
         is not a contract)."""

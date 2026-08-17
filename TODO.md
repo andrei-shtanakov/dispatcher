@@ -145,6 +145,24 @@
       «0 gates/loops waiting» — только при все-ok бандлах без report-level
       diagnostics.
 
+- [ ] Read-only `qg4_backlog` wait — фаза 3 gate_waiting @owner:github:andrei-shtanakov @id:product-proposal-qg4-backlog-wait
+      Принятие inbox-issue #154 от impresario (ADR-ECO-006), продолжение
+      #129/#136. QG-4 — один gate над версией RankedBacklog: ожидание
+      существует, пока в текущей версии `backlog.yaml` есть selectable-позиции
+      (`new` | `under_review`) и нет активного (не superseded) GateDecision
+      `qg4_backlog` той же версии с любым исходом QG-4
+      (select | defer | park | reject); identity `(backlog_id, version)`,
+      freshness `updated_at`. Re-pin всех impresario-контрактов @ `a9d11fa`
+      (5 директорий, один пин): добавлены `ranked-backlog/v1` и
+      `loop-resume-decision/v1` — LRD-записи в `decisions/` распознаются и
+      игнорируются (живой lrd-001.yaml в pp-101 больше не роняет бандл в
+      unknown). Поля `backlog_bundles`/`backlog_waits` в
+      `ProductProposalsReport`, web-панель, acceptance #154 на пинованной
+      копии `pilot/backlog.yaml` (BL-ecosystem v4). Спека:
+      `docs/superpowers/specs/2026-08-17-qg4-backlog-wait-design.md`.
+      Follow-up (вне scope): явный рендер `backlog_waits` в TUI/VSCode
+      (прецедент parity — PR #138); MCP отдаёт поля уже сейчас.
+
 - [x] Read-only `needs_human` из loop-state/v1 — фаза 2 gate_waiting — PR #137 @owner:github:andrei-shtanakov @id:product-proposal-needs-human
       Принятие inbox-issue #136 от impresario (ADR-ECO-006), продолжение
       #129 (фаза 1 — PR #132..#135). Единый re-pin всех трёх контрактов @

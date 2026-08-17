@@ -1,0 +1,45 @@
+{
+  "contract": "impresario-loop-resume-decision",
+  "contract_version": 1,
+  "producer_commit": "a9d11fa75bb101d2919dc9f99e075270de5d7976",
+  "surface_note": "sha256 of every vendored file; excludes PINNED.txt and this manifest",
+  "tree_sha256": "ac7fe6d7f4f1601b654806e1e6524f3eceb118a557fd307d399da155a0f6d3df",
+  "surface": [
+    {
+      "path": "fixtures/invalid/lrd-empty-reason.yaml",
+      "sha256": "0b140446a3540d9d29349531689cc9444d3c4b9ff3d4f54048ad8955d75532b3"
+    },
+    {
+      "path": "fixtures/invalid/lrd-extra-field.yaml",
+      "sha256": "a7b0271ea73689587d8da585c2a802da9f74b75db723da2ea4b8a9a7be131920"
+    },
+    {
+      "path": "fixtures/invalid/lrd-foreign-supersedes.yaml",
+      "sha256": "9ef1a83614879f83d01b334079949355e04b9256be2ccaa899646c165e2648c7"
+    },
+    {
+      "path": "fixtures/invalid/lrd-missing-iteration.yaml",
+      "sha256": "43bf7c62d8bbb6c2446f6c17ab39361e47d5453ce60f8514a8b0df242b20e971"
+    },
+    {
+      "path": "fixtures/invalid/lrd-non-human-actor.yaml",
+      "sha256": "81c7195e088d279d59bd5bfb89673a46d8910caefc191fcd6354a2249c40bf33"
+    },
+    {
+      "path": "fixtures/invalid/lrd-zero-budget.yaml",
+      "sha256": "e4ba1437297acfda4c1f6d11701a7ae596a03c2c20c63ab934bb854b57c8da74"
+    },
+    {
+      "path": "fixtures/valid/lrd-001.yaml",
+      "sha256": "6abf2ca0ffcf3e88e2d3bea2395e4c75a78c0a8c7a727b382e49a6d776ad4487"
+    },
+    {
+      "path": "fixtures/valid/lrd-002-supersedes.yaml",
+      "sha256": "1cf5ea17d1e80a314345b5c2abb41221478c84743e860acbc23ae20f1270affc"
+    },
+    {
+      "path": "schema.json",
+      "sha256": "49baaa38c566d2985f42a0f5bff4f1a1f806de8cc24700d37bc8f5f75539cd2f"
+    }
+  ]
+}

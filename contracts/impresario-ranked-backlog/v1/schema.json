@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:impresario:contract:ranked-backlog:v1",
+  "title": "RankedBacklog",
+  "description": "Версионируемый бизнес-объект ранжированного бэклога (docs/semantics.md, RankedBacklog). Позиции с доказанным blocker живут в excluded[], не в items[]. Уникальность rank — tool-enforced валидатором.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "version",
+    "updated_at",
+    "policy",
+    "items",
+    "pending_unknown",
+    "excluded",
+    "last_run_id"
+  ],
+  "properties": {
+    "id": { "type": "string", "pattern": "^BL-[a-z0-9][a-z0-9-]*$" },
+    "version": { "type": "integer", "minimum": 1 },
+    "updated_at": { "$ref": "#/$defs/timestamp" },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy_version", "weights"],
+      "properties": {
+        "policy_version": { "type": "string", "minLength": 1 },
+        "weights": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fit_strategy", "fit_market", "fit_standards"],
+          "properties": {
+            "fit_strategy": { "type": "number", "exclusiveMinimum": 0 },
+            "fit_market": { "type": "number", "exclusiveMinimum": 0 },
+            "fit_standards": { "type": "number", "exclusiveMinimum": 0 }
+          }
+        },
+        "priority_thresholds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["high", "medium"],
+          "properties": {
+            "high": { "type": "number" },
+            "medium": { "type": "number" }
+          }
+        },
+        "strategy_ref": { "type": "string", "minLength": 1 },
+        "standards_ref": { "type": "string", "minLength": 1 }
+      }
+    },
+    "items": { "type": "array", "items": { "$ref": "#/$defs/item" } },
+    "pending_unknown": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/pendingEntry" }
+    },
+    "excluded": { "type": "array", "items": { "$ref": "#/$defs/excludedEntry" } },
+    "last_run_id": { "type": "string", "pattern": "^RUN-[0-9]{3,}$" },
+    "human_override": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actor", "note", "at"],
+      "properties": {
+        "actor": { "type": "string", "minLength": 1 },
+        "note": { "type": "string", "minLength": 1 },
+        "at": { "$ref": "#/$defs/timestamp" }
+      }
+    }
+  },
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "ideaRef": { "type": "string", "pattern": "^idea://IDEA-[0-9]{3,}$" },
+    "assessmentRef": { "type": "string", "pattern": "^assessment://ASMT-[0-9]{3,}$" },
+    "knownAxis": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "unknownAxis": {
+      "oneOf": [
+        { "type": "integer", "minimum": 1, "maximum": 5 },
+        { "const": "unknown" }
+      ]
+    },
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rank",
+        "idea_ref",
+        "title",
+        "source_kind",
+        "status",
+        "priority",
+        "score",
+        "fit_strategy",
+        "fit_market",
+        "fit_standards",
+        "assessment_ref"
+      ],
+      "properties": {
+        "rank": { "type": "integer", "minimum": 1 },
+        "idea_ref": { "$ref": "#/$defs/ideaRef" },
+        "title": { "type": "string", "minLength": 1 },
+        "source_kind": {
+          "enum": ["market", "customer", "hd", "competitor", "strategy", "rd", "internal", "other"]
+        },
+        "status": { "enum": ["new", "under_review", "selected", "parked", "rejected", "merged"] },
+        "priority": { "enum": ["high", "medium", "low"] },
+        "score": { "type": "number", "minimum": 1, "maximum": 5 },
+        "fit_strategy": { "$ref": "#/$defs/knownAxis" },
+        "fit_market": { "$ref": "#/$defs/knownAxis" },
+        "fit_standards": { "$ref": "#/$defs/knownAxis" },
+        "strategy_blocker": { "const": false },
+        "standards_blocker": { "const": false },
+        "assessment_ref": { "$ref": "#/$defs/assessmentRef" },
+        "rationale_ref": { "type": "string", "minLength": 1 }
+      }
+    },
+    "pendingEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["idea_ref", "title", "fit_strategy", "fit_market", "fit_standards", "missing_inputs"],
+      "properties": {
+        "idea_ref": { "$ref": "#/$defs/ideaRef" },
+        "title": { "type": "string", "minLength": 1 },
+        "fit_strategy": { "$ref": "#/$defs/unknownAxis" },
+        "fit_market": { "$ref": "#/$defs/unknownAxis" },
+        "fit_standards": { "$ref": "#/$defs/unknownAxis" },
+        "missing_inputs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "assessment_ref": { "$ref": "#/$defs/assessmentRef" }
+      }
+    },
+    "excludedEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["idea_ref", "title", "reason_kind", "reason"],
+      "properties": {
+        "idea_ref": { "$ref": "#/$defs/ideaRef" },
+        "title": { "type": "string", "minLength": 1 },
+        "reason_kind": { "enum": ["blocker", "card_defect"] },
+        "reason": { "type": "string", "minLength": 1 },
+        "strategy_blocker": { "type": "boolean" },
+        "strategy_blocker_ref": { "type": "string", "minLength": 1 },
+        "standards_blocker": { "type": "boolean" },
+        "standards_blocker_ref": { "type": "string", "minLength": 1 },
+        "fit_strategy": { "$ref": "#/$defs/unknownAxis" },
+        "fit_market": { "$ref": "#/$defs/unknownAxis" },
+        "fit_standards": { "$ref": "#/$defs/unknownAxis" },
+        "assessment_ref": { "$ref": "#/$defs/assessmentRef" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "reason_kind": { "const": "blocker" } } },
+          "then": {
+            "anyOf": [
+              {
+                "properties": { "strategy_blocker": { "const": true } },
+                "required": ["strategy_blocker", "strategy_blocker_ref"]
+              },
+              {
+                "properties": { "standards_blocker": { "const": true } },
+                "required": ["standards_blocker", "standards_blocker_ref"]
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": { "strategy_blocker": { "const": true } },
+            "required": ["strategy_blocker"]
+          },
+          "then": { "required": ["strategy_blocker_ref"] }
+        },
+        {
+          "if": {
+            "properties": { "standards_blocker": { "const": true } },
+            "required": ["standards_blocker"]
+          },
+          "then": { "required": ["standards_blocker_ref"] }
+        }
+      ]
+    }
+  }
+}

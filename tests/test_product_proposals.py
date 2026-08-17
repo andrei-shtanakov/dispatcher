@@ -113,10 +113,13 @@ def test_discover_finds_bundles_sorted_and_excludes_segments(
     _mk(tmp_path, "_drafts/pp-3/proposal.yaml")  # excluded: _ prefix
     _mk(tmp_path, "pilot/.hidden/pp-4/proposal.yaml")  # excluded: . prefix
     _mk(tmp_path, "deep/nested/contracts/pp-5/proposal.yaml")  # excluded: any segment
-    bundles, diags = _discover(tmp_path)
+    _mk(tmp_path, "pilot/backlog.yaml")  # backlog roots share the walk
+    _mk(tmp_path, "_drafts/backlog.yaml")  # and the same exclusions
+    bundles, backlogs, diags = _discover(tmp_path)
     assert diags == []
     rels = [b.relative_to(tmp_path).as_posix() for b in bundles]
     assert rels == ["pilot/a/pp-1", "pilot/b/pp-2"]
+    assert [b.relative_to(tmp_path).as_posix() for b in backlogs] == ["pilot"]
 
 
 def test_discover_does_not_follow_directory_symlinks(tmp_path: Path) -> None:
@@ -127,8 +130,8 @@ def test_discover_does_not_follow_directory_symlinks(tmp_path: Path) -> None:
     mirror = tmp_path / "mirror"
     mirror.mkdir()
     (mirror / "linked").symlink_to(outside, target_is_directory=True)
-    bundles, diags = _discover(mirror)
-    assert bundles == [] and diags == []
+    bundles, backlogs, diags = _discover(mirror)
+    assert bundles == [] and backlogs == [] and diags == []
 
 
 def test_walk_error_is_a_report_diagnostic_not_zero_bundles(
@@ -147,7 +150,7 @@ def test_walk_error_is_a_report_diagnostic_not_zero_bundles(
         return real_walk(top, **kwargs)
 
     monkeypatch.setattr(pp.os, "walk", failing_walk)
-    bundles, diags = pp._discover(tmp_path)
+    bundles, _backlogs, diags = pp._discover(tmp_path)
     assert [d.code for d in diags] == ["walk-error"]
     assert diags[0].path == "locked"
 

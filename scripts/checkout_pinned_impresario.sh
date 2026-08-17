@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Extract the impresario mirror at the vendored pin for the live smoke.
 #
-# The pin is READ from all three vendored manifests, which must agree — a
+# The pin is READ from all five vendored manifests, which must agree — a
 # disagreement is exactly the mixed-versions state the PR gate forbids, so
 # it fails here too. PP-101 must exist at that commit: its absence is a
 # provenance FAILURE (the pin does not contain the bundle the smoke is
@@ -52,6 +52,8 @@ names = (
     "impresario-product-proposal",
     "impresario-gate-decision",
     "impresario-loop-state",
+    "impresario-ranked-backlog",
+    "impresario-loop-resume-decision",
 )
 print(
     " ".join(
@@ -62,14 +64,14 @@ print(
 PY
 )" || die 3 "could not read producer_commit from the vendored manifests"
 read -r -a PIN_LIST <<< "$PINS"
-[ "${#PIN_LIST[@]}" -eq 3 ] ||
+[ "${#PIN_LIST[@]}" -eq 5 ] ||
   die 3 "could not read producer_commit from the vendored manifests: $PINS"
 for pin in "${PIN_LIST[@]}"; do
   [[ "$pin" =~ ^[0-9a-f]{40}$ ]] ||
     die 3 "not a full 40-hex producer_commit: $pin"
+  [ "$pin" = "${PIN_LIST[0]}" ] ||
+    die 3 "the five manifests disagree on producer_commit: ${PIN_LIST[*]}"
 done
-[ "${PIN_LIST[0]}" = "${PIN_LIST[1]}" ] && [ "${PIN_LIST[1]}" = "${PIN_LIST[2]}" ] ||
-  die 3 "the three manifests disagree on producer_commit: ${PIN_LIST[*]}"
 PIN="${PIN_LIST[0]}"
 
 WORK="$(mktemp -d)"

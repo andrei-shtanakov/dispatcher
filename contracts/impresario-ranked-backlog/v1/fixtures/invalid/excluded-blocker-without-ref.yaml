@@ -1,0 +1,19 @@
+# Инвариант: excluded с reason_kind = blocker требует установленный флаг + evidence-ссылку
+id: BL-portfolio
+version: 3
+updated_at: 2026-08-10T10:00:00Z
+policy:
+  policy_version: scoring/v1
+  weights:
+    fit_strategy: 0.3333
+    fit_market: 0.3333
+    fit_standards: 0.3334
+items: []
+pending_unknown: []
+excluded:
+  - idea_ref: idea://IDEA-006
+    title: "Скраппинг данных конкурентов"
+    reason_kind: blocker
+    reason: "Нарушение нормы, но без ссылки на источник запрета."
+    standards_blocker: true
+last_run_id: RUN-001

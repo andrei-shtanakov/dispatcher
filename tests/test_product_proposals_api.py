@@ -7,6 +7,7 @@ mirrors and exercise the serialized public response.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import httpx
@@ -148,3 +149,24 @@ async def test_needs_human_serializes_through_the_route(tmp_path: Path) -> None:
     # both wait kinds coexist on one bundle: Gate A + loop
     assert [w["gate_id"] for w in data["waits"]] == ["qg5_business"]
     assert data["bundles"][0]["loop_waits"] == data["needs_human"]
+
+
+async def test_backlog_wait_serializes_through_the_route(tmp_path: Path) -> None:
+    """Phase 3: the qg4_backlog wait rides the same pass-through endpoint."""
+    mirror = make_impresario(tmp_path)
+    fixture = Path(__file__).parent / "fixtures" / "product_proposals"
+    shutil.copytree(fixture / "pilot-backlog", mirror / "pilot")
+    (mirror / "pilot" / "PROVENANCE.txt").unlink()
+    async with _client(tmp_path) as client:
+        resp = await client.get("/api/projects/impresario/product-proposals")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert [(b["path"], b["state"]) for b in data["backlog_bundles"]] == [
+        ("pilot", "ok")
+    ]
+    assert [
+        (w["backlog_id"], w["version"], w["gate_id"], w["gate_label"], w["authority"])
+        for w in data["backlog_waits"]
+    ] == [("BL-ecosystem", 4, "qg4_backlog", "QG-4", "qg4_selector")]
+    assert data["backlog_waits"][0]["backlog_updated_at"] == "2026-08-17T02:42:23Z"
+    assert data["attention"] is False

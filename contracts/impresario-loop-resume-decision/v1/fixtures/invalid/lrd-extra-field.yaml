@@ -1,0 +1,11 @@
+decision_id: LRD-001
+subject:
+  loop_id: LOOP-101
+  iteration: 1
+new_max_iterations: 3
+decided_by:
+  kind: human
+  id: andrei
+decided_at: '2026-08-12T04:01:21Z'
+reason: owner resolved the blocking exempt semantics
+comment: extra

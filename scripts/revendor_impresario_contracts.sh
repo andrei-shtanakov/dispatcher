@@ -2,10 +2,11 @@
 # Re-vendor all impresario contracts at one producer commit.
 #
 # The pin is the ONE input. contracts/impresario-product-proposal/v1,
-# contracts/impresario-gate-decision/v1, and contracts/impresario-loop-state/v1
-# are always re-vendored together from the same SHA, so the three manifests can
-# never name different commits — the machine-readable anti-mix guarantee the
-# PR-gate test asserts.
+# contracts/impresario-gate-decision/v1, contracts/impresario-loop-state/v1,
+# contracts/impresario-ranked-backlog/v1, and
+# contracts/impresario-loop-resume-decision/v1 are always re-vendored together
+# from the same SHA, so the five manifests can never name different commits —
+# the machine-readable anti-mix guarantee the PR-gate test asserts.
 #
 # All directories are staged and fully verified before any is touched;
 # the swap is same-filesystem renames with a restoring trap. A failure
@@ -33,6 +34,8 @@ CONTRACTS=(
   "contracts/product-proposal/v1|contracts/impresario-product-proposal/v1|impresario-product-proposal"
   "contracts/gate-decision/v1|contracts/impresario-gate-decision/v1|impresario-gate-decision"
   "contracts/loop-state/v1|contracts/impresario-loop-state/v1|impresario-loop-state"
+  "contracts/ranked-backlog/v1|contracts/impresario-ranked-backlog/v1|impresario-ranked-backlog"
+  "contracts/loop-resume-decision/v1|contracts/impresario-loop-resume-decision/v1|impresario-loop-resume-decision"
 )
 
 die() { echo "revendor: $2" >&2; exit "$1"; }

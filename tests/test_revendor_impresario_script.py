@@ -19,6 +19,8 @@ DSTS = (
     "contracts/impresario-product-proposal/v1",
     "contracts/impresario-gate-decision/v1",
     "contracts/impresario-loop-state/v1",
+    "contracts/impresario-ranked-backlog/v1",
+    "contracts/impresario-loop-resume-decision/v1",
 )
 _GIT_ENV = {
     "GIT_AUTHOR_NAME": "t",
@@ -40,7 +42,7 @@ def _git(repo: Path, *args: str) -> str:
 
 @pytest.fixture
 def producer(tmp_path: Path) -> dict[str, object]:
-    """A miniature impresario: two commits over all three contract subdirs.
+    """A miniature impresario: two commits over all five contract subdirs.
 
     The second commit drops a fixture the first had — the file-deleted-
     upstream case a copy-over-the-top re-vendor gets wrong.
@@ -49,9 +51,13 @@ def producer(tmp_path: Path) -> dict[str, object]:
     pp = repo / "contracts" / "product-proposal" / "v1"
     gd = repo / "contracts" / "gate-decision" / "v1"
     ls = repo / "contracts" / "loop-state" / "v1"
+    rb = repo / "contracts" / "ranked-backlog" / "v1"
+    lrd = repo / "contracts" / "loop-resume-decision" / "v1"
     (pp / "fixtures").mkdir(parents=True)
     (gd / "fixtures").mkdir(parents=True)
     (ls / "fixtures").mkdir(parents=True)
+    (rb / "fixtures").mkdir(parents=True)
+    (lrd / "fixtures").mkdir(parents=True)
     (pp / "schema.json").write_text('{"title": "pp"}\n')
     (pp / "fixtures" / "ok.yaml").write_text("a: 1\n")
     (pp / "fixtures" / "dropped.yaml").write_text("b: 2\n")
@@ -59,6 +65,10 @@ def producer(tmp_path: Path) -> dict[str, object]:
     (gd / "fixtures" / "ok.yaml").write_text("c: 3\n")
     (ls / "schema.json").write_text('{"title": "ls"}\n')
     (ls / "fixtures" / "ok.json").write_text('{"a": 1}\n')
+    (rb / "schema.json").write_text('{"title": "rb"}\n')
+    (rb / "fixtures" / "ok.yaml").write_text("d: 4\n")
+    (lrd / "schema.json").write_text('{"title": "lrd"}\n')
+    (lrd / "fixtures" / "ok.yaml").write_text("e: 5\n")
     _git(repo, "init", "--quiet")
     _git(repo, "add", "-A")
     _git(repo, "commit", "--quiet", "-m", "one")
@@ -130,8 +140,8 @@ def test_upstream_deleted_file_does_not_survive(
 def test_failure_restores_both_previous_copies(
     producer: dict[str, object], sandbox: Path, tmp_path: Path
 ) -> None:
-    """A commit that has product-proposal/v1 but NONE of the three contracts:
-    the second extraction fails, and none of the three live directories may
+    """A commit that has product-proposal/v1 but NONE of the other contracts:
+    the second extraction fails, and none of the five live directories may
     have changed."""
     repo = tmp_path / "half"
     pp = repo / "contracts" / "product-proposal" / "v1"

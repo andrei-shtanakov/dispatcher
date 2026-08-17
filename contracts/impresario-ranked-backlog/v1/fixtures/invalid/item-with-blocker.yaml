@@ -1,0 +1,27 @@
+# Инвариант: позиция с доказанным blocker живёт в excluded[], не в items[]
+id: BL-portfolio
+version: 3
+updated_at: 2026-08-10T10:00:00Z
+policy:
+  policy_version: scoring/v1
+  weights:
+    fit_strategy: 0.3333
+    fit_market: 0.3333
+    fit_standards: 0.3334
+items:
+  - rank: 1
+    idea_ref: idea://IDEA-006
+    title: "Скраппинг данных конкурентов"
+    source_kind: competitor
+    status: under_review
+    priority: low
+    score: 2.7
+    fit_strategy: 3
+    fit_market: 4
+    fit_standards: 1
+    strategy_blocker: false
+    standards_blocker: true
+    assessment_ref: assessment://ASMT-007
+pending_unknown: []
+excluded: []
+last_run_id: RUN-001
