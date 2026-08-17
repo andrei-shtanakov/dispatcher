@@ -1,0 +1,10 @@
+source: impresario pilot/backlog.yaml + pilot/decisions/ (the live RankedBacklog)
+commit: a9d11fa75bb101d2919dc9f99e075270de5d7976  (same as the contract pin)
+copied: 2026-08-17
+files: backlog.yaml (BL-ecosystem v4), decisions/gd-001.yaml (select @ v1),
+  decisions/gd-002.yaml (select @ v3) — the exact live state issue #154 cites:
+  v4 has selectable items and NO active QG-4 decision, so exactly one
+  qg4_backlog wait with identity (BL-ecosystem, 4) exists.
+note: pinned test fixture (read from git objects, not the working tree).
+  Acceptance scenarios mutate a tmp_path copy of THIS directory — the files
+  here are never edited. Refresh together with a contract re-vendor.

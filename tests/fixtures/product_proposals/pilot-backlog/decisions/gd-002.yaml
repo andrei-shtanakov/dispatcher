@@ -1,0 +1,17 @@
+decision_id: GD-002
+gate_id: qg4_backlog
+subject:
+  kind: ranked_backlog
+  ref: backlog://BL-ecosystem
+  version: 3
+decision: select
+selected_idea_ref: idea://IDEA-104
+decided_by:
+  kind: human
+  id: andrei
+  role: qg4_selector
+decided_at: '2026-08-17T02:42:23Z'
+reason: 'Живой прогон researcher/creator-харнесса (M2): ранг #2 backlog v3, IDEA-101 уже в
+  работе'
+artifacts_reviewed:
+- backlog://BL-ecosystem

@@ -1,0 +1,15 @@
+# Бэкфилл 2026-08-15: авторизация исторического resume LOOP-101
+# восстановлена из immutable evidence — trace.jsonl (событие resumed),
+# decided_at = at записи research-pack://RP-503 в exchange-log.yaml.
+decision_id: LRD-001
+subject:
+  loop_id: LOOP-101
+  iteration: 1
+new_max_iterations: 3
+decided_by:
+  kind: human
+  id: andrei
+decided_at: '2026-08-12T04:01:21Z'
+reason: 'Решение владельца robin-runtime: exempt = prograph-vault; контракт
+  семантики из 4 пунктов (включая постоянное раскрытие); канонический
+  _PLAN_EXEMPT в коде вместо env'

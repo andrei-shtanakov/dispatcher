@@ -8,12 +8,16 @@ Locally:
       uv run pytest tests/test_product_proposals_live_smoke.py -v
 
 Asserted against the SERIALIZED public response — attention, diagnostics,
-bundles, waits, loop_status, needs_human — not the core function's return
-value. At the pin the tree holds exactly one bundle outside contracts/ (pp-101,
-approved) with a terminal loop status: a different result after a re-vendor is
-a real contract-behaviour change and must be reviewed, not re-pinned away.
-(contracts/examples/pp-001 doubles as live proof of the contracts/-segment
-exclusion.)
+bundles, waits, loop_status, needs_human, backlog_bundles, backlog_waits —
+not the core function's return value. At the pin the tree holds exactly two
+bundles outside contracts/ (pp-101 — with an LRD record in its decisions/ —
+and pp-104, both approved) with terminal loop statuses, plus the live
+RankedBacklog
+(BL-ecosystem v4: selectable items, no active QG-4 decision → exactly one
+qg4_backlog wait — the invisible wait issue #154 cites): a different result
+after a re-vendor is a real contract-behaviour change and must be reviewed,
+not re-pinned away. (contracts/examples/pp-001 doubles as live proof of the
+contracts/-segment exclusion.)
 """
 
 from __future__ import annotations
@@ -54,8 +58,20 @@ async def test_http_surface_on_the_pinned_real_mirror() -> None:
     assert data["attention"] is False
     assert data["diagnostics"] == []
     assert [(b["path"], b["state"], b["status"]) for b in data["bundles"]] == [
-        ("pilot/forconcept/pp-101", "ok", "approved")
+        ("pilot/forconcept/pp-101", "ok", "approved"),
+        ("pilot/forconcept/pp-104", "ok", "approved"),
     ]
-    assert [b["loop_status"] for b in data["bundles"]] == ["ready_for_business"]
+    assert [b["loop_status"] for b in data["bundles"]] == [
+        "ready_for_business",
+        "ready_for_business",
+    ]
     assert data["waits"] == []
     assert data["needs_human"] == []
+    assert [(b["path"], b["state"]) for b in data["backlog_bundles"]] == [
+        ("pilot", "ok")
+    ]
+    assert [
+        (w["backlog_id"], w["version"], w["gate_id"], w["authority"])
+        for w in data["backlog_waits"]
+    ] == [("BL-ecosystem", 4, "qg4_backlog", "qg4_selector")]
+    assert data["backlog_waits"][0]["artifact_path"] == "pilot/backlog.yaml"

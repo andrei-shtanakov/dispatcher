@@ -6,6 +6,14 @@ Inbox #129 phase 1 (spec: docs/superpowers/specs/
 which product decisions are waiting for a human — Gate A (`qg5_business`,
 business_owner) and Gate B (`qg5_committee`, committee_chair).
 
+Inbox #154 phase 3 (spec: docs/superpowers/specs/
+2026-08-17-qg4-backlog-wait-design.md) adds the backlog-level QG-4 wait:
+a RankedBacklog (`backlog.yaml` + sibling `decisions/*.yaml`) whose current
+version has selectable items and no active QG-4 decision waits for the
+`qg4_selector`. QG-4 is ONE gate over the backlog version — zero or one
+wait per version, identity `(backlog_id, version)`; ANY of the QG-4
+outcomes (select | defer | park | reject) extinguishes it.
+
 Constraints this module lives under:
 
 - Classification only (ARCH-C3/D1): impresario is never imported, its CLI is
@@ -41,6 +49,8 @@ _CONTRACTS = Path(__file__).resolve().parents[2] / "contracts"
 _PROPOSAL_SCHEMA = _CONTRACTS / "impresario-product-proposal" / "v1" / "schema.json"
 _DECISION_SCHEMA = _CONTRACTS / "impresario-gate-decision" / "v1" / "schema.json"
 _LOOP_STATE_SCHEMA = _CONTRACTS / "impresario-loop-state" / "v1" / "schema.json"
+_BACKLOG_SCHEMA = _CONTRACTS / "impresario-ranked-backlog" / "v1" / "schema.json"
+_LRD_SCHEMA = _CONTRACTS / "impresario-loop-resume-decision" / "v1" / "schema.json"
 
 ANCHOR_FILES = (
     "contracts/product-proposal/v1/schema.json",
@@ -80,6 +90,22 @@ _UNREADABLE_CODES = {
     "proposal-schema-invalid",
     "proposal-path-escape",
 }
+_BACKLOG_UNREADABLE_CODES = {
+    "backlog-unreadable",
+    "backlog-schema-invalid",
+    "backlog-path-escape",
+}
+QG4_GATE_ID = "qg4_backlog"
+_QG4_LABEL = "QG-4"
+_QG4_AUTHORITY = "qg4_selector"
+# The gate-decision/v1 conditional pins these as the ONLY qg4_backlog
+# outcomes; semantics.md «QG-4: human select» — any of them extinguishes
+# the wait, not only select.
+_QG4_OUTCOMES = {"select", "defer", "park", "reject"}
+# Selectable = no QG-4 outcome recorded in the item's own status yet.
+# Owner-fixed policy: `under_review` is still undecided, so it keeps the
+# wait open just like `new` does.
+_SELECTABLE_STATUSES = {"new", "under_review"}
 
 
 class Diagnostic(BaseModel):
@@ -121,6 +147,44 @@ class LoopWait(BaseModel):
     bundle_path: str
 
 
+class BacklogWait(BaseModel):
+    """One «QG-4 over the current backlog version waits for a human» record.
+
+    Dedup identity = (backlog_id, version): a version bump extinguishes the
+    previous wait and (with selectable items) opens a NEW one. idea_ref is
+    context, never identity — QG-4 is one gate over the version, not one
+    per item.
+    """
+
+    backlog_id: str
+    gate_id: Literal["qg4_backlog"] = QG4_GATE_ID
+    gate_label: str = _QG4_LABEL
+    authority: str = _QG4_AUTHORITY
+    artifact_ref: str  # "backlog://<id>"
+    artifact_path: str  # backlog.yaml, relative to the mirror root
+    version: int
+    # backlog.updated_at — the version publication moment, a real freshness
+    # signal (unlike proposal_updated_at).
+    backlog_updated_at: str
+    # Context only (which items are still selectable), NOT part of the
+    # identity and not part of artifact_ref.
+    selectable_idea_refs: list[str] = Field(default_factory=list)
+
+
+class BacklogBundle(BaseModel):
+    """Every discovered backlog, lossless: non-ok rows keep ALL diagnostics."""
+
+    path: str  # directory holding backlog.yaml, relative to the mirror root
+    state: BundleState
+    diagnostics: list[Diagnostic] = Field(default_factory=list)
+    backlog_id: str | None = None
+    version: int | None = None
+    updated_at: str | None = None
+    # Computed ONLY for state == "ok" (0..1 records). On any other state an
+    # empty list means «suppressed», never «nothing waits».
+    waits: list[BacklogWait] = Field(default_factory=list)
+
+
 class ProposalBundle(BaseModel):
     """Every discovered bundle, lossless: non-ok rows keep ALL diagnostics."""
 
@@ -148,9 +212,11 @@ class ProductProposalsReport(BaseModel):
     bundles: list[ProposalBundle] = Field(default_factory=list)
     waits: list[GateWait] = Field(default_factory=list)
     needs_human: list[LoopWait] = Field(default_factory=list)
+    backlog_bundles: list[BacklogBundle] = Field(default_factory=list)
+    backlog_waits: list[BacklogWait] = Field(default_factory=list)
     diagnostics: list[Diagnostic] = Field(default_factory=list)
-    # Any non-ok bundle or report-level diagnostic. A plain GateWait does
-    # NOT raise attention — waiting is expected business work.
+    # Any non-ok bundle (proposal or backlog) or report-level diagnostic. A
+    # plain wait does NOT raise attention — waiting is expected business work.
     attention: bool = False
 
 
@@ -205,6 +271,18 @@ def _loop_state_validator() -> jsonschema.Draft202012Validator:
     return jsonschema.Draft202012Validator(schema)
 
 
+@functools.cache
+def _backlog_validator() -> jsonschema.Draft202012Validator:
+    schema = json.loads(_BACKLOG_SCHEMA.read_text(encoding="utf-8"))
+    return jsonschema.Draft202012Validator(schema)
+
+
+@functools.cache
+def _lrd_validator() -> jsonschema.Draft202012Validator:
+    schema = json.loads(_LRD_SCHEMA.read_text(encoding="utf-8"))
+    return jsonschema.Draft202012Validator(schema)
+
+
 def _relpath(path: Path, mirror_root: Path) -> str:
     try:
         return path.relative_to(mirror_root).as_posix()
@@ -224,8 +302,10 @@ def _excluded(name: str) -> bool:
     return name.startswith((".", "_")) or name == "contracts"
 
 
-def _discover(mirror_root: Path) -> tuple[list[Path], list[Diagnostic]]:
-    """Find proposal-bundle roots: every directory holding a proposal.yaml.
+def _discover(
+    mirror_root: Path,
+) -> tuple[list[Path], list[Path], list[Diagnostic]]:
+    """Find bundle roots: directories holding a proposal.yaml or backlog.yaml.
 
     Exclusions apply to ANY path segment; directory symlinks are pruned; an
     enumeration failure becomes a walk-error diagnostic via onerror — the
@@ -245,6 +325,7 @@ def _discover(mirror_root: Path) -> tuple[list[Path], list[Diagnostic]]:
         )
 
     bundles: list[Path] = []
+    backlogs: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(
         mirror_root, topdown=True, onerror=onerror, followlinks=False
     ):
@@ -254,8 +335,11 @@ def _discover(mirror_root: Path) -> tuple[list[Path], list[Diagnostic]]:
         )
         if "proposal.yaml" in filenames:
             bundles.append(here)
+        if "backlog.yaml" in filenames:
+            backlogs.append(here)
     bundles.sort(key=lambda p: _relpath(p, mirror_root))
-    return bundles, diagnostics
+    backlogs.sort(key=lambda p: _relpath(p, mirror_root))
+    return bundles, backlogs, diagnostics
 
 
 def _load_yaml_file(
@@ -323,16 +407,25 @@ def _load_decisions(
                     path=_relpath(path, mirror_root),
                 )
             )
-        elif not _decision_validator().is_valid(data):
+        elif _decision_validator().is_valid(data):
+            records.append(data)
+        elif _lrd_validator().is_valid(data):
+            # A loop-resume-decision (impresario's resume authorization,
+            # vendored loop-resume-decision/v1) legitimately shares the
+            # decisions/ directory. It is valid mirror content that plays
+            # no role in gate classification — recognized, then ignored.
+            continue
+        else:
             diagnostics.append(
                 Diagnostic(
                     code="decision-schema-invalid",
-                    message="does not match the vendored gate-decision/v1",
+                    message=(
+                        "matches neither the vendored gate-decision/v1 nor "
+                        "loop-resume-decision/v1"
+                    ),
                     path=_relpath(path, mirror_root),
                 )
             )
-        else:
-            records.append(data)
     return records, diagnostics
 
 
@@ -517,6 +610,116 @@ def _gate_wait(
     )
 
 
+def _backlog_wait(
+    artifact_path: str,
+    backlog: dict[str, object],
+    decisions: list[dict[str, object]],
+) -> BacklogWait | None:
+    """The version-matched active-QG-4 rule (issue #154, spec «Semantics»).
+
+    QG-4 is one gate over the backlog VERSION: the wait exists while the
+    current version has selectable items and no active decision, and ANY of
+    the QG-4 outcomes extinguishes it. A decision for another version is
+    history, not permission — a version bump reopens the gate.
+    """
+    items = backlog["items"]
+    assert isinstance(items, list)  # schema-guaranteed
+    selectable = [
+        str(item["idea_ref"])
+        for item in items
+        if isinstance(item, dict) and item["status"] in _SELECTABLE_STATUSES
+    ]
+    if not selectable:
+        return None
+    backlog_id = str(backlog["id"])
+    version = int(backlog["version"])  # type: ignore[arg-type]
+    ref = f"backlog://{backlog_id}"
+    superseded = {
+        target for r in decisions if (target := _supersedes_target(r)) is not None
+    }
+    for record in decisions:
+        subject = record["subject"]
+        assert isinstance(subject, dict)  # schema-guaranteed
+        if (
+            record["gate_id"] == QG4_GATE_ID
+            and record["decision"] in _QG4_OUTCOMES
+            and subject["kind"] == "ranked_backlog"
+            and subject["ref"] == ref
+            and subject["version"] == version
+            and str(record["decision_id"]) not in superseded
+        ):
+            return None
+    return BacklogWait(
+        backlog_id=backlog_id,
+        artifact_ref=ref,
+        artifact_path=artifact_path,
+        version=version,
+        backlog_updated_at=str(backlog["updated_at"]),
+        selectable_idea_refs=selectable,
+    )
+
+
+def _load_backlog_bundle(mirror_root: Path, backlog_dir: Path) -> BacklogBundle:
+    """Classify one backlog root; the global id-conflict pass runs later."""
+    rel = _relpath(backlog_dir, mirror_root) or "."
+    backlog_file = backlog_dir / "backlog.yaml"
+    diagnostics: list[Diagnostic] = []
+    backlog: dict[str, object] | None = None
+
+    data, diag = _load_yaml_file(backlog_file, mirror_root, "backlog")
+    if diag is not None:
+        diagnostics.append(diag)
+    elif not isinstance(data, dict):
+        diagnostics.append(
+            Diagnostic(
+                code="backlog-unreadable",
+                message="not a YAML mapping",
+                path=_relpath(backlog_file, mirror_root),
+            )
+        )
+    elif not _backlog_validator().is_valid(data):
+        diagnostics.append(
+            Diagnostic(
+                code="backlog-schema-invalid",
+                message="does not match the vendored ranked-backlog/v1",
+                path=_relpath(backlog_file, mirror_root),
+            )
+        )
+    else:
+        backlog = data
+
+    decisions, decision_diags = _load_decisions(
+        backlog_dir, mirror_root, classify=backlog is not None
+    )
+    diagnostics.extend(decision_diags)
+    if backlog is not None and not decision_diags:
+        diagnostics.extend(_supersession_integrity(decisions))
+
+    diagnostics.sort(key=lambda d: (d.path or "", d.code, d.message))
+    if any(d.code in _BACKLOG_UNREADABLE_CODES for d in diagnostics):
+        state: BundleState = "unreadable"
+    elif diagnostics:
+        state = "unknown"
+    else:
+        state = "ok"
+
+    waits: list[BacklogWait] = []
+    if state == "ok" and backlog is not None:
+        wait = _backlog_wait(_relpath(backlog_file, mirror_root), backlog, decisions)
+        if wait is not None:
+            waits.append(wait)
+
+    return BacklogBundle(
+        path=rel,
+        state=state,
+        diagnostics=diagnostics,
+        backlog_id=str(backlog["id"]) if backlog else None,
+        version=int(backlog["version"]) if backlog else None,  # type: ignore[arg-type]
+        updated_at=str(backlog["updated_at"]) if backlog else None,
+        waits=waits,
+    )
+
+
 def _load_bundle(mirror_root: Path, bundle_dir: Path) -> ProposalBundle:
     """Classify one bundle; the global conflict pass runs in the caller."""
     rel = _relpath(bundle_dir, mirror_root) or "."
@@ -622,6 +825,32 @@ def _mark_conflicts(bundles: list[ProposalBundle]) -> None:
             bundle.diagnostics.sort(key=lambda d: (d.path or "", d.code, d.message))
 
 
+def _mark_backlog_conflicts(bundles: list[BacklogBundle]) -> None:
+    """Same discipline as _mark_conflicts, for the backlog identity: one
+    backlog id claimed by several roots is a conflict, never arbitrary
+    dedup; conflict suppresses waits."""
+    by_id: dict[str, list[BacklogBundle]] = {}
+    for bundle in bundles:
+        if bundle.backlog_id is not None:
+            by_id.setdefault(bundle.backlog_id, []).append(bundle)
+    for backlog_id, group in sorted(by_id.items()):
+        if len(group) < 2:
+            continue
+        paths = ", ".join(sorted(b.path for b in group))
+        for bundle in group:
+            bundle.state = "conflict"
+            bundle.waits = []
+            bundle.diagnostics.append(
+                Diagnostic(
+                    code="backlog-id-conflict",
+                    message=(
+                        f"backlog id {backlog_id} claimed by several roots: {paths}"
+                    ),
+                )
+            )
+            bundle.diagnostics.sort(key=lambda d: (d.path or "", d.code, d.message))
+
+
 def collect_product_proposals(mirror_root: Path) -> ProductProposalsReport:
     """Scan the impresario mirror and classify every proposal bundle.
 
@@ -642,9 +871,11 @@ def collect_product_proposals(mirror_root: Path) -> ProductProposalsReport:
             ],
             attention=True,
         )
-    bundle_dirs, report_diags = _discover(mirror_root)
+    bundle_dirs, backlog_dirs, report_diags = _discover(mirror_root)
     bundles = [_load_bundle(mirror_root, d) for d in bundle_dirs]
     _mark_conflicts(bundles)
+    backlog_bundles = [_load_backlog_bundle(mirror_root, d) for d in backlog_dirs]
+    _mark_backlog_conflicts(backlog_bundles)
     report_diags.sort(key=lambda d: (d.path or "", d.code, d.message))
     waits = sorted(
         (w for b in bundles if b.state == "ok" for w in b.waits),
@@ -654,11 +885,19 @@ def collect_product_proposals(mirror_root: Path) -> ProductProposalsReport:
         (w for b in bundles if b.state == "ok" for w in b.loop_waits),
         key=lambda w: (w.loop_id, w.iteration, w.bundle_path),
     )
+    backlog_waits = sorted(
+        (w for b in backlog_bundles if b.state == "ok" for w in b.waits),
+        key=lambda w: (w.backlog_id, w.version, w.artifact_path),
+    )
     return ProductProposalsReport(
         mirror_path=str(mirror_root),
         bundles=bundles,
         waits=waits,
         needs_human=needs_human,
+        backlog_bundles=backlog_bundles,
+        backlog_waits=backlog_waits,
         diagnostics=report_diags,
-        attention=bool(report_diags) or any(b.state != "ok" for b in bundles),
+        attention=bool(report_diags)
+        or any(b.state != "ok" for b in bundles)
+        or any(b.state != "ok" for b in backlog_bundles),
     )
