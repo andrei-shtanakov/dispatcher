@@ -138,6 +138,32 @@ const LOOP_TERMINAL = report({
   bundles: [{...OK_BUNDLE, status: 'approved', waits: [],
     loop_status: 'ready_for_business', loop_waits: []}],
 });
+const BACKLOG_WAIT = {
+  backlog_id: 'BL-ecosystem', gate_id: 'qg4_backlog', gate_label: 'QG-4',
+  authority: 'qg4_selector', artifact_ref: 'backlog://BL-ecosystem',
+  artifact_path: 'pilot/backlog.yaml', version: 4,
+  backlog_updated_at: '2026-08-17T02:42:23Z',
+  selectable_idea_refs: ['idea://IDEA-103', 'idea://IDEA-106'],
+};
+const OK_BACKLOG = {
+  path: 'pilot', state: 'ok', diagnostics: [], backlog_id: 'BL-ecosystem',
+  version: 4, updated_at: '2026-08-17T02:42:23Z', waits: [BACKLOG_WAIT],
+};
+const BACKLOG_WAITING = report({
+  backlog_bundles: [OK_BACKLOG], backlog_waits: [BACKLOG_WAIT],
+});
+const BACKLOG_SUPPRESSED = report({
+  attention: true,
+  backlog_bundles: [{
+    path: 'pilot', state: 'unreadable',
+    diagnostics: [{
+      code: 'backlog-unreadable',
+      message: 'UnicodeDecodeError: bad byte',
+      path: 'pilot/backlog.yaml',
+    }],
+    backlog_id: null, version: null, updated_at: null, waits: [],
+  }],
+});
 
 function overviewProjects(names) {
   return names.map(name => ({
@@ -443,6 +469,61 @@ testCase('a hostile loop reason arrives escaped', async () => {
   const out = render(env, hostile);
   check(!out.includes('<img'), 'raw markup does not survive esc()');
   check(out.includes('&lt;img'), 'the reason is still readable, escaped');
+});
+
+testCase('a qg4_backlog wait is readable off one screen', async () => {
+  const env = await boot(() => ok(BACKLOG_WAITING));
+  await openDetail(env);
+  const text = screenText(env, 'product-proposals');
+  check(text.includes('backlog://BL-ecosystem'),
+    `backlog artifact_ref on screen (got: ${text})`);
+  check(text.includes('QG-4'), 'gate label on screen');
+  check(text.includes('qg4_selector'), 'authority on screen');
+  check(text.includes('v4'), 'the waited-on backlog version on screen');
+  check(text.includes('2026-08-17T02:42:23Z'), 'backlog updated_at on screen');
+  check(text.includes('pilot/backlog.yaml'), 'artifact path identifies the file');
+  check(text.includes('idea://IDEA-103'), 'selectable idea refs visible as context');
+});
+
+testCase('suppressed backlog never reads as «0 backlog gates waiting»', async () => {
+  const env = await boot(() => ok(BACKLOG_SUPPRESSED));
+  await openDetail(env);
+  const text = screenText(env, 'product-proposals');
+  check(!text.includes('0 backlog gates waiting'),
+    'suppressed backlog classification must not read as zero waits');
+  check(text.includes('classification suppressed'), 'suppressed wording on screen');
+  check(text.includes('backlog-unreadable'), 'the diagnostic code is on screen');
+});
+
+testCase('a decided backlog reads as an explicit zero (fully classified only)', async () => {
+  const env = await boot(() => ok(BACKLOG_WAITING));
+  const decided = report({backlog_bundles: [{...OK_BACKLOG, waits: []}]});
+  const out = render(env, decided);
+  check(out.includes('0 backlog gates waiting'),
+    'an all-ok decided backlog says «0 backlog gates waiting»');
+  const degraded = report({
+    attention: true,
+    backlog_bundles: [{...OK_BACKLOG, waits: []}],
+    diagnostics: [{code: 'scan-degraded', message: 'one pilot dir was lost'}],
+  });
+  const degradedOut = render(env, degraded);
+  check(!degradedOut.includes('0 backlog gates waiting'),
+    'a degraded scan must not read as a confident backlog zero');
+});
+
+testCase('a hostile backlog id arrives escaped, paths never become links', async () => {
+  const env = await boot(() => ok(BACKLOG_WAITING));
+  const hostile = report({
+    attention: true,
+    backlog_bundles: [{...OK_BACKLOG, state: 'unknown', waits: [],
+      diagnostics: [{code: 'decision-schema-invalid',
+        message: '<img src=x onerror=alert(1)>', path: 'pilot/x'}]}],
+  });
+  const out = render(env, hostile);
+  check(!out.includes('<img'), 'raw markup does not survive esc()');
+  check(out.includes('&lt;img'), 'the message is still readable, escaped');
+  const waiting = render(env, BACKLOG_WAITING);
+  check(!waiting.includes('<a '), 'backlog paths render as text, never links');
 });
 
 // ---- main ------------------------------------------------------------------
