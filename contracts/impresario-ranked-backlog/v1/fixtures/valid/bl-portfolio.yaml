@@ -1,0 +1,61 @@
+id: BL-portfolio
+version: 3
+updated_at: 2026-08-10T10:00:00Z
+policy:
+  policy_version: scoring/v1
+  weights:
+    fit_strategy: 0.3333
+    fit_market: 0.3333
+    fit_standards: 0.3334
+  priority_thresholds:
+    high: 4.0
+    medium: 2.5
+  strategy_ref: "strategy://enterprise/2026"
+  standards_ref: "standards://registry/v2"
+items:
+  - rank: 1
+    idea_ref: idea://IDEA-001
+    title: "Портал самообслуживания для 4-й линии HD"
+    source_kind: hd
+    status: under_review
+    priority: high
+    score: 4.0
+    fit_strategy: 4
+    fit_market: 4
+    fit_standards: 4
+    strategy_blocker: false
+    standards_blocker: false
+    assessment_ref: assessment://ASMT-001
+  - rank: 2
+    idea_ref: idea://IDEA-004
+    title: "Конфигуратор тарифов для партнёров"
+    source_kind: market
+    status: under_review
+    priority: medium
+    score: 3.0
+    fit_strategy: 3
+    fit_market: 4
+    fit_standards: 2
+    strategy_blocker: false
+    standards_blocker: false
+    assessment_ref: assessment://ASMT-005
+pending_unknown:
+  - idea_ref: idea://IDEA-005
+    title: "Маркетплейс интеграций"
+    fit_strategy: unknown
+    fit_market: 3
+    fit_standards: unknown
+    missing_inputs:
+      - "актуальный документ стратегии"
+      - "реестр стандартов интеграций"
+excluded:
+  - idea_ref: idea://IDEA-006
+    title: "Скраппинг данных конкурентов"
+    reason_kind: blocker
+    reason: "Нарушение обязательной нормы обработки данных без пути к соответствию."
+    standards_blocker: true
+    standards_blocker_ref: "standards://registry/v2/data-processing-7"
+    fit_strategy: 3
+    fit_market: 4
+    fit_standards: 1
+last_run_id: RUN-001

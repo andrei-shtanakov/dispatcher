@@ -1,0 +1,25 @@
+# Инвариант: в items[] только полностью оценённые позиции; unknown живёт в pending_unknown[]
+id: BL-portfolio
+version: 3
+updated_at: 2026-08-10T10:00:00Z
+policy:
+  policy_version: scoring/v1
+  weights:
+    fit_strategy: 0.3333
+    fit_market: 0.3333
+    fit_standards: 0.3334
+items:
+  - rank: 1
+    idea_ref: idea://IDEA-005
+    title: "Маркетплейс интеграций"
+    source_kind: rd
+    status: under_review
+    priority: medium
+    score: unknown
+    fit_strategy: unknown
+    fit_market: 3
+    fit_standards: unknown
+    assessment_ref: assessment://ASMT-006
+pending_unknown: []
+excluded: []
+last_run_id: RUN-001

@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 CONTRACTS_ROOT = Path(__file__).parent.parent / "contracts"
-PRODUCER_COMMIT = "51e3103b5c88989a1d4a01a659d21790a92bb76b"
+PRODUCER_COMMIT = "a9d11fa75bb101d2919dc9f99e075270de5d7976"
 _EXCLUDED_NAMES = {"PINNED.txt", "manifest.json"}
 VENDORED = {
     "impresario-product-proposal": CONTRACTS_ROOT
@@ -27,6 +27,10 @@ VENDORED = {
     / "v1",
     "impresario-gate-decision": CONTRACTS_ROOT / "impresario-gate-decision" / "v1",
     "impresario-loop-state": CONTRACTS_ROOT / "impresario-loop-state" / "v1",
+    "impresario-ranked-backlog": CONTRACTS_ROOT / "impresario-ranked-backlog" / "v1",
+    "impresario-loop-resume-decision": CONTRACTS_ROOT
+    / "impresario-loop-resume-decision"
+    / "v1",
 }
 EXPECTED_SURFACES = {
     "impresario-product-proposal": {
@@ -57,6 +61,24 @@ EXPECTED_SURFACES = {
         "fixtures/valid/ready.json",
         "fixtures/valid/running.json",
     },
+    "impresario-ranked-backlog": {
+        "schema.json",
+        "fixtures/valid/bl-portfolio.yaml",
+        "fixtures/invalid/excluded-blocker-without-ref.yaml",
+        "fixtures/invalid/item-unknown-score.yaml",
+        "fixtures/invalid/item-with-blocker.yaml",
+    },
+    "impresario-loop-resume-decision": {
+        "schema.json",
+        "fixtures/valid/lrd-001.yaml",
+        "fixtures/valid/lrd-002-supersedes.yaml",
+        "fixtures/invalid/lrd-empty-reason.yaml",
+        "fixtures/invalid/lrd-extra-field.yaml",
+        "fixtures/invalid/lrd-foreign-supersedes.yaml",
+        "fixtures/invalid/lrd-missing-iteration.yaml",
+        "fixtures/invalid/lrd-non-human-actor.yaml",
+        "fixtures/invalid/lrd-zero-budget.yaml",
+    },
 }
 
 
@@ -81,7 +103,7 @@ def test_manifest_names_the_pin_and_contract(name: str) -> None:
 
 
 def test_both_manifests_share_one_producer_commit() -> None:
-    """The anti-mix guarantee: the three contracts can never silently sit at
+    """The anti-mix guarantee: the five contracts can never silently sit at
     different upstream commits — pin and provenance are machine-readable."""
     pins = {_manifest(root)["producer_commit"] for root in VENDORED.values()}
     assert pins == {PRODUCER_COMMIT}

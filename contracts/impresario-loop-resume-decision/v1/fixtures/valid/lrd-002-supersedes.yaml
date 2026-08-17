@@ -1,0 +1,11 @@
+decision_id: LRD-002
+subject:
+  loop_id: LOOP-101
+  iteration: 1
+new_max_iterations: 4
+decided_by:
+  kind: human
+  id: andrei
+decided_at: '2026-08-12T05:00:00Z'
+reason: corrects LRD-001 with a wider budget
+supersedes: loop-resume-decision://LRD-001

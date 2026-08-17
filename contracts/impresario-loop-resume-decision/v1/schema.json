@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:impresario:contract:loop-resume-decision:v1",
+  "title": "LoopResumeDecision",
+  "description": "Immutable авторизация возобновления одного конкретного ожидания needs_human цикла researcher ↔ creator (docs/semantics.md, «Состояние цикла»). Authority — человек (schema-enforced: decided_by.kind = human). Исправление/перекрытие — только новой записью со ссылкой supersedes; старая запись не правится. Consumer (внешний backend) решений не создаёт: отсутствие активного решения — fail-closed отказ.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "decision_id",
+    "subject",
+    "new_max_iterations",
+    "decided_by",
+    "decided_at",
+    "reason"
+  ],
+  "properties": {
+    "decision_id": {
+      "type": "string",
+      "pattern": "^LRD-[0-9]{3,}$"
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["loop_id", "iteration"],
+      "properties": {
+        "loop_id": {
+          "type": "string",
+          "pattern": "^LOOP-[0-9]{3,}$"
+        },
+        "iteration": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "new_max_iterations": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "decided_by": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {
+          "enum": ["human"]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "decided_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "supersedes": {
+      "type": "string",
+      "pattern": "^loop-resume-decision://LRD-[0-9]{3,}$"
+    }
+  },
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    }
+  }
+}

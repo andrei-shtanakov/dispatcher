@@ -1,7 +1,7 @@
 {
   "contract": "impresario-gate-decision",
   "contract_version": 1,
-  "producer_commit": "51e3103b5c88989a1d4a01a659d21790a92bb76b",
+  "producer_commit": "a9d11fa75bb101d2919dc9f99e075270de5d7976",
   "surface_note": "sha256 of every vendored file; excludes PINNED.txt and this manifest",
   "tree_sha256": "c9df63d6845ac977f22ab675466f4b5b69ae5c89a8a54eed9b0077d0e60c700e",
   "surface": [

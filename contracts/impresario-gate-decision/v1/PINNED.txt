@@ -1,6 +1,6 @@
 source: impresario contracts/gate-decision/v1
-commit: 51e3103b5c88989a1d4a01a659d21790a92bb76b
-vendored: 2026-08-12
+commit: a9d11fa75bb101d2919dc9f99e075270de5d7976
+vendored: 2026-08-17
 note: pinned copy (repo-boundaries vendoring, ADR-ECO-003). Do not edit here —
   re-vendor with scripts/revendor_impresario_contracts.sh, which re-vendors
   ALL impresario contract directories from the one commit it is given, so

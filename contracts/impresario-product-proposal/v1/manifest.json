@@ -1,7 +1,7 @@
 {
   "contract": "impresario-product-proposal",
   "contract_version": 1,
-  "producer_commit": "51e3103b5c88989a1d4a01a659d21790a92bb76b",
+  "producer_commit": "a9d11fa75bb101d2919dc9f99e075270de5d7976",
   "surface_note": "sha256 of every vendored file; excludes PINNED.txt and this manifest",
   "tree_sha256": "af5a6f1d678601e952b794c4bf04ef1a17ee4deee0d7155ec69fd62126834c47",
   "surface": [

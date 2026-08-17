@@ -1,7 +1,7 @@
 {
   "contract": "impresario-loop-state",
   "contract_version": 1,
-  "producer_commit": "51e3103b5c88989a1d4a01a659d21790a92bb76b",
+  "producer_commit": "a9d11fa75bb101d2919dc9f99e075270de5d7976",
   "surface_note": "sha256 of every vendored file; excludes PINNED.txt and this manifest",
   "tree_sha256": "fd90502b2d2f1859c4a193b9fc17e6759f9a6293a397013522844e863166783c",
   "surface": [

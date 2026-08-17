@@ -1,7 +1,7 @@
-"""checkout_pinned_impresario.sh: the three-way pin-agreement gate.
+"""checkout_pinned_impresario.sh: the five-way pin-agreement gate.
 
 Sandbox discipline of tests/test_revendor_impresario_script.py: the script
-and the three vendored manifests are COPIED into tmp_path, so the real
+and the five vendored manifests are COPIED into tmp_path, so the real
 contracts tree is never touched. Only the disagreement direction lives
 here — the agreement-pass direction is proven by the live smoke, which
 uses the pin only after this check succeeds.
@@ -20,6 +20,8 @@ CONTRACT_DIRS = (
     "contracts/impresario-product-proposal/v1",
     "contracts/impresario-gate-decision/v1",
     "contracts/impresario-loop-state/v1",
+    "contracts/impresario-ranked-backlog/v1",
+    "contracts/impresario-loop-resume-decision/v1",
 )
 OTHER_PIN = "a" * 40  # valid 40-hex, guaranteed different
 

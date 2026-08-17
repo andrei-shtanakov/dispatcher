@@ -1,4 +1,4 @@
-source: impresario contracts/product-proposal/v1
+source: impresario contracts/ranked-backlog/v1
 commit: a9d11fa75bb101d2919dc9f99e075270de5d7976
 vendored: 2026-08-17
 note: pinned copy (repo-boundaries vendoring, ADR-ECO-003). Do not edit here —
