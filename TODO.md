@@ -145,7 +145,7 @@
       «0 gates/loops waiting» — только при все-ok бандлах без report-level
       diagnostics.
 
-- [ ] Read-only `qg4_backlog` wait — фаза 3 gate_waiting @owner:github:andrei-shtanakov @id:product-proposal-qg4-backlog-wait
+- [x] Read-only `qg4_backlog` wait — фаза 3 gate_waiting — PR #155 @owner:github:andrei-shtanakov @id:product-proposal-qg4-backlog-wait
       Принятие inbox-issue #154 от impresario (ADR-ECO-006), продолжение
       #129/#136. QG-4 — один gate над версией RankedBacklog: ожидание
       существует, пока в текущей версии `backlog.yaml` есть selectable-позиции
