@@ -80,7 +80,7 @@
 
 ## Governance-плоскость (ADR-ECO-004)
 
-- [ ] Governance view: рендерить `declared vs observed` enforcement-зрелость правил (ADR-ECO-004 D3, Batch 2 §6) @owner:github:andrei-shtanakov @blocked_by:prograph-vault#governance-observed-derived @trigger:"в prograph-vault появился derived/governance/ с observed-зрелостью" @id:governance-declared-vs-observed
+- [ ] Governance view: рендерить `declared vs observed` enforcement-зрелость правил (ADR-ECO-004 D3, Batch 2 §6) @owner:github:andrei-shtanakov @blocked_by:todo://prograph-vault/governance-observed-derived @trigger:"в prograph-vault появился derived/governance/ с observed-зрелостью" @id:governance-declared-vs-observed
       Declared-сторона готова: `../prograph-vault/authored/registry/governance.yaml`
       (v1, 2026-07-18) и сам файл называет ожидаемый путь observed —
       `derived/governance/`, который на 2026-07-26 не существует. Сравнивать не с чем,
