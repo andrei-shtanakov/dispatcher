@@ -86,6 +86,39 @@
       `derived/governance/`, который на 2026-07-26 не существует. Сравнивать не с чем,
       поэтому пункт заблокирован, а не «в работе»: dispatcher здесь рендерер, не
       источник, и читать «на будущее» нечего.
+- [ ] Actor-aware evidence мержа: `agent_merge` / `human_merge` в наблюдении (ADR-ECO-004 I4, ADR-ECO-008 D6) @owner:github:andrei-shtanakov @blocked_by:steward#69 @trigger:"App-личность заведена в agent_identities steward и мерж от неё классифицируется agent" @id:agent-merge-observability
+      Принятие inbox-issue #159 (ADR-ECO-006, from: prograph-vault#adr-eco-008).
+      Замер `../prograph-vault/authored/notes/2026-08-19-i4-observability-measurement.md`:
+      merge-команда и исход `merged` есть (`dispatcher/core/actions.py:574`), актора и
+      evidence — нет, агентский мерж и человеческий в dispatcher неразличимы.
+      Заблокирован **источником**, а не UI — сегодня различать нечего и неоткуда:
+      (а) различимого субъекта не существует — агенты флота ходят на GitHub под
+      личностью владельца, а `human_identities` в steward проверяется первым
+      (намеренно), поэтому агентский мерж классифицируется `human` молча, без finding
+      (steward#69: разрешение политикой вместо константы + App-личность в закрытой
+      классификации);
+      (б) ни один вендоренный контракт не несёт актора: `github-checker-snapshot/v1`
+      описывает только открытые PR (`PullRequest`: number/title/author/head_branch/
+      is_dependabot/copilot_review — поля мержа нет вовсе), `steward-gate-verdicts/v1` —
+      header/artifact/finding, актора мержа тоже нет. Первый шаг после разблокировки —
+      выбрать источник (расширение snapshot-контракта у github-checker через inbox-issue
+      либо классификация из steward), а не рисовать панель поверх пустоты.
+      Ограничения, зафиксированные до проектирования:
+      — мержи внутри прогона на GitHub не видны вовсе (в арке `discovery` maestro слил
+      четыре воркстрима в интеграционную ветку локально, без PR и события). Поверхность
+      на предположении «каждый мерж = событие GitHub» будет систематически
+      недосчитывать; наблюдаемая единица — только финальный PR;
+      — dispatcher **не держит** installation token merge-личности: наблюдатель, сам
+      владеющий ключом от наблюдаемого действия, перестаёт быть независимым. Владелец
+      выпуска — открытый вопрос (runtime оркестратора либо узкий merge broker), но не
+      dispatcher UI;
+      — недоступность данных о мерже рендерится `unknown`, а не чистым результатом:
+      это отзывающий контур, и «неизвестность как зелёное» здесь недопустима ровно
+      поэтому. Аномалия видна отдельно: мерж от агента там, где прогон объявлял
+      `merge_authority: human`.
+      Пока пункт закрыт, ADR-ECO-008 D6 предписывает поведение сам: нет наблюдаемости —
+      прогон обязан вести себя как `merge_authority: human`. Плюс D1 не является
+      действующей политикой до ратификации (ADR-ECO-008 `status: proposed`).
 - [x] WS-005 WS-B: вендор `gate-verdicts/v1` + governance-collector (6 состояний бандла) — PR #107 @owner:github:andrei-shtanakov @id:ws005-governance-collector
       Принятие inbox-issue #106 от steward (ADR-ECO-006). Канон:
       `steward/contracts/gate-verdicts/v1` @ `4836345`; копия —
