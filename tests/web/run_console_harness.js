@@ -698,6 +698,137 @@ testCase('opening an ordinary (non-unknown) view leaves #rc-submit enabled',
     });
   });
 
+// -- fix round 1: B2 on the DIRECT path (no #rc-open anywhere) -------------
+// The gap review found: the view-driven gate above only ever fires if the
+// operator navigates to the request via #rc-open. The path that actually
+// happens — submit, see "unknown", click submit again — went through
+// unblocked, because the submit handler's own `finally` re-enabled
+// unconditionally.
+//
+// Fix round 1a blocked on EVERY unresolved attempt (rcPendingRequestId).
+// That was too broad and was narrowed in fix round 1b: `accepted: null`
+// arises two different ways, and only the SERVER-declared one (a 200
+// response whose own body says accepted:null — a record was reserved and
+// launched, spec §5.2.1) should block; a TRANSPORT-level null (the fetch
+// itself rejected, or the body was unreadable — no response reached us at
+// all) must NOT block, because the pinned request_id's retry is the only
+// safe recovery from it, and blocking it would make that pinning dead
+// code. `rcSubmitBlocked` names the distinction directly; the tests below
+// exercise both sides of it.
+
+testCase('fix round 1 — B2 direct path: a SERVER-declared accepted:null '
+  + 'blocks #rc-submit, no #rc-open anywhere', async () => {
+  const page = await boot(() => ok({request_id: 'server-echo', run_id: null,
+    accepted: null, reason: 'launch_unknown: no run appeared within 120s'}));
+  fillValid(page);
+  await click(page, '#rc-submit');
+  check(el(page, '#rc-receipt').innerHTML.includes('rc-result unknown'),
+    'sanity: this is genuinely the accepted:null path');
+  check(el(page, '#rc-submit').disabled === true,
+    'submit is blocked while the SERVER says this is unresolved — the '
+    + 'direct path, no view was ever opened');
+});
+
+testCase('fix round 1 — B2 direct path: submit → accepted:true leaves '
+  + '#rc-submit enabled', async () => {
+  const page = await boot(() => ok(
+    {request_id: 'server-echo', run_id: '01ZZZ', accepted: true, reason: null}));
+  fillValid(page);
+  await click(page, '#rc-submit');
+  check(el(page, '#rc-submit').disabled === false,
+    'a settled outcome (accepted:true) leaves submit enabled');
+});
+
+testCase('fix round 1: the receipt for accepted:null names the request_id '
+  + 'and points at #rc-open — the way out, now that the SERVER-declared '
+  + 'case is blocked', async () => {
+    const page = await boot();
+    const html = receiptHtml(page, {request_id: 'rc-abc123', run_id: null,
+      accepted: null, reason: 'no response reached the browser'});
+    check(html.includes('rc-abc123'),
+      `the request_id is on screen so it can be opened (got: ${html})`);
+    check(/rc-open|open run/i.test(html),
+      `points at the way out (got: ${html})`);
+  });
+
+// Fix round 1b: the distinction itself, pinned directly — this is the
+// whole point of the narrowing, and nothing else states it. Both origins
+// pin the id (the same one that was actually sent, not just "some id");
+// only the server-declared one blocks.
+
+testCase('fix round 1b: a transport-level null does NOT block, a '
+  + 'server-declared null DOES — and both pin the id that was sent',
+  async () => {
+    // Transport-level: fetch() itself rejects. No response reached us at
+    // all, so the pinned id's retry is the recovery — must not block.
+    const transportPage = await boot(() => Promise.reject(new Error('network down')));
+    fillValid(transportPage);
+    await click(transportPage, '#rc-submit');
+    check(el(transportPage, '#rc-submit').disabled === false,
+      'a transport-level null (no response reached us) does not block — '
+      + 'the pinned id is the recovery, not /resolve');
+    const transportSent = JSON.parse(
+      transportPage.calls.find(c => c.url === '/api/runs/submit').opts.body
+    ).request_id;
+    const transportPinned = vm.runInContext('rcPendingRequestId', transportPage.ctx);
+    check(transportPinned === transportSent, 'the id pinned afterward is '
+      + `the SAME one that was sent (sent ${transportSent}, pinned ${transportPinned})`);
+
+    // Server-declared: the response arrived, parsed fine, and its OWN
+    // body says accepted:null — a record exists; resubmitting is useless,
+    // /resolve is the real recovery.
+    const serverPage = await boot(() => ok({request_id: 'server-echo',
+      run_id: null, accepted: null,
+      reason: 'launch_unknown: no run appeared within 120s'}));
+    fillValid(serverPage);
+    await click(serverPage, '#rc-submit');
+    check(el(serverPage, '#rc-submit').disabled === true,
+      'a server-declared accepted:null DOES block — resolution is the '
+      + 'only useful next step, not a resubmit');
+    const serverSent = JSON.parse(
+      serverPage.calls.find(c => c.url === '/api/runs/submit').opts.body
+    ).request_id;
+    const serverPinned = vm.runInContext('rcPendingRequestId', serverPage.ctx);
+    check(serverPinned === serverSent, 'pinned here too, and it is the '
+      + `SAME id that was sent (sent ${serverSent}, pinned ${serverPinned})`);
+  });
+
+testCase('fix round 1: resolving the SAME request a direct submit is '
+  + 'blocked on unblocks #rc-submit', async () => {
+  await withPage(async page => {
+    // Direct submit, SERVER-declared accepted:null: unresolved, submit
+    // blocked, no #rc-open involved yet. Grab the request_id the page
+    // itself minted.
+    fillValid(page);
+    await click(page, '#rc-submit');
+    check(el(page, '#rc-submit').disabled === true, 'blocked after the '
+      + 'server-declared unresolved direct submit (sanity)');
+    const pendingId = vm.runInContext('rcPendingRequestId', page.ctx);
+    check(typeof pendingId === 'string' && pendingId.length > 0,
+      `a request_id was minted and pinned (got: ${pendingId})`);
+
+    // The operator takes the way out: opens that SAME request_id and
+    // resolves it as an unambiguous adoption.
+    page.routes.push([u => u === `/api/runs/${pendingId}`, () => ok(
+      {record: {state: 'launch_unknown', run_id: null}, run: null, warnings: []})]);
+    fill(page, '#rc-request-id', pendingId);
+    await click(page, '#rc-open');
+    page.routes.unshift([u => u === `/api/runs/${pendingId}`, () => ok(
+      {record: {state: 'materialized', run_id: '01LATE'},
+       run: {status: 'running'}, warnings: []})]);
+    page.routes.push([u => u === `/api/runs/${pendingId}/resolve`, () => ok({
+      request_id: pendingId, adopted_run_id: '01LATE', candidates: ['01LATE'],
+      reason: 'exactly one new run correlated; adopted',
+    })]);
+    await click(page, '#rc-resolve');
+
+    check(el(page, '#rc-submit').disabled === false, 'resolving the SAME '
+      + 'request the direct submit was blocked on unblocks #rc-submit — '
+      + "there is no longer anything left unresolved");
+  }, () => ok({request_id: 'server-echo', run_id: null, accepted: null,
+    reason: 'launch_unknown: no run appeared within 120s'}));
+});
+
 // -- renderResolution: the pure renderer over the three shapes §5.2.1 can --
 // answer with. Each case first proves the OTHER expected content rendered,
 // so an absence assertion cannot pass on a block that failed to render.

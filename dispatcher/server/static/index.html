@@ -700,9 +700,18 @@ function renderReceipt(r) {
       <code>${esc(r.run_id)}</code></div>`;
   if (r.accepted === false)
     return `<div class="rc-result err">✗ refused — ${esc(r.reason ?? "")}</div>`;
+  // Fix round 1 (B2): submitting again is blocked below when the SERVER
+  // itself declared this unresolved (rcSubmitBlocked), so the receipt
+  // must be the way out for that case — the request_id, and where to
+  // take it (#rc-open, right above), or the block has no route forward.
+  // Harmless to show for a transport-level null too (submit stays enabled
+  // there — see rcSubmitBlocked's declaration below — but the id is still
+  // worth having on screen).
   return `<div class="rc-result unknown">? unknown — the launch may or may not
     have produced a run. ${esc(r.reason ?? "")}
-    <span class="rc-hint">Resolve it before submitting again.</span></div>`;
+    <span class="rc-hint">Resolve it before submitting again — open
+    <code>${esc(r.request_id)}</code> above (request_id field, "Open run")
+    to check or resolve it.</span></div>`;
 }
 
 // Mirrors exactly two of the server's refusals (dispatcher/core/run_request.py,
@@ -725,6 +734,26 @@ function validateRunRequest(fields) {
   }
   return null;
 }
+
+// Fix round 1: `accepted: null` arises two different ways, and only one of
+// them should block resubmission (B2 is about the SERVER-declared case,
+// not every ambiguity). `rcSubmitBlocked` names that distinction directly,
+// so it does not have to be re-derived from `rcPendingRequestId` (which
+// stays set — and MUST stay set — in both cases, for idempotent retry):
+//   - transport failure / unreadable body: no response reached us, so we
+//     do not know whether a record was ever written. A retry WITH THE
+//     PINNED id is the correct, safe recovery — safe by construction,
+//     since the server's own idempotency (keyed on request_id) collapses
+//     a duplicate into the same record. Blocking here would remove the
+//     only recovery from a dropped connection, AND make the pinning
+//     itself dead code (an id that can never be reused is not "pinned
+//     for retry", it is just inert).
+//   - the SERVER answered with `accepted: null` (launch_unknown): a
+//     record was reserved and launched; resubmitting the same id just
+//     re-reads that record, which is harmless but useless — the real
+//     recovery is `/resolve`. This is the case B2 is about, and the one
+//     `rcSubmitBlocked` is set true for.
+let rcSubmitBlocked = false;
 
 // The id of the attempt currently in flight or left unresolved (accepted:
 // null, a dropped connection, an unreadable response) — not yet known to
@@ -787,9 +816,15 @@ document.getElementById("rc-submit").addEventListener("click", async () => {
       // reached it, been accepted, and produced a run, with only the
       // response lost. Either is possible, so this is launch_unknown, not
       // a refusal: rcPendingRequestId stays set so a retry lands on the
-      // same idempotency record instead of risking a second run.
+      // same idempotency record instead of risking a second run. Fix
+      // round 1: this is the TRANSPORT-level null, not the server's own —
+      // no response reached us, so there is nothing here for `/resolve`
+      // to act on (the operator would open the id and find nothing, or a
+      // 404). The retry the pinned id exists for is the only recovery,
+      // so submission must NOT be blocked.
       out.innerHTML = renderReceipt({request_id: requestId, run_id: null,
         accepted: null, reason: `no response reached the browser: ${err}`});
+      rcSubmitBlocked = false;
       return;
     }
 
@@ -799,9 +834,12 @@ document.getElementById("rc-submit").addEventListener("click", async () => {
     } catch (err) {
       // The server answered but the body could not be read — the same
       // ambiguity as a dropped connection: what the server decided is
-      // unknown from here, so this is not a refusal either.
+      // unknown from here, so this is not a refusal either. Fix round 1:
+      // also transport-level (we have a response, but not its content) —
+      // same reasoning as the fetch-rejected branch above.
       out.innerHTML = renderReceipt({request_id: requestId, run_id: null,
         accepted: null, reason: `response body was unreadable: ${err}`});
+      rcSubmitBlocked = false;
       return;
     }
 
@@ -813,15 +851,35 @@ document.getElementById("rc-submit").addEventListener("click", async () => {
       out.innerHTML = renderReceipt({request_id: requestId, run_id: null,
         accepted: false, reason: data.detail ?? `HTTP ${resp.status}`});
       rcPendingRequestId = null;
+      rcSubmitBlocked = false;
       return;
     }
 
     out.innerHTML = renderReceipt(data);
-    if (data.accepted !== null) rcPendingRequestId = null;
+    if (data.accepted !== null) {
+      rcPendingRequestId = null;
+      rcSubmitBlocked = false;
+    } else {
+      // Fix round 1: the SERVER answered with accepted:null — a record
+      // was reserved and launched (spec §5.2.1); this is the case B2 is
+      // about. Resubmitting the same id would just re-read that record,
+      // not resolve anything, so THIS is the case that blocks — the
+      // operator is steered to `/resolve` instead.
+      rcSubmitBlocked = true;
+    }
   } catch (err) {
     out.innerHTML = `<div class="rc-result err">✗ ${esc(String(err))}</div>`;
   } finally {
-    btn.disabled = false;
+    // Fix round 1 (B2): a second submit is the one action the recovery
+    // design forbids while attribution is ambiguous — but ONLY the
+    // server-declared ambiguity (rcSubmitBlocked), not every unresolved
+    // attempt. The DIRECT path — submit, see "unknown", click submit
+    // again, no #rc-open anywhere — used to re-enable unconditionally
+    // here, which was the actual hole; a blanket block on ANY unresolved
+    // attempt was the over-correction (it would also have made the
+    // transport-failure retry, and rcPendingRequestId's whole reason for
+    // existing, unreachable).
+    btn.disabled = rcSubmitBlocked;
   }
 });
 
@@ -962,10 +1020,18 @@ async function rcPollView() {
   box.innerHTML = renderRunView(view);
   // B2: while THIS view stands unresolved (launch_unknown), a second
   // submit is the one action the recovery design forbids — the launch may
-  // already have happened, and a retry risks a second one. Any other
-  // state (including terminal) leaves submission alone.
+  // already have happened, and a retry risks a second one. `record.state
+  // === "launch_unknown"` is, by definition, the server-declared case
+  // (spec §5.2.1) — the same one `rcSubmitBlocked` tracks for the direct
+  // path. Fix round 1: OR'd with `rcSubmitBlocked`, not overwriting it —
+  // an operator who submitted from THIS tab and is server-blocked, then
+  // opens some OTHER, unrelated, ordinary view, must not have that
+  // unrelated view's settled state silently re-enable submission while
+  // their own attempt is still unresolved. (Deliberately NOT OR'd with
+  // `rcPendingRequestId`: a transport-level null also pins the id, but
+  // must not block — see the comment on `rcSubmitBlocked`'s declaration.)
   document.getElementById("rc-submit").disabled =
-    view.record.state === "launch_unknown";
+    rcSubmitBlocked || view.record.state === "launch_unknown";
   if (rcViewSettled(view)) {
     if (rcViewTimer !== null) { clearInterval(rcViewTimer); rcViewTimer = null; }
   } else if (rcViewTimer === null) {
@@ -1029,6 +1095,14 @@ document.getElementById("rc-run-view").addEventListener("click", async e => {
       // launch_unknown is settled UNTIL an operator acts (rcViewSettled),
       // so nothing will poll into this on its own — the refresh has to be
       // deliberate, right here, not left for a timer that was never set.
+      // Fix round 1: if THIS request is the one a direct submit in this
+      // tab pinned, resolving it here is exactly what settles that
+      // attempt — clear both, or the OR'd gate in rcPollView below could
+      // leave #rc-submit disabled with nothing left to resolve.
+      if (requestId === rcPendingRequestId) {
+        rcPendingRequestId = null;
+        rcSubmitBlocked = false;
+      }
       await rcPollView();
     } else {
       // Zero or still-ambiguous: still launch_unknown, so let the operator
@@ -1070,7 +1144,12 @@ document.getElementById("rc-run-view").addEventListener("click", async e => {
       return;
     }
     // Ended: record.state has moved off launch_unknown (terminal). Same
-    // deliberate-refresh reasoning as the adopt branch above.
+    // deliberate-refresh reasoning as the adopt branch above, and the same
+    // fix-round-1 clearing: this request is now settled either way.
+    if (requestId === rcPendingRequestId) {
+      rcPendingRequestId = null;
+      rcSubmitBlocked = false;
+    }
     await rcPollView();
   }
 });
