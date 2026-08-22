@@ -42,6 +42,14 @@ class LockBusyError(RunStoreError):
     """The repository already has a launch in flight (→ 409)."""
 
 
+class _UnreadableLock(Exception):
+    """A lock file exists but its content could not be parsed.
+
+    Kept internal: every caller must decide fail-closed what to do about it,
+    never inherit a silent "nobody holds it" default.
+    """
+
+
 class LaunchRecord(BaseModel):
     request_id: str
     repo_key: str
@@ -80,6 +88,7 @@ class RunStore:
         return self._locks / f"{slug}.lock"
 
     def get(self, request_id: str) -> LaunchRecord | None:
+        """The current `LaunchRecord` for `request_id`, or `None` if unknown."""
         try:
             raw = self._record_path(request_id).read_text()
         except OSError:
@@ -124,7 +133,10 @@ class RunStore:
         try:
             fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, _FILE_MODE)
         except FileExistsError:
-            holder = self._lock_holder(lock)
+            try:
+                holder = self._lock_holder(lock)
+            except _UnreadableLock:
+                holder = None
             raise LockBusyError(
                 f"{key.as_text()}: a launch is already in flight "
                 f"(held by {holder or 'an unreadable lock file'}); "
@@ -144,16 +156,42 @@ class RunStore:
         return record
 
     def _lock_holder(self, lock: Path) -> str | None:
+        """The `request_id` in a lock file; `None` if no lock file exists.
+
+        Raises `_UnreadableLock` if the file exists but its content cannot be
+        parsed — a torn write (`json.dump` here is not temp-then-rename) must
+        never read as "nobody holds it".
+        """
         try:
-            return str(json.loads(lock.read_text())["request_id"])
-        except (OSError, ValueError, KeyError, TypeError):
+            raw = lock.read_text()
+        except OSError:
             return None
+        try:
+            return str(json.loads(raw)["request_id"])
+        except (ValueError, KeyError, TypeError) as err:
+            raise _UnreadableLock(str(lock)) from err
 
     def release_lock(self, key: RepoKey, request_id: str) -> None:
-        """Release only the lock this request owns (spec §5.2.1)."""
+        """Release only the lock this request owns (spec §5.2.1).
+
+        A lock file that exists but cannot be parsed is refused, not treated
+        as free: `reserve()` is already conservative about this same
+        condition (unreadable → busy), and a release path that guesses
+        "nobody holds it" would let any caller delete a lock it never took —
+        the one instrument standing between two agent-driven runs and one
+        checkout failing open in exactly the state it exists to cover.
+        """
         lock = self._lock_path(key)
-        holder = self._lock_holder(lock)
-        if holder is not None and holder != request_id:
+        try:
+            holder = self._lock_holder(lock)
+        except _UnreadableLock:
+            raise LockBusyError(
+                f"{key.as_text()}: lock file is unreadable; refusing to "
+                f"release without confirming it is held by {request_id}"
+            ) from None
+        if holder is None:
+            return  # nothing to release
+        if holder != request_id:
             raise LockBusyError(
                 f"{key.as_text()}: lock is held by {holder}, not {request_id}"
             )
@@ -168,6 +206,7 @@ class RunStore:
         return updated
 
     def mark_launching(self, request_id: str) -> LaunchRecord:
+        """The launch process has started; the lock stays held."""
         return self._transition(request_id, state="launching")
 
     def mark_materialized(self, request_id: str, run_id: str) -> LaunchRecord:
@@ -181,6 +220,7 @@ class RunStore:
         return self._transition(request_id, state="launch_unknown", reason=reason)
 
     def mark_terminal(self, request_id: str, outcome: str) -> LaunchRecord:
+        """The run finished; like `mark_materialized`, this releases the lock."""
         record = self._transition(request_id, state="terminal", outcome=outcome)
         self._release_for(record)
         return record
@@ -195,5 +235,13 @@ class RunStore:
         self.release_lock(key, record.request_id)
 
     def holds_lock(self, key: RepoKey) -> str | None:
-        """The request_id currently holding this repo's launch lock, if any."""
-        return self._lock_holder(self._lock_path(key))
+        """The request_id currently holding this repo's launch lock, if any.
+
+        Best-effort only: unlike `release_lock`, a query has no mutation to
+        guard, so an unreadable lock file is reported the same as no lock
+        rather than raising.
+        """
+        try:
+            return self._lock_holder(self._lock_path(key))
+        except _UnreadableLock:
+            return None

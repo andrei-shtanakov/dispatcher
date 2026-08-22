@@ -82,3 +82,28 @@ def test_a_repeated_request_id_returns_the_existing_record(tmp_path: Path) -> No
     again = store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
     assert again.state == first.state
     assert again.request_id == first.request_id
+
+
+def test_terminal_releases_the_lock(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
+    store.mark_terminal(_REQ, "success")
+    stored = store.get(_REQ)
+    assert stored is not None and stored.outcome == "success"
+    store.reserve(_OTHER, _KEY, known_runs=[], window_start="t")  # no raise
+
+
+def test_release_lock_refuses_a_corrupt_lock_file_rather_than_freeing_it(
+    tmp_path: Path,
+) -> None:
+    """A torn lock write must not read as "nobody holds it": `reserve()` is
+    already conservative about an unreadable lock (unreadable → busy), and a
+    release path that guesses "free" would let any caller delete a lock it
+    never took (spec §5.4)."""
+    store = _store(tmp_path)
+    store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
+    lock_path = next((tmp_path / "state" / "locks").glob("*.lock"))
+    lock_path.write_text("not valid json")
+    with pytest.raises(LockBusyError):
+        store.release_lock(_KEY, _REQ)
+    assert lock_path.exists()
