@@ -262,6 +262,17 @@ function maybeEl(page, selector) { return page.document.querySelector(selector);
 function resolutionHtml(page, res) {
   return vm.runInContext(`renderResolution(${JSON.stringify(res)})`, page.ctx);
 }
+/** Calls the page's own renderVerbOutcome(), not a copy of it. */
+function verbOutcomeHtml(page, outcome) {
+  return vm.runInContext(`renderVerbOutcome(${JSON.stringify(outcome)})`, page.ctx);
+}
+/** Opens an ordinary (non-launch_unknown) materialized+running view — the
+ * home of Task 5's status/retry/approve controls — exactly as an operator
+ * does: type the request_id, click #rc-open. */
+async function openMaterialized(page, requestId = 'req-materialized') {
+  await openView(page, requestId, {record: {state: 'materialized', run_id: '01AAA'},
+    run: {status: 'running'}, warnings: []});
+}
 /** Sets a <select>'s value and fires 'change', exactly as an operator
  * choosing an option does. dom.js models a control as a bare `.value`
  * property with no `<option>` children/selectedIndex/options collection
@@ -1048,6 +1059,216 @@ testCase('#rc-end posts {run_id, outcome} together, and refreshes the '
       'the view refreshed to show the run is now terminal');
     check(!/run-end/i.test(el(page, '#rc-run-view').innerHTML),
       'run-end is gone once the state is no longer launch_unknown');
+  });
+});
+
+// -- TASK-5: the three Mode-1 verb controls (status/retry/approve), and ----
+// the acceptance pass (spec §6) ---------------------------------------------
+//
+// B1, asserted here a second time (the first was Task 4's "run-end is
+// nowhere near the normal controls"): now that renderRunView actually
+// builds a non-empty #rc-view-actions for the ordinary case, that absence
+// assertion is no longer trivially true — the case below proves the THREE
+// controls positively rendered before trusting that run-end and stop did
+// not. `stop` never had a home anywhere in this page (`maestro stop` ends
+// the scheduler process, not a run), so its absence is checked directly
+// too, not merely inferred from run-end's.
+
+testCase('Task 5: exactly the three verb controls render for an ordinary '
+  + 'view — never run-end, never stop (B1)', async () => {
+  const page = await boot();
+  const html = runViewHtml(page, {record: {state: 'materialized', run_id: '01AAA'},
+    run: {status: 'running'}, warnings: []});
+  // Positive: prove the controls actually rendered before trusting any
+  // absence below.
+  check(/id="rc-verb-status"/.test(html), `status control rendered (got: ${html})`);
+  check(/id="rc-verb-retry"/.test(html), `retry control rendered (got: ${html})`);
+  check(/id="rc-verb-approve"/.test(html), `approve control rendered (got: ${html})`);
+  // Negative, now meaningful because the positive checks above proved the
+  // block rendered.
+  check(!/id="rc-end"/.test(html), `no run-end control here (got: ${html})`);
+  check(!/run-end/i.test(html), `no run-end wording here (got: ${html})`);
+  check(!/\bstop\b/i.test(html), `no stop control or wording anywhere (got: ${html})`);
+});
+
+testCase("Task 5: launch_unknown still shows only Task 4's resolution flow "
+  + '— the verb controls do not leak into it (B1, the other direction)',
+  async () => {
+    const page = await boot();
+    const html = runViewHtml(page, {record: {state: 'launch_unknown', run_id: null},
+      run: null, warnings: []});
+    check(/rc-resolve/.test(html), `resolution flow rendered (got: ${html})`);
+    check(!/id="rc-verb-status"/.test(html)
+      && !/id="rc-verb-retry"/.test(html)
+      && !/id="rc-verb-approve"/.test(html),
+      `verb controls must not appear while launch_unknown (got: ${html})`);
+  });
+
+// approve and retry each demand a task id before they will fire — neither
+// is sent, and each says what is missing in the SERVER's own words
+// (run_controller.py:666-681), so approve and retry read as two distinct
+// rules rather than one vague "needs an id" message repeated twice.
+
+testCase('Task 5: approve without a task id is not sent, and says what is '
+  + "missing in the server's own words", async () => {
+  await withPage(async page => {
+    await openMaterialized(page, 'req-verb-approve');
+    await click(page, '#rc-verb-approve');
+    check(!page.calls.some(c => c.url.endsWith('/verb')),
+      'approve without a task id must not reach the wire');
+    const msg = text(page, '#rc-verb-result');
+    check(/task_id/i.test(msg), `says what is missing (got: ${msg})`);
+    check(/AWAITING_APPROVAL/.test(msg),
+      `names the state approve releases, verbatim (got: ${msg})`);
+    check(/retry instead/.test(msg),
+      `points at retry for NEEDS_REVIEW, verbatim (got: ${msg})`);
+  });
+});
+
+testCase('Task 5: retry without a task id is not sent, and says what is '
+  + "missing in the server's own words", async () => {
+  await withPage(async page => {
+    await openMaterialized(page, 'req-verb-retry');
+    await click(page, '#rc-verb-retry');
+    check(!page.calls.some(c => c.url.endsWith('/verb')),
+      'retry without a task id must not reach the wire');
+    const msg = text(page, '#rc-verb-result');
+    check(/task_id/i.test(msg), `says what is missing (got: ${msg})`);
+    check(/FAILED/.test(msg) && /NEEDS_REVIEW/.test(msg),
+      `names the states retry clears, verbatim (got: ${msg})`);
+    check(/approve instead/.test(msg),
+      `points at approve for AWAITING_APPROVAL, verbatim (got: ${msg})`);
+  });
+});
+
+// This exact confusion (approve vs. retry) already cost a fix round on the
+// server side — the labels below must distinguish the two verbs, not just
+// carry two different names for the same idea.
+
+testCase("Task 5: approve's and retry's labels distinguish which state "
+  + 'each one clears — not just two different button names', async () => {
+  const page = await boot();
+  const html = runViewHtml(page, {record: {state: 'materialized', run_id: '01AAA'},
+    run: {status: 'running'}, warnings: []});
+  const approveLabel =
+    /id="rc-verb-approve"[^>]*>([^<]*)</.exec(html)?.[1] ?? '';
+  const retryLabel =
+    /id="rc-verb-retry"[^>]*>([^<]*)</.exec(html)?.[1] ?? '';
+  check(approveLabel !== '' && retryLabel !== '',
+    `both labels were found (approve: '${approveLabel}', retry: '${retryLabel}')`);
+  check(/AWAITING_APPROVAL/.test(approveLabel) && !/FAILED|NEEDS_REVIEW/.test(approveLabel),
+    `approve's label names its own state only (got: ${approveLabel})`);
+  check(/FAILED|NEEDS_REVIEW/.test(retryLabel) && !/AWAITING_APPROVAL/.test(retryLabel),
+    `retry's label names its own state only (got: ${retryLabel})`);
+});
+
+// The wiring: each control posts to /verb with the action token, and the
+// body carries exactly what that verb needs — no task_id key at all for
+// status, {verb, task_id} for approve/retry.
+
+testCase('Task 5: #rc-verb-status posts {verb:"status"} with no task_id key',
+  async () => {
+    await withPage(async page => {
+      await openMaterialized(page, 'req-verb-2');
+      page.routes.push([u => u === '/api/runs/req-verb-2/verb', () => ok(
+        {verb: 'status', run_id: '01AAA', ok: true, stdout: 'running', stderr: ''})]);
+      await click(page, '#rc-verb-status');
+      const call = page.calls.find(c => c.url === '/api/runs/req-verb-2/verb');
+      check(!!call, 'posted to /api/runs/req-verb-2/verb');
+      if (!call) return;
+      check(call.opts.headers['X-Action-Token'] === 'test-token', 'token sent');
+      const body = JSON.parse(call.opts.body);
+      check(body.verb === 'status', `verb is status (got: ${JSON.stringify(body)})`);
+      check(!('task_id' in body), `no task_id key for status (got: ${JSON.stringify(body)})`);
+    });
+  });
+
+testCase('Task 5: #rc-verb-approve posts {verb:"approve", task_id} once a '
+  + 'task id is filled in', async () => {
+  await withPage(async page => {
+    await openMaterialized(page, 'req-verb-3');
+    fill(page, '#rc-verb-task-id', 'task-42');
+    page.routes.push([u => u === '/api/runs/req-verb-3/verb', () => ok(
+      {verb: 'approve', run_id: '01AAA', ok: true, stdout: '', stderr: ''})]);
+    await click(page, '#rc-verb-approve');
+    const call = page.calls.find(c => c.url === '/api/runs/req-verb-3/verb');
+    check(!!call, 'posted to /api/runs/req-verb-3/verb');
+    if (!call) return;
+    const body = JSON.parse(call.opts.body);
+    check(body.verb === 'approve' && body.task_id === 'task-42',
+      `verb and task_id both sent (got: ${JSON.stringify(body)})`);
+  });
+});
+
+testCase('Task 5: #rc-verb-retry posts {verb:"retry", task_id} once a task '
+  + 'id is filled in', async () => {
+  await withPage(async page => {
+    await openMaterialized(page, 'req-verb-4');
+    fill(page, '#rc-verb-task-id', 'task-99');
+    page.routes.push([u => u === '/api/runs/req-verb-4/verb', () => ok(
+      {verb: 'retry', run_id: '01AAA', ok: true, stdout: '', stderr: ''})]);
+    await click(page, '#rc-verb-retry');
+    const call = page.calls.find(c => c.url === '/api/runs/req-verb-4/verb');
+    check(!!call, 'posted to /api/runs/req-verb-4/verb');
+    if (!call) return;
+    const body = JSON.parse(call.opts.body);
+    check(body.verb === 'retry' && body.task_id === 'task-99',
+      `verb and task_id both sent (got: ${JSON.stringify(body)})`);
+  });
+});
+
+// renderVerbOutcome: the pure renderer over VerbOutcome. A failing verb
+// must show the maestro CLI's own stderr, never a bare "failed".
+
+testCase('renderVerbOutcome: a failing verb shows stderr, not a bare '
+  + '"failed"', async () => {
+  const page = await boot();
+  const html = verbOutcomeHtml(page,
+    {verb: 'status', run_id: '01AAA', ok: false, stdout: '', stderr: 'no such run'});
+  check(html.includes('no such run'), `stderr is shown (got: ${html})`);
+});
+
+testCase('renderVerbOutcome: a successful verb reads as success, no error '
+  + 'wording, and names the run', async () => {
+  const page = await boot();
+  const html = verbOutcomeHtml(page,
+    {verb: 'approve', run_id: '01AAA', ok: true, stdout: 'ok', stderr: ''});
+  check(html.includes('01AAA'), `run_id is on screen (got: ${html})`);
+  check(!/error|fail/i.test(html), `no error/fail wording (got: ${html})`);
+});
+
+// End-to-end: a click drives the real handler through to renderVerbOutcome
+// showing up in #rc-verb-result, on both the success and the server-refusal
+// paths — the latter (a non-ok HTTP response with a parsed `detail`) is the
+// shape `RunRejectedError`/`ControlPlaneOff` take (dispatcher/server/app.py
+// run_verb), distinct from a VerbOutcome with ok:false.
+
+testCase('Task 5: a successful #rc-verb-status click renders the outcome '
+  + 'via renderVerbOutcome', async () => {
+  await withPage(async page => {
+    await openMaterialized(page, 'req-verb-5');
+    page.routes.push([u => u === '/api/runs/req-verb-5/verb', () => ok(
+      {verb: 'status', run_id: '01AAA', ok: true, stdout: 'RUNNING', stderr: ''})]);
+    await click(page, '#rc-verb-status');
+    const html = text(page, '#rc-verb-result');
+    check(html.includes('RUNNING'), `stdout is shown (got: ${html})`);
+    check(el(page, '#rc-verb-status').disabled === false,
+      'the button is re-enabled once the outcome lands');
+  });
+});
+
+testCase('Task 5: a server refusal (non-ok HTTP, e.g. no run to act on) '
+  + "shows the server's detail, and re-enables the button", async () => {
+  await withPage(async page => {
+    await openMaterialized(page, 'req-verb-6');
+    page.routes.push([u => u === '/api/runs/req-verb-6/verb', () => resp(422,
+      {detail: 'req-verb-6 has no run to act on (state: reserved)'})]);
+    await click(page, '#rc-verb-status');
+    const html = text(page, '#rc-verb-result');
+    check(html.includes('has no run to act on'),
+      `the server's refusal detail is shown (got: ${html})`);
+    check(el(page, '#rc-verb-status').disabled === false,
+      'the button is re-enabled after a refusal, so the operator can retry');
   });
 });
 

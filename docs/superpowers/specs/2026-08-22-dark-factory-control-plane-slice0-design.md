@@ -558,19 +558,12 @@ green" would be reading a signal deployer does not emit.
 
 Steps that are still manual in pass 1, named so the result is not oversold:
 
-- **issuing the request at all — there is no UI** (§2.1). Until one exists, "from the
-  UI" reads as a token fetch and a hand-made POST, which is not what this criterion
-  says and not what pass 1 is meant to demonstrate;
 - authoring the plan and the `tasks.yaml` (no compiler — §2.2);
 - choosing the revision;
 - reading run logs outside the UI (§10).
 
 ## 10. Known gaps, deliberately left open
 
-- **There is no UI, and this gap was not deliberate — it was unnoticed** (§2.1, §9).
-  Every other entry here was a choice; this one was an omission in the plan that the
-  whole-branch review found after the server half had shipped. It is listed first
-  because it is the only gap that blocks pass 1 outright.
 - **Logs are read outside dispatcher.** The acceptance criterion claims "visible in
   dispatcher" while permitting the one detailed channel to sit outside it. This is a
   temporary gap, not a design position; it is cheap to close because maestro already

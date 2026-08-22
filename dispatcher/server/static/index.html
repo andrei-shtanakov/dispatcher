@@ -974,6 +974,55 @@ function renderResolution(res) {
     <button id="rc-end" type="button" disabled>run-end</button>`;
 }
 
+// -- Task 5: the three Mode-1 verb controls (spec §6) ------------------------
+// The server's allowlist is FOUR verbs — status/retry/approve/run-end — but
+// run-end lives ONLY inside the launch_unknown resolution flow above (B1):
+// it ends a run that cannot observe itself ending, and offering it as a
+// peer of ordinary controls invites ending a healthy run with one click.
+// `stop` is not a verb at all and has no control anywhere on this page:
+// `maestro stop` terminates the SCHEDULER PROCESS, not a run (spec §6 as
+// corrected).
+//
+// `approve` and `retry` are easy to confuse — this exact mix-up already
+// cost a fix round on the server side (run_controller.py:666-681) — so the
+// pre-flight refusal below and the button labels both restate the server's
+// own wording verbatim, the same discipline validateRunRequest uses for the
+// submit form's two client-side checks.
+const RC_VERB_TASK_ID_MESSAGE = {
+  approve: "approve needs a task_id: it releases a task sitting in "
+    + "AWAITING_APPROVAL. A task in NEEDS_REVIEW is cleared by retry instead",
+  retry: "retry needs a task_id: it clears a task sitting in FAILED or "
+    + "NEEDS_REVIEW. A task in AWAITING_APPROVAL is released by approve "
+    + "instead",
+};
+
+function renderVerbControls() {
+  return `<p><b>controls:</b></p>
+    <label for="rc-verb-task-id">task id (for approve / retry)</label>
+    <input id="rc-verb-task-id" type="text">
+    <button id="rc-verb-status" type="button">status</button>
+    <button id="rc-verb-retry" type="button"
+      >retry — clears a task in FAILED or NEEDS_REVIEW</button>
+    <button id="rc-verb-approve" type="button"
+      >approve — releases a task in AWAITING_APPROVAL</button>
+    <div id="rc-verb-result"></div>`;
+}
+
+// Pure renderer over VerbOutcome {verb, run_id, ok, stdout, stderr}
+// (dispatcher/core/run_controller.py). A failing verb shows the maestro
+// CLI's own stderr, never a bare "failed" — the operator needs the reason,
+// not just the fact that it did not work.
+function renderVerbOutcome(o) {
+  if (o.ok) {
+    return `<div class="rc-result ok">✓ ${esc(o.verb)} on
+      <code>${esc(o.run_id)}</code>${
+        o.stdout ? ` — <pre>${esc(o.stdout)}</pre>` : ""}</div>`;
+  }
+  return `<div class="rc-result err">✗ ${esc(o.verb)} on
+    <code>${esc(o.run_id)}</code> —
+    ${esc(o.stderr || o.stdout || "no output")}</div>`;
+}
+
 function renderRunView(view) {
   const rec = view.record;
   const run = view.run;
@@ -988,10 +1037,13 @@ function renderRunView(view) {
     ? `<ul class="warn">${
         view.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul>`
     : "";
-  // Task 5 places the Mode-1 verb controls (status/retry/approve) here for
-  // every OTHER state; this task only handles launch_unknown (B1: run-end
-  // must never sit beside those verbs, so it is not built here).
-  const actions = rec.state === "launch_unknown" ? renderUnknownActions() : "";
+  // launch_unknown gets the resolution flow (Task 4); every OTHER state
+  // gets the three verb controls (Task 5) — never both, which is how B1
+  // stays true in both directions: run-end never sits beside status/
+  // retry/approve, and status/retry/approve never sit beside run-end.
+  const actions = rec.state === "launch_unknown"
+    ? renderUnknownActions()
+    : renderVerbControls();
   return recordLine + runLine + warningsBlock
     + `<div id="rc-view-actions">${actions}</div>`;
 }
@@ -1066,10 +1118,63 @@ document.getElementById("rc-open").addEventListener("click", async () => {
   await rcPollView();
 });
 
+// Fires one Mode-1 verb against the currently open request (Task 5, spec
+// §6). `approve`/`retry` are checked for a task id BEFORE anything is sent
+// — a request rejected here never reaches the wire, same discipline as
+// validateRunRequest on the submit form — and the refusal is the server's
+// own wording (RC_VERB_TASK_ID_MESSAGE), so an operator reads one
+// vocabulary for the rule, not two. `status` needs no task id and is sent
+// immediately. Same staleness discipline as #rc-resolve/#rc-end above:
+// requestId is captured before any await and re-checked after each one, so
+// an operator who opens a different request while this is in flight does
+// not have that request's result land in this one's #rc-verb-result.
+async function rcRunVerb(verb, btn) {
+  const requestId = rcViewRequestId;
+  const result = document.getElementById("rc-verb-result");
+  const needsTaskId = verb === "approve" || verb === "retry";
+  const taskId = needsTaskId
+    ? document.getElementById("rc-verb-task-id").value.trim() : "";
+  if (needsTaskId && !taskId) {
+    result.innerHTML =
+      `<div class="rc-result err">${esc(RC_VERB_TASK_ID_MESSAGE[verb])}</div>`;
+    return;
+  }
+  btn.disabled = true;
+  result.textContent = "…";
+  const body = needsTaskId ? {verb, task_id: taskId} : {verb};
+  let resp;
+  try {
+    resp = await fetch(`/api/runs/${encodeURIComponent(requestId)}/verb`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json",
+                "X-Action-Token": await ensureActionToken()},
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    if (requestId !== rcViewRequestId) return;
+    result.innerHTML = `<div class="rc-result err">${esc(String(err))}</div>`;
+    btn.disabled = false;
+    return;
+  }
+  if (requestId !== rcViewRequestId) return;
+  const data = await resp.json().catch(() => ({}));
+  if (requestId !== rcViewRequestId) return;
+  if (!resp.ok) {
+    result.innerHTML =
+      `<div class="rc-result err">${esc(data.detail ?? `HTTP ${resp.status}`)}</div>`;
+    btn.disabled = false;
+    return;
+  }
+  result.innerHTML = renderVerbOutcome(data);
+  btn.disabled = false;
+}
+
 // `#rc-view-actions`, `#rc-resolve`, `#rc-resolution`, `#rc-end-run`,
-// `#rc-end-outcome` and `#rc-end` are all re-created on every renderRunView
-// call, so their listeners are delegated on the box that survives
-// re-render — same idiom as `#sync-hosts`/`#sync-proposals` above.
+// `#rc-end-outcome`, `#rc-end`, `#rc-verb-task-id`, `#rc-verb-status`,
+// `#rc-verb-retry`, `#rc-verb-approve` and `#rc-verb-result` are all
+// re-created on every renderRunView call, so their listeners are delegated
+// on the box that survives re-render — same idiom as
+// `#sync-hosts`/`#sync-proposals` above.
 document.getElementById("rc-run-view").addEventListener("click", async e => {
   const resolveBtn = e.target.closest("#rc-resolve");
   if (resolveBtn) {
@@ -1166,7 +1271,15 @@ document.getElementById("rc-run-view").addEventListener("click", async e => {
       rcSubmitBlocked = false;
     }
     await rcPollView();
+    return;
   }
+
+  const statusBtn = e.target.closest("#rc-verb-status");
+  if (statusBtn) { await rcRunVerb("status", statusBtn); return; }
+  const retryBtn = e.target.closest("#rc-verb-retry");
+  if (retryBtn) { await rcRunVerb("retry", retryBtn); return; }
+  const approveBtn = e.target.closest("#rc-verb-approve");
+  if (approveBtn) { await rcRunVerb("approve", approveBtn); return; }
 });
 
 // `run_id` and `outcome` must be given together (spec §5.2.1, #168): the
