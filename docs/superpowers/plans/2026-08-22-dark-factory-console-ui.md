@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- **No new server endpoints.** Everything here consumes what is already merged: `POST /api/runs/submit`, `GET /api/runs/{request_id}`, `POST /api/runs/{request_id}/resolve`, `POST /api/runs/{request_id}/verb`. If a task seems to need a new route, stop and report — it means this plan mis-read the server.
+- **No new server endpoints.** Everything here consumes what is already merged: `POST /api/runs/submit`, `GET /api/runs/{request_id}`, `POST /api/runs/{request_id}/resolve`, `POST /api/runs/{request_id}/verb`. If a task seems to need a new route, stop and report — it means this plan misread the server.
 - Mutating requests send `X-Action-Token` from `ensureActionToken()` (`index.html:616-620`) and `Content-Type: application/json`. Read requests send neither.
 - The page is plain ES2020 with no bundler. Follow the surrounding idiom: `const get = async p => (await fetch(p)).json();`, `render*(data) -> html string`, `panel.innerHTML = render*(...)`, `section.hidden = …`.
 - **Escape every server-supplied string** before it reaches `innerHTML`. The page has a helper for this — find it and use it; do not hand-roll a second one.
@@ -247,7 +247,7 @@ git commit -am "feat(console): client-side checks for the two mistakes the serve
 
 **Interfaces:**
 - Consumes: `GET /api/runs/{request_id}` → `RunView {record, run, warnings}`.
-- Produces: `renderRunView(view) -> html`; polling that stops on a terminal state.
+- Produces: `renderRunView(view) -> html`; polling that stops when **both** axes are settled (see the stop rule below).
 
 **Design notes:** `record.state` is dispatcher's launch state machine (`reserved`/`launching`/`materialized`/`terminal`/`launch_unknown`); `run.status` is maestro's classification of the run itself (`running`/`interrupted`/`suspended`/`completed`/`cancelled`/`superseded`/`failed`/`unreadable`). **They are different axes and must be shown as two facts, not merged into one badge** — dispatcher renders maestro's FSM, it does not restate it (spec §3.2).
 
@@ -270,7 +270,7 @@ assertView({record: {state: 'materialized', run_id: '01AAA'}, run: null,
             warnings: ['runs enumeration: cannot list /x: Permission denied']},
   html => /Permission denied/.test(html));
 
-// polling stops once the record is terminal
+// polling stops once BOTH axes are settled
 await withPage(async page => {
   await openView(page, 'req-1', {record: {state: 'terminal', run_id: '01AAA'},
                                  run: {status: 'completed'}, warnings: []});
@@ -278,11 +278,57 @@ await withPage(async page => {
   await tick(page, 5000);
   assert(page.calls.length === before, 'no polling after terminal');
 });
+
+// …but a materialized record with a LIVE run keeps polling: the record is
+// finished and the run is not, and stopping here would freeze the run half
+// of the display on `running` forever.
+await withPage(async page => {
+  await openView(page, 'req-2', {record: {state: 'materialized', run_id: '01AAA'},
+                                 run: {status: 'running'}, warnings: []});
+  const before = page.calls.length;
+  await tick(page, 5000);
+  assert(page.calls.length > before, 'still polling while the run is live');
+});
+
+// launch_unknown is settled until an operator acts — do not poll into it
+await withPage(async page => {
+  await openView(page, 'req-3', {record: {state: 'launch_unknown', run_id: null},
+                                 run: null, warnings: []});
+  const before = page.calls.length;
+  await tick(page, 5000);
+  assert(page.calls.length === before, 'no polling while awaiting the operator');
+});
 ```
 
 - [ ] **Step 2: Run, watch it fail, implement `renderRunView` + polling, run to green**
 
-Poll `GET /api/runs/{id}` on an interval while the record state is one of `reserved`/`launching`; stop on `materialized`, `terminal` or `launch_unknown`. Reuse the page's existing interval idiom rather than adding a scheduler.
+**The stop rule, because two axes means two ways to get it wrong.** An earlier draft of
+this plan said "stop on `materialized`" in one place and "stop on a terminal state" in
+another, and neither was right on its own — the contradiction is what made the real
+answer visible.
+
+`materialized` is where dispatcher's launch machine *finishes*, and where maestro's run
+*begins*. Stopping there freezes the run half of the display at whatever it said the
+moment the directory appeared — usually `running` — and it would stay that way after the
+run completed, which is the panel telling a confident lie.
+
+So: keep polling while there is anything left to learn on **either** axis, and stop only
+when both are settled.
+
+- Keep polling while `record.state` is `reserved` or `launching` — the launch is still
+  resolving.
+- Keep polling while `record.state` is `materialized` **and** `run.status` is not one of
+  `completed`/`cancelled`/`superseded`/`failed` — the record is done, the run is not.
+- Stop on `record.state` of `terminal` or `launch_unknown`: the first is settled, and
+  the second is settled *until an operator acts*, so it must not be polled into (Task 4
+  drives it by hand).
+- Stop when `record.state` is `materialized` and `run.status` is one of the four terminal
+  values above.
+- `run` being `null` under a `materialized` record is **not** a stop condition: it means
+  either the directory is gone or unreadable (`warnings` says which), and both deserve to
+  keep being checked rather than silently freezing.
+
+Reuse the page's existing interval idiom rather than adding a scheduler.
 
 - [ ] **Step 3: Commit**
 
