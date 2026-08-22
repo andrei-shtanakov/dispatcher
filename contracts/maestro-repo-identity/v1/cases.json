@@ -1,0 +1,22 @@
+{
+  "case_insensitive_hosts": ["github.com", "gitlab.com", "bitbucket.org"],
+  "parse": [
+    {"url": "git@github.com:Andrei-Shtanakov/Dispatcher.git",
+     "key": ["github.com", "andrei-shtanakov", "dispatcher"]},
+    {"url": "https://github.com/andrei-shtanakov/deployer",
+     "key": ["github.com", "andrei-shtanakov", "deployer"]},
+    {"url": "ssh://git@git.epam.com:7999/Team/Repo.git",
+     "key": ["git.epam.com", "Team", "Repo"]},
+    {"url": "git://gitlab.com/Owner/Repo.git",
+     "key": ["gitlab.com", "owner", "repo"]}
+  ],
+  "reject": [
+    {"url": "", "why": "empty remote URL"},
+    {"url": "file:///tmp/repo", "why": "non-git scheme"},
+    {"url": "git@github.com:repo.git", "why": "no owner/repo"}
+  ],
+  "producer_accepts_but_dispatcher_must_refuse": [
+    {"url": "git@github.com:owner/../etc.git", "key": ["github.com", "..", "etc"],
+     "why": "the producer's _UNSAFE class allows dots, and only `repo` is checked against {'.','..'} — so `owner` may be '..'. Verified against maestro cb91759. dispatcher joins these segments into a filesystem path, so it guards separately (see safe_path_parts)."}
+  ]
+}

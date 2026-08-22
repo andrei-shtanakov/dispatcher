@@ -1,0 +1,123 @@
+"""Repository identity as maestro computes it — a pinned mirror.
+
+maestro names a repository by its `origin` remote, never by a filesystem
+path, and builds every run path from that name
+(`maestro/maestro/repo_identity.py`, `maestro/maestro/state_paths.py:36-45`).
+dispatcher has to reach the same name from the same checkout: the pre-launch
+snapshot and the materialization watch (spec §5.2, §5.3) both address
+`projects/<host>/<owner>/<repo>/runs/`, so a divergent key would make every
+healthy launch look like `launch_unknown`.
+
+This is a mirror of a producer RULE, pinned in
+`contracts/maestro-repo-identity/v1/PINNED.txt` and held to the behaviour
+table beside it. Do not "fix" a mismatch by editing the rule here.
+"""
+
+from __future__ import annotations
+
+import re
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+_CASE_INSENSITIVE_HOSTS = frozenset({"github.com", "gitlab.com", "bitbucket.org"})
+_SCP_LIKE = re.compile(r"^(?:(?P<user>[^@]+)@)?(?P<host>[^:/]+):(?P<path>.+)$")
+_URL_LIKE = re.compile(
+    r"^(?P<scheme>https?|ssh|git)://(?:[^@/]+@)?(?P<host>[^/:]+)(?::\d+)?/(?P<path>.+)$"
+)
+_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
+_GIT_TIMEOUT = 15
+
+
+class IdentityError(Exception):
+    """Identity could not be established; the request must be refused."""
+
+
+@dataclass(frozen=True)
+class RepoKey:
+    host: str
+    owner: str
+    repo: str
+    local: bool = False
+
+    def as_path_parts(self) -> tuple[str, ...]:
+        """Path segments under `projects/`. Local keys are two segments."""
+        if self.local:
+            return ("_local", self.repo)
+        return (self.host, self.owner, self.repo)
+
+    def as_text(self) -> str:
+        """The `<host>/<owner>/<repo>` form the collector keys runs by."""
+        return "/".join(self.as_path_parts())
+
+
+def _fold(host: str, owner: str, repo: str) -> tuple[str, str, str]:
+    host = host.lower()
+    if host in _CASE_INSENSITIVE_HOSTS:
+        return host, owner.lower(), repo.lower()
+    return host, owner, repo
+
+
+def parse_remote_url(url: str) -> RepoKey:
+    """Parse a git remote into a `RepoKey`, or raise `IdentityError`."""
+    text = (url or "").strip()
+    if not text:
+        raise IdentityError("empty remote URL")
+    match = _URL_LIKE.match(text) or _SCP_LIKE.match(text)
+    if match is None:
+        raise IdentityError(f"cannot parse remote URL: {url!r}")
+    host = match.group("host")
+    if host == "file":
+        raise IdentityError(f"cannot parse remote URL: {url!r}")
+    path = match.group("path").strip("/")
+    if path.endswith(".git"):
+        path = path[: -len(".git")]
+    parts = [p for p in path.split("/") if p]
+    if len(parts) < 2:
+        raise IdentityError(f"remote URL has no owner/repo: {url!r}")
+    owner, repo = parts[-2], parts[-1]
+    if _UNSAFE.search(owner) or _UNSAFE.search(repo) or repo in {".", ".."}:
+        raise IdentityError(f"remote URL yields unsafe path segments: {url!r}")
+    host, owner, repo = _fold(host, owner, repo)
+    return RepoKey(host=host, owner=owner, repo=repo)
+
+
+def safe_path_parts(key: RepoKey) -> tuple[str, ...]:
+    """`key.as_path_parts()`, refused if any segment could escape a join.
+
+    The mirror above is deliberately faithful, and the producer's rule has a
+    hole: `_UNSAFE` permits dots and only `repo` is checked against
+    `{'.', '..'}`, so `git@host:owner/../etc.git` yields `('host', '..',
+    'etc')` — verified against maestro cb91759. dispatcher joins these
+    segments into a filesystem path, so it refuses the traversal on its own
+    side rather than diverging from the rule it mirrors. The producer-side
+    gap is filed as maestro inbox issue (slug:
+    `repo-identity-owner-traversal`).
+    """
+    parts = key.as_path_parts()
+    for part in parts:
+        if part in {"", ".", ".."} or "/" in part or "\\" in part:
+            raise IdentityError(
+                f"repository identity has an unsafe path segment {part!r}: "
+                f"{'/'.join(parts)} would not stay under projects/"
+            )
+    return parts
+
+
+def identity_from_checkout(repo_root: Path) -> RepoKey:
+    """The `RepoKey` of a checkout, from its `origin` remote."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as err:
+        raise IdentityError(f"cannot read origin of {repo_root}: {err}") from err
+    if proc.returncode != 0:
+        raise IdentityError(
+            f"{repo_root} has no usable origin remote: "
+            f"{proc.stderr.strip() or 'git exited ' + str(proc.returncode)}"
+        )
+    return parse_remote_url(proc.stdout)

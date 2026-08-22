@@ -1,0 +1,11 @@
+source: maestro maestro/repo_identity.py
+commit: cb91759
+vendored: 2026-08-22
+note: pinned MIRROR of a producer RULE, not a schema copy (repo-boundaries
+  vendoring, ADR-ECO-003). dispatcher must name a repository exactly as
+  maestro does, or it watches the wrong run directory. Do not edit the rule
+  here to fix a mismatch — re-pin against the producer.
+guarantee-gap: only copy-integrity (the cases table below) is enforced today.
+  The upstream-drift half of the two-guarantees rule is NOT wired; it is
+  filed as `@id:maestro-identity-drift-watch` in TODO.md. Unknown drift must
+  not read as green.
