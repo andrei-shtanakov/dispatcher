@@ -855,6 +855,52 @@ function rcViewSettled(view) {
   return view.run !== null && RC_RUN_TERMINAL.has(view.run.status);
 }
 
+// -- Task 4: the launch_unknown resolution flow (spec §5.2.1) ---------------
+// accepted:null / record.state === "launch_unknown" is a third state, not
+// an error (B2): the launch may have happened, so the copy below never
+// says error/failed, and the operator is offered a way to find out rather
+// than a red box. `#rc-resolve` attempts adoption (`POST .../resolve {}`);
+// its answer is rendered by the pure `renderResolution` below.
+function renderUnknownActions() {
+  return `<p class="unknown">This request's outcome is unknown — the launch
+    may or may not have produced a run.
+    <span class="rc-hint">Resolve it before submitting again.</span></p>
+    <button id="rc-resolve" type="button">Attempt resolution</button>
+    <div id="rc-resolution"></div>`;
+}
+
+// What `POST .../resolve {}` (adoption attempt) decided, per spec §5.2.1:
+//   - zero candidates: nothing to end — say so, no picker, no run-end (B1).
+//   - exactly one: already adopted by the server: name it, no run-end (B1)
+//     — there is nothing left for an operator to end.
+//   - two or more: genuinely ambiguous. List every candidate and offer the
+//     ONLY picker+button in this whole page that can reach `run-end`
+//     (B1) — ending a NAMED run the operator chose, never a bare verb
+//     beside status/retry/approve.
+function renderResolution(res) {
+  const candidates = res.candidates || [];
+  if (candidates.length === 0) {
+    return `<p class="rc-hint">${esc(res.reason)}</p>`;
+  }
+  if (candidates.length === 1) {
+    return `<p class="ok">✓ adopted run <code>${esc(res.adopted_run_id)}</code>
+      — ${esc(res.reason)}</p>`;
+  }
+  const items = candidates.map(id => `<li><code>${esc(id)}</code></li>`).join("");
+  const options = candidates
+    .map(id => `<option value="${esc(id)}">${esc(id)}</option>`).join("");
+  return `<p class="rc-hint">${esc(res.reason)}</p>
+    <ul>${items}</ul>
+    <label for="rc-end-run">run to end</label>
+    <select id="rc-end-run"><option value="">choose…</option>${options}</select>
+    <label for="rc-end-outcome">outcome</label>
+    <select id="rc-end-outcome"><option value="">choose…</option>
+      <option value="cancelled">cancelled</option>
+      <option value="superseded">superseded</option>
+    </select>
+    <button id="rc-end" type="button" disabled>run-end</button>`;
+}
+
 function renderRunView(view) {
   const rec = view.record;
   const run = view.run;
@@ -869,9 +915,12 @@ function renderRunView(view) {
     ? `<ul class="warn">${
         view.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul>`
     : "";
-  // Task 4 places the launch_unknown resolution flow and the Mode-1 verb
-  // controls here; this task only reserves the slot.
-  return recordLine + runLine + warningsBlock + `<div id="rc-view-actions"></div>`;
+  // Task 5 places the Mode-1 verb controls (status/retry/approve) here for
+  // every OTHER state; this task only handles launch_unknown (B1: run-end
+  // must never sit beside those verbs, so it is not built here).
+  const actions = rec.state === "launch_unknown" ? renderUnknownActions() : "";
+  return recordLine + runLine + warningsBlock
+    + `<div id="rc-view-actions">${actions}</div>`;
 }
 
 let rcViewTimer = null;
@@ -911,6 +960,12 @@ async function rcPollView() {
   const view = await resp.json();
   if (requestId !== rcViewRequestId) return;  // superseded while parsing
   box.innerHTML = renderRunView(view);
+  // B2: while THIS view stands unresolved (launch_unknown), a second
+  // submit is the one action the recovery design forbids — the launch may
+  // already have happened, and a retry risks a second one. Any other
+  // state (including terminal) leaves submission alone.
+  document.getElementById("rc-submit").disabled =
+    view.record.state === "launch_unknown";
   if (rcViewSettled(view)) {
     if (rcViewTimer !== null) { clearInterval(rcViewTimer); rcViewTimer = null; }
   } else if (rcViewTimer === null) {
@@ -928,6 +983,107 @@ document.getElementById("rc-open").addEventListener("click", async () => {
   if (rcViewTimer !== null) { clearInterval(rcViewTimer); rcViewTimer = null; }
   rcViewRequestId = requestId;
   await rcPollView();
+});
+
+// `#rc-view-actions`, `#rc-resolve`, `#rc-resolution`, `#rc-end-run`,
+// `#rc-end-outcome` and `#rc-end` are all re-created on every renderRunView
+// call, so their listeners are delegated on the box that survives
+// re-render — same idiom as `#sync-hosts`/`#sync-proposals` above.
+document.getElementById("rc-run-view").addEventListener("click", async e => {
+  const resolveBtn = e.target.closest("#rc-resolve");
+  if (resolveBtn) {
+    // Captured before any await, checked after each one, same discipline
+    // as rcPollView: an operator who opens a different request_id while
+    // this is in flight must not have their new view clobbered by this
+    // one's stale answer.
+    const requestId = rcViewRequestId;
+    resolveBtn.disabled = true;
+    const box = document.getElementById("rc-resolution");
+    box.textContent = "…";
+    let resp;
+    try {
+      resp = await fetch(`/api/runs/${encodeURIComponent(requestId)}/resolve`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json",
+                  "X-Action-Token": await ensureActionToken()},
+        body: JSON.stringify({}),
+      });
+    } catch (err) {
+      if (requestId !== rcViewRequestId) return;
+      box.innerHTML = `<div class="warn">${esc(String(err))}</div>`;
+      resolveBtn.disabled = false;
+      return;
+    }
+    if (requestId !== rcViewRequestId) return;
+    const data = await resp.json().catch(() => ({}));
+    if (requestId !== rcViewRequestId) return;
+    if (!resp.ok) {
+      box.innerHTML =
+        `<div class="warn">${esc(data.detail ?? `HTTP ${resp.status}`)}</div>`;
+      resolveBtn.disabled = false;
+      return;
+    }
+    box.innerHTML = renderResolution(data);
+    if ((data.candidates || []).length === 1) {
+      // Adopted: record.state has moved off launch_unknown (materialized).
+      // launch_unknown is settled UNTIL an operator acts (rcViewSettled),
+      // so nothing will poll into this on its own — the refresh has to be
+      // deliberate, right here, not left for a timer that was never set.
+      await rcPollView();
+    } else {
+      // Zero or still-ambiguous: still launch_unknown, so let the operator
+      // try again (e.g. a late run may still appear).
+      resolveBtn.disabled = false;
+    }
+    return;
+  }
+
+  const endBtn = e.target.closest("#rc-end");
+  if (endBtn) {
+    const requestId = rcViewRequestId;
+    const runId = document.getElementById("rc-end-run").value;
+    const outcome = document.getElementById("rc-end-outcome").value;
+    endBtn.disabled = true;
+    const box = document.getElementById("rc-resolution");
+    let resp;
+    try {
+      resp = await fetch(`/api/runs/${encodeURIComponent(requestId)}/resolve`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json",
+                  "X-Action-Token": await ensureActionToken()},
+        body: JSON.stringify({run_id: runId, outcome}),
+      });
+    } catch (err) {
+      if (requestId !== rcViewRequestId) return;
+      box.insertAdjacentHTML("beforeend",
+        `<div class="warn">${esc(String(err))}</div>`);
+      endBtn.disabled = false;
+      return;
+    }
+    if (requestId !== rcViewRequestId) return;
+    const data = await resp.json().catch(() => ({}));
+    if (requestId !== rcViewRequestId) return;
+    if (!resp.ok) {
+      box.insertAdjacentHTML("beforeend",
+        `<div class="warn">${esc(data.detail ?? `HTTP ${resp.status}`)}</div>`);
+      endBtn.disabled = false;
+      return;
+    }
+    // Ended: record.state has moved off launch_unknown (terminal). Same
+    // deliberate-refresh reasoning as the adopt branch above.
+    await rcPollView();
+  }
+});
+
+// `run_id` and `outcome` must be given together (spec §5.2.1, #168): the
+// button stays disabled until both selects carry a value.
+document.getElementById("rc-run-view").addEventListener("change", e => {
+  if (e.target.id !== "rc-end-run" && e.target.id !== "rc-end-outcome") return;
+  const btn = document.getElementById("rc-end");
+  if (!btn) return;
+  const runId = document.getElementById("rc-end-run").value;
+  const outcome = document.getElementById("rc-end-outcome").value;
+  btn.disabled = !(runId && outcome);
 });
 
 async function refresh() {

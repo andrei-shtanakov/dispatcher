@@ -250,6 +250,40 @@ async function openView(page, requestId, view) {
   fill(page, '#rc-request-id', requestId);
   await click(page, '#rc-open');
 }
+/** Like el(), but returns null instead of throwing — for asserting a
+ * control is genuinely absent from the markup, not merely unfound by a
+ * typo'd selector. */
+function maybeEl(page, selector) { return page.document.querySelector(selector); }
+/** Calls the page's own renderResolution(), not a copy of it. */
+function resolutionHtml(page, res) {
+  return vm.runInContext(`renderResolution(${JSON.stringify(res)})`, page.ctx);
+}
+/** Sets a <select>'s value and fires 'change', exactly as an operator
+ * choosing an option does. dom.js models a control as a bare `.value`
+ * property with no `<option>` children/selectedIndex/options collection
+ * (see the harness's TASK-4 section below), so this — not simulating a
+ * click on some option node — is the only way a test here can drive a
+ * <select>; page code must never read `.options`/`.selectedIndex` for the
+ * same reason: this harness cannot exercise that branch, so a bug behind
+ * it would pass silently. */
+async function select(page, selector, value) {
+  fill(page, selector, value);
+  await Promise.all(dispatch(el(page, selector), 'change'));
+  await drain();
+}
+/** Opens a fresh launch_unknown view and drives #rc-resolve to an
+ * ambiguous (2+ candidate) answer, exactly as an operator would: open,
+ * click "Attempt resolution", land on the picker. */
+async function openAmbiguous(page, requestId, candidates) {
+  await openView(page, requestId,
+    {record: {state: 'launch_unknown', run_id: null}, run: null, warnings: []});
+  page.routes.push([u => u === `/api/runs/${requestId}/resolve`, () => ok({
+    request_id: requestId, adopted_run_id: null, candidates,
+    reason: `${candidates.length} new runs correlate equally well; `
+      + 'attribution is ambiguous in principle',
+  })]);
+  await click(page, '#rc-resolve');
+}
 
 // ---- case runner -----------------------------------------------------------
 
@@ -609,6 +643,206 @@ testCase('a stale in-flight poll (non-ok response) does not clobber a '
     const after = page.calls.filter(c => c.url === '/api/runs/req-2').length;
     check(after > before, "req-2's polling must survive the stale req-1 "
       + `response landing late (before=${before}, after=${after})`);
+  });
+});
+
+// -- TASK-4: the launch_unknown resolution flow, and the only home of ------
+// run-end (B1, B2) ------------------------------------------------------
+//
+// B1: run-end (`maestro run-end <run_id> --outcome ...`) ends a run that
+// cannot observe itself ending. Rendered as a peer of ordinary controls it
+// invites ending a healthy run with one click; it must appear ONLY inside
+// this flow, and ONLY once correlation is genuinely ambiguous (2+
+// candidates) — never for zero, never for exactly one (already resolved).
+//
+// B2: launch_unknown / accepted:null is a third state, not an error — the
+// launch may have happened. Consequences asserted below: #rc-submit is
+// blocked while it stands open, resolution is offered instead of an error
+// box, and the copy never says error/failed.
+//
+// The three "absence" cases below are the easy ones to fake (a test that
+// never actually renders the block passes vacuously) — each first proves
+// the surrounding content DID render before trusting that run-end did not.
+
+testCase('B1: run-end is nowhere near the normal controls (a settled, '
+  + 'ordinary materialized+running view)', async () => {
+  const page = await boot();
+  const html = runViewHtml(page, {record: {state: 'materialized', run_id: '01AAA'},
+    run: {status: 'running'}, warnings: []});
+  // Prove the view actually rendered — otherwise "no run-end" would pass
+  // whether or not renderRunView worked at all.
+  check(/materialized/i.test(html), `record.state rendered (got: ${html})`);
+  check(/running/i.test(html), `run.status rendered (got: ${html})`);
+  check(!/run-end/i.test(html), `run-end must not appear here (got: ${html})`);
+});
+
+testCase('B2: launch_unknown blocks resubmission and offers resolution '
+  + 'instead of an error', async () => {
+  await withPage(async page => {
+    await openView(page, 'req-1', {record: {state: 'launch_unknown', run_id: null},
+      run: null, warnings: []});
+    check(el(page, '#rc-submit').disabled === true, 'submit blocked while unknown');
+    check(maybeEl(page, '#rc-resolve') !== null, 'resolution is offered');
+    check(!/error|failed/i.test(text(page, '#rc-run-view')),
+      `not worded as an error (got: ${text(page, '#rc-run-view')})`);
+  });
+});
+
+testCase('opening an ordinary (non-unknown) view leaves #rc-submit enabled',
+  async () => {
+    await withPage(async page => {
+      await openView(page, 'req-ok', {record: {state: 'materialized', run_id: '01AAA'},
+        run: {status: 'running'}, warnings: []});
+      check(el(page, '#rc-submit').disabled === false,
+        'submit stays enabled for an ordinary view');
+    });
+  });
+
+// -- renderResolution: the pure renderer over the three shapes §5.2.1 can --
+// answer with. Each case first proves the OTHER expected content rendered,
+// so an absence assertion cannot pass on a block that failed to render.
+
+testCase('resolution: zero candidates says so plainly — no picker, no '
+  + 'run-end', async () => {
+  const page = await boot();
+  const html = resolutionHtml(page, {request_id: 'r', adopted_run_id: null,
+    candidates: [],
+    reason: 'no new run to correlate; the launch may never have started'});
+  check(/no new run/i.test(html),
+    `states there is nothing to end, in the server's words (got: ${html})`);
+  check(!/<select/i.test(html), `no empty picker either (got: ${html})`);
+  check(!/run-end/i.test(html), `no run-end with nothing to end (got: ${html})`);
+});
+
+testCase('resolution: exactly one candidate is adopted and named — no '
+  + 'run-end (already resolved)', async () => {
+  const page = await boot();
+  const html = resolutionHtml(page, {request_id: 'r', adopted_run_id: '01LATE',
+    candidates: ['01LATE'], reason: 'exactly one new run correlated; adopted'});
+  check(html.includes('01LATE'), `the adopted run is named (got: ${html})`);
+  check(!/run-end/i.test(html),
+    `already resolved automatically, nothing to end (got: ${html})`);
+});
+
+testCase('resolution: two or more candidates list BOTH and offer run-end '
+  + '— the only place it lives', async () => {
+  const page = await boot();
+  const html = resolutionHtml(page, {request_id: 'r', adopted_run_id: null,
+    candidates: ['01AAA', '01BBB'], reason: 'ambiguous'});
+  check(html.includes('01AAA') && html.includes('01BBB'),
+    `both candidates are listed (got: ${html})`);
+  check(/run-end/i.test(html), `run-end is offered here (got: ${html})`);
+});
+
+// -- the wiring: #rc-resolve and #rc-end actually reach /resolve ----------
+
+testCase('#rc-resolve posts {} to /resolve, with the action token', async () => {
+  await withPage(async page => {
+    await openView(page, 'req-5', {record: {state: 'launch_unknown', run_id: null},
+      run: null, warnings: []});
+    page.routes.push([u => u === '/api/runs/req-5/resolve', () => ok({
+      request_id: 'req-5', adopted_run_id: null, candidates: [],
+      reason: 'no new run to correlate',
+    })]);
+    await click(page, '#rc-resolve');
+    const call = page.calls.find(c => c.url === '/api/runs/req-5/resolve');
+    check(!!call, 'posted to /api/runs/req-5/resolve');
+    if (!call) return;
+    check(call.opts.headers['X-Action-Token'] === 'test-token', 'token sent');
+    check(JSON.parse(call.opts.body ?? '{}').run_id === undefined
+      && JSON.parse(call.opts.body ?? '{}').outcome === undefined,
+      'body carries neither run_id nor outcome — this is the adopt-attempt shape');
+  });
+});
+
+testCase('an adopted resolution (exactly one candidate) refreshes the view '
+  + 'deliberately — nothing polls into a settled launch_unknown on its own',
+  async () => {
+    await withPage(async page => {
+      await openView(page, 'req-6', {record: {state: 'launch_unknown', run_id: null},
+        run: null, warnings: []});
+      // The refetch after resolving must see the NEW state, or this test
+      // could not tell "refreshed" from "coincidentally re-rendered".
+      page.routes.unshift([u => u === '/api/runs/req-6', () => ok(
+        {record: {state: 'materialized', run_id: '01LATE'},
+         run: {status: 'running'}, warnings: []})]);
+      page.routes.push([u => u === '/api/runs/req-6/resolve', () => ok({
+        request_id: 'req-6', adopted_run_id: '01LATE', candidates: ['01LATE'],
+        reason: 'exactly one new run correlated; adopted',
+      })]);
+      const before = page.calls.filter(c => c.url === '/api/runs/req-6').length;
+      await click(page, '#rc-resolve');
+      const after = page.calls.filter(c => c.url === '/api/runs/req-6').length;
+      check(after > before,
+        `adoption triggers a fresh GET of the view (before=${before}, after=${after})`);
+      check(/materialized/i.test(el(page, '#rc-run-view').innerHTML),
+        'the refreshed view shows the new (post-adoption) state');
+      check(el(page, '#rc-submit').disabled === false,
+        'submit unblocks once the view is no longer launch_unknown');
+    });
+  });
+
+testCase('zero candidates does NOT auto-refresh — the view stays open for '
+  + 'a retry', async () => {
+  await withPage(async page => {
+    await openView(page, 'req-7', {record: {state: 'launch_unknown', run_id: null},
+      run: null, warnings: []});
+    page.routes.push([u => u === '/api/runs/req-7/resolve', () => ok({
+      request_id: 'req-7', adopted_run_id: null, candidates: [],
+      reason: 'no new run to correlate',
+    })]);
+    const before = page.calls.filter(c => c.url === '/api/runs/req-7').length;
+    await click(page, '#rc-resolve');
+    const after = page.calls.filter(c => c.url === '/api/runs/req-7').length;
+    check(after === before, 'no fresh GET fired — nothing was resolved '
+      + `(before=${before}, after=${after})`);
+    check(el(page, '#rc-resolve').disabled === false,
+      '#rc-resolve is re-enabled so the operator can try again');
+  });
+});
+
+// -- #rc-end: disabled until BOTH a run and an outcome are chosen ---------
+
+testCase('the run-end button stays disabled until run_id AND outcome are '
+  + 'both chosen', async () => {
+  await withPage(async page => {
+    await openAmbiguous(page, 'req-8', ['01AAA', '01BBB']);
+    check(el(page, '#rc-end').disabled === true, 'disabled with neither chosen');
+    await select(page, '#rc-end-run', '01AAA');
+    check(el(page, '#rc-end').disabled === true,
+      'still disabled with only a run chosen');
+    await select(page, '#rc-end-outcome', 'cancelled');
+    check(el(page, '#rc-end').disabled === false,
+      'enabled once both a run and an outcome are chosen');
+  });
+});
+
+testCase('#rc-end posts {run_id, outcome} together, and refreshes the '
+  + 'view once the run is ended', async () => {
+  await withPage(async page => {
+    await openAmbiguous(page, 'req-9', ['01AAA', '01BBB']);
+    await select(page, '#rc-end-run', '01AAA');
+    await select(page, '#rc-end-outcome', 'cancelled');
+    page.routes.unshift([u => u === '/api/runs/req-9', () => ok(
+      {record: {state: 'terminal', run_id: '01AAA'},
+       run: {status: 'cancelled'}, warnings: []})]);
+    page.routes.push([u => u === '/api/runs/req-9/resolve', () => ok({
+      request_id: 'req-9', adopted_run_id: '01AAA', candidates: ['01AAA', '01BBB'],
+      reason: 'operator ended 01AAA as cancelled; lock released',
+    })]);
+    await click(page, '#rc-end');
+    const call = page.calls.find(c => c.url === '/api/runs/req-9/resolve'
+      && JSON.parse(c.opts.body).run_id === '01AAA');
+    check(!!call, 'posted {run_id, outcome} to /resolve');
+    if (call) {
+      const body = JSON.parse(call.opts.body);
+      check(body.run_id === '01AAA' && body.outcome === 'cancelled',
+        `both fields sent together (got: ${JSON.stringify(body)})`);
+    }
+    check(/terminal/i.test(el(page, '#rc-run-view').innerHTML),
+      'the view refreshed to show the run is now terminal');
+    check(!/run-end/i.test(el(page, '#rc-run-view').innerHTML),
+      'run-end is gone once the state is no longer launch_unknown');
   });
 });
 
