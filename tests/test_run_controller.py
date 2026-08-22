@@ -1,5 +1,6 @@
 """RunController launch path (spec §5.3, §5.4)."""
 
+import dataclasses
 import subprocess
 import textwrap
 from pathlib import Path
@@ -357,3 +358,46 @@ def test_end_orphan_rejects_an_outcome_outside_the_operator_endings(
     (runs / "01AAA").mkdir()
     with pytest.raises(RunRejectedError, match="cancelled|superseded"):
         controller.end_orphan(_REQ, "01AAA", "completed")
+
+
+# -- task 5 fix round 1 ------------------------------------------------------
+
+
+def test_end_orphan_missing_binary_is_a_refusal(tmp_path: Path) -> None:
+    """A missing/non-executable maestro binary must come back as a
+    RunRejectedError, not an unhandled OSError escaping the controller."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run=None)
+    config = _config(tmp_path, cli)
+    controller = RunController(config, poll_interval=0.05, materialize_timeout=0.3)
+    receipt = controller.submit(_request(head))
+    assert receipt.accepted is None
+    assert config.maestro_home is not None
+    runs = config.maestro_home / "projects/github.com/owner/deployer/runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / "01AAA").mkdir()
+
+    broken = dataclasses.replace(config, maestro_cli=tmp_path / "no-such-binary")
+    broken_controller = RunController(
+        broken, poll_interval=0.05, materialize_timeout=0.3
+    )
+    with pytest.raises(RunRejectedError, match="cannot run maestro run-end"):
+        broken_controller.end_orphan(_REQ, "01AAA", "cancelled")
+
+
+def test_resolve_unknown_refuses_a_settled_record(tmp_path: Path) -> None:
+    controller, runs = _unknown(tmp_path)
+    (runs / "01LATE").mkdir()
+    controller.resolve_unknown(_REQ)
+    assert _state(controller, _REQ) == "materialized"
+    with pytest.raises(RunRejectedError, match="not launch_unknown"):
+        controller.resolve_unknown(_REQ)
+
+
+def test_end_orphan_refuses_a_settled_record(tmp_path: Path) -> None:
+    controller, runs = _unknown(tmp_path)
+    (runs / "01LATE").mkdir()
+    controller.resolve_unknown(_REQ)
+    assert _state(controller, _REQ) == "materialized"
+    with pytest.raises(RunRejectedError, match="not launch_unknown"):
+        controller.end_orphan(_REQ, "01LATE", "cancelled")

@@ -376,10 +376,23 @@ class RunController:
         `known_runs` is `runs/` as it looked immediately before the launch
         (`dispatcher/core/run_store.py:63-64`) — the only thing an orphan can
         be correlated against.
+
+        Guarded here, not only at the API layer that will call
+        `resolve_unknown`/`end_orphan`: both methods reach this before doing
+        anything else, so every caller — present or future — inherits the
+        guard instead of relying on each one to add it. A record that has
+        already settled (`materialized`/`terminal`) recomputes "new since
+        `known_runs`" against a now-stale snapshot; re-adopting over it would
+        silently overwrite a settled outcome.
         """
         record = self._store().get(request_id)
         if record is None:
             raise RunRejectedError(f"no launch record for {request_id}")
+        if record.state != "launch_unknown":
+            raise RunRejectedError(
+                f"{request_id} is not launch_unknown (state={record.state!r}); "
+                "nothing to resolve"
+            )
         parts = record.repo_key.split("/")
         key = (
             RepoKey(host="", owner="", repo=parts[1], local=True)
@@ -448,13 +461,22 @@ class RunController:
                 f"candidates are: {', '.join(candidates) or 'none'}"
             )
         _, cli, home = self._require_on()
-        proc = subprocess.run(  # noqa: S603 — argv is a fixed shape
-            [str(cli), "run-end", run_id, "--outcome", outcome],
-            capture_output=True,
-            text=True,
-            env={**os.environ, "MAESTRO_HOME": str(home)},
-            timeout=_VERB_TIMEOUT,
-        )
+        try:
+            proc = subprocess.run(  # noqa: S603 — argv is a fixed shape
+                [str(cli), "run-end", run_id, "--outcome", outcome],
+                capture_output=True,
+                text=True,
+                env={**os.environ, "MAESTRO_HOME": str(home)},
+                timeout=_VERB_TIMEOUT,
+            )
+        except (OSError, subprocess.SubprocessError) as err:
+            # A missing/non-executable binary raises OSError; a hang past
+            # _VERB_TIMEOUT raises TimeoutExpired (SubprocessError). Neither
+            # is a RunRejectedError on its own, and both are otherwise
+            # ordinary and recoverable — the run itself is untouched, only
+            # this attempt to end it failed (spec §5.2.1; mirrors
+            # `run_request._git`, `run_controller._launch`'s Popen guard).
+            raise RunRejectedError(f"cannot run maestro run-end: {err}") from err
         if proc.returncode != 0:
             raise RunRejectedError(
                 f"maestro run-end refused: {proc.stderr.strip() or proc.stdout.strip()}"
