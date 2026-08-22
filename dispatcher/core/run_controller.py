@@ -432,6 +432,11 @@ class RunController:
             raise RunRejectedError(f"no launch record for {request_id}")
         if record.run_id is None:
             return RunView(record=record)
+        # The resolved home, not the raw config field: `maestro_home=None`
+        # means "derive from `maestro_db.parent`" (`_require_on()`), and
+        # `runs_dir()`/`_launch()` already use this value — the one
+        # canonical resolver, not a second fallback expression here.
+        _, _, home = self._require_on()
         # A throwaway snapshot: `classified_runs` reports unreadable sources
         # into it, and those warnings belong to the dashboard's snapshot, not
         # to this lookup.
@@ -439,7 +444,7 @@ class RunController:
         match = next(
             (
                 info
-                for info, _ in classified_runs(self._config.maestro_home, scratch)
+                for info, _ in classified_runs(home, scratch)
                 if info.run_id == record.run_id and info.repo_key == record.repo_key
             ),
             None,

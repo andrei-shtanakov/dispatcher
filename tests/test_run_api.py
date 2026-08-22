@@ -169,3 +169,43 @@ def test_view_joins_the_request_to_maestros_own_run_row(tmp_path: Path) -> None:
     assert view.record.run_id == "01AAA"
     assert view.run is not None
     assert view.run.status == "completed"
+
+
+def test_view_resolves_home_from_maestro_db_when_maestro_home_is_unset(
+    tmp_path: Path,
+) -> None:
+    """`maestro_home=None` means "derive from `maestro_db.parent`"
+    (`DispatcherConfig.effective_maestro_home`), not "control plane off" —
+    the same shape `_require_on()` and `runs_dir()` already honor. `view()`
+    must resolve through that fallback too, or a config that only sets
+    `maestro_db` would see every run as absent while the dashboard
+    collector, which does use the resolved home, finds it fine."""
+    from conftest import make_maestro_run
+
+    from dispatcher.core.run_controller import RunController
+    from dispatcher.core.run_identity import RepoKey
+    from dispatcher.core.run_store import RunStore
+
+    home = tmp_path / "mhome"
+    key = RepoKey(host="github.com", owner="owner", repo="deployer")
+    make_maestro_run(
+        home,
+        key.as_path_parts(),
+        "01AAA",
+        started_at="2026-08-22T00:00:00Z",
+        outcome="completed",
+    )
+    config = DispatcherConfig(
+        roots=(tmp_path / "ws",),
+        maestro_db=home / "maestro.db",  # maestro_home left unset on purpose
+        run_state_dir=tmp_path / "state",
+        maestro_cli=tmp_path / "unused-maestro",
+    )
+    (tmp_path / "ws").mkdir()
+    store = RunStore(tmp_path / "state")
+    store.reserve("req-1", key, known_runs=[], window_start="t")
+    store.mark_materialized("req-1", "01AAA")
+
+    view = RunController(config).view("req-1")
+    assert view.run is not None
+    assert view.run.status == "completed"
