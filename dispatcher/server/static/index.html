@@ -996,14 +996,38 @@ const RC_VERB_TASK_ID_MESSAGE = {
     + "instead",
 };
 
-function renderVerbControls() {
+// Fix round 1: these controls need a run to act on, and the record ALREADY
+// SAYS whether one exists — `rec.run_id` is null in exactly the two states
+// (`reserved`, `launching`) where `renderRunView`'s own line above this one
+// just printed "no run yet". Rendering three clickable buttons right below
+// that sentence is the same class of defect this branch already shipped
+// once (a UI contradicting a sentence it just printed) — a click would
+// only earn the operator a round trip to learn what this page already
+// knew: `RunController.control` refuses with "{request_id} has no run to
+// act on (state: ...)" (run_controller.py:652-656). validateRunRequest
+// already sets the precedent for predicting a server refusal client-side
+// (Task 2); this case is easier, since the client does not have to predict
+// anything — it already HAS `rec.run_id`. Disabled, not hidden: `reserved`
+// and `launching` are transient and this view polls, so controls that
+// vanish and reappear would make the panel jump — a visibly disabled
+// control with a reason tells the operator what is coming instead.
+function renderVerbControls(rec) {
+  const noRun = rec.run_id === null || rec.run_id === undefined;
+  const disabledAttr = noRun ? "disabled" : "";
+  // "no run to act on" is the server's own phrase (run_controller.py:653-
+  // 654), restated here verbatim for the same reason RC_VERB_TASK_ID_MESSAGE
+  // restates the task_id refusals — one vocabulary, not two.
+  const reason = noRun
+    ? `<p class="rc-hint">no run to act on yet
+      (state: ${esc(rec.state)})</p>` : "";
   return `<p><b>controls:</b></p>
+    ${reason}
     <label for="rc-verb-task-id">task id (for approve / retry)</label>
     <input id="rc-verb-task-id" type="text">
-    <button id="rc-verb-status" type="button">status</button>
-    <button id="rc-verb-retry" type="button"
+    <button id="rc-verb-status" type="button" ${disabledAttr}>status</button>
+    <button id="rc-verb-retry" type="button" ${disabledAttr}
       >retry — clears a task in FAILED or NEEDS_REVIEW</button>
-    <button id="rc-verb-approve" type="button"
+    <button id="rc-verb-approve" type="button" ${disabledAttr}
       >approve — releases a task in AWAITING_APPROVAL</button>
     <div id="rc-verb-result"></div>`;
 }
@@ -1043,7 +1067,7 @@ function renderRunView(view) {
   // retry/approve, and status/retry/approve never sit beside run-end.
   const actions = rec.state === "launch_unknown"
     ? renderUnknownActions()
-    : renderVerbControls();
+    : renderVerbControls(rec);
   return recordLine + runLine + warningsBlock
     + `<div id="rc-view-actions">${actions}</div>`;
 }

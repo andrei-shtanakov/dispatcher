@@ -1272,6 +1272,89 @@ testCase('Task 5: a server refusal (non-ok HTTP, e.g. no run to act on) '
   });
 });
 
+// -- Task 5 fix round 1: gate the verb controls on rec.run_id --------------
+// The record already knows whether a run exists to act on (`rec.run_id`):
+// `reserved`/`launching` have none yet, and `renderRunView`'s OWN "no run
+// yet" line says so one line above where the controls render. Three
+// clickable buttons right below that sentence would only earn the operator
+// a round trip to learn what this page already knew (`RunController.control`
+// refuses with "has no run to act on (state: ...)",
+// run_controller.py:652-656) — disabled, with the reason, not hidden
+// (reserved/launching are transient and this view polls, so appearing/
+// vanishing controls would make the panel jump).
+//
+// Each case below proves the controls block actually rendered (maybeEl !==
+// null) before trusting anything about their disabled state — the same
+// "absence passes trivially on nothing rendered" trap this branch has hit
+// before, now guarded on the POSITIVE (enabled/disabled) side too, not just
+// on absence.
+
+testCase('Task 5 fix round 1: verb controls are disabled, with a '
+  + "server-worded reason, when the record has no run yet (state: "
+  + 'launching)', async () => {
+  await withPage(async page => {
+    await openView(page, 'req-noRun-1', {record: {state: 'launching', run_id: null},
+      run: null, warnings: []});
+    check(maybeEl(page, '#rc-verb-status') !== null, 'status control rendered');
+    check(maybeEl(page, '#rc-verb-retry') !== null, 'retry control rendered');
+    check(maybeEl(page, '#rc-verb-approve') !== null, 'approve control rendered');
+    check(el(page, '#rc-verb-status').disabled === true,
+      'status is disabled while there is no run yet');
+    check(el(page, '#rc-verb-retry').disabled === true,
+      'retry is disabled while there is no run yet');
+    check(el(page, '#rc-verb-approve').disabled === true,
+      'approve is disabled while there is no run yet');
+    const html = text(page, '#rc-run-view');
+    check(/no run to act on/i.test(html),
+      `the reason uses the server's own wording (got: ${html})`);
+    check(/launching/i.test(html),
+      `the current state is named in the reason (got: ${html})`);
+  });
+});
+
+testCase('Task 5 fix round 1: verb controls are disabled the same way for '
+  + 'state: reserved, and a disabled control cannot be clicked', async () => {
+  await withPage(async page => {
+    await openView(page, 'req-noRun-2', {record: {state: 'reserved', run_id: null},
+      run: null, warnings: []});
+    check(maybeEl(page, '#rc-verb-status') !== null, 'status control rendered');
+    check(el(page, '#rc-verb-status').disabled === true,
+      'status is disabled for state: reserved too');
+    await click(page, '#rc-verb-status');
+    check(!page.calls.some(c => c.url.endsWith('/verb')),
+      'a disabled control must not reach the wire even when clicked');
+  });
+});
+
+testCase('Task 5 fix round 1: verb controls are enabled once the record '
+  + 'carries a run_id, and no "no run" reason is shown', async () => {
+  await withPage(async page => {
+    await openMaterialized(page, 'req-hasRun');
+    check(maybeEl(page, '#rc-verb-status') !== null, 'status control rendered');
+    check(maybeEl(page, '#rc-verb-retry') !== null, 'retry control rendered');
+    check(maybeEl(page, '#rc-verb-approve') !== null, 'approve control rendered');
+    check(el(page, '#rc-verb-status').disabled === false,
+      'status is enabled once a run exists');
+    check(el(page, '#rc-verb-retry').disabled === false,
+      'retry is enabled once a run exists');
+    check(el(page, '#rc-verb-approve').disabled === false,
+      'approve is enabled once a run exists');
+    check(!/no run to act on/i.test(text(page, '#rc-run-view')),
+      'the "no run to act on" reason must not appear once a run exists');
+  });
+});
+
+testCase('Task 5 fix round 1: verb controls are enabled for a terminal '
+  + 'record too — the gate is run_id, not any particular state', async () => {
+  await withPage(async page => {
+    await openView(page, 'req-terminal', {record: {state: 'terminal', run_id: '01AAA'},
+      run: {status: 'completed'}, warnings: []});
+    check(maybeEl(page, '#rc-verb-status') !== null, 'status control rendered');
+    check(el(page, '#rc-verb-status').disabled === false,
+      'status is enabled for a terminal record with a run_id');
+  });
+});
+
 // ---- main -------------------------------------------------------------------
 
 (async () => {
