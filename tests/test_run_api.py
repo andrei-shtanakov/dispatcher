@@ -80,6 +80,31 @@ async def test_control_plane_off_reads_409_not_404(tmp_path: Path) -> None:
         assert resp.status_code == 409
 
 
+async def test_resolve_and_verb_still_answer_with_the_control_plane_off(
+    tmp_path: Path,
+) -> None:
+    """`run_state_dir`/`maestro_cli` unset does not remove `/resolve` and
+    `/verb` from the app (`create_app` always registers them) — it makes
+    each answer 409, the documented shape (`DispatcherConfig.run_state_dir`
+    docstring). This is the behaviour the field's own comment must describe
+    accurately, not "no controller"."""
+    async with _client(tmp_path) as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resolve_resp = await client.post(
+            "/api/runs/nope/resolve",
+            json={},
+            headers={"X-Action-Token": token},
+        )
+        assert resolve_resp.status_code == 409
+
+        verb_resp = await client.post(
+            "/api/runs/nope/verb",
+            json={"verb": "status"},
+            headers={"X-Action-Token": token},
+        )
+        assert verb_resp.status_code == 409
+
+
 async def test_verb_outside_the_allowlist_is_422(tmp_path: Path) -> None:
     async with _client(tmp_path) as client:
         token = (await client.get("/api/actions/session")).json()["token"]

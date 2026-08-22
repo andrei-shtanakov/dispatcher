@@ -47,13 +47,18 @@ class DispatcherConfig:
     # config never carries the token itself. None → run-status is off.
     benchmarks_token_file: Path | None = None
     # Durable store for RunRequest records and the per-RepoKey launch lock
-    # (slice-0 spec §5.2). None → the control plane is off: no submit
-    # endpoint, no controller. Mirrors the "None → feature off" shape of
-    # `benchmarks_url` and `tracking_file`.
+    # (slice-0 spec §5.2). None → the control plane is off, but the
+    # `/api/runs/*` endpoints exist regardless: `submit` still answers with
+    # a refusal receipt (`accepted: false`), and the other three answer 409
+    # (`ControlPlaneOff`). Mirrors the "None → feature off" shape of
+    # `benchmarks_url` and `tracking_file`, not their "endpoint absent"
+    # behaviour.
     run_state_dir: Path | None = None
     # ABSOLUTE path to the maestro binary the controller launches. None →
-    # the control plane is off. Distinct from `maestro_home`/`maestro_db`,
-    # which say where maestro's STATE is; this says what to execute.
+    # same "off but reachable" shape as `run_state_dir` above: `submit`
+    # refuses, the rest answer 409. Distinct from `maestro_home`/
+    # `maestro_db`, which say where maestro's STATE is; this says what to
+    # execute.
     maestro_cli: Path | None = None
 
     @property
