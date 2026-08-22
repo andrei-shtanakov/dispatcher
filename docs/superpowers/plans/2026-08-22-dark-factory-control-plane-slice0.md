@@ -1301,15 +1301,25 @@ class RunController:
     # -- wiring -------------------------------------------------------------
 
     def _require_on(self) -> tuple[Path, Path, Path]:
+        """The three paths the control plane needs, or `ControlPlaneOff`.
+
+        Only `run_state_dir` and `maestro_cli` are switches. `maestro_home`
+        is NOT one: the config documents `None` there as "derive from
+        `maestro_db.parent`" and exposes that through the
+        `effective_maestro_home` property, which the rest of the codebase
+        already consumes (`core/service.py:72`). Gating on it would report
+        the control plane off for a working, supported config shape.
+        """
         state_dir = self._config.run_state_dir
         cli = self._config.maestro_cli
-        home = self._config.maestro_home
-        if state_dir is None or cli is None or home is None:
+        if state_dir is None or cli is None:
             raise ControlPlaneOff(
-                "control plane is off: run_state_dir, maestro_cli and "
-                "maestro_home must all be configured"
+                "control plane is off: run_state_dir and maestro_cli must "
+                "both be configured"
             )
-        return state_dir, cli, home
+        # One value, two uses — the child's $MAESTRO_HOME and the watched
+        # `runs/` must never be resolved separately.
+        return state_dir, cli, self._config.effective_maestro_home
 
     def _store(self) -> RunStore:
         state_dir, _, _ = self._require_on()
@@ -2362,6 +2372,14 @@ found in the first draft of this plan and fixed here:
    flight and the input is simply bad. Added `RunStoreError` as the base.
 9. The idempotency test's counter did `len(read_text())` instead of `int(...)`, so it
    would have passed without measuring anything.
+
+**Fourth pass — caught during execution of Task 4.** `_require_on` treated
+`config.maestro_home is None` as `ControlPlaneOff`. In the real `DispatcherConfig` only
+`run_state_dir` and `maestro_cli` carry "None → off"; `maestro_home = None` means "derive
+from `maestro_db.parent`" via the `effective_maestro_home` property, already consumed at
+`core/service.py:72`. The plan's version would have switched the control plane off for a
+working config. Corrected above, with the one-wire invariant made explicit in the code
+rather than only in prose.
 
 **Third pass — caught during execution of Task 1.** The replacement reject case
 `git@github.com:owner/x..y.git` was wrong too: `_UNSAFE` permits dots and only an exact
