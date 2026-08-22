@@ -1,7 +1,17 @@
 # Dark Factory control plane, slice 0 — dispatcher-side design
 
-**Status:** draft 2026-08-22. Owner decision pending. No inbox issue: this is
-dispatcher's own work, not a cross-repo request.
+**Status:** 2026-08-22, corrected after implementation. The slice-0 server half shipped
+in #167/#168/#169; five things this spec asserted turned out to be wrong or unbuilt, and
+each is corrected in place below rather than left for a reader to trip over. Every
+correction is marked **Correction, 2026-08-22** and says what was believed before.
+
+The corrections, in descending order of consequence: §4.2.1 — a run's repository is
+chosen by the `tasks.yaml`, not by the request; §2.1/§9/§10 — the UI was never planned
+and pass 1 cannot be accepted without it; §6 — `stop` is not a run-scoped verb; §5.2.1 —
+one of three named lock-release conditions had no mechanism; §3.1 — the record's join
+was asserted but not implemented.
+
+No inbox issue: this is dispatcher's own work, not a cross-repo request.
 
 Slice 0 is the smallest contour that lets a real backlog item be implemented by an
 orchestrated run **started from the dispatcher UI**, without opening a terminal in the
@@ -43,6 +53,15 @@ A durable, idempotent request to start one maestro Mode-1 run against one reposi
 one revision, issued from the dispatcher UI, executed by a controller that owns the
 process, with run state read back from maestro's own store.
 
+**Correction, 2026-08-22: the UI half was never planned and is not built.** The
+implementation (#167, #168, #169) delivers the server half — the request contract, the
+store, the controller, the verbs, the HTTP surface and the read-back — and nothing under
+`dispatcher/server/static/`. Today a request is issued by fetching the CSRF token from
+`/api/actions/session` and posting to `/api/runs/submit` by hand. Narrowing slice 0 to
+the server half is defensible; it is the hard half. What was not defensible was leaving
+the narrowing unstated while §9's acceptance criterion assumed the UI existed. **Pass 1
+cannot be accepted until the UI lands**, and it is owed its own plan.
+
 ### 2.2 Non-goals (explicit, each with its reason)
 
 | Not in slice 0 | Why |
@@ -76,7 +95,14 @@ dispatcher persists exactly one thing nobody else owns: the `RunRequest` and its
 outcome. This is the same constraint `core/governance.py` already lives under (CON-03,
 "no sibling-repo path is ever resolved") applied to writes.
 
-For slice 0 the join between the five identities lives **in the RunRequest record**.
+For slice 0 the join between the five identities lives **in the RunRequest record** —
+concretely, the durable record persists `work_id`, `revision`, `tasks` and both
+`spec_ref`/`plan_ref` path-and-commit pairs alongside the state machine, not just
+`request_id` and `run_id`. **Correction, 2026-08-22:** the first implementation of this
+spec stored only the state machine and dropped the request body, which left this
+paragraph's central claim — the reason dispatcher owns a store at all — true of nothing.
+Neither the plan's own review nor any per-task review caught it; the whole-branch review
+did.
 Requiring `work_id` to be carried natively by spec-runner's SpecMeta, steward's
 `gate-verdicts/v1`, and maestro's run DB would begin this work with three cross-repo
 contract requests — the exact traffic the pilot exists to avoid. Which of the five must
@@ -136,10 +162,49 @@ accepted as a free string, and never used to build a path before it validates.
 
 ### 4.2 `tasks` and `revision` validation
 
-`tasks` is repo-relative and resolved **only inside the checkout of `revision`**: no
-absolute paths, no `..` traversal, no symlink escape (resolve, then assert the real path
-is under the checkout root). `revision` is a full 40-hex sha — a ref would make the
-request non-reproducible on retry, which defeats idempotency at the source.
+`tasks` is repo-relative and validated **inside the checkout of `revision`** by asking
+git rather than the filesystem: `git cat-file -e <revision>:<tasks>`. A git object path
+cannot contain `..` traversal or follow a symlink out of the repository, so the
+resolve-then-assert dance the first draft of this section described is unnecessary.
+`revision` is a full 40-hex sha — a ref would make the request non-reproducible on
+retry, which defeats idempotency at the source.
+
+#### 4.2.1 `tasks` also *names its own repository*, and it wins
+
+**Correction, 2026-08-22 — this was the largest defect in the first version of this
+spec.** §3.2 below reasons carefully about `MAESTRO_HOME` deciding *where* a run
+materializes, and never asks what decides *under which key*. It is not the controller's
+working directory.
+
+Mode-1 identity comes from the DAG itself. `ProjectConfig.repo` is a **required** field
+(`maestro/maestro/models.py:871`), and `identity_from_config`
+(`maestro/maestro/repo_identity.py:103-135`) reads `repo_url:` when the config declares
+one, otherwise resolves `repo:` as a local checkout and takes *that* checkout's
+`origin`. `bootstrap_run` calls it first (`maestro/maestro/run_bootstrap.py:68`).
+The child's `cwd` plays no part.
+
+So `request.repository` and the repository maestro actually publishes under are two
+independent namings, and if nothing reconciles them:
+
+- the `revision` guard above governs a checkout maestro never touches;
+- the per-`RepoKey` lock of §5.4 — "the only thing standing between slice 0 and two
+  agent-driven runs mutating one checkout" — is taken on the wrong repository;
+- `runs/` is watched in the wrong place, so a healthy launch reads as `launch_unknown`,
+  which is exactly the §3.2 failure arriving through a door §3.2 never looked at;
+- an agent-driven run edits a checkout nobody requested, while the receipt names the one
+  that was.
+
+This is not exotic. A `tasks.yaml` is hand-authored (§2.2 defers the compiler), lives in
+one repository, and names its target by absolute path
+(`maestro/examples/maestro-builds-maestro.yaml:18`). Copying a DAG between repositories
+and forgetting the `repo:` line produces it.
+
+**Therefore:** validation reads the task file at the revision, parses it, and refuses
+unless its `repo_url:`, or the `origin` of the checkout its `repo:` names, resolves to
+the same `RepoKey` as `request.repository`. An absent, unparseable or unresolvable
+`repo:` is refused too — maestro would exit non-zero on it anyway
+(`maestro/maestro/cli.py:591-593`, the `IdentityError` handler), and refusing costs
+nothing while a failed launch costs the lock.
 
 ## 5. Launch lifecycle
 
@@ -210,10 +275,30 @@ is released only on one of:
 
 - a successful adoption;
 - a confirmed `run-end` for the named run;
-- an explicit operator resolution of the conflict.
+- a launch that is **known** not to have produced a run — see below.
 
 A lock dropped on uncertainty would let the next request launch a second run into the
 same tree, which is the failure the lock exists to prevent.
+
+**Correction, 2026-08-22.** The first version of this list ended with "an explicit
+operator resolution of the conflict", and that condition had no mechanism anywhere: no
+endpoint, no verb, no message telling an operator it was needed. In practice the lock
+had to be freed by deleting a file under `run_state_dir/locks/` by hand, which is not a
+condition a spec can name and then leave unbuilt.
+
+It is replaced by a case that is decidable rather than delegated. When the child process
+has exited **and** its exit code is non-zero **and** a second look at `runs/` still
+shows nothing, no run can appear later — the only publisher is dead, and publication
+happens in `bootstrap_run` before the scheduler starts. That is knowledge, so §5.3's
+`accepted: false` applies, the record goes terminal, and the lock is released with
+maestro's own stderr tail as the reason. `null` stays for the genuine timeout, where the
+child is still alive and the answer is honestly unknown.
+
+That removes most of what the deleted condition was for. What remains — a lock whose
+holder cannot be identified because the lock file itself is torn — is deliberately *not*
+self-healing: `release_lock` refuses rather than freeing a lock it cannot prove it owns.
+Recovering from that is an operator action on the filesystem, and this spec says so
+plainly instead of implying an interface exists.
 
 ### 5.3 `accepted` is bound to maestro's own publication point
 
@@ -299,7 +384,21 @@ agreement, not to assume it.
 
 Slice 0's allowlist is Mode-1 only:
 
-    submit (maestro run) · status · stop · retry · approve · run-end
+    submit (maestro run) · status · retry · approve · run-end
+
+**Correction, 2026-08-22: `stop` is not on this list and the first version was wrong to
+put it there.** `maestro stop [OPTIONS]` takes no `--run` and no positional argument —
+its help reads "Stop the running scheduler. Sends a termination signal to the scheduler
+process" (`maestro/maestro/cli.py:1194`). It is not addressed to a run at all. Offering
+it as an action on one request's run would put a control in the UI that ends every other
+run the same scheduler is managing, so fixing its argv would have been worse than the
+bug. Verified by running `maestro stop --help`, not by reading the source — the
+first version of this section was derived by reading, and was wrong about two verbs.
+
+The other correction from the same check: `approve` **and** `retry` each take a required
+positional task id plus `--run` (`maestro/maestro/cli.py:1207`, `:1154`); `run-end`
+takes a positional run id plus `--outcome` and no `--run` (`:1973`); `status` takes
+`--run` alone (`:1117`).
 
 Two of these are easy to mistake for one another. `approve`
 (`maestro/maestro/cli.py:1207`) releases a task sitting in `AWAITING_APPROVAL` because
@@ -459,12 +558,19 @@ green" would be reading a signal deployer does not emit.
 
 Steps that are still manual in pass 1, named so the result is not oversold:
 
+- **issuing the request at all — there is no UI** (§2.1). Until one exists, "from the
+  UI" reads as a token fetch and a hand-made POST, which is not what this criterion
+  says and not what pass 1 is meant to demonstrate;
 - authoring the plan and the `tasks.yaml` (no compiler — §2.2);
 - choosing the revision;
 - reading run logs outside the UI (§10).
 
 ## 10. Known gaps, deliberately left open
 
+- **There is no UI, and this gap was not deliberate — it was unnoticed** (§2.1, §9).
+  Every other entry here was a choice; this one was an omission in the plan that the
+  whole-branch review found after the server half had shipped. It is listed first
+  because it is the only gap that blocks pass 1 outright.
 - **Logs are read outside dispatcher.** The acceptance criterion claims "visible in
   dispatcher" while permitting the one detailed channel to sit outside it. This is a
   temporary gap, not a design position; it is cheap to close because maestro already
@@ -514,6 +620,9 @@ break and expensive to trust once broken; re-verify before citing this table onw
 | `run-end` records the endings a run cannot observe | `maestro/maestro/cli.py:1973` |
 | Mode 1 / Mode 2 split | `maestro/maestro/cli.py:1040` (`run`), `:1911` (`orchestrate`) |
 | `approve` is for `AWAITING_APPROVAL`; `retry` clears `NEEDS_REVIEW` | `maestro/maestro/cli.py:1207`, `:940` |
+| Mode-1 identity comes from the DAG's own `repo:`/`repo_url:` | `maestro/maestro/models.py:871`, `maestro/maestro/repo_identity.py:103-135`, `maestro/maestro/run_bootstrap.py:68` |
+| `stop` is process-scoped, not run-scoped | `maestro/maestro/cli.py:1194` (`def stop_command() -> None`) |
+| `approve`/`retry` take a positional task id | `maestro/maestro/cli.py:1207`, `:1154` |
 | Mode-1 `TaskStatus.NEEDS_REVIEW` is verifier-assigned | `maestro/maestro/cli.py:682` |
 | ActionRunner is synchronous, 120 s, process-local lock | `dispatcher/core/actions.py:51,351,498` |
 | existing broker pattern with `--if-head` | `dispatcher/core/actions.py:586` |
