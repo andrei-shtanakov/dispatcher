@@ -12,6 +12,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
 from pydantic import BaseModel, Field
 
 from dispatcher.core.discovery import DispatcherConfig
@@ -19,6 +20,7 @@ from dispatcher.core.run_identity import (
     IdentityError,
     RepoKey,
     identity_from_checkout,
+    parse_remote_url,
 )
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -134,6 +136,8 @@ def validate_request(request: RunRequest, config: DispatcherConfig) -> Validated
             f"tasks {tasks!r} is not present in {request.revision[:12]}"
         )
 
+    _reconcile_repo(checkout, request.revision, tasks, key)
+
     return ValidatedRequest(
         request=request,
         checkout=checkout,
@@ -141,6 +145,70 @@ def validate_request(request: RunRequest, config: DispatcherConfig) -> Validated
         spec_commit=_ref_commit(request.spec_ref, request.revision),
         plan_commit=_ref_commit(request.plan_ref, request.revision),
     )
+
+
+def _reconcile_repo(
+    checkout: Path, revision: str, tasks: str, expected: RepoKey
+) -> None:
+    """Refuse a `tasks.yaml` that would launch under a different repository.
+
+    maestro does not key a Mode-1 run by the caller's cwd: `bootstrap_run`
+    calls `identity_from_config(config)`, which for a Mode-1 DAG reads the
+    required `repo:` field of the YAML and takes THAT checkout's `origin`
+    (`maestro/maestro/run_bootstrap.py:68`, `maestro/maestro/models.py:871`,
+    `maestro/maestro/repo_identity.py:103-135`). Nothing before this call
+    reads that field, so dispatcher's `RepoKey` (from `request.repository`)
+    and maestro's own could name two different repositories with nothing
+    reconciling them — misplacing the lock, the `runs_dir()` watch, and the
+    revision guard all at once (review finding C1).
+
+    Refusing an absent/unparseable/unresolvable `repo:`/`repo_url:` is not a
+    widening: maestro would exit non-zero on it too
+    (`maestro/maestro/cli.py:590-592`), and refusing here costs nothing
+    while a failed launch costs the repository lock (see I1).
+    """
+    show = _git(checkout, "show", f"{revision}:{tasks}")
+    if show.returncode != 0:
+        raise RunRejectedError(
+            f"cannot read {tasks!r} at {revision[:12]} to check its repo: "
+            f"{show.stderr.strip()}"
+        )
+    try:
+        doc = yaml.safe_load(show.stdout)
+    except yaml.YAMLError as err:
+        raise RunRejectedError(f"{tasks!r} is not valid YAML: {err}") from err
+    if not isinstance(doc, dict):
+        raise RunRejectedError(f"{tasks!r} does not parse to a mapping")
+
+    repo_url = doc.get("repo_url")
+    if isinstance(repo_url, str) and repo_url.strip():
+        try:
+            named = parse_remote_url(repo_url)
+        except IdentityError as err:
+            raise RunRejectedError(
+                f"{tasks!r} repo_url is unresolvable: {err}"
+            ) from err
+    else:
+        repo_field = doc.get("repo")
+        if not isinstance(repo_field, str) or not repo_field.strip():
+            raise RunRejectedError(
+                f"{tasks!r} names no repository (`repo:`/`repo_url:`); "
+                "maestro would refuse this DAG for the same reason"
+            )
+        try:
+            named = identity_from_checkout(Path(repo_field).expanduser())
+        except IdentityError as err:
+            raise RunRejectedError(
+                f"{tasks!r} repo: {repo_field!r} is unresolvable: {err}"
+            ) from err
+
+    if named != expected:
+        raise RunRejectedError(
+            f"{tasks!r} names repository {named.as_text()!r}, but the "
+            f"request names {expected.as_text()!r}: refusing to lock, "
+            "watch and validate a repository that will not be the one "
+            "maestro actually runs against"
+        )
 
 
 def _ref_commit(ref: Ref | None, revision: str) -> str | None:

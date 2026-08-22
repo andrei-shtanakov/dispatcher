@@ -32,7 +32,10 @@ def _repo(root: Path) -> str:
         ],
         check=True,
     )
-    (repo / "tasks.yaml").write_text("tasks: []\n")
+    # C1: maestro keys the run by this file's own `repo:` field, not by
+    # dispatcher's `request.repository` — self-reference here keeps every
+    # test that expects a launch to be reachable meaning what it says.
+    (repo / "tasks.yaml").write_text(f"tasks: []\nrepo: {repo}\n")
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
     subprocess.run(
         [
