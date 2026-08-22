@@ -1,6 +1,7 @@
 """RunController launch path (spec §5.3, §5.4)."""
 
 import dataclasses
+import os
 import subprocess
 import textwrap
 from pathlib import Path
@@ -718,3 +719,106 @@ def test_control_run_end_survives_a_lock_release_failure(
     monkeypatch.setattr(RunStore, "mark_terminal", _boom)
     with pytest.raises(RunRejectedError, match="run-end"):
         controller.control(_REQ, "run-end", outcome="cancelled")
+
+
+# -- I7: an unreadable runs/ must not read the same as an absent one --------
+
+
+def _skip_if_root() -> None:
+    """`chmod 0o000` denies nothing to root; a test that would silently
+    pass without proving anything must skip loudly instead."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("running as root: chmod does not deny self access")
+
+
+def test_listing_treats_a_genuinely_absent_runs_dir_as_clean_empty(
+    tmp_path: Path,
+) -> None:
+    assert RunController._listing(tmp_path / "no-such-runs") == []
+
+
+def test_listing_refuses_an_unreadable_runs_dir(tmp_path: Path) -> None:
+    """A permissions fault must not read the same as "no runs yet"."""
+    _skip_if_root()
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    (runs / "01AAA").mkdir()
+    runs.chmod(0o000)
+    try:
+        with pytest.raises(OSError):
+            RunController._listing(runs)
+    finally:
+        runs.chmod(0o755)
+
+
+def test_listing_refuses_when_runs_is_a_plain_file(tmp_path: Path) -> None:
+    """A stray file sitting where `runs/` belongs is grouped with the
+    fault, not with absence: `NotADirectoryError` propagates rather than
+    reading as clean-empty. This is a deliberate divergence from `_subdirs`
+    (`dispatcher/core/collectors/maestro.py:222-232`), which treats
+    `NotADirectoryError` the same as `FileNotFoundError` — `_listing` backs
+    correlation, where this is a genuine anomaly, not the ordinary
+    "nothing here yet" case."""
+    runs = tmp_path / "runs"
+    runs.write_text("not a directory")
+    with pytest.raises(NotADirectoryError):
+        RunController._listing(runs)
+
+
+def test_submit_refuses_rather_than_snapshot_an_unreadable_runs_dir(
+    tmp_path: Path,
+) -> None:
+    """The pre-launch snapshot (`submit`, before `reserve`) must not
+    silently read an unreadable `runs/` as "no runs" — a later correlation
+    would otherwise see every existing run as new."""
+    _skip_if_root()
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    assert config.maestro_home is not None
+    runs = config.maestro_home / "projects/github.com/owner/deployer/runs"
+    runs.mkdir(parents=True)
+    (runs / "01EXISTING").mkdir()
+    runs.chmod(0o000)
+    try:
+        controller = RunController(config, materialize_timeout=10.0)
+        receipt = controller.submit(_request(head))
+    finally:
+        runs.chmod(0o755)
+    assert receipt.accepted is False
+    assert "cannot use request_id" in (receipt.reason or "")
+
+
+def test_resolve_unknown_refuses_rather_than_zero_candidates_when_unreadable(
+    tmp_path: Path,
+) -> None:
+    """A permissions fault while recounting candidates must not read as
+    "nothing new to correlate" — `resolve_unknown` would otherwise claim
+    "the launch may never have started" when the truth is "I could not
+    look"."""
+    _skip_if_root()
+    controller, runs = _unknown(tmp_path)
+    (runs / "01LATE").mkdir()
+    runs.chmod(0o000)
+    try:
+        with pytest.raises(RunRejectedError, match="cannot list runs"):
+            controller.resolve_unknown(_REQ)
+    finally:
+        runs.chmod(0o755)
+
+
+def test_end_orphan_refuses_rather_than_a_stale_candidate_set_when_unreadable(
+    tmp_path: Path,
+) -> None:
+    """Same fault, the other resolution path: naming a run against a
+    candidate set that could not actually be read must refuse, not fall
+    through to "not a candidate" for a run that may well still be one."""
+    _skip_if_root()
+    controller, runs = _unknown(tmp_path)
+    (runs / "01AAA").mkdir()
+    runs.chmod(0o000)
+    try:
+        with pytest.raises(RunRejectedError, match="cannot list runs"):
+            controller.end_orphan(_REQ, "01AAA", "cancelled")
+    finally:
+        runs.chmod(0o755)

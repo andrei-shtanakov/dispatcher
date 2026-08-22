@@ -647,6 +647,27 @@ def create_app(
     ) -> UnknownResolution:
         """Adopt an unambiguous orphan, or end the one the operator names."""
         _require_token(x_action_token)
+        if (request.run_id is None) != (request.outcome is None):
+            # `run_id` and `outcome` are one operator decision — "end THIS
+            # run THIS way" — so the endpoint enforces the pairing in both
+            # directions. Half of it is a malformed request, not an empty
+            # one, and the two halves fail differently if waved through:
+            # a run_id alone reaches `end_orphan(..., "")`, which reports
+            # "outcome must be cancelled|superseded, got ''" as though the
+            # CALLER sent that value; an outcome alone is silently dropped
+            # and the request falls through to `resolve_unknown`, so the
+            # caller asks to END a run and gets an ADOPTION attempt with no
+            # sign anything was ignored. The controller's own check stays —
+            # `end_orphan` is also reachable from the TUI, MCP and VSCode
+            # surfaces, which do not go through this endpoint.
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "run_id and outcome must be given together: both to end "
+                    "a named orphan (outcome cancelled|superseded), or "
+                    "neither to attempt adoption"
+                ),
+            )
         try:
             if request.run_id is not None:
                 return runs.end_orphan(

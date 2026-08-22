@@ -179,10 +179,48 @@ class RunController:
 
     @staticmethod
     def _listing(runs: Path) -> list[str]:
+        """Run-id subdirectories of `runs/`.
+
+        A genuinely absent `runs/` is normal before a repo's first run and
+        reads as clean-empty (`FileNotFoundError`). Every other `OSError` —
+        a permissions error, a bad mount, `runs` colliding with a plain
+        file (`NotADirectoryError`) — must NOT read as empty: that is
+        exactly how a live launch would be reported as "never happened"
+        (mirrors `_subdirs`, `dispatcher/core/collectors/maestro.py:222-232`,
+        which WARNs rather than swallowing). `NotADirectoryError` is grouped
+        with the fault here, unlike `_subdirs` — `_listing` backs
+        correlation, where a stray file sitting where `runs/` belongs is an
+        anomaly, not the ordinary "no runs yet" case `FileNotFoundError`
+        already covers. This raises rather than logging: callers translate
+        the propagated `OSError` into their own existing failure shape
+        (a refusal receipt in `submit`, `RunRejectedError` in
+        `_candidates`) rather than this method inventing a new one.
+        """
         try:
             return sorted(p.name for p in runs.iterdir() if p.is_dir())
-        except OSError:
-            # An absent `runs/` is normal before the first run of a repo.
+        except FileNotFoundError:
+            return []
+
+    def _listing_since(self, runs: Path, before: set[str]) -> list[str]:
+        """Names new in `runs/` relative to `before`, for the post-launch
+        poll only (`_await_materialization`).
+
+        Unlike `_listing`'s two other callers — the pre-launch snapshot in
+        `submit` and operator resolution in `_candidates`, both of which
+        must now fail loud (I7) — the maestro child is already running
+        here (`start_new_session=True`, spec §7.1) by the time this is
+        called. Letting an `OSError` escape mid-poll would abandon that
+        live process behind an unhandled 500 with no diagnostics recorded,
+        which is a strictly worse outcome than the transient read failure
+        itself. A read failure here degrades to "nothing new this round"
+        (logged, not silent) and the poll continues; correctness still
+        rests on `submit`'s pre-launch snapshot and `_candidates`' recount
+        being trustworthy, which this method does not touch.
+        """
+        try:
+            return [n for n in self._listing(runs) if n not in before]
+        except OSError as err:
+            _audit.error("await_materialization runs=%s cannot list: %s", runs, err)
             return []
 
     # -- submit -------------------------------------------------------------
@@ -505,7 +543,7 @@ class RunController:
         """
         deadline = time.monotonic() + self._timeout
         while time.monotonic() < deadline:
-            fresh = [name for name in self._listing(runs) if name not in before]
+            fresh = self._listing_since(runs, before)
             if len(fresh) == 1:
                 return _MaterializationResult(run_id=fresh[0])
             if len(fresh) > 1:
@@ -518,7 +556,7 @@ class RunController:
                 # look — not the exit alone — is what turns a live child's
                 # ordinary timeout into a knowable non-launch (I1).
                 time.sleep(self._poll)
-                late = [n for n in self._listing(runs) if n not in before]
+                late = self._listing_since(runs, before)
                 if len(late) == 1:
                     return _MaterializationResult(run_id=late[0])
                 if not late and child.returncode != 0:
@@ -731,7 +769,19 @@ class RunController:
             else RepoKey(host=parts[0], owner=parts[1], repo=parts[2])
         )
         before = set(record.known_runs)
-        fresh = [n for n in self._listing(self.runs_dir(key)) if n not in before]
+        runs = self.runs_dir(key)
+        try:
+            fresh = [n for n in self._listing(runs) if n not in before]
+        except OSError as err:
+            # `_listing` no longer reads an unreadable `runs/` as empty
+            # (I7). Without this, "cannot list" and "nothing new" would
+            # both surface as zero candidates: `resolve_unknown` would say
+            # "the launch may never have started" and `end_orphan` would
+            # say the named run "is not a candidate" — both false. Wrapped
+            # in `RunRejectedError` so the existing 422 handler in
+            # `resolve_run` (`dispatcher/server/app.py`) catches it without
+            # a new exception type.
+            raise RunRejectedError(f"cannot list runs at {runs}: {err}") from err
         return fresh, key
 
     def resolve_unknown(self, request_id: str) -> UnknownResolution:
