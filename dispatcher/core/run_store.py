@@ -51,6 +51,15 @@ class _UnreadableLock(Exception):
 
 
 class LaunchRecord(BaseModel):
+    """dispatcher's request, plus how far it got (spec §5.2).
+
+    Spec §3.1: "the join between the five identities lives in the
+    RunRequest record" — `work_id`/`revision`/`tasks`/the two ref fields
+    ARE that record, persisted at `reserve()` time (I3) rather than
+    validated and dropped. Defaulting to `""`/`None` keeps a record written
+    before this field existed readable.
+    """
+
     request_id: str
     repo_key: str
     state: LaunchState
@@ -61,6 +70,13 @@ class LaunchRecord(BaseModel):
     known_runs: list[str] = Field(default_factory=list)
     window_start: str = ""
     outcome: str | None = None
+    work_id: str = ""
+    revision: str = ""
+    tasks: str = ""
+    spec_ref_path: str | None = None
+    spec_commit: str | None = None
+    plan_ref_path: str | None = None
+    plan_commit: str | None = None
 
 
 class RunStore:
@@ -119,11 +135,21 @@ class RunStore:
         *,
         known_runs: list[str],
         window_start: str,
+        work_id: str = "",
+        revision: str = "",
+        tasks: str = "",
+        spec_ref_path: str | None = None,
+        spec_commit: str | None = None,
+        plan_ref_path: str | None = None,
+        plan_commit: str | None = None,
     ) -> LaunchRecord:
         """Take the lock and write the record BEFORE any process starts.
 
         A repeated `request_id` returns its existing record and never starts a
-        second launch (spec §5.2).
+        second launch (spec §5.2). The request-body kwargs persist the join
+        spec §3.1 says lives here (I3); they default to empty/`None` so a
+        caller with nothing to add (most of this module's own tests) still
+        works unchanged.
         """
         existing = self.get(request_id)
         if existing is not None:
@@ -151,6 +177,13 @@ class RunStore:
             state="reserved",
             known_runs=known_runs,
             window_start=window_start,
+            work_id=work_id,
+            revision=revision,
+            tasks=tasks,
+            spec_ref_path=spec_ref_path,
+            spec_commit=spec_commit,
+            plan_ref_path=plan_ref_path,
+            plan_commit=plan_commit,
         )
         self._write(record)
         return record

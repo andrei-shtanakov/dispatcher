@@ -224,6 +224,15 @@ class RunController:
                 validated.key,
                 known_runs=self._listing(runs),
                 window_start=datetime.now(UTC).isoformat(),
+                # spec §3.1: the request body is the join dispatcher owns
+                # (I3) — persisted here, not validated and dropped.
+                work_id=request.work_id,
+                revision=request.revision,
+                tasks=request.tasks,
+                spec_ref_path=request.spec_ref.path if request.spec_ref else None,
+                spec_commit=validated.spec_commit,
+                plan_ref_path=request.plan_ref.path if request.plan_ref else None,
+                plan_commit=validated.plan_commit,
             )
         except LockBusyError as err:
             return self._refuse(request.request_id, str(err))

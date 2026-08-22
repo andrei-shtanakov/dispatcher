@@ -130,6 +130,39 @@ def test_accepted_true_only_after_the_run_appears(tmp_path: Path) -> None:
     assert receipt.run_id == "01AAA"
 
 
+def test_reserve_persists_the_request_body(tmp_path: Path) -> None:
+    """I3: spec §3.1's five-way join lives in the `LaunchRecord`, not just
+    in a validated-then-discarded `RunRequest`."""
+    from dispatcher.core.run_store import RunStore
+
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    request = RunRequest(
+        request_id=_REQ,
+        work_id="todo://deployer/entrypoint-token-boundary-match",
+        repository="deployer",
+        revision=head,
+        tasks="tasks.yaml",
+        spec_ref={"path": "docs/s.md"},
+        plan_ref={"path": "docs/p.md", "commit": "b" * 40},
+    )
+    controller = RunController(config, materialize_timeout=10.0)
+    receipt = controller.submit(request)
+    assert receipt.accepted is True
+
+    assert config.run_state_dir is not None
+    record = RunStore(config.run_state_dir).get(_REQ)
+    assert record is not None
+    assert record.work_id == "todo://deployer/entrypoint-token-boundary-match"
+    assert record.revision == head
+    assert record.tasks == "tasks.yaml"
+    assert record.spec_ref_path == "docs/s.md"
+    assert record.spec_commit == head, "spec_ref.commit defaults to revision"
+    assert record.plan_ref_path == "docs/p.md"
+    assert record.plan_commit == "b" * 40, "an explicit plan_ref.commit is kept"
+
+
 def test_launch_that_never_materializes_is_null_not_false(tmp_path: Path) -> None:
     head = _repo(tmp_path / "ws")
     cli = _fake_maestro(tmp_path / "fake-maestro", creates_run=None)
