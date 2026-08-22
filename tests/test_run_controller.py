@@ -69,7 +69,13 @@ def _repo_head(root: Path) -> str:
     ).stdout.strip()
 
 
-def _fake_maestro(path: Path, *, creates_run: str | None, exit_code: int = 0) -> Path:
+def _fake_maestro(
+    path: Path,
+    *,
+    creates_run: str | None,
+    exit_code: int = 0,
+    stderr_msg: str | None = None,
+) -> Path:
     """A stand-in that publishes a run directory the way maestro does.
 
     It reads MAESTRO_HOME from the environment on purpose: a controller that
@@ -80,6 +86,9 @@ def _fake_maestro(path: Path, *, creates_run: str | None, exit_code: int = 0) ->
         #!/usr/bin/env python3
         import os, pathlib, sys
         run_id = {creates_run!r}
+        msg = {stderr_msg!r}
+        if msg:
+            print(msg, file=sys.stderr)
         if run_id:
             home = pathlib.Path(os.environ["MAESTRO_HOME"])
             runs = home / "projects/github.com/owner/deployer/runs" / run_id
@@ -131,6 +140,39 @@ def test_launch_that_never_materializes_is_null_not_false(tmp_path: Path) -> Non
     assert receipt.accepted is None, "unknown must never be reported as a refusal"
     assert receipt.run_id is None
     assert "unknown" in (receipt.reason or "").lower()
+
+
+def test_launch_that_exits_nonzero_without_publishing_is_a_refusal(
+    tmp_path: Path,
+) -> None:
+    """I1: once the child is confirmed dead and a second look still finds
+    nothing published, `false` is knowable (spec §5.3) rather than a guess
+    — and the lock must be released, or a retry is blocked forever with no
+    way out."""
+    from dispatcher.core.run_identity import RepoKey
+    from dispatcher.core.run_store import RunStore
+
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(
+        tmp_path / "dying-maestro",
+        creates_run=None,
+        exit_code=1,
+        stderr_msg="config error: bad tasks.yaml",
+    )
+    config = _config(tmp_path, cli)
+    controller = RunController(config, poll_interval=0.05, materialize_timeout=2.0)
+    receipt = controller.submit(_request(head))
+    assert receipt.accepted is False
+    assert receipt.run_id is None
+    assert "exited 1" in (receipt.reason or "")
+    assert "config error: bad tasks.yaml" in (receipt.reason or "")
+
+    assert config.run_state_dir is not None
+    store = RunStore(config.run_state_dir)
+    assert store.get(_REQ) is not None
+    assert store.get(_REQ).state == "terminal"  # type: ignore[union-attr]
+    key = RepoKey(host="github.com", owner="owner", repo="deployer")
+    assert store.holds_lock(key) is None, "the lock must not survive a dead launch"
 
 
 def test_validation_failure_is_accepted_false(tmp_path: Path) -> None:

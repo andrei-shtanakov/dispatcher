@@ -17,6 +17,7 @@ import logging
 import os
 import subprocess
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -92,6 +93,21 @@ class UnknownResolution(BaseModel):
     adopted_run_id: str | None = None
     candidates: list[str] = Field(default_factory=list)
     reason: str = ""
+
+
+@dataclass(frozen=True)
+class _MaterializationResult:
+    """What `_await_materialization` could determine about the child.
+
+    `died_without_publishing` is a separate flag from `run_id is None`
+    rather than a third `run_id` sentinel: it is the one case where "no run
+    appeared" is knowable as `accepted: False` rather than
+    `launch_unknown` — the only publisher (maestro itself) exited non-zero
+    and a second look still found nothing (spec §5.3, I1).
+    """
+
+    run_id: str | None
+    died_without_publishing: bool = False
 
 
 class VerbOutcome(BaseModel):
@@ -224,7 +240,7 @@ class RunController:
         key: RepoKey,
         runs: Path,
     ) -> LaunchReceipt:
-        _, cli, home = self._require_on()
+        state_dir, cli, home = self._require_on()
         reserved = store.get(request.request_id)
         if reserved is None:
             # `reserve()` just wrote this record synchronously; its absence
@@ -253,22 +269,60 @@ class RunController:
             )
             return self._refuse(request.request_id, f"cannot record launch: {err}")
 
+        # A run's diagnostics are discarded past this point unless captured
+        # now: once maestro exits, DEVNULL would have thrown away the one
+        # message that could tell an operator why (I1). Best-effort — a
+        # failure to open the log file must not block the launch itself.
+        stderr_path = self._stderr_path(state_dir, request.request_id)
+        try:
+            stderr_handle = stderr_path.open("wb")
+        except OSError:
+            stderr_handle = None
         try:
             child = subprocess.Popen(  # noqa: S603 — argv is a fixed shape
                 argv,
                 cwd=str(checkout),
                 env=env,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=stderr_handle
+                if stderr_handle is not None
+                else subprocess.DEVNULL,
+                # The run must survive this web request and a dispatcher
+                # restart (spec §7.1): without its own session, a Ctrl-C in
+                # the terminal running the server sends SIGINT to the whole
+                # foreground process group and kills the run too (I2). The
+                # child is intentionally never reaped — a zombie per launch
+                # is harmless at pilot volume and unbounded reaping is out
+                # of scope for slice 0.
+                start_new_session=True,
             )
         except OSError as err:
             # Nothing was executed, so "no run exists" is a fact, not a guess.
             self._try_mark_terminal(store, request.request_id, f"launch failed: {err}")
             return self._refuse(request.request_id, f"cannot start maestro: {err}")
+        finally:
+            if stderr_handle is not None:
+                stderr_handle.close()
 
-        run_id = self._await_materialization(runs, before, child)
-        if run_id is not None:
-            return self._report_materialized(store, request, key, run_id)
+        result = self._await_materialization(runs, before, child)
+        if result.run_id is not None:
+            return self._report_materialized(store, request, key, result.run_id)
+
+        if result.died_without_publishing:
+            # Stricter than an ordinary timeout, and deliberately so: the
+            # only publisher is dead and a second look still found nothing,
+            # so `false` here is knowable rather than a guess (spec §5.3
+            # lists "a non-zero exit before publication" under `false`).
+            tail = self._tail(stderr_path)
+            reason = (
+                f"maestro exited {child.returncode} before publishing any "
+                f"run under {runs}; nothing was launched."
+                + (f" stderr: {tail}" if tail else "")
+            )
+            self._try_mark_terminal(
+                store, request.request_id, f"launch failed: exit {child.returncode}"
+            )
+            return self._refuse(request.request_id, reason)
 
         reason = (
             "launch_unknown: no run appeared under "
@@ -285,6 +339,27 @@ class RunController:
         return LaunchReceipt(
             request_id=request.request_id, accepted=None, reason=reason
         )
+
+    @staticmethod
+    def _stderr_path(state_dir: Path, request_id: str) -> Path:
+        """Where this launch's maestro stderr is captured (I1).
+
+        `request_id` reaching here has already passed
+        `RunRequest.request_id`'s pydantic charset constraint (`submit` is
+        the only caller of `_launch`), so it is safe to use as a filename.
+        """
+        log_dir = state_dir / "launch-stderr"
+        log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        return log_dir / f"{request_id}.log"
+
+    @staticmethod
+    def _tail(path: Path, limit: int = 4000) -> str:
+        """Best-effort: the last `limit` chars of a captured stderr file."""
+        try:
+            data = path.read_text(errors="replace")
+        except OSError:
+            return ""
+        return data.strip()[-limit:]
 
     def _report_materialized(
         self, store: RunStore, request: RunRequest, key: RepoKey, run_id: str
@@ -365,7 +440,7 @@ class RunController:
 
     def _await_materialization(
         self, runs: Path, before: set[str], child: subprocess.Popen[bytes]
-    ) -> str | None:
+    ) -> _MaterializationResult:
         """Watch for the rename INTO `runs/` — maestro's own publication point.
 
         maestro builds the run under `<project>/.staging/<run_id>`, outside
@@ -377,20 +452,27 @@ class RunController:
         while time.monotonic() < deadline:
             fresh = [name for name in self._listing(runs) if name not in before]
             if len(fresh) == 1:
-                return fresh[0]
+                return _MaterializationResult(run_id=fresh[0])
             if len(fresh) > 1:
                 # Two new runs cannot both be ours; the lock is supposed to
                 # make this impossible, so it is unknown, not a pick.
-                return None
+                return _MaterializationResult(run_id=None)
             if child.poll() is not None and not fresh:
                 # The child is gone and published nothing. It may still have
-                # published between these two observations, so this is
-                # unknown rather than a claimed non-launch.
+                # published between these two observations, so this second
+                # look — not the exit alone — is what turns a live child's
+                # ordinary timeout into a knowable non-launch (I1).
                 time.sleep(self._poll)
                 late = [n for n in self._listing(runs) if n not in before]
-                return late[0] if len(late) == 1 else None
+                if len(late) == 1:
+                    return _MaterializationResult(run_id=late[0])
+                if not late and child.returncode != 0:
+                    return _MaterializationResult(
+                        run_id=None, died_without_publishing=True
+                    )
+                return _MaterializationResult(run_id=None)
             time.sleep(self._poll)
-        return None
+        return _MaterializationResult(run_id=None)
 
     # -- leaving launch_unknown ----------------------------------------------
 
