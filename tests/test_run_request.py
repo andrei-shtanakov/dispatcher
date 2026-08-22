@@ -167,11 +167,17 @@ def test_tasks_yaml_with_unresolvable_repo_field_is_refused(tmp_path: Path) -> N
 
 
 def test_owner_traversal_in_origin_is_refused_not_a_500(tmp_path: Path) -> None:
-    """I4: `parse_remote_url` lets an owner of `..` through — only `repo` is
-    checked against `{'.', '..'}` (`cases.json`'s
-    `producer_accepts_but_dispatcher_must_refuse`). `validate_request` must
-    catch this itself via `safe_path_parts`, or `IdentityError` escapes as
-    an unhandled exception instead of a refusal."""
+    """I4: a traversal in `origin` is a refusal, never an unhandled 500.
+
+    What catches it moved: before the re-pin to maestro 95e5b3f the parser
+    accepted `owner='..'` and only `safe_path_parts` stood in the way; now
+    `parse_remote_url` refuses the segment itself. Either way the property
+    under test is the same one — `validate_request` translates it into a
+    refusal rather than letting `IdentityError` escape `submit()` — and it
+    is asserted here rather than assuming which layer fires. The
+    directly-built-key path that only `safe_path_parts` can catch is
+    covered by `test_safe_path_parts_still_guards_a_directly_built_key`.
+    """
     repo = tmp_path / "deployer"
     repo.mkdir(parents=True)
     subprocess.run(["git", "init", "-q", str(repo)], check=True)

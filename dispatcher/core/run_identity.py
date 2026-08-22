@@ -99,14 +99,17 @@ def parse_remote_url(url: str) -> RepoKey:
 def safe_path_parts(key: RepoKey) -> tuple[str, ...]:
     """`key.as_path_parts()`, refused if any segment could escape a join.
 
-    The mirror above is deliberately faithful, and the producer's rule has a
-    hole: `_UNSAFE` permits dots and only `repo` is checked against
-    `{'.', '..'}`, so `git@host:owner/../etc.git` yields `('host', '..',
-    'etc')` — verified against maestro cb91759. dispatcher joins these
-    segments into a filesystem path, so it refuses the traversal on its own
-    side rather than diverging from the rule it mirrors. The producer-side
-    gap is filed as maestro inbox issue (slug:
-    `repo-identity-owner-traversal`).
+    **Second line of defence, not the only one — and deliberately kept.**
+    Until maestro#211 the producer accepted a `.`/`..` segment in `host` and
+    `owner` (only `repo` was checked), so this guard was the sole thing
+    standing between `git@host:owner/../etc.git` and a path escaping
+    `projects/`. That hole is closed: `parse_remote_url` above now refuses
+    all three segments, matching the producer at the current pin.
+
+    This stays anyway, because a `RepoKey` does not have to come from the
+    parser — it is a plain dataclass any caller can construct — and because
+    dispatcher joins these segments into a filesystem path itself. That
+    defence must not depend on which version of the neighbour is installed.
     """
     parts = key.as_path_parts()
     for part in parts:

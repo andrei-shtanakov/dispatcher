@@ -116,15 +116,14 @@ def validate_request(request: RunRequest, config: DispatcherConfig) -> Validated
 
     try:
         key = identity_from_checkout(checkout)
-        # I4: `parse_remote_url` lets an owner of `..` through — only `repo`
-        # is checked against `{'.', '..'}` (documented in
-        # `cases.json`'s `producer_accepts_but_dispatcher_must_refuse`). That
-        # guard normally fires downstream in `safe_path_parts`
-        # (`runs_dir`/`_lock_path`), but `IdentityError` is not in this
+        # I4: refuse an unsafe key where it is minted, not where it is
+        # first joined. `safe_path_parts` also fires downstream in
+        # `runs_dir`/`_lock_path`, but `IdentityError` is outside this
         # function's caught hierarchy there, so it would escape `submit()`
-        # as an unhandled 500 instead of a refusal. Checked here, right next
-        # to where the key is minted, so no unsafe key can reach the
-        # controller or the store at all.
+        # as an unhandled 500 instead of a refusal. Since the re-pin to
+        # maestro 95e5b3f the parser refuses `.`/`..` segments itself, so
+        # this is belt-and-braces for a key built without it — kept for
+        # that reason, not because the producer still has the hole.
         safe_path_parts(key)
     except IdentityError as err:
         raise RunRejectedError(str(err)) from err
