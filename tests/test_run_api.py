@@ -135,3 +135,37 @@ async def test_verb_with_a_malformed_request_id_is_422_not_500(
             headers={"X-Action-Token": token},
         )
         assert resp.status_code == 422
+
+
+def test_view_joins_the_request_to_maestros_own_run_row(tmp_path: Path) -> None:
+    """dispatcher renders maestro's FSM; it does not restate it (spec §3.2)."""
+    from conftest import make_maestro_run
+
+    from dispatcher.core.run_controller import RunController
+    from dispatcher.core.run_identity import RepoKey
+    from dispatcher.core.run_store import RunStore
+
+    home = tmp_path / "mhome"
+    key = RepoKey(host="github.com", owner="owner", repo="deployer")
+    make_maestro_run(
+        home,
+        key.as_path_parts(),
+        "01AAA",
+        started_at="2026-08-22T00:00:00Z",
+        outcome="completed",
+    )
+    config = DispatcherConfig(
+        roots=(tmp_path / "ws",),
+        maestro_home=home,
+        run_state_dir=tmp_path / "state",
+        maestro_cli=tmp_path / "unused-maestro",
+    )
+    (tmp_path / "ws").mkdir()
+    store = RunStore(tmp_path / "state")
+    store.reserve("req-1", key, known_runs=[], window_start="t")
+    store.mark_materialized("req-1", "01AAA")
+
+    view = RunController(config).view("req-1")
+    assert view.record.run_id == "01AAA"
+    assert view.run is not None
+    assert view.run.status == "completed"

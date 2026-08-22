@@ -22,7 +22,9 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from dispatcher.core.collectors.maestro import classified_runs
 from dispatcher.core.discovery import DispatcherConfig
+from dispatcher.core.models import OrchestrationRunInfo, ProjectSnapshot
 from dispatcher.core.run_identity import RepoKey, safe_path_parts
 from dispatcher.core.run_request import (
     RunRejectedError,
@@ -74,6 +76,13 @@ class LaunchReceipt(BaseModel):
     run_id: str | None = None
     accepted: bool | None = None
     reason: str | None = None
+
+
+class RunView(BaseModel):
+    """dispatcher's request, joined to maestro's own row for that run."""
+
+    record: LaunchRecord
+    run: OrchestrationRunInfo | None = None
 
 
 class UnknownResolution(BaseModel):
@@ -402,6 +411,40 @@ class RunController:
             raise RunRejectedError(
                 f"cannot use request_id {request_id!r}: {err}"
             ) from err
+
+    def view(self, request_id: str) -> RunView:
+        """The request plus maestro's classification of its run (spec §3.2).
+
+        Status is read through the collector's one classifier; nothing here
+        re-derives liveness. A `run_id` whose directory is gone yields
+        `run=None` — absent, not invented.
+        """
+        try:
+            record = self._store().get(request_id)
+        except RunStoreError as err:
+            # Same translation as `record`/`control`: a request_id off the
+            # wire carries no pydantic constraint, and an unsafe one is a
+            # refusal, not a crash.
+            raise RunRejectedError(
+                f"cannot use request_id {request_id!r}: {err}"
+            ) from err
+        if record is None:
+            raise RunRejectedError(f"no launch record for {request_id}")
+        if record.run_id is None:
+            return RunView(record=record)
+        # A throwaway snapshot: `classified_runs` reports unreadable sources
+        # into it, and those warnings belong to the dashboard's snapshot, not
+        # to this lookup.
+        scratch = ProjectSnapshot(name="maestro", path="")
+        match = next(
+            (
+                info
+                for info, _ in classified_runs(self._config.maestro_home, scratch)
+                if info.run_id == record.run_id and info.repo_key == record.repo_key
+            ),
+            None,
+        )
+        return RunView(record=record, run=match)
 
     def control(
         self,

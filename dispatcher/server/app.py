@@ -47,11 +47,11 @@ from dispatcher.core.run_controller import (
     ControlPlaneOff,
     LaunchReceipt,
     RunController,
+    RunView,
     UnknownResolution,
     VerbOutcome,
 )
 from dispatcher.core.run_request import RunRejectedError, RunRequest
-from dispatcher.core.run_store import LaunchRecord
 from dispatcher.core.service import SnapshotService, recent_errors
 from dispatcher.core.spec_runner_config import (
     ProjectSpecRunnerConfig,
@@ -625,16 +625,14 @@ def create_app(
         _require_token(x_action_token)
         return runs.submit(request)
 
-    @app.get("/api/runs/{request_id}", response_model=LaunchRecord)
-    def read_run(request_id: str) -> LaunchRecord:
-        """Read-through to the stored launch record; no mutation, no token."""
+    @app.get("/api/runs/{request_id}", response_model=RunView)
+    def read_run(request_id: str) -> RunView:
+        """Read-through to the launch record, joined to maestro's own run
+        row (spec §3.2); no mutation, no token."""
         try:
-            record = runs.record(request_id)
-        except (ControlPlaneOff, RunRejectedError) as err:
+            return runs.view(request_id)
+        except (RunRejectedError, ControlPlaneOff) as err:
             raise HTTPException(status_code=404, detail=str(err)) from err
-        if record is None:
-            raise HTTPException(status_code=404, detail=f"no record: {request_id}")
-        return record
 
     @app.post("/api/runs/{request_id}/resolve", response_model=UnknownResolution)
     def resolve_run(
