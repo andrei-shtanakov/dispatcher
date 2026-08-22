@@ -647,6 +647,21 @@ def create_app(
     ) -> UnknownResolution:
         """Adopt an unambiguous orphan, or end the one the operator names."""
         _require_token(x_action_token)
+        if request.run_id is not None and request.outcome is None:
+            # A named run with no outcome is a malformed request, not an
+            # empty one: `end_orphan(..., "")` would report "outcome must
+            # be cancelled|superseded, got ''", which reads like the CALLER
+            # sent that value rather than dispatcher inventing it. The
+            # controller's own check below stays — `end_orphan` is also
+            # reachable from the TUI, MCP, and VSCode surfaces, which do
+            # not go through this endpoint.
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "run_id was given without outcome; both are required "
+                    "together and outcome must be cancelled|superseded"
+                ),
+            )
         try:
             if request.run_id is not None:
                 return runs.end_orphan(

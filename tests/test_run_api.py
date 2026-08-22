@@ -161,6 +161,27 @@ async def test_resolve_with_a_malformed_request_id_is_422_not_500(
         assert resp.status_code == 422
 
 
+async def test_resolve_with_a_run_id_and_no_outcome_is_422_naming_both_fields(
+    tmp_path: Path,
+) -> None:
+    """A caller that names `run_id` but omits `outcome` gets a 422 that
+    names both fields — not `end_orphan`'s "outcome must be
+    cancelled|superseded, got ''", which reads as if the caller had sent an
+    empty string rather than nothing at all (Copilot review follow-up)."""
+    async with _client(tmp_path, control_plane=True) as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/runs/some-request/resolve",
+            json={"run_id": "01AAA"},
+            headers={"X-Action-Token": token},
+        )
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert "run_id" in detail
+        assert "outcome" in detail
+        assert "cancelled" in detail and "superseded" in detail
+
+
 async def test_verb_with_a_malformed_request_id_is_422_not_500(
     tmp_path: Path,
 ) -> None:
