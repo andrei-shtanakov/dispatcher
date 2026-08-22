@@ -15,7 +15,7 @@
 - Python `>=3.12`; run everything through `uv run` (never bare `pytest`/`python`).
 - Line length **88**; `uv run ruff format .` then `uv run ruff check . --fix`; `uv run pyrefly check` must be clean. Type hints on all new code; docstrings on public functions.
 - Tests live in `tests/` (flat, `test_<topic>.py`); builders go in `tests/conftest.py`. Run with `uv run pytest`.
-- **Mode 1 only.** The operations are exactly `submit · status · stop · retry · approve · run-end` (spec §6). `submit` is the **launch operation** (Task 4) and is deliberately NOT a member of `_VERBS`: it is long-lived and returns a receipt, while the other five are short and return process output. Do not expose `submit` through the control-verb path. Workstream verbs must not appear anywhere in this plan's code.
+- **Mode 1 only.** Spec §6 names `submit · status · stop · retry · approve · run-end`. This plan implements `submit` as the **launch operation** (Task 4), never a control verb, and implements four verbs: `status · retry · approve · run-end`. **`stop` is excluded on evidence:** `maestro stop [OPTIONS]` takes no `--run` and no positional — it terminates the scheduler process, not a run, so a per-request control would end every other run the scheduler manages. Verified by running `maestro stop --help`. The spec needs this correction too. Mode-2 (workstream) verbs must not appear anywhere in this plan's code.
 - **No `merge_authority` field** anywhere, and no merge from the UI (spec §2.2).
 - `accepted` is three-valued — `true` / `false` / `null` — and `null` is never collapsed into `false` (spec §5.3).
 - **Neighbour code is cited repository-first** in comments and docstrings (`maestro/maestro/cli.py:1040`), never as a bare path — both repos have a `cli.py` (spec, Citations note).
@@ -1747,7 +1747,9 @@ git commit -m "feat(run): resolve launch_unknown by adoption or named run-end"
 **Interfaces:**
 - Produces: `VerbOutcome(verb: str, run_id: str, ok: bool, stdout: str, stderr: str)`; `RunController.control(request_id: str, verb: str, *, task_id: str | None = None, outcome: str | None = None) -> VerbOutcome`.
 
-**Design notes:** `approve` (`maestro/maestro/cli.py:1207`) releases a task sitting in `AWAITING_APPROVAL`; a task in `TaskStatus.NEEDS_REVIEW` is cleared by `retry`, whose retryable set is `{FAILED, NEEDS_REVIEW}` (`maestro/maestro/cli.py:940`). Do not wire a control labelled "approve" to a review outcome. Workstream verbs are Mode 2 and must not be added here.
+**Design notes:** `approve` (`maestro/maestro/cli.py:1207`) releases a task sitting in `AWAITING_APPROVAL`; a task in `TaskStatus.NEEDS_REVIEW` is cleared by `retry`, whose retryable set is `{FAILED, NEEDS_REVIEW}` (`maestro/maestro/cli.py:940`). Do not wire a control labelled "approve" to a review outcome. Mode-2 workstream verbs must not be added here.
+
+**Both `approve` and `retry` take a required positional task id** — `maestro approve [OPTIONS] TASK_ID` and `maestro retry [OPTIONS] TASK_ID` — and both accept `--run`. Refuse either without one. `stop` is not implemented at all (see Global Constraints). Every argv shape in this task was checked by running `maestro <verb> --help`; do not re-derive them by reading `cli.py`.
 
 - [ ] **Step 1: Write the failing tests (append)**
 
@@ -1814,10 +1816,16 @@ Expected: FAIL — `AttributeError: 'RunController' object has no attribute 'con
 Beside the other constants:
 
 ```python
-#: Mode-1 only (spec §6). `submit` is not here — it is not a short verb.
-#: Workstream verbs serve `orchestrate` (Mode 2) and stay outside the slice:
-#: one request type must not control two state machines.
-_VERBS = frozenset({"status", "stop", "retry", "approve", "run-end"})
+#: Mode-1 only, minus `stop`. `submit` is not here either — it is the
+#: long-lived launch operation, not a short verb. Mode-2 verbs serve
+#: `orchestrate` and stay outside the slice: one request type must not
+#: control two state machines.
+#:
+#: `stop` is absent although spec §6 names it. Verified by running the
+#: producer: `maestro stop [OPTIONS]` takes no `--run` and no positional —
+#: it stops the SCHEDULER PROCESS. Offering it as an action on one request's
+#: run would silently end every other run that scheduler is managing.
+_VERBS = frozenset({"status", "retry", "approve", "run-end"})
 _VERB_TIMEOUT = 120
 ```
 
@@ -1855,23 +1863,27 @@ On `RunController`:
         run_id = record.run_id
         _, cli, home = self._require_on()
 
-        argv = [str(cli), verb]
-        if verb == "approve":
+        # argv shapes verified by running `maestro <verb> --help`, never by
+        # reading the source: this table was wrong for two of five verbs when
+        # derived by reading. `approve` and `retry` each take a REQUIRED
+        # positional task id plus `--run`; `run-end` takes a positional run id
+        # plus `--outcome` and no `--run`; `status` takes `--run` alone.
+        if verb in {"approve", "retry"}:
             if not task_id:
                 raise RunRejectedError(
-                    "approve needs a task_id: it releases a task sitting in "
-                    "AWAITING_APPROVAL. A task in NEEDS_REVIEW is cleared by "
-                    "retry instead"
+                    f"{verb} needs a task_id. `approve` releases a task sitting "
+                    "in AWAITING_APPROVAL; a task in NEEDS_REVIEW is cleared by "
+                    "`retry` instead — both address one task, not the whole run"
                 )
-            argv.append(task_id)
-        if verb == "run-end":
+            argv = [str(cli), verb, task_id, "--run", run_id]
+        elif verb == "run-end":
             if outcome not in _OPERATOR_ENDINGS:
                 raise RunRejectedError(
                     f"run-end outcome must be cancelled|superseded, got {outcome!r}"
                 )
-            argv += [run_id, "--outcome", outcome]
+            argv = [str(cli), verb, run_id, "--outcome", outcome]
         else:
-            argv += ["--run", run_id]
+            argv = [str(cli), verb, "--run", run_id]
 
         proc = subprocess.run(
             argv,
@@ -2372,6 +2384,14 @@ found in the first draft of this plan and fixed here:
    flight and the input is simply bad. Added `RunStoreError` as the base.
 9. The idempotency test's counter did `len(read_text())` instead of `int(...)`, so it
    would have passed without measuring anything.
+
+**Fifth pass — caught during execution of Task 6, and the worst of them.** The verb argv
+table was wrong for two of five verbs. `maestro retry` takes a REQUIRED positional task
+id, which this plan routed only into `approve`, so `retry` could never have succeeded.
+And `maestro stop` takes no `--run` and no positional at all — it stops the scheduler
+process, so wiring it as a per-request verb would have shipped a UI control that ends
+every other run. `stop` is removed from the allowlist and flagged for the spec. Both were
+found by running `maestro <verb> --help`; both would have survived another reading.
 
 **Fourth pass — caught during execution of Task 4.** `_require_on` treated
 `config.maestro_home is None` as `ControlPlaneOff`. In the real `DispatcherConfig` only
