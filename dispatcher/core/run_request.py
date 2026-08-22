@@ -12,7 +12,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.run_identity import (
@@ -23,6 +23,13 @@ from dispatcher.core.run_identity import (
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _SAFE_DIR_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")
+# The spec calls request_id a uuid4 (client-generated idempotency key), but
+# the charset — not the version — is what dispatcher depends on: RunStore
+# keys a JSON record and a lock file off this string
+# (`dispatcher/core/run_store.py:78-83`), so anything outside it must never
+# reach that layer. A uuid4 always matches; a path separator or whitespace
+# never does.
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _GIT_TIMEOUT = 15
 
 
@@ -46,7 +53,7 @@ class RunRequest(BaseModel):
     come into existence after the run and belong to the outcome record.
     """
 
-    request_id: str
+    request_id: str = Field(pattern=_REQUEST_ID_RE.pattern)
     work_id: str
     repository: str
     revision: str

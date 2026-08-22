@@ -29,7 +29,12 @@ from dispatcher.core.run_request import (
     RunRequest,
     validate_request,
 )
-from dispatcher.core.run_store import LaunchRecord, LockBusyError, RunStore
+from dispatcher.core.run_store import (
+    LaunchRecord,
+    LockBusyError,
+    RunStore,
+    RunStoreError,
+)
 
 _audit = logging.getLogger("dispatcher.runs")
 
@@ -126,7 +131,19 @@ class RunController:
             return self._refuse(request.request_id, str(err))
 
         store = self._store()
-        existing = store.get(request.request_id)
+        try:
+            existing = store.get(request.request_id)
+        except RunStoreError as err:
+            # `RunRequest.request_id` is pydantic-constrained to a safe
+            # charset (spec §4), but this is the second, independent layer:
+            # `RunStore._record_path` refuses anything outside its own safe
+            # charset with a bare `RunStoreError` — the store's base
+            # exception, not just `LockBusyError` — and that must not
+            # escape as an unhandled error for input that just isn't
+            # UUID-shaped. Nothing has been reserved or launched yet, so
+            # "no run exists" is a fact dispatcher can safely claim.
+            return self._refuse(request.request_id, f"cannot use request_id: {err}")
+
         if existing is not None and existing.state != "reserved":
             # Idempotency: a repeated request_id continues or returns the
             # existing record and never starts a second process (spec §5.2).
@@ -152,6 +169,8 @@ class RunController:
             )
         except LockBusyError as err:
             return self._refuse(request.request_id, str(err))
+        except RunStoreError as err:
+            return self._refuse(request.request_id, f"cannot use request_id: {err}")
 
         return self._launch(store, request, validated.checkout, validated.key, runs)
 
@@ -165,11 +184,33 @@ class RunController:
     ) -> LaunchReceipt:
         _, cli, home = self._require_on()
         reserved = store.get(request.request_id)
-        assert reserved is not None  # just written by `reserve`
+        if reserved is None:
+            # `reserve()` just wrote this record synchronously; its absence
+            # here is a store invariant violation, not an ordinary failure
+            # mode with a safe fallback, so this is raised rather than
+            # folded into a receipt.
+            raise RunStoreError(
+                f"launch record for {request.request_id} disappeared "
+                "between reserve() and _launch(): nothing to launch against"
+            )
         before = set(reserved.known_runs)
         argv = [str(cli), "run", request.tasks]
         env = {**os.environ, "MAESTRO_HOME": str(home)}
-        store.mark_launching(request.request_id)
+        try:
+            store.mark_launching(request.request_id)
+        except (RunStoreError, OSError) as err:
+            # No subprocess has been started yet, so "no run exists" is
+            # still a fact dispatcher knows, unlike a failure after
+            # materialization. The record is untouched (still "reserved"),
+            # so a resubmission under the same request_id will try again.
+            _audit.error(
+                "submit request=%s repo=%s mark_launching failed: %s",
+                request.request_id,
+                key.as_text(),
+                err,
+            )
+            return self._refuse(request.request_id, f"cannot record launch: {err}")
+
         try:
             child = subprocess.Popen(  # noqa: S603 — argv is a fixed shape
                 argv,
@@ -180,21 +221,12 @@ class RunController:
             )
         except OSError as err:
             # Nothing was executed, so "no run exists" is a fact, not a guess.
-            store.mark_terminal(request.request_id, f"launch failed: {err}")
+            self._try_mark_terminal(store, request.request_id, f"launch failed: {err}")
             return self._refuse(request.request_id, f"cannot start maestro: {err}")
 
         run_id = self._await_materialization(runs, before, child)
         if run_id is not None:
-            store.mark_materialized(request.request_id, run_id)
-            _audit.info(
-                "submit request=%s repo=%s run=%s accepted=True",
-                request.request_id,
-                key.as_text(),
-                run_id,
-            )
-            return LaunchReceipt(
-                request_id=request.request_id, run_id=run_id, accepted=True
-            )
+            return self._report_materialized(store, request, key, run_id)
 
         reason = (
             "launch_unknown: no run appeared under "
@@ -202,7 +234,7 @@ class RunController:
             "resolve it before retrying (spec §5.2.1). The repository lock is "
             "deliberately still held."
         )
-        store.mark_unknown(request.request_id, reason)
+        self._try_mark_unknown(store, request.request_id, reason)
         _audit.info(
             "submit request=%s repo=%s accepted=None launch_unknown",
             request.request_id,
@@ -211,6 +243,83 @@ class RunController:
         return LaunchReceipt(
             request_id=request.request_id, accepted=None, reason=reason
         )
+
+    def _report_materialized(
+        self, store: RunStore, request: RunRequest, key: RepoKey, run_id: str
+    ) -> LaunchReceipt:
+        """Record and report a materialized run — never claim `False` for it.
+
+        The run was OBSERVED (spec §5.3): that is knowledge dispatcher
+        already has, independent of whether the durable write below
+        succeeds. A failed write must not raise (the caller would get no
+        receipt at all) and must not become `accepted: False` — the one
+        claim that is definitely wrong once a run has been seen. It becomes
+        `accepted: None` instead, same as an ordinary `launch_unknown`: the
+        lock stays held (via the `mark_unknown` fallback, or untouched if
+        even that write fails) and `run_id`/`reason` still tell the caller a
+        run exists, which is what separates this from a genuine no-run
+        `launch_unknown`.
+        """
+        try:
+            store.mark_materialized(request.request_id, run_id)
+        except (RunStoreError, OSError) as err:
+            _audit.error(
+                "submit request=%s repo=%s run=%s mark_materialized failed: %s",
+                request.request_id,
+                key.as_text(),
+                run_id,
+                err,
+            )
+            reason = (
+                f"run {run_id} was observed under runs/, but the launch "
+                f"record could not be updated to reflect it: {err}. The run "
+                "exists; the repository lock is deliberately still held."
+            )
+            self._try_mark_unknown(store, request.request_id, reason)
+            return LaunchReceipt(
+                request_id=request.request_id,
+                run_id=run_id,
+                accepted=None,
+                reason=reason,
+            )
+
+        _audit.info(
+            "submit request=%s repo=%s run=%s accepted=True",
+            request.request_id,
+            key.as_text(),
+            run_id,
+        )
+        return LaunchReceipt(
+            request_id=request.request_id, run_id=run_id, accepted=True
+        )
+
+    @staticmethod
+    def _try_mark_terminal(store: RunStore, request_id: str, outcome: str) -> None:
+        """Best-effort `mark_terminal`.
+
+        Called only when the caller-facing receipt is already settled as
+        `accepted: False` (nothing was launched); a write failure here
+        costs the audit trail, not correctness, so it is logged and
+        swallowed rather than raised.
+        """
+        try:
+            store.mark_terminal(request_id, outcome)
+        except (RunStoreError, OSError) as err:
+            _audit.error("submit request=%s mark_terminal failed: %s", request_id, err)
+
+    @staticmethod
+    def _try_mark_unknown(store: RunStore, request_id: str, reason: str) -> None:
+        """Best-effort `mark_unknown`.
+
+        Used for the ordinary materialization timeout and as the fallback
+        when `mark_materialized` itself cannot be written. If this also
+        fails there is nowhere left to durably record the fact; this only
+        logs, since the caller-facing receipt already carries `reason`.
+        """
+        try:
+            store.mark_unknown(request_id, reason)
+        except (RunStoreError, OSError) as err:
+            _audit.error("submit request=%s mark_unknown failed: %s", request_id, err)
 
     def _await_materialization(
         self, runs: Path, before: set[str], child: subprocess.Popen[bytes]

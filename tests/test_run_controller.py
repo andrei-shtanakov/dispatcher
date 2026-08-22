@@ -4,9 +4,13 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.run_controller import RunController
 from dispatcher.core.run_request import RunRequest
+from dispatcher.core.run_store import RunStore
 
 _REQ = "11111111-1111-4111-8111-111111111111"
 
@@ -179,3 +183,92 @@ def test_repeated_request_id_does_not_launch_twice(tmp_path: Path) -> None:
     second = controller.submit(_request(head))
     assert first.run_id == second.run_id
     assert int(marker.read_text()) == 1, "the second submit must not re-launch"
+
+
+# -- fix round 1: Important 1 — an unsafe request_id must not raise --------
+
+
+def test_request_id_pattern_rejects_path_and_whitespace_characters() -> None:
+    """Layer 1: pydantic refuses an unsafe request_id at construction."""
+    with pytest.raises(ValidationError):
+        RunRequest(
+            request_id="bad/id with space",
+            work_id="todo://deployer/entrypoint-token-boundary-match",
+            repository="deployer",
+            revision="a" * 40,
+            tasks="tasks.yaml",
+        )
+
+
+def test_submit_refuses_rather_than_raises_on_an_unsafe_request_id(
+    tmp_path: Path,
+) -> None:
+    """Layer 2: even a request that bypassed pydantic validation (e.g. built
+    via `model_construct`, or a future field nobody re-guarded) must not
+    reach `RunStore` and raise `RunStoreError` out of `submit()` — it must
+    come back as an ordinary refusal, because nothing was launched."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    controller = RunController(_config(tmp_path, cli))
+    request = RunRequest.model_construct(
+        request_id="bad/id with space",
+        work_id="todo://deployer/entrypoint-token-boundary-match",
+        repository="deployer",
+        revision=head,
+        tasks="tasks.yaml",
+    )
+    receipt = controller.submit(request)
+    assert receipt.accepted is False
+    assert receipt.run_id is None
+
+
+# -- fix round 1: Important 2 — a store-write failure must not lose or -----
+# -- misreport a run that genuinely materialized ----------------------------
+
+
+def test_mark_launching_failure_is_accepted_false_not_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing was exec'd yet, so a bookkeeping failure here is still a
+    known non-launch, not an unhandled exception."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    controller = RunController(_config(tmp_path, cli))
+
+    def _boom(self: RunStore, request_id: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(RunStore, "mark_launching", _boom)
+    receipt = controller.submit(_request(head))
+    assert receipt.accepted is False
+    assert receipt.run_id is None
+
+
+def test_mark_materialized_failure_never_claims_the_run_did_not_happen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run WAS observed under runs/; a failure to durably record that
+    must surface as `accepted: None` with the run_id attached (never
+    `False`, and never an unhandled exception), and must keep the
+    repository lock held rather than abandon it."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01EEE")
+    controller = RunController(_config(tmp_path, cli), materialize_timeout=10.0)
+
+    def _boom(self: RunStore, request_id: str, run_id: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(RunStore, "mark_materialized", _boom)
+    receipt = controller.submit(_request(head))
+    assert receipt.accepted is None, "a materialized run must never read as False"
+    assert receipt.run_id == "01EEE"
+    assert "01EEE" in (receipt.reason or "")
+
+    # The lock is still held: a second, distinct request against the same
+    # repository is refused rather than silently allowed to race.
+    second = _request(head).model_copy(
+        update={"request_id": "33333333-3333-4333-8333-333333333333"}
+    )
+    second_receipt = RunController(_config(tmp_path, cli)).submit(second)
+    assert second_receipt.accepted is False
+    assert "in flight" in (second_receipt.reason or "")
