@@ -48,8 +48,12 @@ _OPERATOR_ENDINGS = frozenset({"cancelled", "superseded"})
 
 #: Mode-1 only (spec §6). `submit` is not here — it is not a short verb.
 #: Workstream verbs serve `orchestrate` (Mode 2) and stay outside the slice:
-#: one request type must not control two state machines.
-_VERBS = frozenset({"status", "stop", "retry", "approve", "run-end"})
+#: one request type must not control two state machines. `stop` is also
+#: excluded: `maestro stop` takes no `--run`/positional at all — it "Stops
+#: the running scheduler" (sends a termination signal to the scheduler
+#: process), not one run. Wiring it up would make a per-request control
+#: silently kill every other run the scheduler is managing.
+_VERBS = frozenset({"status", "retry", "approve", "run-end"})
 
 
 class ControlPlaneOff(Exception):
@@ -395,9 +399,9 @@ class RunController:
     ) -> VerbOutcome:
         """Run one allowlisted Mode-1 verb against this request's run.
 
-        Short and synchronous, unlike `submit`: `status`/`stop`/`retry`/
-        `approve`/`run-end` act on a run that already exists and return
-        once the child exits, no materialization polling involved.
+        Short and synchronous, unlike `submit`: `status`/`retry`/`approve`/
+        `run-end` act on a run that already exists and return once the
+        child exits, no materialization polling involved.
         """
         if verb not in _VERBS:
             raise RunRejectedError(f"verb not allowlisted: {verb!r}")
@@ -411,6 +415,7 @@ class RunController:
         _, cli, home = self._require_on()
 
         argv: list[str]
+        run_end_outcome: str | None = None
         if verb == "approve":
             if not task_id:
                 raise RunRejectedError(
@@ -418,12 +423,21 @@ class RunController:
                     "AWAITING_APPROVAL. A task in NEEDS_REVIEW is cleared by "
                     "retry instead"
                 )
-            argv = [str(cli), verb, task_id]
+            argv = [str(cli), verb, task_id, "--run", run_id]
+        elif verb == "retry":
+            if not task_id:
+                raise RunRejectedError(
+                    "retry needs a task_id: it clears a task sitting in "
+                    "FAILED or NEEDS_REVIEW. A task in AWAITING_APPROVAL is "
+                    "released by approve instead"
+                )
+            argv = [str(cli), verb, task_id, "--run", run_id]
         elif verb == "run-end":
             if outcome is None or outcome not in _OPERATOR_ENDINGS:
                 raise RunRejectedError(
                     f"run-end outcome must be cancelled|superseded, got {outcome!r}"
                 )
+            run_end_outcome = outcome
             argv = [str(cli), verb, run_id, "--outcome", outcome]
         else:
             argv = [str(cli), verb, "--run", run_id]
@@ -452,8 +466,8 @@ class RunController:
             run_id,
             proc.returncode == 0,
         )
-        if verb == "run-end" and proc.returncode == 0:
-            self._store().mark_terminal(request_id, outcome or "ended")
+        if run_end_outcome is not None and proc.returncode == 0:
+            self._store().mark_terminal(request_id, run_end_outcome)
         return VerbOutcome(
             verb=verb,
             run_id=run_id,

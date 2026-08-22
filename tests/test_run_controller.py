@@ -475,3 +475,42 @@ def test_control_missing_binary_is_a_refusal(tmp_path: Path) -> None:
     broken_controller = RunController(broken, materialize_timeout=10.0)
     with pytest.raises(RunRejectedError, match="cannot run maestro"):
         broken_controller.control(_REQ, "status")
+
+
+# -- task 6 fix round 1 -------------------------------------------------------
+
+
+def test_approve_is_addressed_to_the_adopted_run_with_its_task_id(
+    tmp_path: Path,
+) -> None:
+    """`maestro approve TASK_ID --run RUN_ID` — losing `--run` means approve
+    acts on whatever the resolver picks, not this request's run."""
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    outcome = controller.control(_REQ, "approve", task_id="T1")
+    assert outcome.ok
+    assert "approve T1 --run 01AAA" in outcome.stdout
+
+
+def test_retry_requires_a_task_id(tmp_path: Path) -> None:
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    with pytest.raises(RunRejectedError, match="task_id"):
+        controller.control(_REQ, "retry")
+
+
+def test_retry_is_addressed_to_the_adopted_run_with_its_task_id(
+    tmp_path: Path,
+) -> None:
+    """`maestro retry TASK_ID` requires a positional task id — without one
+    every call fails with a missing-argument error."""
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    outcome = controller.control(_REQ, "retry", task_id="T2")
+    assert outcome.ok
+    assert "retry T2 --run 01AAA" in outcome.stdout
+
+
+def test_stop_is_not_allowlisted(tmp_path: Path) -> None:
+    """`maestro stop` takes no `--run`/positional: it stops the whole
+    scheduler process, not one run, so it must not be a per-request verb."""
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    with pytest.raises(RunRejectedError, match="not allowlisted"):
+        controller.control(_REQ, "stop")
