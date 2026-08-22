@@ -158,6 +158,7 @@ function el(page, selector) {
   return node;
 }
 function fill(page, selector, value) { el(page, selector).value = value; }
+function text(page, selector) { return el(page, selector).innerHTML; }
 async function click(page, selector) {
   await Promise.all(dispatch(el(page, selector), 'click'));
   await drain();
@@ -166,6 +167,13 @@ async function click(page, selector) {
 function receiptHtml(page, receipt) {
   return vm.runInContext(
     `renderReceipt(${JSON.stringify(receipt)})`, page.ctx);
+}
+/** Fills the form with values that pass both the client and server checks. */
+function fillValid(page) {
+  fill(page, '#rc-repository', 'deployer');
+  fill(page, '#rc-revision', 'a'.repeat(40));
+  fill(page, '#rc-tasks', 'tasks.yaml');
+  fill(page, '#rc-work-id', 'todo://deployer/entrypoint-token-boundary-match');
 }
 
 // ---- case runner -----------------------------------------------------------
@@ -255,16 +263,9 @@ testCase('false and null are genuinely distinguished, not merged by falsiness',
 // it lands on the server's idempotency record (RunController.submit)
 // instead of risking a second launch.
 
-async function fillMinimalForm(page) {
-  fill(page, '#rc-repository', 'deployer');
-  fill(page, '#rc-revision', 'a'.repeat(40));
-  fill(page, '#rc-tasks', 'tasks.yaml');
-  fill(page, '#rc-work-id', 'todo://deployer/entrypoint-token-boundary-match');
-}
-
 testCase('a rejected fetch() renders as unknown, never as a refusal', async () => {
   const page = await boot(() => Promise.reject(new Error('network down')));
-  await fillMinimalForm(page);
+  fillValid(page);
   await click(page, '#rc-submit');
   const html = el(page, '#rc-receipt').innerHTML;
   check(!html.includes('rc-result err'),
@@ -280,7 +281,7 @@ testCase('an unreadable response body renders as unknown, never as a refusal',
       status: 200, ok: true,
       json: () => Promise.reject(new Error('unexpected token')),
     }));
-    await fillMinimalForm(page);
+    fillValid(page);
     await click(page, '#rc-submit');
     const html = el(page, '#rc-receipt').innerHTML;
     check(!html.includes('rc-result err'),
@@ -292,7 +293,7 @@ testCase('an unreadable response body renders as unknown, never as a refusal',
 testCase('a non-ok response with a parsed body still renders as a refusal',
   async () => {
     const page = await boot(() => resp(403, {detail: 'bad or missing action token'}));
-    await fillMinimalForm(page);
+    fillValid(page);
     await click(page, '#rc-submit');
     const html = el(page, '#rc-receipt').innerHTML;
     check(html.includes('rc-result err'),
@@ -304,7 +305,7 @@ testCase('a non-ok response with a parsed body still renders as a refusal',
 testCase('a retry after a transport failure reuses the same request_id',
   async () => {
     const page = await boot(() => Promise.reject(new Error('network down')));
-    await fillMinimalForm(page);
+    fillValid(page);
     await click(page, '#rc-submit');
     await click(page, '#rc-submit');
     const submits = page.calls.filter(c => c.url === '/api/runs/submit');
@@ -320,7 +321,7 @@ testCase('a new submission after a settled outcome mints a fresh request_id',
   async () => {
     const page = await boot(() => ok(
       {request_id: 'server-echo', run_id: '01BBB', accepted: true, reason: null}));
-    await fillMinimalForm(page);
+    fillValid(page);
     await click(page, '#rc-submit');
     await click(page, '#rc-submit');
     const submits = page.calls.filter(c => c.url === '/api/runs/submit');
@@ -330,6 +331,54 @@ testCase('a new submission after a settled outcome mints a fresh request_id',
     const second = JSON.parse(submits[1].opts.body).request_id;
     check(first !== second, 'a settled outcome must not pin the next '
       + 'submission to the same request_id');
+  });
+
+// -- TASK-2: client-side validation that mirrors the server's refusals ------
+// validateRunRequest() only saves a round trip on the two mistakes an
+// operator makes constantly (dispatcher/core/run_request.py: revision must
+// be 40 hex chars, tasks must be repo-relative with no '..'). It is not a
+// safety layer, so the third case below matters as much as the first two:
+// an over-eager check that refuses a good request is worse than no check.
+
+testCase('a bad revision never reaches the wire, and says what the server says',
+  async () => {
+    const page = await boot();
+    fill(page, '#rc-repository', 'deployer');
+    fill(page, '#rc-revision', 'HEAD');
+    fill(page, '#rc-tasks', 'tasks.yaml');
+    await click(page, '#rc-submit');
+    check(!page.calls.some(c => c.url === '/api/runs/submit'), 'not sent');
+    check(/40-hex/.test(text(page, '#rc-receipt')),
+      `says 40-hex, as the server does (got: ${text(page, '#rc-receipt')})`);
+  });
+
+testCase('".." in tasks is caught client-side', async () => {
+  const page = await boot();
+  fillValid(page);
+  fill(page, '#rc-tasks', '../outside.yaml');
+  await click(page, '#rc-submit');
+  check(!page.calls.some(c => c.url === '/api/runs/submit'), 'not sent');
+});
+
+testCase('a valid-looking request IS sent — the client must not invent refusals',
+  async () => {
+    const page = await boot();
+    fillValid(page);
+    await click(page, '#rc-submit');
+    check(page.calls.some(c => c.url === '/api/runs/submit'), 'sent');
+  });
+
+testCase('a client-side rejection leaves rcPendingRequestId untouched',
+  async () => {
+    const page = await boot();
+    fill(page, '#rc-repository', 'deployer');
+    fill(page, '#rc-revision', 'HEAD');
+    fill(page, '#rc-tasks', 'tasks.yaml');
+    await click(page, '#rc-submit');
+    check(!page.calls.some(c => c.url === '/api/runs/submit'), 'not sent');
+    const pending = vm.runInContext('rcPendingRequestId', page.ctx);
+    check(pending === null,
+      `nothing was sent, so no request_id should be pinned (got: ${pending})`);
   });
 
 // ---- main -------------------------------------------------------------------

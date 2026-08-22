@@ -699,6 +699,27 @@ function renderReceipt(r) {
     <span class="rc-hint">Resolve it before submitting again.</span></div>`;
 }
 
+// Mirrors exactly two of the server's refusals (dispatcher/core/run_request.py,
+// `validate_request`), in the server's own words, to save an operator a
+// round trip on the two mistakes they make constantly. This is NOT a safety
+// layer: the repository-manifest check, the `git cat-file` existence check
+// and the `repo:` reconciliation happen only on the server and are
+// invisible from here — a client that guessed at them would refuse valid
+// requests, which is worse than the round trip this saves.
+const _RC_SHA_RE = /^[0-9a-f]{40}$/;
+
+function validateRunRequest(fields) {
+  if (!_RC_SHA_RE.test(fields.revision)) {
+    return `revision must be a full 40-hex commit sha, got '${fields.revision}': `
+      + "a ref would make the request non-reproducible on retry";
+  }
+  const tasks = fields.tasks;
+  if (tasks.startsWith("/") || tasks.split("/").includes("..") || !tasks.trim()) {
+    return `tasks must be a repo-relative path without '..', got '${tasks}'`;
+  }
+  return null;
+}
+
 // The id of the attempt currently in flight or left unresolved (accepted:
 // null, a dropped connection, an unreadable response) — not yet known to
 // dispatcher as settled. `RunController.submit` keys idempotency off
@@ -710,8 +731,21 @@ let rcPendingRequestId = null;
 
 document.getElementById("rc-submit").addEventListener("click", async () => {
   const btn = document.getElementById("rc-submit");
-  btn.disabled = true;
   const out = document.getElementById("rc-receipt");
+
+  // Validated before anything else runs: a request rejected here was never
+  // sent, so it must not consume or clear rcPendingRequestId.
+  const problem = validateRunRequest({
+    revision: document.getElementById("rc-revision").value,
+    tasks: document.getElementById("rc-tasks").value,
+  });
+  if (problem) {
+    out.innerHTML = renderReceipt(
+      {request_id: null, run_id: null, accepted: false, reason: problem});
+    return;
+  }
+
+  btn.disabled = true;
   out.textContent = "…";
   const requestId = rcPendingRequestId ?? rcRequestId();
   rcPendingRequestId = requestId;
