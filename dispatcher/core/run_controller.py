@@ -46,6 +46,11 @@ _VERB_TIMEOUT = 120
 #: (`maestro/maestro/cli.py:1973`).
 _OPERATOR_ENDINGS = frozenset({"cancelled", "superseded"})
 
+#: Mode-1 only (spec §6). `submit` is not here — it is not a short verb.
+#: Workstream verbs serve `orchestrate` (Mode 2) and stay outside the slice:
+#: one request type must not control two state machines.
+_VERBS = frozenset({"status", "stop", "retry", "approve", "run-end"})
+
 
 class ControlPlaneOff(Exception):
     """`run_state_dir` or `maestro_cli` is unset; there is no control plane."""
@@ -74,6 +79,16 @@ class UnknownResolution(BaseModel):
     adopted_run_id: str | None = None
     candidates: list[str] = Field(default_factory=list)
     reason: str = ""
+
+
+class VerbOutcome(BaseModel):
+    """The synchronous result of one Mode-1 control verb (spec §6)."""
+
+    verb: str
+    run_id: str
+    ok: bool
+    stdout: str = ""
+    stderr: str = ""
 
 
 class RunController:
@@ -369,6 +384,83 @@ class RunController:
     def record(self, request_id: str) -> LaunchRecord | None:
         """The stored launch record, for the API and for tests."""
         return self._store().get(request_id)
+
+    def control(
+        self,
+        request_id: str,
+        verb: str,
+        *,
+        task_id: str | None = None,
+        outcome: str | None = None,
+    ) -> VerbOutcome:
+        """Run one allowlisted Mode-1 verb against this request's run.
+
+        Short and synchronous, unlike `submit`: `status`/`stop`/`retry`/
+        `approve`/`run-end` act on a run that already exists and return
+        once the child exits, no materialization polling involved.
+        """
+        if verb not in _VERBS:
+            raise RunRejectedError(f"verb not allowlisted: {verb!r}")
+        record = self._store().get(request_id)
+        if record is None or record.run_id is None:
+            raise RunRejectedError(
+                f"{request_id} has no run to act on "
+                f"(state: {record.state if record else 'absent'})"
+            )
+        run_id = record.run_id
+        _, cli, home = self._require_on()
+
+        argv: list[str]
+        if verb == "approve":
+            if not task_id:
+                raise RunRejectedError(
+                    "approve needs a task_id: it releases a task sitting in "
+                    "AWAITING_APPROVAL. A task in NEEDS_REVIEW is cleared by "
+                    "retry instead"
+                )
+            argv = [str(cli), verb, task_id]
+        elif verb == "run-end":
+            if outcome is None or outcome not in _OPERATOR_ENDINGS:
+                raise RunRejectedError(
+                    f"run-end outcome must be cancelled|superseded, got {outcome!r}"
+                )
+            argv = [str(cli), verb, run_id, "--outcome", outcome]
+        else:
+            argv = [str(cli), verb, "--run", run_id]
+
+        try:
+            proc = subprocess.run(  # noqa: S603 — argv is a fixed shape
+                argv,
+                capture_output=True,
+                text=True,
+                env={**os.environ, "MAESTRO_HOME": str(home)},
+                timeout=_VERB_TIMEOUT,
+            )
+        except (OSError, subprocess.SubprocessError) as err:
+            # A missing/non-executable binary raises OSError; a hang past
+            # _VERB_TIMEOUT raises TimeoutExpired (SubprocessError). Neither
+            # is a RunRejectedError on its own, and both are otherwise
+            # ordinary and recoverable — the run itself is untouched, only
+            # this attempt to control it failed (mirrors `end_orphan`,
+            # `run_request._git`, `run_controller._launch`'s Popen guard).
+            raise RunRejectedError(f"cannot run maestro {verb}: {err}") from err
+
+        _audit.info(
+            "verb=%s request=%s run=%s ok=%s",
+            verb,
+            request_id,
+            run_id,
+            proc.returncode == 0,
+        )
+        if verb == "run-end" and proc.returncode == 0:
+            self._store().mark_terminal(request_id, outcome or "ended")
+        return VerbOutcome(
+            verb=verb,
+            run_id=run_id,
+            ok=proc.returncode == 0,
+            stdout=proc.stdout.strip(),
+            stderr=proc.stderr.strip(),
+        )
 
     def _candidates(self, request_id: str) -> tuple[list[str], RepoKey]:
         """New runs relative to the pre-launch snapshot, and the repo key.

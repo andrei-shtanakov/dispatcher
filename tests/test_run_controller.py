@@ -401,3 +401,77 @@ def test_end_orphan_refuses_a_settled_record(tmp_path: Path) -> None:
     assert _state(controller, _REQ) == "materialized"
     with pytest.raises(RunRejectedError, match="not launch_unknown"):
         controller.end_orphan(_REQ, "01LATE", "cancelled")
+
+
+# -- task 6: Mode-1 control verbs --------------------------------------------
+
+
+def _materialized(tmp_path: Path, script: str) -> RunController:
+    head = _repo(tmp_path / "ws")
+    cli = tmp_path / "verb-maestro"
+    cli.write_text("#!/usr/bin/env python3\n" + textwrap.dedent(script).strip() + "\n")
+    cli.chmod(0o755)
+    controller = RunController(_config(tmp_path, cli), materialize_timeout=10.0)
+    controller.submit(_request(head))
+    return controller
+
+
+_PUBLISH_THEN_ECHO = """
+import os, pathlib, sys
+home = pathlib.Path(os.environ["MAESTRO_HOME"])
+d = home / "projects/github.com/owner/deployer/runs/01AAA"
+if not d.exists():
+    d.mkdir(parents=True)
+    (d / "state.db").write_text("")
+    sys.exit(0)
+print(" ".join(sys.argv[1:]))
+"""
+
+
+def test_status_is_addressed_to_the_adopted_run(tmp_path: Path) -> None:
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    outcome = controller.control(_REQ, "status")
+    assert outcome.ok
+    assert "--run 01AAA" in outcome.stdout
+
+
+def test_verb_outside_the_allowlist_is_refused(tmp_path: Path) -> None:
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    with pytest.raises(RunRejectedError, match="not allowlisted"):
+        controller.control(_REQ, "workstream-continue")
+
+
+def test_approve_requires_a_task_id(tmp_path: Path) -> None:
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    with pytest.raises(RunRejectedError, match="task_id"):
+        controller.control(_REQ, "approve")
+
+
+def test_verbs_refuse_a_request_with_no_run_yet(tmp_path: Path) -> None:
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run=None)
+    controller = RunController(
+        _config(tmp_path, cli), poll_interval=0.05, materialize_timeout=0.3
+    )
+    controller.submit(_request(head))
+    with pytest.raises(RunRejectedError, match="no run"):
+        controller.control(_REQ, "status")
+
+
+def test_control_missing_binary_is_a_refusal(tmp_path: Path) -> None:
+    """A missing/non-executable maestro binary must come back as a
+    RunRejectedError, not an unhandled OSError escaping the controller."""
+    head = _repo(tmp_path / "ws")
+    cli = tmp_path / "verb-maestro"
+    cli.write_text(
+        "#!/usr/bin/env python3\n" + textwrap.dedent(_PUBLISH_THEN_ECHO).strip() + "\n"
+    )
+    cli.chmod(0o755)
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    controller.submit(_request(head))
+
+    broken = dataclasses.replace(config, maestro_cli=tmp_path / "no-such-binary")
+    broken_controller = RunController(broken, materialize_timeout=10.0)
+    with pytest.raises(RunRejectedError, match="cannot run maestro"):
+        broken_controller.control(_REQ, "status")
