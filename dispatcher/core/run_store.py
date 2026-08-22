@@ -185,7 +185,24 @@ class RunStore:
             plan_ref_path=plan_ref_path,
             plan_commit=plan_commit,
         )
-        self._write(record)
+        try:
+            self._write(record)
+        except OSError as err:
+            # I5: unlike `release_lock`, which must refuse a lock it cannot
+            # confirm it holds, `reserve` created THIS lock microseconds ago
+            # under `O_EXCL` and knows exactly that it owns it — so a torn
+            # record write here must not leave the lock standing forever
+            # with no record behind it (a permanent, unexplained
+            # `LockBusyError` for every future request_id). Unlinked
+            # directly rather than through `release_lock`, since a lock
+            # file this fresh cannot yet be the "unreadable, refuse"
+            # case that method exists to guard.
+            lock.unlink(missing_ok=True)
+            raise RunStoreError(
+                f"reserved {key.as_text()} but could not write its launch "
+                f"record; the lock has been released so a retry is not "
+                f"blocked forever: {err}"
+            ) from err
         return record
 
     def _lock_holder(self, lock: Path) -> str | None:

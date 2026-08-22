@@ -166,6 +166,49 @@ def test_tasks_yaml_with_unresolvable_repo_field_is_refused(tmp_path: Path) -> N
         validate_request(_request(revision=_head(repo)), config)
 
 
+def test_owner_traversal_in_origin_is_refused_not_a_500(tmp_path: Path) -> None:
+    """I4: `parse_remote_url` lets an owner of `..` through — only `repo` is
+    checked against `{'.', '..'}` (`cases.json`'s
+    `producer_accepts_but_dispatcher_must_refuse`). `validate_request` must
+    catch this itself via `safe_path_parts`, or `IdentityError` escapes as
+    an unhandled exception instead of a refusal."""
+    repo = tmp_path / "deployer"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:owner/../etc.git",
+        ],
+        check=True,
+    )
+    (repo / "tasks.yaml").write_text(f"tasks: []\nrepo: {repo}\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "init",
+        ],
+        check=True,
+    )
+    config = DispatcherConfig(roots=(tmp_path,))
+    with pytest.raises(RunRejectedError, match="unsafe path segment"):
+        validate_request(_request(revision=_head(repo)), config)
+
+
 def test_checkout_must_already_be_at_the_revision(tmp_path: Path) -> None:
     """Slice 0 refuses rather than moving a neighbour's checkout."""
     repo = _repo(tmp_path, "deployer")

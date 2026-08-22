@@ -236,7 +236,11 @@ class RunController:
             )
         except LockBusyError as err:
             return self._refuse(request.request_id, str(err))
-        except RunStoreError as err:
+        except (RunStoreError, OSError) as err:
+            # I5: `_write` (inside `reserve`) raises plain `OSError` on a
+            # filesystem failure — the branch's own convention elsewhere is
+            # `(RunStoreError, OSError)`, and this call was one of four that
+            # had fallen behind it.
             return self._refuse(request.request_id, f"cannot use request_id: {err}")
 
         return self._launch(store, request, validated.checkout, validated.key, runs)
@@ -261,6 +265,13 @@ class RunController:
                 "between reserve() and _launch(): nothing to launch against"
             )
         before = set(reserved.known_runs)
+        try:
+            self._validate_maestro_cli(cli)
+        except RunRejectedError as err:
+            # Nothing has been recorded as launching yet, so — like the
+            # `mark_launching` failure just below — the record stays
+            # "reserved" and a resubmission will try again.
+            return self._refuse(request.request_id, f"cannot start maestro: {err}")
         argv = [str(cli), "run", request.tasks]
         env = {**os.environ, "MAESTRO_HOME": str(home)}
         try:
@@ -348,6 +359,25 @@ class RunController:
         return LaunchReceipt(
             request_id=request.request_id, accepted=None, reason=reason
         )
+
+    @staticmethod
+    def _validate_maestro_cli(cli: Path) -> None:
+        """Refuse a `maestro_cli` that is not what it claims to be (I6).
+
+        Documented as an ABSOLUTE path
+        (`dispatcher/core/discovery.py:54-57`) but never checked before
+        this; combined with `cwd=<checkout>` at every subprocess call site
+        that uses it, a relative value containing a slash
+        (`./bin/maestro`, `tools/maestro`) would execute a binary from
+        INSIDE the target repository instead of the configured location.
+        Mirrors the existing pattern at
+        `dispatcher/core/suggest_cli.py:128-133` (H-1): absolute, and the
+        file must actually exist.
+        """
+        if not cli.is_absolute():
+            raise RunRejectedError(f"maestro_cli must be an absolute path, got: {cli}")
+        if not cli.is_file():
+            raise RunRejectedError(f"maestro_cli not found: {cli}")
 
     @staticmethod
     def _stderr_path(state_dir: Path, request_id: str) -> Path:
@@ -571,6 +601,10 @@ class RunController:
             )
         run_id = record.run_id
         _, cli, home = self._require_on()
+        try:
+            self._validate_maestro_cli(cli)
+        except RunRejectedError as err:
+            raise RunRejectedError(f"cannot run maestro {verb}: {err}") from err
 
         argv: list[str]
         run_end_outcome: str | None = None
@@ -627,11 +661,12 @@ class RunController:
         if run_end_outcome is not None and proc.returncode == 0:
             try:
                 self._store().mark_terminal(request_id, run_end_outcome)
-            except RunStoreError as err:
+            except (RunStoreError, OSError) as err:
                 # maestro run-end already succeeded; only releasing the
                 # lock/updating the record failed (e.g. `LockBusyError` from
-                # a corrupt or foreign-held lock file). Still a refusal, not
-                # an unhandled exception — same translation as above.
+                # a corrupt or foreign-held lock file, or a plain `OSError`
+                # from `_write` — I5). Still a refusal, not an unhandled
+                # exception — same translation as above.
                 raise RunRejectedError(
                     f"run-end for {run_id} succeeded, but the launch record "
                     f"could not be released: {err}"
@@ -695,11 +730,12 @@ class RunController:
             adopted = candidates[0]
             try:
                 self._store().mark_materialized(request_id, adopted)
-            except RunStoreError as err:
+            except (RunStoreError, OSError) as err:
                 # A new run WAS observed and correlated; only the durable
                 # write failed (e.g. `LockBusyError` from a corrupt or
-                # foreign-held lock file). Still a refusal, not an unhandled
-                # exception — same translation as `record`/`control`.
+                # foreign-held lock file, or a plain `OSError` from `_write`
+                # — I5). Still a refusal, not an unhandled exception — same
+                # translation as `record`/`control`.
                 raise RunRejectedError(
                     f"correlated {adopted} for {request_id}, but the launch "
                     f"record could not be updated: {err}"
@@ -751,6 +787,10 @@ class RunController:
             )
         _, cli, home = self._require_on()
         try:
+            self._validate_maestro_cli(cli)
+        except RunRejectedError as err:
+            raise RunRejectedError(f"cannot run maestro run-end: {err}") from err
+        try:
             proc = subprocess.run(  # noqa: S603 — argv is a fixed shape
                 [str(cli), "run-end", run_id, "--outcome", outcome],
                 capture_output=True,
@@ -773,9 +813,10 @@ class RunController:
         store = self._store()
         try:
             store.mark_terminal(request_id, outcome)
-        except RunStoreError as err:
+        except (RunStoreError, OSError) as err:
             # `maestro run-end` already succeeded above; only releasing the
-            # lock/updating the record failed. Still a refusal, not an
+            # lock/updating the record failed (`LockBusyError`, or a plain
+            # `OSError` from `_write` — I5). Still a refusal, not an
             # unhandled exception — same translation as `control`.
             raise RunRejectedError(
                 f"run-end for {run_id} succeeded, but the launch record "

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from dispatcher.core.run_identity import RepoKey
-from dispatcher.core.run_store import LockBusyError, RunStore
+from dispatcher.core.run_store import LockBusyError, RunStore, RunStoreError
 
 _KEY = RepoKey(host="github.com", owner="owner", repo="deployer")
 _REQ = "11111111-1111-4111-8111-111111111111"
@@ -91,6 +91,28 @@ def test_terminal_releases_the_lock(tmp_path: Path) -> None:
     stored = store.get(_REQ)
     assert stored is not None and stored.outcome == "success"
     store.reserve(_OTHER, _KEY, known_runs=[], window_start="t")  # no raise
+
+
+def test_reserve_releases_the_lock_it_just_took_if_the_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I5: unlike `release_lock`, which must refuse a lock it cannot confirm
+    it holds, `reserve` created THIS lock microseconds earlier under
+    `O_EXCL` and knows exactly that it owns it. A torn record write must not
+    leave that lock standing forever with no record behind it — a permanent
+    `LockBusyError` no retry could ever clear."""
+    store = _store(tmp_path)
+
+    def _broken_write(self: RunStore, record: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(RunStore, "_write", _broken_write)
+    with pytest.raises(RunStoreError, match="lock has been released"):
+        store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
+
+    monkeypatch.undo()
+    assert store.get(_REQ) is None, "no record should exist after a torn write"
+    store.reserve(_OTHER, _KEY, known_runs=[], window_start="t")  # lock is free
 
 
 def test_release_lock_refuses_a_corrupt_lock_file_rather_than_freeing_it(

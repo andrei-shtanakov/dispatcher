@@ -130,6 +130,30 @@ def test_accepted_true_only_after_the_run_appears(tmp_path: Path) -> None:
     assert receipt.run_id == "01AAA"
 
 
+def test_relative_maestro_cli_is_refused_not_executed_from_the_checkout(
+    tmp_path: Path,
+) -> None:
+    """I6: `maestro_cli` is documented as an ABSOLUTE path but was never
+    checked; combined with `cwd=<checkout>` on the launch, a relative value
+    containing a slash would execute a binary planted INSIDE the target
+    repository instead of the configured location. A marker file proves
+    nothing from the checkout actually ran."""
+    head = _repo(tmp_path / "ws")
+    checkout = tmp_path / "ws" / "deployer"
+    marker = tmp_path / "pwned"
+    evil = checkout / "bin" / "maestro"
+    evil.parent.mkdir(parents=True)
+    evil.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    evil.chmod(0o755)
+
+    config = _config(tmp_path, Path("bin/maestro"))  # relative, with a slash
+    controller = RunController(config, poll_interval=0.05, materialize_timeout=0.5)
+    receipt = controller.submit(_request(head))
+    assert receipt.accepted is False
+    assert "absolute" in (receipt.reason or "")
+    assert not marker.exists(), "a relative maestro_cli must never be executed"
+
+
 def test_reserve_persists_the_request_body(tmp_path: Path) -> None:
     """I3: spec §3.1's five-way join lives in the `LaunchRecord`, not just
     in a validated-then-discarded `RunRequest`."""

@@ -21,6 +21,7 @@ from dispatcher.core.run_identity import (
     RepoKey,
     identity_from_checkout,
     parse_remote_url,
+    safe_path_parts,
 )
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -115,6 +116,16 @@ def validate_request(request: RunRequest, config: DispatcherConfig) -> Validated
 
     try:
         key = identity_from_checkout(checkout)
+        # I4: `parse_remote_url` lets an owner of `..` through — only `repo`
+        # is checked against `{'.', '..'}` (documented in
+        # `cases.json`'s `producer_accepts_but_dispatcher_must_refuse`). That
+        # guard normally fires downstream in `safe_path_parts`
+        # (`runs_dir`/`_lock_path`), but `IdentityError` is not in this
+        # function's caught hierarchy there, so it would escape `submit()`
+        # as an unhandled 500 instead of a refusal. Checked here, right next
+        # to where the key is minted, so no unsafe key can reach the
+        # controller or the store at all.
+        safe_path_parts(key)
     except IdentityError as err:
         raise RunRejectedError(str(err)) from err
 
