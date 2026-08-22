@@ -46,6 +46,15 @@ class DispatcherConfig:
     # PATH to the ATP user-token file (phase-2 spec 2026-08-16 §3) — the
     # config never carries the token itself. None → run-status is off.
     benchmarks_token_file: Path | None = None
+    # Durable store for RunRequest records and the per-RepoKey launch lock
+    # (slice-0 spec §5.2). None → the control plane is off: no submit
+    # endpoint, no controller. Mirrors the "None → feature off" shape of
+    # `benchmarks_url` and `tracking_file`.
+    run_state_dir: Path | None = None
+    # ABSOLUTE path to the maestro binary the controller launches. None →
+    # the control plane is off. Distinct from `maestro_home`/`maestro_db`,
+    # which say where maestro's STATE is; this says what to execute.
+    maestro_cli: Path | None = None
 
     @property
     def effective_maestro_home(self) -> Path:
@@ -99,6 +108,10 @@ def load_config(config_path: Path | None = None) -> DispatcherConfig:
     ).expanduser()
     raw_suggest = data.get("suggest_claude_cli")
     suggest_claude_cli = Path(raw_suggest).expanduser() if raw_suggest else None
+    raw_state_dir = data.get("run_state_dir")
+    run_state_dir = Path(raw_state_dir).expanduser() if raw_state_dir else None
+    raw_maestro_cli = data.get("maestro_cli")
+    maestro_cli = Path(raw_maestro_cli).expanduser() if raw_maestro_cli else None
     raw_benchmarks = data.get("benchmarks", {})
     if not isinstance(raw_benchmarks, dict):
         # A present-but-malformed section must error, not silently disable
@@ -137,6 +150,8 @@ def load_config(config_path: Path | None = None) -> DispatcherConfig:
         suggest_claude_cli=suggest_claude_cli,
         benchmarks_url=benchmarks_url,
         benchmarks_token_file=benchmarks_token_file,
+        run_state_dir=run_state_dir,
+        maestro_cli=maestro_cli,
     )
 
 

@@ -1,0 +1,84 @@
+"""Durable launch records and the per-RepoKey lock (spec §5.2, §5.4)."""
+
+from pathlib import Path
+
+import pytest
+
+from dispatcher.core.run_identity import RepoKey
+from dispatcher.core.run_store import LockBusyError, RunStore
+
+_KEY = RepoKey(host="github.com", owner="owner", repo="deployer")
+_REQ = "11111111-1111-4111-8111-111111111111"
+_OTHER = "22222222-2222-4222-8222-222222222222"
+
+
+def _store(tmp_path: Path) -> RunStore:
+    return RunStore(tmp_path / "state")
+
+
+def test_reserve_writes_a_durable_record_before_anything_starts(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    record = store.reserve(
+        _REQ, _KEY, known_runs=["01AAA"], window_start="2026-08-22T00:00:00Z"
+    )
+    assert record.state == "reserved"
+    stored = store.get(_REQ)
+    assert stored is not None
+    assert stored.known_runs == ["01AAA"]
+
+
+def test_second_request_for_a_busy_repo_is_refused_not_queued(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
+    with pytest.raises(LockBusyError, match="deployer"):
+        store.reserve(_OTHER, _KEY, known_runs=[], window_start="t")
+
+
+def test_lock_survives_a_new_store_instance(tmp_path: Path) -> None:
+    """A process-local lock is released by exactly the restart that creates
+    the problem the lock exists to prevent (spec §5.4)."""
+    _store(tmp_path).reserve(_REQ, _KEY, known_runs=[], window_start="t")
+    with pytest.raises(LockBusyError):
+        _store(tmp_path).reserve(_OTHER, _KEY, known_runs=[], window_start="t")
+
+
+def test_materializing_releases_the_lock(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
+    store.mark_materialized(_REQ, "01BBB")
+    stored = store.get(_REQ)
+    assert stored is not None and stored.run_id == "01BBB"
+    store.reserve(_OTHER, _KEY, known_runs=[], window_start="t")  # no raise
+
+
+def test_launch_unknown_keeps_the_lock(tmp_path: Path) -> None:
+    """Dropping the lock on uncertainty would let the next request launch a
+    second run into the same tree (spec §5.2.1)."""
+    store = _store(tmp_path)
+    store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
+    store.mark_unknown(_REQ, "no run appeared within the timeout")
+    stored = store.get(_REQ)
+    assert stored is not None and stored.state == "launch_unknown"
+    with pytest.raises(LockBusyError):
+        store.reserve(_OTHER, _KEY, known_runs=[], window_start="t")
+
+
+def test_release_lock_requires_the_owning_request(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
+    with pytest.raises(LockBusyError, match="held by"):
+        store.release_lock(_KEY, _OTHER)
+    store.release_lock(_KEY, _REQ)
+    store.reserve(_OTHER, _KEY, known_runs=[], window_start="t")
+
+
+def test_a_repeated_request_id_returns_the_existing_record(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    first = store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
+    again = store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
+    assert again.state == first.state
+    assert again.request_id == first.request_id
