@@ -10,7 +10,9 @@ healthy launch look like `launch_unknown`.
 
 This is a mirror of a producer RULE, pinned in
 `contracts/maestro-repo-identity/v1/PINNED.txt` and held to the behaviour
-table beside it. Do not "fix" a mismatch by editing the rule here.
+table beside it. Re-pinned to maestro `95e5b3f` after maestro#211 — the
+traversal the previous pin documented as producer-accepted is now refused
+by the producer itself. Do not "fix" a mismatch by editing the rule here.
 """
 
 from __future__ import annotations
@@ -27,6 +29,18 @@ _URL_LIKE = re.compile(
 )
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 _GIT_TIMEOUT = 15
+
+
+def _segment_is_safe(segment: str) -> bool:
+    """One path segment of a `RepoKey`, as the producer now judges it.
+
+    Dots INSIDE a segment stay legal (`x..y` is a valid repo name); a
+    segment that *is* `.` or `..` is not, because every one of the three
+    becomes a directory name under `projects/`. The producer applied this
+    to `repo` alone until maestro#211 widened it to all three — the mirror
+    follows, it does not lead.
+    """
+    return bool(segment) and not _UNSAFE.search(segment) and segment not in {".", ".."}
 
 
 class IdentityError(Exception):
@@ -76,7 +90,7 @@ def parse_remote_url(url: str) -> RepoKey:
     if len(parts) < 2:
         raise IdentityError(f"remote URL has no owner/repo: {url!r}")
     owner, repo = parts[-2], parts[-1]
-    if _UNSAFE.search(owner) or _UNSAFE.search(repo) or repo in {".", ".."}:
+    if not all(_segment_is_safe(s) for s in (host, owner, repo)):
         raise IdentityError(f"remote URL yields unsafe path segments: {url!r}")
     host, owner, repo = _fold(host, owner, repo)
     return RepoKey(host=host, owner=owner, repo=repo)

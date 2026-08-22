@@ -1,11 +1,21 @@
 source: maestro maestro/repo_identity.py
-commit: cb91759
-vendored: 2026-08-22
+commit: 95e5b3f
+vendored: 2026-08-22 (re-pinned same day, was cb91759)
 note: pinned MIRROR of a producer RULE, not a schema copy (repo-boundaries
   vendoring, ADR-ECO-003). dispatcher must name a repository exactly as
   maestro does, or it watches the wrong run directory. Do not edit the rule
   here to fix a mismatch — re-pin against the producer.
-guarantee-gap: only copy-integrity (the cases table below) is enforced today.
-  The upstream-drift half of the two-guarantees rule is NOT wired; it is
-  filed as `@id:maestro-identity-drift-watch` in TODO.md. Unknown drift must
-  not read as green.
+re-pin reason: maestro#211 (from dispatcher's inbox issue maestro#210) widened
+  the unsafe-segment check from `repo` alone to host/owner/repo. The previous
+  pin's `producer_accepts_but_dispatcher_must_refuse` section documented
+  `owner='..'` as producer-accepted; that is no longer true, and a table
+  asserting it would be a pinned copy telling a lie about its producer.
+  Verified by EXECUTING the new producer, not by reading it — this table was
+  wrong twice when derived by reading.
+still ours: `safe_path_parts` stays. dispatcher joins these segments into a
+  filesystem path itself, and that defence must not depend on the neighbour's
+  version. It is now belt-and-braces rather than the only guard.
+guarantee-gap: only copy-integrity (the cases table beside this file) is
+  enforced. The upstream-drift half is still NOT wired — this re-pin was
+  triggered by a human noticing, which is exactly what
+  `@id:maestro-identity-drift-watch` in TODO.md exists to replace.
