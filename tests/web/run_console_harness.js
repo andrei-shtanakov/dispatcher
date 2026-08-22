@@ -226,10 +226,14 @@ async function click(page, selector) {
   await Promise.all(dispatch(el(page, selector), 'click'));
   await drain();
 }
-/** Calls the page's own renderReceipt(), not a copy of it. */
-function receiptHtml(page, receipt) {
+/** Calls the page's own renderReceipt(), not a copy of it. `blocked` (fix
+ * round 2) selects the accepted:null copy — server-declared (true) vs.
+ * transport-level (false/omitted) — the same explicit flag the real
+ * submit handler passes; unused by the accepted:true/false branches. */
+function receiptHtml(page, receipt, blocked) {
   return vm.runInContext(
-    `renderReceipt(${JSON.stringify(receipt)})`, page.ctx);
+    `renderReceipt(${JSON.stringify(receipt)}, ${JSON.stringify(!!blocked)})`,
+    page.ctx);
 }
 /** Fills the form with values that pass both the client and server checks. */
 function fillValid(page) {
@@ -739,16 +743,44 @@ testCase('fix round 1 — B2 direct path: submit → accepted:true leaves '
     'a settled outcome (accepted:true) leaves submit enabled');
 });
 
-testCase('fix round 1: the receipt for accepted:null names the request_id '
-  + 'and points at #rc-open — the way out, now that the SERVER-declared '
-  + 'case is blocked', async () => {
+// Fix round 2: the two accepted:null origins get DIFFERENT copy, and the
+// re-review found round 1's version said the same (server-declared)
+// sentence for both — wrong for the transport case, whose button beside
+// it is deliberately enabled. Each test below asserts the actual sentence
+// each origin gets, not just the shared "unknown" class name — the two
+// receipts differ ONLY in their words, so the class name alone proves
+// nothing about which copy rendered.
+
+testCase('fix round 2: the SERVER-declared receipt (blocked) names the '
+  + 'request_id and says to resolve it — the only case where that is true',
+  async () => {
     const page = await boot();
     const html = receiptHtml(page, {request_id: 'rc-abc123', run_id: null,
-      accepted: null, reason: 'no response reached the browser'});
+      accepted: null, reason: 'launch_unknown: no run appeared within 120s'},
+      true);
     check(html.includes('rc-abc123'),
       `the request_id is on screen so it can be opened (got: ${html})`);
+    check(/resolve/i.test(html),
+      `tells the operator to resolve it (got: ${html})`);
     check(/rc-open|open run/i.test(html),
       `points at the way out (got: ${html})`);
+  });
+
+testCase('fix round 2: the TRANSPORT-level receipt (not blocked) says '
+  + 'retrying is safe, never "resolve", and does not point at #rc-open — '
+  + 'a request that never reached the server 404s there', async () => {
+    const page = await boot();
+    const html = receiptHtml(page, {request_id: 'rc-xyz789', run_id: null,
+      accepted: null, reason: 'no response reached the browser: network down'},
+      false);
+    check(html.includes('rc-xyz789'),
+      `the request_id is named, since it will be reused (got: ${html})`);
+    check(/safe/i.test(html), `says retrying is safe (got: ${html})`);
+    check(!/resolve/i.test(html), 'must NOT say to resolve — there is '
+      + `nothing to resolve for a request that never arrived (got: ${html})`);
+    check(!/#rc-open|open run/i.test(html), 'must NOT point at #rc-open — '
+      + `that leads to a 404 for a request that never reached the server `
+      + `(got: ${html})`);
   });
 
 // Fix round 1b: the distinction itself, pinned directly — this is the
@@ -825,6 +857,48 @@ testCase('fix round 1: resolving the SAME request a direct submit is '
     check(el(page, '#rc-submit').disabled === false, 'resolving the SAME '
       + 'request the direct submit was blocked on unblocks #rc-submit — '
       + "there is no longer anything left unresolved");
+  }, () => ok({request_id: 'server-echo', run_id: null, accepted: null,
+    reason: 'launch_unknown: no run appeared within 120s'}));
+});
+
+// Fix round 2, re-review Minor 1: the clearing guard reads
+// `if (requestId === rcPendingRequestId)` — nothing pinned that resolving
+// a DIFFERENT request_id leaves rcSubmitBlocked (and rcPendingRequestId)
+// alone, which is exactly the sort of scoping a later refactor drops
+// silently without a test naming it.
+
+testCase('fix round 2: resolving a DIFFERENT request_id leaves the '
+  + "direct submit's block (and its pinned id) alone", async () => {
+  await withPage(async page => {
+    // Direct submit of request A: server-declared, blocks #rc-submit.
+    fillValid(page);
+    await click(page, '#rc-submit');
+    check(el(page, '#rc-submit').disabled === true,
+      'blocked by request A (sanity)');
+    const pinnedA = vm.runInContext('rcPendingRequestId', page.ctx);
+    check(typeof pinnedA === 'string' && pinnedA.length > 0,
+      `A is pinned (got: ${pinnedA})`);
+
+    // Open and fully resolve an UNRELATED request B — not A, and never
+    // pinned by this tab's own submit.
+    page.routes.push([u => u === '/api/runs/req-B', () => ok(
+      {record: {state: 'launch_unknown', run_id: null}, run: null, warnings: []})]);
+    fill(page, '#rc-request-id', 'req-B');
+    await click(page, '#rc-open');
+    page.routes.unshift([u => u === '/api/runs/req-B', () => ok(
+      {record: {state: 'materialized', run_id: '01OTHER'},
+       run: {status: 'running'}, warnings: []})]);
+    page.routes.push([u => u === '/api/runs/req-B/resolve', () => ok({
+      request_id: 'req-B', adopted_run_id: '01OTHER', candidates: ['01OTHER'],
+      reason: 'exactly one new run correlated; adopted',
+    })]);
+    await click(page, '#rc-resolve');
+
+    check(el(page, '#rc-submit').disabled === true, 'resolving B must NOT '
+      + 'unblock submit — A is a different request and is still unresolved');
+    const stillPinned = vm.runInContext('rcPendingRequestId', page.ctx);
+    check(stillPinned === pinnedA, 'A is still pinned, untouched by '
+      + `resolving the unrelated B (got: ${stillPinned})`);
   }, () => ok({request_id: 'server-echo', run_id: null, accepted: null,
     reason: 'launch_unknown: no run appeared within 120s'}));
 });

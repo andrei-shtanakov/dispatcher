@@ -690,7 +690,7 @@ function rcRequestId() {
   return `rc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function renderReceipt(r) {
+function renderReceipt(r, blocked) {
   // `accepted` is three-valued (spec §5.3) and both `false` and `null` are
   // falsy in JS, so every branch here is an explicit identity check. A
   // truthiness test would merge "no run was created" with "a run may exist",
@@ -700,18 +700,27 @@ function renderReceipt(r) {
       <code>${esc(r.run_id)}</code></div>`;
   if (r.accepted === false)
     return `<div class="rc-result err">✗ refused — ${esc(r.reason ?? "")}</div>`;
-  // Fix round 1 (B2): submitting again is blocked below when the SERVER
-  // itself declared this unresolved (rcSubmitBlocked), so the receipt
-  // must be the way out for that case — the request_id, and where to
-  // take it (#rc-open, right above), or the block has no route forward.
-  // Harmless to show for a transport-level null too (submit stays enabled
-  // there — see rcSubmitBlocked's declaration below — but the id is still
-  // worth having on screen).
+  // Fix round 2: `accepted: null` has two origins with two DIFFERENT,
+  // correct recoveries (see `rcSubmitBlocked`'s declaration below), and
+  // the copy must not say the same thing for both — round 1's "resolve it
+  // / open #rc-open" text was wrong for the transport case: resolving is
+  // not required (the enabled button beside it IS the recovery), and
+  // opening a request that never reached the server 404s. `blocked` is
+  // passed in explicitly by the caller (transport catches pass `false`;
+  // the success path passes `data.accepted === null`) rather than
+  // inferred here, since the two local receipt objects the transport
+  // catches build carry no field that would let this function tell them
+  // apart from the server's own LaunchReceipt body otherwise.
+  const recovery = blocked
+    ? `Resolve it before submitting again — open
+      <code>${esc(r.request_id)}</code> above (request_id field, "Open run")
+      to check or resolve it.`
+    : `Submitting again is safe — the same request_id
+      (<code>${esc(r.request_id)}</code>) will be reused, so a run that
+      did start cannot be duplicated.`;
   return `<div class="rc-result unknown">? unknown — the launch may or may not
     have produced a run. ${esc(r.reason ?? "")}
-    <span class="rc-hint">Resolve it before submitting again — open
-    <code>${esc(r.request_id)}</code> above (request_id field, "Open run")
-    to check or resolve it.</span></div>`;
+    <span class="rc-hint">${recovery}</span></div>`;
 }
 
 // Mirrors exactly two of the server's refusals (dispatcher/core/run_request.py,
@@ -823,7 +832,8 @@ document.getElementById("rc-submit").addEventListener("click", async () => {
       // 404). The retry the pinned id exists for is the only recovery,
       // so submission must NOT be blocked.
       out.innerHTML = renderReceipt({request_id: requestId, run_id: null,
-        accepted: null, reason: `no response reached the browser: ${err}`});
+        accepted: null, reason: `no response reached the browser: ${err}`},
+        false);
       rcSubmitBlocked = false;
       return;
     }
@@ -838,7 +848,8 @@ document.getElementById("rc-submit").addEventListener("click", async () => {
       // also transport-level (we have a response, but not its content) —
       // same reasoning as the fetch-rejected branch above.
       out.innerHTML = renderReceipt({request_id: requestId, run_id: null,
-        accepted: null, reason: `response body was unreadable: ${err}`});
+        accepted: null, reason: `response body was unreadable: ${err}`},
+        false);
       rcSubmitBlocked = false;
       return;
     }
@@ -855,7 +866,11 @@ document.getElementById("rc-submit").addEventListener("click", async () => {
       return;
     }
 
-    out.innerHTML = renderReceipt(data);
+    // `blocked` is `data.accepted === null` — the ONLY case this receipt
+    // must steer to #rc-open/resolve; passed explicitly rather than left
+    // for renderReceipt to infer, same as the two transport branches
+    // above.
+    out.innerHTML = renderReceipt(data, data.accepted === null);
     if (data.accepted !== null) {
       rcPendingRequestId = null;
       rcSubmitBlocked = false;
