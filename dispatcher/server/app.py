@@ -43,6 +43,15 @@ from dispatcher.core.roadmap import (
     SummaryResponse,
     default_roadmap_dirs,
 )
+from dispatcher.core.run_controller import (
+    ControlPlaneOff,
+    LaunchReceipt,
+    RunController,
+    RunView,
+    UnknownResolution,
+    VerbOutcome,
+)
+from dispatcher.core.run_request import RunRejectedError, RunRequest
 from dispatcher.core.service import SnapshotService, recent_errors
 from dispatcher.core.spec_runner_config import (
     ProjectSpecRunnerConfig,
@@ -131,6 +140,21 @@ class ActionSession(BaseModel):
     token: str
 
 
+class ResolveRequest(BaseModel):
+    """POST /api/runs/{id}/resolve — optional named orphan to end."""
+
+    run_id: str | None = None
+    outcome: str | None = None
+
+
+class VerbRequest(BaseModel):
+    """POST /api/runs/{id}/verb — one Mode-1 control verb."""
+
+    verb: str
+    task_id: str | None = None
+    outcome: str | None = None
+
+
 class UpdateSpecRunnerConfigRequest(BaseModel):
     """POST /api/actions/update-spec-runner-config body."""
 
@@ -178,6 +202,7 @@ def create_app(
     )
     sync_cache = sync_service if sync_service is not None else SyncService(config)
     actions = ActionRunner(config)
+    runs = RunController(config)
     spec_runner_config_actions = SpecRunnerConfigActionRunner(config)
     suggest = suggest_runner if suggest_runner is not None else SuggestRunner(config)
     benchmarks_service = (
@@ -581,6 +606,76 @@ def create_app(
         except (SpecRunnerConfigRejectedError, ConfigValidationError) as err:
             raise HTTPException(status_code=422, detail=str(err)) from err
         except (SpecRunnerConfigBusyError, SpecRunnerConfigConflictError) as err:
+            raise HTTPException(status_code=409, detail=str(err)) from err
+
+    def _require_token(token: str | None) -> None:
+        if token != action_token:
+            raise HTTPException(status_code=403, detail="bad or missing action token")
+
+    @app.post("/api/runs/submit", response_model=LaunchReceipt)
+    def submit_run(
+        request: RunRequest,
+        x_action_token: str | None = Header(default=None),
+    ) -> LaunchReceipt:
+        """Explicit human click: start one Mode-1 run (spec §5.3).
+
+        Every outcome is a receipt, including a refusal: `accepted` is
+        three-valued and `null` (launch_unknown) is not an error.
+        """
+        _require_token(x_action_token)
+        return runs.submit(request)
+
+    @app.get("/api/runs/{request_id}", response_model=RunView)
+    def read_run(request_id: str) -> RunView:
+        """Read-through to the launch record, joined to maestro's own run
+        row (spec §3.2); no mutation, no token."""
+        try:
+            return runs.view(request_id)
+        except RunRejectedError as err:
+            raise HTTPException(status_code=404, detail=str(err)) from err
+        except ControlPlaneOff as err:
+            # Matches `/resolve` and `/verb`: "the feature is off" is not
+            # the same fact as "no such request", and 404 told an operator
+            # the wrong one of the two.
+            raise HTTPException(status_code=409, detail=str(err)) from err
+
+    @app.post("/api/runs/{request_id}/resolve", response_model=UnknownResolution)
+    def resolve_run(
+        request_id: str,
+        request: ResolveRequest,
+        x_action_token: str | None = Header(default=None),
+    ) -> UnknownResolution:
+        """Adopt an unambiguous orphan, or end the one the operator names."""
+        _require_token(x_action_token)
+        try:
+            if request.run_id is not None:
+                return runs.end_orphan(
+                    request_id, request.run_id, request.outcome or ""
+                )
+            return runs.resolve_unknown(request_id)
+        except RunRejectedError as err:
+            raise HTTPException(status_code=422, detail=str(err)) from err
+        except ControlPlaneOff as err:
+            raise HTTPException(status_code=409, detail=str(err)) from err
+
+    @app.post("/api/runs/{request_id}/verb", response_model=VerbOutcome)
+    def run_verb(
+        request_id: str,
+        request: VerbRequest,
+        x_action_token: str | None = Header(default=None),
+    ) -> VerbOutcome:
+        """Explicit human click: one allowlisted Mode-1 control verb (spec §6)."""
+        _require_token(x_action_token)
+        try:
+            return runs.control(
+                request_id,
+                request.verb,
+                task_id=request.task_id,
+                outcome=request.outcome,
+            )
+        except RunRejectedError as err:
+            raise HTTPException(status_code=422, detail=str(err)) from err
+        except ControlPlaneOff as err:
             raise HTTPException(status_code=409, detail=str(err)) from err
 
     app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="static")

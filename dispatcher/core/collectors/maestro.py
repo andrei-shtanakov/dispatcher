@@ -79,38 +79,24 @@ class MaestroCollector:
 
     def _collect_runs(self, home: Path | None, snap: ProjectSnapshot) -> list[Path]:
         """Enumerate per-project run DBs; returns freshness sources."""
-        if home is None:
-            return []
-        # No is_dir() guard: an ABSENT projects/ is normal (Maestro has not
-        # run since the layout change) and reads as clean-zero inside
-        # _subdirs; an UNREADABLE one must warn there, and is_dir() would
-        # swallow that stat error into a silent zero.
-        projects = home / "projects"
         sources: list[Path] = []
-        for repo_key, project_dir in _project_dirs(projects, snap):
-            holder = _holder_run_id(project_dir / "locks")
-            runs: list[tuple[OrchestrationRunInfo, Path]] = []
-            for run_dir in _subdirs(project_dir / "runs", snap):
-                db = run_dir / "state.db"
-                if not db.is_file():
-                    continue
-                sources.append(db)
-                runs.append(
-                    (_classify_run(db, repo_key, run_dir.name, holder, snap), db)
-                )
+        by_project: dict[str, list[tuple[OrchestrationRunInfo, Path]]] = {}
+        for info, db in classified_runs(home, snap):
+            sources.append(db)
+            by_project.setdefault(info.repo_key, []).append((info, db))
+        for _, runs in sorted(by_project.items()):
             runs.sort(
                 key=lambda r: (r[0].started_at or "", r[0].run_id or ""),
                 reverse=True,
             )
             snap.runs.extend(info for info, _ in runs)
-            if runs:
-                newest_db = runs[0][1]
-                self._collect_run_tasks(newest_db, snap)
-                logs_dir = newest_db.parent / "logs"
-                snap.errors.extend(read_otel_errors(logs_dir))
-                # Everything read must feed freshness: telemetry can land
-                # under the run's logs/ after the last state.db write.
-                sources.append(logs_dir)
+            newest_db = runs[0][1]
+            self._collect_run_tasks(newest_db, snap)
+            logs_dir = newest_db.parent / "logs"
+            snap.errors.extend(read_otel_errors(logs_dir))
+            # Everything read must feed freshness: telemetry can land under
+            # the run's logs/ after the last state.db write.
+            sources.append(logs_dir)
         return sources
 
     def _collect_run_tasks(self, db: Path, snap: ProjectSnapshot) -> None:
@@ -191,6 +177,33 @@ class MaestroCollector:
                 summary=mask_secrets(shallow_summary(data)),
             )
         )
+
+
+def classified_runs(
+    home: Path | None, snap: ProjectSnapshot
+) -> list[tuple[OrchestrationRunInfo, Path]]:
+    """Every run under `home`, classified once, with its `state.db`.
+
+    The single place run status is decided. `_collect_runs` layers its extra
+    work (tasks, logs, freshness sources) on top; the control plane
+    (`core/run_controller.py`) uses this alone, so a request's status and the
+    dashboard's can never disagree.
+    """
+    if home is None:
+        return []
+    # No is_dir() guard: an ABSENT projects/ is normal (Maestro has not run
+    # since the layout change) and reads as clean-zero inside _subdirs; an
+    # UNREADABLE one must warn there, and is_dir() would swallow that stat
+    # error into a silent zero.
+    out: list[tuple[OrchestrationRunInfo, Path]] = []
+    for repo_key, project_dir in _project_dirs(home / "projects", snap):
+        holder = _holder_run_id(project_dir / "locks")
+        for run_dir in _subdirs(project_dir / "runs", snap):
+            db = run_dir / "state.db"
+            if not db.is_file():
+                continue
+            out.append((_classify_run(db, repo_key, run_dir.name, holder, snap), db))
+    return out
 
 
 def _project_dirs(projects: Path, snap: ProjectSnapshot) -> list[tuple[str, Path]]:
