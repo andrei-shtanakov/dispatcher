@@ -1040,7 +1040,7 @@ git commit -m "feat(run): durable launch records and the per-RepoKey lock"
 
 **Design notes for the implementer:**
 - `accepted` is three-valued. `False` may be returned **only** when the controller knows no run was created (validation, `busy`, a non-zero exit before publication). Unknown is `None`. The precedent is `merged` in `dispatcher/core/actions.py:580-584`, and collapsing `None` into `False` would invite the caller to retry — the one action spec §5.2.1 forbids.
-- The child's environment decides where the run lands. Set `MAESTRO_HOME` **explicitly** from `config.maestro_home` and resolve the watch from the same value; inheriting whatever the web process holds is how a healthy launch turns into `launch_unknown` (spec §3.2, `maestro/maestro/state_paths.py:26-29`).
+- The child's environment decides where the run lands. Set `MAESTRO_HOME` **explicitly** from `config.effective_maestro_home` — the resolver, never the raw `maestro_home` field, which is `None` for a deployment that configures only `maestro_db` — and resolve the watch from that same value; inheriting whatever the web process holds is how a healthy launch turns into `launch_unknown` (spec §3.2, `maestro/maestro/state_paths.py:26-29`).
 - Watch for the **rename into `runs/`**, not for a directory anywhere: maestro builds under `<project>/.staging/<run_id>` and renames only after the database is closed (`maestro/maestro/run_publish.py:45-73`). Watching `runs/` therefore observes a producer-defined boundary, not a guess.
 
 - [ ] **Step 1: Write the failing test**
@@ -1183,7 +1183,7 @@ def test_child_is_launched_with_an_explicit_maestro_home(tmp_path: Path) -> None
     receipt = RunController(config, materialize_timeout=10.0).submit(_request(head))
     assert receipt.accepted is True
     expected = (
-        config.maestro_home / "projects/github.com/owner/deployer/runs/01CCC"
+        config.effective_maestro_home / "projects/github.com/owner/deployer/runs/01CCC"
     )
     assert expected.is_dir()
 
@@ -1527,7 +1527,7 @@ def _unknown(tmp_path: Path) -> tuple[RunController, Path]:
     controller = RunController(config, poll_interval=0.05, materialize_timeout=0.3)
     receipt = controller.submit(_request(head))
     assert receipt.accepted is None
-    runs = config.maestro_home / "projects/github.com/owner/deployer/runs"
+    runs = config.effective_maestro_home / "projects/github.com/owner/deployer/runs"
     runs.mkdir(parents=True, exist_ok=True)
     return controller, runs
 
@@ -2283,7 +2283,14 @@ class RunView(BaseModel):
         Status is read through the collector's one classifier; nothing here
         re-derives liveness. A `run_id` whose directory is gone yields
         `run=None` — absent, not invented.
+
+        The home comes from `_require_on()`, never from `config.maestro_home`
+        directly: that field is `None` for a deployment configuring only
+        `maestro_db`, and `classified_runs(None, ...)` returns `[]`, which
+        would make every lookup report `run=None` while the dashboard finds
+        the run perfectly well.
         """
+        _, _, home = self._require_on()
         record = self._store().get(request_id)
         if record is None:
             raise RunRejectedError(f"no launch record for {request_id}")
@@ -2296,7 +2303,7 @@ class RunView(BaseModel):
         match = next(
             (
                 info
-                for info, _ in classified_runs(self._config.maestro_home, scratch)
+                for info, _ in classified_runs(home, scratch)
                 if info.run_id == record.run_id
                 and info.repo_key == record.repo_key
             ),
@@ -2384,6 +2391,14 @@ found in the first draft of this plan and fixed here:
    flight and the input is simply bad. Added `RunStoreError` as the base.
 9. The idempotency test's counter did `len(read_text())` instead of `int(...)`, so it
    would have passed without measuring anything.
+
+**Sixth pass — caught during execution of Task 8, and it is a repeat.** `view()` read
+`config.maestro_home` directly instead of `effective_maestro_home`, so for any deployment
+configuring only `maestro_db` the lookup returns `[]` and every read-back reports
+`run=None`. This is the SAME confusion corrected in Task 4 — and the correction was
+patched only into the task that surfaced it, never swept across the plan. Four call sites
+carried it forward. Process lesson worth more than the fix: **a mid-execution plan
+correction must be swept over the whole plan, not applied where it was found.**
 
 **Fifth pass — caught during execution of Task 6, and the worst of them.** The verb argv
 table was wrong for two of five verbs. `maestro retry` takes a REQUIRED positional task
