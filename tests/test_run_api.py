@@ -182,6 +182,29 @@ async def test_resolve_with_a_run_id_and_no_outcome_is_422_naming_both_fields(
         assert "cancelled" in detail and "superseded" in detail
 
 
+async def test_resolve_with_an_outcome_and_no_run_id_is_422_not_a_silent_adoption(
+    tmp_path: Path,
+) -> None:
+    """The reverse half of the pairing, and the more dangerous one.
+
+    `run_id` without `outcome` at least fails loudly downstream. An
+    `outcome` without `run_id` used to be dropped on the floor: the request
+    fell through to `resolve_unknown`, so a caller asking to END a named run
+    got an ADOPTION attempt instead, with nothing saying a field had been
+    ignored.
+    """
+    async with _client(tmp_path, control_plane=True) as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/runs/11111111-1111-4111-8111-111111111111/resolve",
+            json={"outcome": "cancelled"},
+            headers={"X-Action-Token": token},
+        )
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert "run_id" in detail and "outcome" in detail
+
+
 async def test_verb_with_a_malformed_request_id_is_422_not_500(
     tmp_path: Path,
 ) -> None:
