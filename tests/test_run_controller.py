@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.run_controller import RunController
-from dispatcher.core.run_request import RunRequest
+from dispatcher.core.run_request import RunRejectedError, RunRequest
 from dispatcher.core.run_store import RunStore
 
 _REQ = "11111111-1111-4111-8111-111111111111"
@@ -50,6 +50,15 @@ def _repo(root: Path) -> str:
     )
     return subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+def _repo_head(root: Path) -> str:
+    return subprocess.run(
+        ["git", "-C", str(root / "deployer"), "rev-parse", "HEAD"],
         capture_output=True,
         text=True,
         check=True,
@@ -272,3 +281,79 @@ def test_mark_materialized_failure_never_claims_the_run_did_not_happen(
     second_receipt = RunController(_config(tmp_path, cli)).submit(second)
     assert second_receipt.accepted is False
     assert "in flight" in (second_receipt.reason or "")
+
+
+# -- task 5: leaving launch_unknown — adoption and operator resolution ------
+
+
+def _state(controller: RunController, request_id: str) -> str:
+    """The stored state, with the Optional narrowed once instead of per call."""
+    record = controller.record(request_id)
+    assert record is not None
+    return record.state
+
+
+def _unknown(tmp_path: Path) -> tuple[RunController, Path]:
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run=None)
+    config = _config(tmp_path, cli)
+    controller = RunController(config, poll_interval=0.05, materialize_timeout=0.3)
+    receipt = controller.submit(_request(head))
+    assert receipt.accepted is None
+    assert config.maestro_home is not None
+    runs = config.maestro_home / "projects/github.com/owner/deployer/runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    return controller, runs
+
+
+def test_exactly_one_candidate_is_adopted(tmp_path: Path) -> None:
+    controller, runs = _unknown(tmp_path)
+    (runs / "01LATE").mkdir()
+    resolution = controller.resolve_unknown(_REQ)
+    assert resolution.adopted_run_id == "01LATE"
+    assert _state(controller, _REQ) == "materialized"
+
+
+def test_zero_candidates_stays_unknown(tmp_path: Path) -> None:
+    controller, _ = _unknown(tmp_path)
+    resolution = controller.resolve_unknown(_REQ)
+    assert resolution.adopted_run_id is None
+    assert _state(controller, _REQ) == "launch_unknown"
+
+
+def test_two_candidates_are_never_guessed_between(tmp_path: Path) -> None:
+    controller, runs = _unknown(tmp_path)
+    (runs / "01AAA").mkdir()
+    (runs / "01BBB").mkdir()
+    resolution = controller.resolve_unknown(_REQ)
+    assert resolution.adopted_run_id is None
+    assert sorted(resolution.candidates) == ["01AAA", "01BBB"]
+    assert _state(controller, _REQ) == "launch_unknown"
+
+
+def test_adoption_releases_the_lock(tmp_path: Path) -> None:
+    controller, runs = _unknown(tmp_path)
+    (runs / "01LATE").mkdir()
+    controller.resolve_unknown(_REQ)
+    head = _repo_head(tmp_path / "ws")
+    second = _request(head).model_copy(
+        update={"request_id": "33333333-3333-4333-8333-333333333333"}
+    )
+    assert controller.submit(second).accepted is not False
+
+
+def test_end_orphan_refuses_a_run_outside_the_candidate_set(tmp_path: Path) -> None:
+    controller, runs = _unknown(tmp_path)
+    (runs / "01AAA").mkdir()
+    (runs / "01BBB").mkdir()
+    with pytest.raises(RunRejectedError, match="not a candidate"):
+        controller.end_orphan(_REQ, "01ZZZ", "cancelled")
+
+
+def test_end_orphan_rejects_an_outcome_outside_the_operator_endings(
+    tmp_path: Path,
+) -> None:
+    controller, runs = _unknown(tmp_path)
+    (runs / "01AAA").mkdir()
+    with pytest.raises(RunRejectedError, match="cancelled|superseded"):
+        controller.end_orphan(_REQ, "01AAA", "completed")

@@ -20,7 +20,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.run_identity import RepoKey, safe_path_parts
@@ -40,6 +40,11 @@ _audit = logging.getLogger("dispatcher.runs")
 
 _POLL_INTERVAL = 0.5
 _MATERIALIZE_TIMEOUT = 120.0
+_VERB_TIMEOUT = 120
+
+#: The two endings a run cannot observe about itself
+#: (`maestro/maestro/cli.py:1973`).
+_OPERATOR_ENDINGS = frozenset({"cancelled", "superseded"})
 
 
 class ControlPlaneOff(Exception):
@@ -60,6 +65,15 @@ class LaunchReceipt(BaseModel):
     run_id: str | None = None
     accepted: bool | None = None
     reason: str | None = None
+
+
+class UnknownResolution(BaseModel):
+    """What a `launch_unknown` resolution attempt could and could not decide."""
+
+    request_id: str
+    adopted_run_id: str | None = None
+    candidates: list[str] = Field(default_factory=list)
+    reason: str = ""
 
 
 class RunController:
@@ -349,6 +363,113 @@ class RunController:
                 return late[0] if len(late) == 1 else None
             time.sleep(self._poll)
         return None
+
+    # -- leaving launch_unknown ----------------------------------------------
+
+    def record(self, request_id: str) -> LaunchRecord | None:
+        """The stored launch record, for the API and for tests."""
+        return self._store().get(request_id)
+
+    def _candidates(self, request_id: str) -> tuple[list[str], RepoKey]:
+        """New runs relative to the pre-launch snapshot, and the repo key.
+
+        `known_runs` is `runs/` as it looked immediately before the launch
+        (`dispatcher/core/run_store.py:63-64`) — the only thing an orphan can
+        be correlated against.
+        """
+        record = self._store().get(request_id)
+        if record is None:
+            raise RunRejectedError(f"no launch record for {request_id}")
+        parts = record.repo_key.split("/")
+        key = (
+            RepoKey(host="", owner="", repo=parts[1], local=True)
+            if parts[0] == "_local"
+            else RepoKey(host=parts[0], owner=parts[1], repo=parts[2])
+        )
+        before = set(record.known_runs)
+        fresh = [n for n in self._listing(self.runs_dir(key)) if n not in before]
+        return fresh, key
+
+    def resolve_unknown(self, request_id: str) -> UnknownResolution:
+        """Adopt an orphan only under unambiguous correlation (spec §5.2.1).
+
+        Exactly one new run relative to the pre-launch snapshot is adopted.
+        Zero and two-or-more both remain `launch_unknown`: a heuristic
+        adoption attributes work to a request that may not have produced it,
+        and every later control verb would then act on a stranger's run.
+        """
+        candidates, _ = self._candidates(request_id)
+        if len(candidates) == 1:
+            adopted = candidates[0]
+            self._store().mark_materialized(request_id, adopted)
+            _audit.info("resolve request=%s adopted=%s", request_id, adopted)
+            return UnknownResolution(
+                request_id=request_id,
+                adopted_run_id=adopted,
+                candidates=candidates,
+                reason="exactly one new run correlated; adopted",
+            )
+        reason = (
+            "no new run to correlate; the launch may never have started"
+            if not candidates
+            else (
+                f"{len(candidates)} new runs correlate equally well; "
+                "attribution is ambiguous in principle. Name the exact run_id "
+                "and end it — the best-fitting timestamp is not evidence."
+            )
+        )
+        _audit.info(
+            "resolve request=%s adopted=None candidates=%d",
+            request_id,
+            len(candidates),
+        )
+        return UnknownResolution(
+            request_id=request_id, candidates=candidates, reason=reason
+        )
+
+    def end_orphan(
+        self, request_id: str, run_id: str, outcome: str
+    ) -> UnknownResolution:
+        """Operator resolution: end a NAMED orphan, then release the lock.
+
+        The run must be one the correlation actually offered — ending a run
+        that merely fits the launch window is forbidden for the same reason
+        automatic adoption is (spec §5.2.1).
+        """
+        if outcome not in _OPERATOR_ENDINGS:
+            raise RunRejectedError(
+                f"outcome must be one of cancelled|superseded, got {outcome!r}: "
+                "'completed' and 'failed' are recorded by the run itself"
+            )
+        candidates, key = self._candidates(request_id)
+        if run_id not in candidates:
+            raise RunRejectedError(
+                f"{run_id} is not a candidate for {request_id}; "
+                f"candidates are: {', '.join(candidates) or 'none'}"
+            )
+        _, cli, home = self._require_on()
+        proc = subprocess.run(  # noqa: S603 — argv is a fixed shape
+            [str(cli), "run-end", run_id, "--outcome", outcome],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "MAESTRO_HOME": str(home)},
+            timeout=_VERB_TIMEOUT,
+        )
+        if proc.returncode != 0:
+            raise RunRejectedError(
+                f"maestro run-end refused: {proc.stderr.strip() or proc.stdout.strip()}"
+            )
+        store = self._store()
+        store.mark_terminal(request_id, outcome)
+        _audit.info(
+            "end-orphan request=%s run=%s outcome=%s", request_id, run_id, outcome
+        )
+        return UnknownResolution(
+            request_id=request_id,
+            adopted_run_id=run_id,
+            candidates=candidates,
+            reason=f"operator ended {run_id} as {outcome}; lock released",
+        )
 
     def _refuse(self, request_id: str, reason: str) -> LaunchReceipt:
         _audit.info("submit request=%s accepted=False rejected=%s", request_id, reason)
