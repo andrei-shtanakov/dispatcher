@@ -386,8 +386,22 @@ class RunController:
     # -- leaving launch_unknown ----------------------------------------------
 
     def record(self, request_id: str) -> LaunchRecord | None:
-        """The stored launch record, for the API and for tests."""
-        return self._store().get(request_id)
+        """The stored launch record, for the API and for tests.
+
+        Translates a store-level `RunStoreError` into `RunRejectedError`:
+        `RunStore._record_path` raises the bare base class for a
+        `request_id` outside its safe charset, and unlike
+        `RunRequest.request_id`, an id reaching this method from an HTTP
+        path parameter carries no pydantic constraint. A refusal, not a
+        crash — `submit` makes the same translation for its own entry
+        point, into a receipt instead of an exception.
+        """
+        try:
+            return self._store().get(request_id)
+        except RunStoreError as err:
+            raise RunRejectedError(
+                f"cannot use request_id {request_id!r}: {err}"
+            ) from err
 
     def control(
         self,
@@ -405,7 +419,12 @@ class RunController:
         """
         if verb not in _VERBS:
             raise RunRejectedError(f"verb not allowlisted: {verb!r}")
-        record = self._store().get(request_id)
+        try:
+            record = self._store().get(request_id)
+        except RunStoreError as err:
+            raise RunRejectedError(
+                f"cannot use request_id {request_id!r}: {err}"
+            ) from err
         if record is None or record.run_id is None:
             raise RunRejectedError(
                 f"{request_id} has no run to act on "
@@ -467,7 +486,17 @@ class RunController:
             proc.returncode == 0,
         )
         if run_end_outcome is not None and proc.returncode == 0:
-            self._store().mark_terminal(request_id, run_end_outcome)
+            try:
+                self._store().mark_terminal(request_id, run_end_outcome)
+            except RunStoreError as err:
+                # maestro run-end already succeeded; only releasing the
+                # lock/updating the record failed (e.g. `LockBusyError` from
+                # a corrupt or foreign-held lock file). Still a refusal, not
+                # an unhandled exception — same translation as above.
+                raise RunRejectedError(
+                    f"run-end for {run_id} succeeded, but the launch record "
+                    f"could not be released: {err}"
+                ) from err
         return VerbOutcome(
             verb=verb,
             run_id=run_id,
@@ -491,7 +520,12 @@ class RunController:
         `known_runs`" against a now-stale snapshot; re-adopting over it would
         silently overwrite a settled outcome.
         """
-        record = self._store().get(request_id)
+        try:
+            record = self._store().get(request_id)
+        except RunStoreError as err:
+            raise RunRejectedError(
+                f"cannot use request_id {request_id!r}: {err}"
+            ) from err
         if record is None:
             raise RunRejectedError(f"no launch record for {request_id}")
         if record.state != "launch_unknown":
@@ -520,7 +554,17 @@ class RunController:
         candidates, _ = self._candidates(request_id)
         if len(candidates) == 1:
             adopted = candidates[0]
-            self._store().mark_materialized(request_id, adopted)
+            try:
+                self._store().mark_materialized(request_id, adopted)
+            except RunStoreError as err:
+                # A new run WAS observed and correlated; only the durable
+                # write failed (e.g. `LockBusyError` from a corrupt or
+                # foreign-held lock file). Still a refusal, not an unhandled
+                # exception — same translation as `record`/`control`.
+                raise RunRejectedError(
+                    f"correlated {adopted} for {request_id}, but the launch "
+                    f"record could not be updated: {err}"
+                ) from err
             _audit.info("resolve request=%s adopted=%s", request_id, adopted)
             return UnknownResolution(
                 request_id=request_id,
@@ -588,7 +632,16 @@ class RunController:
                 f"maestro run-end refused: {proc.stderr.strip() or proc.stdout.strip()}"
             )
         store = self._store()
-        store.mark_terminal(request_id, outcome)
+        try:
+            store.mark_terminal(request_id, outcome)
+        except RunStoreError as err:
+            # `maestro run-end` already succeeded above; only releasing the
+            # lock/updating the record failed. Still a refusal, not an
+            # unhandled exception — same translation as `control`.
+            raise RunRejectedError(
+                f"run-end for {run_id} succeeded, but the launch record "
+                f"could not be released: {err}"
+            ) from err
         _audit.info(
             "end-orphan request=%s run=%s outcome=%s", request_id, run_id, outcome
         )

@@ -630,7 +630,7 @@ def create_app(
         """Read-through to the stored launch record; no mutation, no token."""
         try:
             record = runs.record(request_id)
-        except ControlPlaneOff as err:
+        except (ControlPlaneOff, RunRejectedError) as err:
             raise HTTPException(status_code=404, detail=str(err)) from err
         if record is None:
             raise HTTPException(status_code=404, detail=f"no record: {request_id}")

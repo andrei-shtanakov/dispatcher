@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.run_controller import RunController
 from dispatcher.core.run_request import RunRejectedError, RunRequest
-from dispatcher.core.run_store import RunStore
+from dispatcher.core.run_store import LockBusyError, RunStore
 
 _REQ = "11111111-1111-4111-8111-111111111111"
 
@@ -514,3 +514,80 @@ def test_stop_is_not_allowlisted(tmp_path: Path) -> None:
     controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
     with pytest.raises(RunRejectedError, match="not allowlisted"):
         controller.control(_REQ, "stop")
+
+
+# -- task 7 fix round 1: an unsafe request_id must not raise out of any -----
+# -- non-submit entry point --------------------------------------------------
+#
+# `submit()` already refuses rather than raises on an unsafe request_id (see
+# `test_submit_refuses_rather_than_raises_on_an_unsafe_request_id` above). A
+# request_id reaching `record`/`control`/`resolve_unknown`/`end_orphan` comes
+# from an HTTP PATH PARAMETER, which — unlike `RunRequest.request_id` — carries
+# no pydantic constraint, so `RunStore._record_path`'s bare `RunStoreError` was
+# reachable through all four with the control plane ON (the off-by-default
+# fixture masks this: `_require_on()` raises `ControlPlaneOff` first).
+
+_UNSAFE_ID = "bad/id with space"
+
+
+def test_record_with_an_unsafe_request_id_is_a_refusal_not_a_crash(
+    tmp_path: Path,
+) -> None:
+    cli = tmp_path / "unused-maestro"
+    controller = RunController(_config(tmp_path, cli))
+    with pytest.raises(RunRejectedError, match="unsafe|cannot use request_id"):
+        controller.record(_UNSAFE_ID)
+
+
+def test_control_with_an_unsafe_request_id_is_a_refusal_not_a_crash(
+    tmp_path: Path,
+) -> None:
+    cli = tmp_path / "unused-maestro"
+    controller = RunController(_config(tmp_path, cli))
+    with pytest.raises(RunRejectedError, match="unsafe|cannot use request_id"):
+        controller.control(_UNSAFE_ID, "status")
+
+
+def test_resolve_unknown_with_an_unsafe_request_id_is_a_refusal_not_a_crash(
+    tmp_path: Path,
+) -> None:
+    cli = tmp_path / "unused-maestro"
+    controller = RunController(_config(tmp_path, cli))
+    with pytest.raises(RunRejectedError, match="unsafe|cannot use request_id"):
+        controller.resolve_unknown(_UNSAFE_ID)
+
+
+def test_end_orphan_with_an_unsafe_request_id_is_a_refusal_not_a_crash(
+    tmp_path: Path,
+) -> None:
+    cli = tmp_path / "unused-maestro"
+    controller = RunController(_config(tmp_path, cli))
+    with pytest.raises(RunRejectedError, match="unsafe|cannot use request_id"):
+        controller.end_orphan(_UNSAFE_ID, "01AAA", "cancelled")
+
+
+def test_control_run_end_survives_a_lock_release_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`LockBusyError` is a `RunStoreError` subclass: `release_lock` raising
+    from inside `mark_terminal` (a corrupt or foreign-held lock) must also
+    come back as a refusal, not escape `control()` unhandled."""
+    controller = _materialized(
+        tmp_path,
+        """
+        import os, pathlib, sys
+        home = pathlib.Path(os.environ["MAESTRO_HOME"])
+        d = home / "projects/github.com/owner/deployer/runs/01AAA"
+        if not d.exists():
+            d.mkdir(parents=True)
+            (d / "state.db").write_text("")
+        sys.exit(0)
+        """,
+    )
+
+    def _boom(self: RunStore, request_id: str, outcome: str) -> None:
+        raise LockBusyError("lock held by someone else")
+
+    monkeypatch.setattr(RunStore, "mark_terminal", _boom)
+    with pytest.raises(RunRejectedError, match="run-end"):
+        controller.control(_REQ, "run-end", outcome="cancelled")
