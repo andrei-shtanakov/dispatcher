@@ -92,7 +92,8 @@ guarantee-gap: only copy-integrity (the cases table below) is enforced today.
     {"url": "", "why": "empty remote URL"},
     {"url": "file:///tmp/repo", "why": "non-git scheme"},
     {"url": "git@github.com:repo.git", "why": "no owner/repo"},
-    {"url": "git@github.com:owner/x..y.git", "why": "unsafe repo segment"}
+    {"url": "git@github.com:owner/...git", "why": "repo segment is '..' — the one traversal case the producer DOES check"},
+    {"url": "git@github.com:owner/re~po.git", "why": "character outside [A-Za-z0-9._-]"}
   ],
   "producer_accepts_but_dispatcher_must_refuse": [
     {"url": "git@github.com:owner/../etc.git", "key": ["github.com", "..", "etc"],
@@ -2361,5 +2362,14 @@ found in the first draft of this plan and fixed here:
    flight and the input is simply bad. Added `RunStoreError` as the base.
 9. The idempotency test's counter did `len(read_text())` instead of `int(...)`, so it
    would have passed without measuring anything.
+
+**Third pass — caught during execution of Task 1.** The replacement reject case
+`git@github.com:owner/x..y.git` was wrong too: `_UNSAFE` permits dots and only an exact
+`repo == ".."` is checked, so the producer *accepts* `x..y` (verified against cb91759).
+Replaced with two cases the producer genuinely rejects — `owner/..` (the one traversal
+form it does catch) and a character outside `[A-Za-z0-9._-]`. Both verified by running
+the producer, not by reading it. Twice now this table asserted a rejection the rule does
+not make: **verify a pinned behaviour table by executing the producer, never by reading
+its source.**
 
 **Type consistency:** `RepoKey.as_path_parts()`/`as_text()` (T1) are used unchanged in T3, T4, T5. `RunRejectedError` is raised by T2 and caught in T4, T5, T6, T7. `LaunchRecord.state` values match `_LOCK_HELD_STATES` and `_accepted_for`. `_OPERATOR_ENDINGS` is defined once (T5) and reused by T6. `_VERB_TIMEOUT` is flagged in T5 and owned by T6 to avoid a duplicate definition.
