@@ -699,14 +699,25 @@ function renderReceipt(r) {
     <span class="rc-hint">Resolve it before submitting again.</span></div>`;
 }
 
+// The id of the attempt currently in flight or left unresolved (accepted:
+// null, a dropped connection, an unreadable response) — not yet known to
+// dispatcher as settled. `RunController.submit` keys idempotency off
+// `request_id` (spec §5.2): a retry that reused it lands on the SAME
+// record instead of starting a second attempt, which matters exactly when
+// the first attempt's outcome is unknown and may already have launched. A
+// fresh id is minted only once an attempt reaches accepted true/false.
+let rcPendingRequestId = null;
+
 document.getElementById("rc-submit").addEventListener("click", async () => {
   const btn = document.getElementById("rc-submit");
   btn.disabled = true;
   const out = document.getElementById("rc-receipt");
   out.textContent = "…";
+  const requestId = rcPendingRequestId ?? rcRequestId();
+  rcPendingRequestId = requestId;
   try {
     const body = {
-      request_id: rcRequestId(),
+      request_id: requestId,
       work_id: document.getElementById("rc-work-id").value,
       repository: document.getElementById("rc-repository").value,
       revision: document.getElementById("rc-revision").value,
@@ -722,15 +733,51 @@ document.getElementById("rc-submit").addEventListener("click", async () => {
       const commit = document.getElementById("rc-plan-ref-commit").value.trim();
       body.plan_ref = {path: planPath, commit: commit || null};
     }
-    const resp = await fetch("/api/runs/submit", {
-      method: "POST",
-      headers: {"Content-Type": "application/json",
-                "X-Action-Token": await ensureActionToken()},
-      body: JSON.stringify(body),
-    });
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.detail ?? `HTTP ${resp.status}`);
+
+    let resp;
+    try {
+      resp = await fetch("/api/runs/submit", {
+        method: "POST",
+        headers: {"Content-Type": "application/json",
+                  "X-Action-Token": await ensureActionToken()},
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      // The request may never have reached the server — or it may have
+      // reached it, been accepted, and produced a run, with only the
+      // response lost. Either is possible, so this is launch_unknown, not
+      // a refusal: rcPendingRequestId stays set so a retry lands on the
+      // same idempotency record instead of risking a second run.
+      out.innerHTML = renderReceipt({request_id: requestId, run_id: null,
+        accepted: null, reason: `no response reached the browser: ${err}`});
+      return;
+    }
+
+    let data;
+    try {
+      data = await resp.json();
+    } catch (err) {
+      // The server answered but the body could not be read — the same
+      // ambiguity as a dropped connection: what the server decided is
+      // unknown from here, so this is not a refusal either.
+      out.innerHTML = renderReceipt({request_id: requestId, run_id: null,
+        accepted: null, reason: `response body was unreadable: ${err}`});
+      return;
+    }
+
+    if (!resp.ok) {
+      // The server received the request and definitively refused it — a
+      // real accepted:false, routed through the one renderer for refusals
+      // even though it arrived as a non-2xx status rather than a
+      // LaunchReceipt body.
+      out.innerHTML = renderReceipt({request_id: requestId, run_id: null,
+        accepted: false, reason: data.detail ?? `HTTP ${resp.status}`});
+      rcPendingRequestId = null;
+      return;
+    }
+
     out.innerHTML = renderReceipt(data);
+    if (data.accepted !== null) rcPendingRequestId = null;
   } catch (err) {
     out.innerHTML = `<div class="rc-result err">✗ ${esc(String(err))}</div>`;
   } finally {

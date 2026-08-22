@@ -5,7 +5,7 @@
 // harnesses, self-contained on purpose: each harness's loader and fixtures
 // are module-local (see governance_harness.js's header for the reasoning).
 //
-// Two layers are asserted here:
+// Three layers are asserted here:
 //   1. the wire: filling the RunRequest form and clicking #rc-submit posts
 //      to /api/runs/submit with the X-Action-Token and the form's values.
 //   2. the pure renderer: renderReceipt() over the receipt's three-valued
@@ -18,6 +18,15 @@
 //      failed or refused) and does not carry the `err` class, and false
 //      vs. null render to genuinely different markup, not merged by
 //      falsiness.
+//   3. the submit handler's error split (fix round 1): a non-ok response
+//      with a parseable body is a genuine accepted:false refusal, but a
+//      rejected fetch() or an unreadable response body is NOT — the request
+//      may already have been accepted server-side with only the reply lost,
+//      so that must render as `unknown`, never `err`, and must NOT spend the
+//      request_id: a retry has to reuse it so the server's own idempotency
+//      (RunController.submit, keyed on request_id) absorbs it instead of a
+//      second launch being risked. A settled outcome (true/false), by
+//      contrast, must free the id so the next submission is a fresh attempt.
 //
 // Usage: node run_console_harness.js <path-to-index.html>
 'use strict';
@@ -234,6 +243,93 @@ testCase('false and null are genuinely distinguished, not merged by falsiness',
     check(asFalse.includes('rc-result err'), 'false renders with the err class');
     check(asNull.includes('rc-result unknown'),
       'null renders with its own unknown class');
+  });
+
+// -- fix round 1: transport failure vs. a definitive refusal -----------------
+// A non-ok response with a parseable body is a fact: the server received the
+// request and refused it (accepted:false is honest). A rejected fetch() or
+// an unreadable response body is NOT a fact either way — the request may
+// never have arrived, or it may have arrived, been accepted, and produced a
+// run, with only the reply lost. That second case must render as `unknown`,
+// never `err`, and must not spend the request_id: a retry has to reuse it so
+// it lands on the server's idempotency record (RunController.submit)
+// instead of risking a second launch.
+
+async function fillMinimalForm(page) {
+  fill(page, '#rc-repository', 'deployer');
+  fill(page, '#rc-revision', 'a'.repeat(40));
+  fill(page, '#rc-tasks', 'tasks.yaml');
+  fill(page, '#rc-work-id', 'todo://deployer/entrypoint-token-boundary-match');
+}
+
+testCase('a rejected fetch() renders as unknown, never as a refusal', async () => {
+  const page = await boot(() => Promise.reject(new Error('network down')));
+  await fillMinimalForm(page);
+  await click(page, '#rc-submit');
+  const html = el(page, '#rc-receipt').innerHTML;
+  check(!html.includes('rc-result err'),
+    `a transport failure must not carry the err class (got: ${html})`);
+  check(html.includes('rc-result unknown'),
+    'a transport failure renders with the unknown class');
+  check(!/refused/i.test(html), 'a transport failure is not worded as a refusal');
+});
+
+testCase('an unreadable response body renders as unknown, never as a refusal',
+  async () => {
+    const page = await boot(() => ({
+      status: 200, ok: true,
+      json: () => Promise.reject(new Error('unexpected token')),
+    }));
+    await fillMinimalForm(page);
+    await click(page, '#rc-submit');
+    const html = el(page, '#rc-receipt').innerHTML;
+    check(!html.includes('rc-result err'),
+      `an unreadable body must not carry the err class (got: ${html})`);
+    check(html.includes('rc-result unknown'),
+      'an unreadable body renders with the unknown class');
+  });
+
+testCase('a non-ok response with a parsed body still renders as a refusal',
+  async () => {
+    const page = await boot(() => resp(403, {detail: 'bad or missing action token'}));
+    await fillMinimalForm(page);
+    await click(page, '#rc-submit');
+    const html = el(page, '#rc-receipt').innerHTML;
+    check(html.includes('rc-result err'),
+      `a definitive server refusal keeps the err class (got: ${html})`);
+    check(html.includes('bad or missing action token'),
+      'the refusal reason from the server is shown');
+  });
+
+testCase('a retry after a transport failure reuses the same request_id',
+  async () => {
+    const page = await boot(() => Promise.reject(new Error('network down')));
+    await fillMinimalForm(page);
+    await click(page, '#rc-submit');
+    await click(page, '#rc-submit');
+    const submits = page.calls.filter(c => c.url === '/api/runs/submit');
+    check(submits.length === 2, `two attempts were made (got ${submits.length})`);
+    if (submits.length !== 2) return;
+    const first = JSON.parse(submits[0].opts.body).request_id;
+    const second = JSON.parse(submits[1].opts.body).request_id;
+    check(first === second, 'a retry after an unresolved attempt must reuse '
+      + `request_id (got ${first} vs ${second})`);
+  });
+
+testCase('a new submission after a settled outcome mints a fresh request_id',
+  async () => {
+    const page = await boot(() => ok(
+      {request_id: 'server-echo', run_id: '01BBB', accepted: true, reason: null}));
+    await fillMinimalForm(page);
+    await click(page, '#rc-submit');
+    await click(page, '#rc-submit');
+    const submits = page.calls.filter(c => c.url === '/api/runs/submit');
+    check(submits.length === 2, `two attempts were made (got ${submits.length})`);
+    if (submits.length !== 2) return;
+    const first = JSON.parse(submits[0].opts.body).request_id;
+    const second = JSON.parse(submits[1].opts.body).request_id;
+    check(first !== second, 'a settled outcome must not pin the next '
+      + 'submission to the same request_id');
   });
 
 // ---- main -------------------------------------------------------------------
