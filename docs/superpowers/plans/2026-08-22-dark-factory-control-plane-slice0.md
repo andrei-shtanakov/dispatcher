@@ -2352,11 +2352,43 @@ git commit -m "feat(run): join a request to maestro's own run classification"
 
 ## After the plan
 
-Slice 0's dispatcher half is done when Task 8 lands. Three things are then true and should be stated rather than assumed:
+**The UI is not in this plan, and slice 0 is not complete without it.** Spec §2.1 and §9
+both say the request is issued "from the dispatcher UI", and pass 1's acceptance criterion
+is "`RunRequest` from the UI". This plan's File Structure has no entry under
+`dispatcher/server/static/` and no task creates one. After all eight tasks an operator must
+fetch the CSRF token from `/api/actions/session` and `curl` the endpoint. Narrowing slice 0
+to the server half is a defensible call — it is the hard half — but it was never stated,
+and the sentence below originally claimed the dispatcher half was finished. It is not:
+**pass 1 cannot be accepted on this plan alone.** The UI is owed its own plan.
+
+Slice 0's dispatcher *server* half is done when Task 8 lands. Three things are then true and should be stated rather than assumed:
 
 1. **The one-launch invariant is still a working agreement, not a mechanism** (spec §5.4.1). The durable lock binds `RunController` only; a terminal, a second controller instance, or a service tick can still launch against the same `RepoKey`.
 2. **Logs are read outside dispatcher** (spec §10). Cheap to close later — maestro writes them to `<run_dir>/logs` (`maestro/maestro/run_publish.py:59`) — but it is not in this plan.
 3. **Pass 1 cannot run on dispatcher alone.** It needs deployer's `tasks.yaml` and the pilot fix, which are a separate plan in a separate repository, and the red/green evidence comes from the run because deployer's CI runs no tests (spec §9.2).
+
+## What the whole-branch review found that the per-task reviews could not
+
+Eight task-scoped reviews each saw one task's diff. The whole-branch review saw the branch
+against the producer's code, and found one Critical and six Important that were invisible
+task by task. Recording them because they say what this plan's structure could not check:
+
+- **The run's repository is chosen by the `tasks.yaml`, not by the request.** maestro's
+  Mode-1 identity comes from the DAG's own required `repo:`/`repo_url:` field
+  (`maestro/maestro/models.py:871`, `maestro/maestro/repo_identity.py:103-135`), never from
+  the child's cwd. This plan validated `repository` and `revision` against a checkout
+  maestro might never touch, took the per-`RepoKey` lock on it, and watched its `runs/`.
+  §4.2 treated `tasks` as an opaque path to check for reachability. **This is a spec defect
+  as much as a plan defect** — spec §3.2 reasons carefully about `MAESTRO_HOME` deciding
+  *where* a run lands and never asks what decides *under which key*.
+- A launch whose child died immediately held the repository lock with no in-band release
+  and no diagnostics; spec §5.2.1 names three release conditions and the plan assigned the
+  third no task.
+- The `Popen` lacked `start_new_session=True`, so a `Ctrl-C` in the server's terminal killed
+  the run — the opposite of what spec §7.1 requires.
+- `LaunchRecord` persisted no request body, so spec §3.1's five-way join — the stated reason
+  dispatcher owns a store at all — lived nowhere. Neither this plan's own self-review nor any
+  per-task review caught it.
 
 ## Self-review
 
