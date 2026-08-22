@@ -92,12 +92,12 @@ dispatcher's own store. dispatcher renders maestro's FSM; it does not restate it
 `$MAESTRO_HOME` when set and `~/.maestro` otherwise
 (`maestro/maestro/state_paths.py:26-29`), and every run path is built from that one
 function. Because `RunController` starts maestro as a child process, the environment it
-passes decides where the run materialises — so the controller **sets `MAESTRO_HOME`
+passes decides where the run materializes — so the controller **sets `MAESTRO_HOME`
 explicitly in the child environment and resolves its own reads from the same value**,
 rather than inheriting whatever the web process happened to hold. A controller that
 launches under one root and watches another would see no run appear and report
 `launch_unknown` (§5.2.1) for every healthy launch: the pre-launch snapshot of §5.2 and
-the materialisation watch of §5.3 are only meaningful against the same root the child
+the materialization watch of §5.3 are only meaningful against the same root the child
 used.
 
 This matters beyond tidiness: maestro's `TaskStatus.NEEDS_REVIEW` — the Mode-1 status a
@@ -126,7 +126,7 @@ not to an immutable request body.
 
 `spec_ref` / `plan_ref` are structural, not `path@sha` strings, and are optional. Their
 `commit` defaults to `revision`; a value that differs must be recorded as given rather
-than normalised, so "the plan is older than the code" stays visible instead of becoming
+than normalized, so "the plan is older than the code" stays visible instead of becoming
 three identical fields and one quietly different one.
 
 ### 4.1 `repository` validation
@@ -219,7 +219,7 @@ same tree, which is the failure the lock exists to prevent.
 
 maestro publishes a run atomically: `run_publish.create_run` builds the directory under
 `<project>/.staging/<run_id>`, *outside* `runs/`, and renames it into `runs/` only after
-the database is closed. The rename is therefore a real materialisation boundary defined
+the database is closed. The rename is therefore a real materialization boundary defined
 by the producer, not a guess by an observer.
 
     {"request_id": "...", "run_id": "...", "accepted": true, "reason": null}
