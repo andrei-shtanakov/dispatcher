@@ -59,13 +59,40 @@ def test_identity_from_checkout_reads_origin(tmp_path: Path) -> None:
     )
 
 
-def test_traversal_segment_is_refused_before_any_join() -> None:
-    """The producer accepts owner='..'; dispatcher must not join it."""
-    accepted = _CASES["producer_accepts_but_dispatcher_must_refuse"][0]
-    key = parse_remote_url(accepted["url"])
-    assert list(key.as_path_parts()) == accepted["key"], "mirror stays faithful"
+def test_the_mirror_now_refuses_the_traversal_the_producer_refuses() -> None:
+    """maestro#211 widened the check to host/owner/repo; the mirror follows.
+
+    Before the re-pin this case lived in a
+    `producer_accepts_but_dispatcher_must_refuse` section, because the
+    producer accepted it and only `safe_path_parts` stood in the way.
+    """
+    for url in (
+        "git@github.com:owner/../etc.git",
+        "git@..:owner/repo.git",
+        "https://../owner/repo.git",
+    ):
+        with pytest.raises(IdentityError, match="unsafe path segments"):
+            parse_remote_url(url)
+
+
+def test_dots_inside_a_segment_stay_legal() -> None:
+    """Only a segment that IS `.` or `..` is unsafe — `x..y` is a repo name."""
+    assert parse_remote_url("git@github.com:owner/x..y.git").as_path_parts() == (
+        "github.com",
+        "owner",
+        "x..y",
+    )
+
+
+def test_safe_path_parts_still_guards_a_directly_built_key() -> None:
+    """Belt-and-braces: a `RepoKey` can be constructed without the parser.
+
+    The producer closing the hole does not retire this guard — dispatcher
+    joins these segments into a filesystem path itself, and that defence
+    must not depend on the neighbour's version.
+    """
     with pytest.raises(IdentityError, match="unsafe path segment"):
-        safe_path_parts(key)
+        safe_path_parts(RepoKey(host="github.com", owner="..", repo="etc"))
 
 
 def test_safe_path_parts_passes_a_normal_key() -> None:

@@ -8,15 +8,19 @@
     {"url": "ssh://git@git.epam.com:7999/Team/Repo.git",
      "key": ["git.epam.com", "Team", "Repo"]},
     {"url": "git://gitlab.com/Owner/Repo.git",
-     "key": ["gitlab.com", "owner", "repo"]}
+     "key": ["gitlab.com", "owner", "repo"]},
+    {"url": "git@github.com:owner/x..y.git",
+     "key": ["github.com", "owner", "x..y"],
+     "why": "dots INSIDE a segment stay legal — only a segment that IS '.' or '..' is refused"}
   ],
   "reject": [
     {"url": "", "why": "empty remote URL"},
     {"url": "file:///tmp/repo", "why": "non-git scheme"},
-    {"url": "git@github.com:repo.git", "why": "no owner/repo"}
-  ],
-  "producer_accepts_but_dispatcher_must_refuse": [
-    {"url": "git@github.com:owner/../etc.git", "key": ["github.com", "..", "etc"],
-     "why": "the producer's _UNSAFE class allows dots, and only `repo` is checked against {'.','..'} — so `owner` may be '..'. Verified against maestro cb91759. dispatcher joins these segments into a filesystem path, so it guards separately (see safe_path_parts)."}
+    {"url": "git@github.com:repo.git", "why": "no owner/repo"},
+    {"url": "git@github.com:owner/re~po.git", "why": "character outside [A-Za-z0-9._-]"},
+    {"url": "git@github.com:owner/...git", "why": "repo segment is '..'"},
+    {"url": "git@github.com:owner/../etc.git", "why": "owner segment is '..' — closed by maestro#211"},
+    {"url": "git@..:owner/repo.git", "why": "host segment is '..' — closed by maestro#211"},
+    {"url": "https://../owner/repo.git", "why": "host segment is '..' via URL form — closed by maestro#211"}
   ]
 }
