@@ -180,7 +180,13 @@
   <div id="rc-actions">
     <button id="rc-submit" type="button">Submit run</button>
   </div>
-  <div id="rc-receipt"></div></section>
+  <div id="rc-receipt"></div>
+  <div id="rc-view-open">
+    <label for="rc-request-id">request_id</label>
+    <input id="rc-request-id" type="text" spellcheck="false">
+    <button id="rc-open" type="button">Open run</button>
+  </div>
+  <div id="rc-run-view"></div></section>
 
 <section><h2>Projects</h2>
 <div class="grid" id="projects"></div></section>
@@ -817,6 +823,98 @@ document.getElementById("rc-submit").addEventListener("click", async () => {
   } finally {
     btn.disabled = false;
   }
+});
+
+// -- Run view: read a request back and show maestro's own state (spec §3.2) --
+// record.state is dispatcher's launch state machine (reserved / launching /
+// materialized / terminal / launch_unknown); run.status is maestro's own
+// classification of the run (running / interrupted / suspended / completed
+// / cancelled / superseded / failed / unreadable). They are DIFFERENT AXES
+// and are rendered as two separate facts below — dispatcher renders
+// maestro's FSM, it does not restate it as its own.
+const RC_RUN_TERMINAL =
+  new Set(["completed", "cancelled", "superseded", "failed"]);
+
+// The stop rule: poll while there is anything left to learn on EITHER axis,
+// stop only once both are settled. `materialized` is where dispatcher's
+// launch machine finishes and maestro's run begins — treating it as a stop
+// condition on its own would freeze the run half of the display at
+// whatever it said the moment the run directory appeared (usually
+// `running`), which is a confident lie once the run actually finishes.
+function rcViewSettled(view) {
+  const state = view.record.state;
+  if (state === "reserved" || state === "launching") return false;
+  // `terminal` is settled outright; `launch_unknown` is settled UNTIL an
+  // operator acts (Task 4's resolution flow drives it by hand) — either
+  // way, this page must not keep polling into it.
+  if (state === "terminal" || state === "launch_unknown") return true;
+  // state === "materialized": dispatcher's machine is done, but maestro's
+  // run may not be. `run === null` here means the run directory is gone or
+  // unreadable — `warnings` says which — and neither is a stop condition:
+  // both deserve to keep being checked rather than silently freezing.
+  return view.run !== null && RC_RUN_TERMINAL.has(view.run.status);
+}
+
+function renderRunView(view) {
+  const rec = view.record;
+  const run = view.run;
+  const recordLine = `<p><b>dispatcher:</b>
+    <span class="badge">${esc(rec.state)}</span>${
+      rec.run_id ? ` · run_id <code>${esc(rec.run_id)}</code>` : ""}</p>`;
+  const runLine = run
+    ? `<p><b>maestro:</b> <span class="badge">${esc(run.status)}</span>${
+        run.run_id ? ` · <code>${esc(run.run_id)}</code>` : ""}</p>`
+    : `<p><b>maestro:</b> <span class="dim">no run yet</span></p>`;
+  const warningsBlock = (view.warnings || []).length
+    ? `<ul class="warn">${
+        view.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul>`
+    : "";
+  // Task 4 places the launch_unknown resolution flow and the Mode-1 verb
+  // controls here; this task only reserves the slot.
+  return recordLine + runLine + warningsBlock + `<div id="rc-view-actions"></div>`;
+}
+
+let rcViewTimer = null;
+let rcViewRequestId = null;
+
+async function rcPollView() {
+  const requestId = rcViewRequestId;
+  if (!requestId) return;
+  const box = document.getElementById("rc-run-view");
+  let view;
+  try {
+    const resp = await fetch(`/api/runs/${encodeURIComponent(requestId)}`);
+    if (!resp.ok) {
+      // 404 (no such request) or 409 (control plane off) — a definitive
+      // server answer, not a transport failure; shown verbatim and not
+      // retried, same as run-status-check's non-ok handling above.
+      const data = await resp.json().catch(() => ({}));
+      box.innerHTML =
+        `<div class="warn">${esc(data.detail ?? `HTTP ${resp.status}`)}</div>`;
+      if (rcViewTimer !== null) { clearInterval(rcViewTimer); rcViewTimer = null; }
+      return;
+    }
+    view = await resp.json();
+  } catch (err) {
+    // Fail-loud: a network failure must not read as "no such request".
+    box.innerHTML = `<div class="warn">${esc(String(err))}</div>`;
+    return;
+  }
+  if (requestId !== rcViewRequestId) return;  // superseded by a newer open
+  box.innerHTML = renderRunView(view);
+  if (rcViewSettled(view)) {
+    if (rcViewTimer !== null) { clearInterval(rcViewTimer); rcViewTimer = null; }
+  } else if (rcViewTimer === null) {
+    rcViewTimer = setInterval(rcPollView, 5000);
+  }
+}
+
+document.getElementById("rc-open").addEventListener("click", async () => {
+  const requestId = document.getElementById("rc-request-id").value.trim();
+  if (!requestId) return;
+  if (rcViewTimer !== null) { clearInterval(rcViewTimer); rcViewTimer = null; }
+  rcViewRequestId = requestId;
+  await rcPollView();
 });
 
 async function refresh() {

@@ -129,15 +129,66 @@ const drain = async (turns = 5) => {
   for (let i = 0; i < turns; i++) await new Promise(r => setTimeout(r, 0));
 };
 
+// A controllable virtual timer for setInterval/clearInterval, standing in
+// for the no-op stub every sibling harness uses (runs_harness.js:175,
+// governance_harness.js:176, benchmarks_harness.js:191). Those pages never
+// assert on their own polling, so stubbing it away is harmless there; this
+// harness's whole point is TASK-3's stop rule, and a no-op stub would make
+// BOTH "stopped" assertions pass vacuously (nothing was ever scheduled)
+// while only the "still polling" assertion could fail — the shape of a
+// suite that looks green while proving nothing. So: real interval
+// bookkeeping (id -> {cb, period, due}) over a virtual clock that only
+// advances when a test calls tick(); clearInterval genuinely removes the
+// entry, so a cleared interval provably stops firing rather than the test
+// merely hoping so.
+function makeVirtualClock() {
+  let now = 0;
+  let nextId = 1;
+  const intervals = new Map();
+  return {
+    setInterval(cb, period) {
+      const id = nextId++;
+      intervals.set(id, {cb, period, due: now + period});
+      return id;
+    },
+    clearInterval(id) { intervals.delete(id); },
+    // Advances the clock by `ms`, firing every interval whose due time
+    // falls at or before the new time, in due-time order, including an
+    // interval that becomes due more than once inside a large `ms`. Each
+    // firing reschedules its own next due time BEFORE invoking the
+    // callback, so a callback that calls clearInterval on itself (or on
+    // another interval) is observed correctly on the next loop pass.
+    async tick(ms) {
+      const target = now + ms;
+      for (;;) {
+        let dueId = null, dueAt = null;
+        for (const [id, iv] of intervals) {
+          if (iv.due <= target && (dueAt === null || iv.due < dueAt)) {
+            dueId = id; dueAt = iv.due;
+          }
+        }
+        if (dueId === null) break;
+        const iv = intervals.get(dueId);
+        now = iv.due;
+        iv.due += iv.period;
+        iv.cb();
+        await drain(10);
+      }
+      now = target;
+    },
+  };
+}
+
 async function boot(submitRoute) {
   const document = new Document(BODY_HTML);
   const calls = [];
   const routes = defaultRoutes(submitRoute);
+  const clock = makeVirtualClock();
   const ctx = {
     document, console, URL,
     setTimeout, clearTimeout,
-    setInterval: () => 0,
-    clearInterval: () => {},
+    setInterval: clock.setInterval,
+    clearInterval: clock.clearInterval,
     fetch: (url, opts) => {
       const u = String(url);
       calls.push({url: u, opts: opts || {}});
@@ -149,8 +200,20 @@ async function boot(submitRoute) {
   vm.createContext(ctx);
   vm.runInContext(PAGE_SCRIPT, ctx);
   await drain();
-  return {ctx, document, calls};
+  // The page's own `setInterval(refresh, 10000)` (index.html:2663) registers
+  // here too, on the SAME virtual clock as any per-run polling this harness
+  // starts. A tick large enough to cross 10000ms will fire it — that is
+  // correct behaviour, not a test failure; tests below stay under that
+  // threshold specifically so it does not confound the polling assertions.
+  return {ctx, document, calls, routes, clock};
 }
+
+/** Advances page's virtual clock, firing any interval callbacks now due. */
+async function tick(page, ms) { await page.clock.tick(ms); }
+
+/** Boots a fresh page and hands it to `fn` — mirrors the plan's pseudocode
+ * naming; equivalent to `await fn(await boot())`. */
+async function withPage(fn, submitRoute) { await fn(await boot(submitRoute)); }
 
 function el(page, selector) {
   const node = page.document.querySelector(selector);
@@ -174,6 +237,18 @@ function fillValid(page) {
   fill(page, '#rc-revision', 'a'.repeat(40));
   fill(page, '#rc-tasks', 'tasks.yaml');
   fill(page, '#rc-work-id', 'todo://deployer/entrypoint-token-boundary-match');
+}
+/** Calls the page's own renderRunView(), not a copy of it. */
+function runViewHtml(page, view) {
+  return vm.runInContext(`renderRunView(${JSON.stringify(view)})`, page.ctx);
+}
+/** Registers a fixture for GET /api/runs/{requestId} and opens it exactly
+ * the way an operator does: type the request_id, click #rc-open. */
+async function openView(page, requestId, view) {
+  const url = `/api/runs/${requestId}`;
+  page.routes.push([u => u === url, () => ok(view)]);
+  fill(page, '#rc-request-id', requestId);
+  await click(page, '#rc-open');
 }
 
 // ---- case runner -----------------------------------------------------------
@@ -380,6 +455,103 @@ testCase('a client-side rejection leaves rcPendingRequestId untouched',
     check(pending === null,
       `nothing was sent, so no request_id should be pinned (got: ${pending})`);
   });
+
+// -- TASK-3: the run view — dispatcher's record joined to maestro's run ----
+// record.state (dispatcher's launch machine) and run.status (maestro's own
+// classification) are different axes (spec §3.2) and must show as two
+// facts, never merged into one badge — the cases below assert both are on
+// screen independently, that a missing run reads as "no run yet" rather
+// than borrowing "running"'s wording, and that an UNREADABLE run directory
+// (run:null WITH a warning) is visibly different from an ABSENT one
+// (run:null, no warning): the warning must reach the screen.
+
+testCase('renderRunView shows both axes, not conflated into one badge',
+  async () => {
+    const page = await boot();
+    const html = runViewHtml(page, {
+      record: {state: 'materialized', run_id: '01AAA'},
+      run: {run_id: '01AAA', status: 'running'}, warnings: [],
+    });
+    check(/materialized/i.test(html), `record.state is shown (got: ${html})`);
+    check(/running/i.test(html), `run.status is shown (got: ${html})`);
+  });
+
+testCase('no run yet: the record still shows, the run half says so plainly',
+  async () => {
+    const page = await boot();
+    const html = runViewHtml(page, {
+      record: {state: 'launching', run_id: null}, run: null, warnings: [],
+    });
+    check(/launching/i.test(html), `record.state is shown (got: ${html})`);
+    check(!/running/i.test(html),
+      `no stray "running" wording with no run (got: ${html})`);
+  });
+
+testCase('unreadable is NOT absent: the collector warning reaches the screen',
+  async () => {
+    const page = await boot();
+    const html = runViewHtml(page, {
+      record: {state: 'materialized', run_id: '01AAA'}, run: null,
+      warnings: ['runs enumeration: cannot list /x: Permission denied'],
+    });
+    check(/Permission denied/.test(html), `the warning is shown (got: ${html})`);
+  });
+
+// -- the stop rule: poll while anything is unsettled on EITHER axis --------
+// An earlier plan draft said "stop on materialized" in one place and "stop
+// on a terminal state" in another; neither alone is right. materialized is
+// where dispatcher's machine finishes and maestro's run begins — stopping
+// there would freeze the run half of the display on whatever it said the
+// moment the directory appeared (usually "running"), forever. So: stop only
+// once BOTH axes are settled.
+
+testCase('polling stops once both axes are settled (terminal record, '
+  + 'completed run)', async () => {
+  await withPage(async page => {
+    await openView(page, 'req-1', {record: {state: 'terminal', run_id: '01AAA'},
+      run: {status: 'completed'}, warnings: []});
+    const before = page.calls.length;
+    await tick(page, 5000);
+    check(page.calls.length === before,
+      `no polling after terminal (before=${before}, after=${page.calls.length})`);
+  });
+});
+
+testCase('a materialized record with a LIVE run keeps polling — the record '
+  + 'is done, the run is not', async () => {
+  await withPage(async page => {
+    await openView(page, 'req-2', {record: {state: 'materialized', run_id: '01AAA'},
+      run: {status: 'running'}, warnings: []});
+    const before = page.calls.length;
+    await tick(page, 5000);
+    check(page.calls.length > before, 'still polling while the run is live '
+      + `(before=${before}, after=${page.calls.length})`);
+  });
+});
+
+testCase('launch_unknown is settled until an operator acts — do not poll '
+  + 'into it', async () => {
+  await withPage(async page => {
+    await openView(page, 'req-3', {record: {state: 'launch_unknown', run_id: null},
+      run: null, warnings: []});
+    const before = page.calls.length;
+    await tick(page, 5000);
+    check(page.calls.length === before, 'no polling while awaiting the '
+      + `operator (before=${before}, after=${page.calls.length})`);
+  });
+});
+
+testCase('a materialized record with a gone/unreadable run directory (run: '
+  + 'null) keeps polling rather than freezing silently', async () => {
+  await withPage(async page => {
+    await openView(page, 'req-4', {record: {state: 'materialized', run_id: '01AAA'},
+      run: null, warnings: ['runs enumeration: cannot list /x: Permission denied']});
+    const before = page.calls.length;
+    await tick(page, 5000);
+    check(page.calls.length > before, 'still polling with run:null under a '
+      + `materialized record (before=${before}, after=${page.calls.length})`);
+  });
+});
 
 // ---- main -------------------------------------------------------------------
 

@@ -330,6 +330,21 @@ when both are settled.
 
 Reuse the page's existing interval idiom rather than adding a scheduler.
 
+**Test harness note — do not copy the no-op timer stub.** Every sibling harness
+(`runs_harness.js:175`, `governance_harness.js:176`, `benchmarks_harness.js:191`) stubs
+`setInterval`/`clearInterval` to no-ops, because those pages never assert on their own
+polling and the page's `setInterval(refresh, 10000)` would otherwise loop the harness
+forever. That stub is wrong for THIS task: the two "polling stopped" assertions above
+would pass having never scheduled anything, and only "still polling while the run is
+live" could fail — a vacuous suite one careless deletion away from proving nothing.
+`run_console_harness.js` therefore installs a controllable virtual clock instead
+(`makeVirtualClock()`): `setInterval`/`clearInterval` do real id→`{cb, period, due}`
+bookkeeping, and a test-only `tick(page, ms)` advances a virtual "now", firing whichever
+callbacks are due — including the page's own `setInterval(refresh, 10000)`, which
+registers on the same clock and fires if a tick crosses 10000ms. That's correct
+behaviour, not a test failure; the stop-rule tests stay at `tick(page, 5000)` specifically
+to keep the global refresh out of the count they're asserting on.
+
 - [ ] **Step 3: Commit**
 
 ```bash
