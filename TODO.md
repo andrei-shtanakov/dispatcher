@@ -86,8 +86,28 @@
       `derived/governance/`, который на 2026-07-26 не существует. Сравнивать не с чем,
       поэтому пункт заблокирован, а не «в работе»: dispatcher здесь рендерер, не
       источник, и читать «на будущее» нечего.
-- [ ] Actor-aware evidence мержа: `agent_merge` / `human_merge` в наблюдении (ADR-ECO-004 I4, ADR-ECO-008 D6) @owner:github:andrei-shtanakov @blocked_by:steward#72 @trigger:"steward опубликовал contracts/approval-facts/v1 с actor_class и материализует его в .steward/" @id:agent-merge-observability
+- [ ] Actor-aware evidence мержа: `agent_merge` / `human_merge` в наблюдении (ADR-ECO-004 I4, ADR-ECO-008 D6) @owner:github:andrei-shtanakov @id:agent-merge-observability
       Принятие inbox-issue #159 (ADR-ECO-006, from: prograph-vault#adr-eco-008).
+      **Предпосылка выполнена 2026-08-21, ожидание снято 2026-08-22.** steward#72
+      закрыт: опубликован `contracts/approval-facts/v2/` (`SCHEMA.json` с `actor_class`
+      закрытой классификацией `human|agent|unknown`, `fixtures/`, `README.md`), факты
+      материализуются в `.steward/approval_facts.jsonl` (`approvalfacts/publish.py`),
+      evidence — `steward/docs/evidence/2026-08-21-approval-facts-v2-migration/`.
+      Сопутствующий steward#69 тоже закрыт: `agent_merge_allowed` стал значением политики
+      с fail-closed дефолтом `false`, в `agent_identities` внесена App-личность
+      `github:merge-broker`.
+      **Версия в прежнем триггере была неверна и стоила суток простоя:** он требовал
+      `contracts/approval-facts/**v1**`, тогда как владелец выпустил сразу **v2**, и
+      каталога `v1` не существовало никогда. Буквальное чтение давало «не сработал» при
+      выполненной предпосылке; `@blocked_by:steward#72` при этом резолвился по состоянию
+      issue, а issue оставался открытым сутки после отгрузки. Отсюда правило на будущее:
+      ожидание указывать на **пункт продюсера** (`todo://<repo>/<id>`), а не на issue —
+      пункт продюсер закрывает как часть самой работы, issue же отдельная бухгалтерия,
+      которую забывают.
+      **Ход теперь наш, стадия 2:** завендорить пиненую копию `contracts/approval-facts/v2`
+      внутрь себя (`PIN` + copy-integrity, как остальные контракты) и написать
+      `core/merge_actor.py` — валидация по вендоренной схеме и рендер типизированного
+      наблюдения, без собственной семантики.
       Замер `../prograph-vault/authored/notes/2026-08-19-i4-observability-measurement.md`:
       merge-команда и исход `merged` есть (`dispatcher/core/actions.py:574`), актора и
       evidence — нет, агентский мерж и человеческий в dispatcher неразличимы.
