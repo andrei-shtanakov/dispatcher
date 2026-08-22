@@ -65,12 +65,15 @@ class ValidatedRequest:
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True,
-        text=True,
-        timeout=_GIT_TIMEOUT,
-    )
+    try:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as err:
+        raise RunRejectedError(f"cannot run git: {err}") from err
 
 
 def _checkout(repository: str, config: DispatcherConfig) -> Path:

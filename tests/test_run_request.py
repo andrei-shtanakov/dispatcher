@@ -153,3 +153,39 @@ def test_ref_commit_defaults_to_revision(tmp_path: Path) -> None:
     assert request.spec_ref.commit is None
     validated = validate_request(request, DispatcherConfig(roots=(tmp_path,)))
     assert validated.spec_commit == head
+
+
+def test_git_exception_becomes_run_rejected_error(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Git timeout/missing binary raises RunRejectedError, not raw exception."""
+    repo = _repo(tmp_path, "deployer")
+    head = _head(repo)
+
+    original_run = subprocess.run
+    call_count = [0]
+
+    def mock_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        call_count[0] += 1
+        # Let identity setup succeed (first call), then fail on rev-parse
+        if call_count[0] <= 1:
+            return original_run(*args, **kwargs)
+        raise subprocess.TimeoutExpired("git", 15)
+
+    monkeypatch.setattr("dispatcher.core.run_request.subprocess.run", mock_run)
+    config = DispatcherConfig(roots=(tmp_path,))
+    with pytest.raises(RunRejectedError, match="cannot run git"):
+        validate_request(_request(revision=head), config)
+
+
+def test_spec_ref_explicit_commit_is_preserved(tmp_path: Path) -> None:
+    """Explicitly set spec_ref.commit is preserved; not normalized to revision."""
+    repo = _repo(tmp_path, "deployer")
+    head = _head(repo)
+    different_sha = "b" * 40
+    request = _request(
+        revision=head, spec_ref={"path": "docs/s.md", "commit": different_sha}
+    )
+    assert request.spec_ref is not None
+    assert request.spec_ref.commit == different_sha
+    validated = validate_request(request, DispatcherConfig(roots=(tmp_path,)))
+    assert validated.spec_commit == different_sha
+    assert validated.spec_commit != head
