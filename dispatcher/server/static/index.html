@@ -43,10 +43,10 @@
      совпадать с порядком чтения, а span состояния распирает строку на 900px и
      выталкивает title под textarea. Логика при этом верна — сломана только
      раскладка, и увидеть это можно лишь в браузере. */
-  #task-authoring label { display: block; margin-bottom: 4px; color: var(--dim);
-    font-size: 13px; }
-  #task-authoring input, #ta-prose { display: block; width: 100%;
-    max-width: 640px; box-sizing: border-box; }
+  #task-authoring label, #run-console label { display: block; margin-bottom: 4px;
+    color: var(--dim); font-size: 13px; }
+  #task-authoring input, #ta-prose, #run-console input { display: block;
+    width: 100%; max-width: 640px; box-sizing: border-box; }
   #ta-prose { margin: 10px 0; font: inherit; padding: 8px 10px;
     background: var(--card); color: var(--ink);
     border: 1px solid var(--line); border-radius: 8px; resize: vertical; }
@@ -62,6 +62,11 @@
   .ok { color: var(--ok); }
   /* attested-only implementation: amber, not machine-green (ADR-ECO-005 D3) */
   .attested { color: var(--warn); }
+  /* accepted: null (launch_unknown) is its own class, deliberately not
+     `.err` — the launch may have happened, so red/"failed" would lie. */
+  .unknown { color: var(--warn); }
+  .rc-hint { display: block; color: var(--dim); font-size: 12px; margin-top: 2px; }
+  #rc-actions { margin-top: 12px; }
   td.msg { white-space: normal; word-break: break-word; max-width: 720px; }
   td.msg[data-full] { cursor: pointer; }
   #errors-toggle { background: none; border: 1px solid var(--line);
@@ -154,6 +159,28 @@
     <input id="run-status-input" type="number" min="1" inputmode="numeric"></label>
     <button id="run-status-check" type="button">Check status</button></div>
   <div id="run-status-result"></div></section>
+
+<section id="run-console"><h2>Run console</h2>
+  <label for="rc-repository">repository</label>
+  <input id="rc-repository" type="text" spellcheck="false">
+  <label for="rc-revision">revision (full 40-hex commit sha)</label>
+  <input id="rc-revision" type="text" spellcheck="false">
+  <label for="rc-tasks">tasks (repo-relative path)</label>
+  <input id="rc-tasks" type="text" spellcheck="false">
+  <label for="rc-work-id">work_id</label>
+  <input id="rc-work-id" type="text" spellcheck="false">
+  <label for="rc-spec-ref-path">spec_ref path (optional)</label>
+  <input id="rc-spec-ref-path" type="text" spellcheck="false">
+  <label for="rc-spec-ref-commit">spec_ref commit (optional, defaults to revision)</label>
+  <input id="rc-spec-ref-commit" type="text" spellcheck="false">
+  <label for="rc-plan-ref-path">plan_ref path (optional)</label>
+  <input id="rc-plan-ref-path" type="text" spellcheck="false">
+  <label for="rc-plan-ref-commit">plan_ref commit (optional, defaults to revision)</label>
+  <input id="rc-plan-ref-commit" type="text" spellcheck="false">
+  <div id="rc-actions">
+    <button id="rc-submit" type="button">Submit run</button>
+  </div>
+  <div id="rc-receipt"></div></section>
 
 <section><h2>Projects</h2>
 <div class="grid" id="projects"></div></section>
@@ -643,6 +670,69 @@ document.getElementById("sync-hosts").addEventListener("click", async e => {
   } catch (err) {
     out.textContent = "✗ " + err;
     out.className = "act-result err";
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// -- Run console: RunRequest → LaunchReceipt (spec §5.3) ---------------------
+// A client-generated idempotency key. dispatcher only constrains the
+// charset (`_REQUEST_ID_RE`, run_request.py), not the algorithm, so a
+// timestamp+random string avoids depending on a `crypto` global this page
+// otherwise never needs.
+function rcRequestId() {
+  return `rc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function renderReceipt(r) {
+  // `accepted` is three-valued (spec §5.3) and both `false` and `null` are
+  // falsy in JS, so every branch here is an explicit identity check. A
+  // truthiness test would merge "no run was created" with "a run may exist",
+  // which is the one distinction this console exists to preserve.
+  if (r.accepted === true)
+    return `<div class="rc-result ok">✓ started — run
+      <code>${esc(r.run_id)}</code></div>`;
+  if (r.accepted === false)
+    return `<div class="rc-result err">✗ refused — ${esc(r.reason ?? "")}</div>`;
+  return `<div class="rc-result unknown">? unknown — the launch may or may not
+    have produced a run. ${esc(r.reason ?? "")}
+    <span class="rc-hint">Resolve it before submitting again.</span></div>`;
+}
+
+document.getElementById("rc-submit").addEventListener("click", async () => {
+  const btn = document.getElementById("rc-submit");
+  btn.disabled = true;
+  const out = document.getElementById("rc-receipt");
+  out.textContent = "…";
+  try {
+    const body = {
+      request_id: rcRequestId(),
+      work_id: document.getElementById("rc-work-id").value,
+      repository: document.getElementById("rc-repository").value,
+      revision: document.getElementById("rc-revision").value,
+      tasks: document.getElementById("rc-tasks").value,
+    };
+    const specPath = document.getElementById("rc-spec-ref-path").value.trim();
+    if (specPath) {
+      const commit = document.getElementById("rc-spec-ref-commit").value.trim();
+      body.spec_ref = {path: specPath, commit: commit || null};
+    }
+    const planPath = document.getElementById("rc-plan-ref-path").value.trim();
+    if (planPath) {
+      const commit = document.getElementById("rc-plan-ref-commit").value.trim();
+      body.plan_ref = {path: planPath, commit: commit || null};
+    }
+    const resp = await fetch("/api/runs/submit", {
+      method: "POST",
+      headers: {"Content-Type": "application/json",
+                "X-Action-Token": await ensureActionToken()},
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail ?? `HTTP ${resp.status}`);
+    out.innerHTML = renderReceipt(data);
+  } catch (err) {
+    out.innerHTML = `<div class="rc-result err">✗ ${esc(String(err))}</div>`;
   } finally {
     btn.disabled = false;
   }
