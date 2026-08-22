@@ -1526,6 +1526,41 @@ testCase('M1: a launching/reserved record with no run_id still says "yet" '
   });
 });
 
+// -- whole-branch review M1b (re-review): M1 was half-applied — the ---------
+// maestro line ("no run yet") is a SEPARATE sentence from the controls'
+// reason ("no run to act on (state: ...)"), rendered a few lines above it
+// in renderRunView, and the terminal-conditional was only ever applied to
+// the controls' line. A terminal record with no run therefore still
+// rendered "maestro: no run yet" directly above "no run to act on (state:
+// terminal)" — the exact self-contradiction class this branch has now
+// spent three rounds removing. Nothing asserted on the maestro line's
+// wording before this, which is how the half-application survived.
+
+testCase('M1b: a terminal record with no run says "no run" on the maestro '
+  + 'line too — not "yet"', async () => {
+  await withPage(async page => {
+    await openView(page, 'req-terminal-norun-b',
+      {record: {state: 'terminal', run_id: null}, run: null, warnings: []});
+    const html = text(page, '#rc-run-view');
+    check(/maestro:/i.test(html), `sanity: the maestro line rendered (got: ${html})`);
+    check(!/no run yet/i.test(html),
+      `the maestro line must not say "yet" for a terminal record — no run `
+      + `is coming (got: ${html})`);
+  });
+});
+
+testCase('M1b: a launching/reserved record with no run still says "no run '
+  + 'yet" on the maestro line — a run may still arrive', async () => {
+  await withPage(async page => {
+    await openView(page, 'req-launching-norun-b',
+      {record: {state: 'launching', run_id: null}, run: null, warnings: []});
+    const html = text(page, '#rc-run-view');
+    check(/no run yet/i.test(html),
+      `the maestro line must still say "yet" while a run may still arrive `
+      + `(got: ${html})`);
+  });
+});
+
 // ---- main -------------------------------------------------------------------
 
 (async () => {

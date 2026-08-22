@@ -1087,10 +1087,16 @@ function renderRunView(view) {
   const recordLine = `<p><b>dispatcher:</b>
     <span class="badge">${esc(rec.state)}</span>${
       rec.run_id ? ` · run_id <code>${esc(rec.run_id)}</code>` : ""}</p>`;
+  // M1b (re-review): "yet" is only true for the transient reserved/
+  // launching states — the same condition renderVerbControls uses for its
+  // own "no run to act on" reason (M1) below. A terminal record with no
+  // run_id (spec §5.2.1's decidable accepted:false path) has none coming,
+  // ever, so this line must not promise one either.
   const runLine = run
     ? `<p><b>maestro:</b> <span class="badge">${esc(run.status)}</span>${
         run.run_id ? ` · <code>${esc(run.run_id)}</code>` : ""}</p>`
-    : `<p><b>maestro:</b> <span class="dim">no run yet</span></p>`;
+    : `<p><b>maestro:</b> <span class="dim">no run${
+        rec.state !== "terminal" ? " yet" : ""}</span></p>`;
   const warningsBlock = (view.warnings || []).length
     ? `<ul class="warn">${
         view.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul>`
