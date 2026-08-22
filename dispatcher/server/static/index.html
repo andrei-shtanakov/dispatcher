@@ -881,26 +881,35 @@ async function rcPollView() {
   const requestId = rcViewRequestId;
   if (!requestId) return;
   const box = document.getElementById("rc-run-view");
-  let view;
+  let resp;
   try {
-    const resp = await fetch(`/api/runs/${encodeURIComponent(requestId)}`);
-    if (!resp.ok) {
-      // 404 (no such request) or 409 (control plane off) — a definitive
-      // server answer, not a transport failure; shown verbatim and not
-      // retried, same as run-status-check's non-ok handling above.
-      const data = await resp.json().catch(() => ({}));
-      box.innerHTML =
-        `<div class="warn">${esc(data.detail ?? `HTTP ${resp.status}`)}</div>`;
-      if (rcViewTimer !== null) { clearInterval(rcViewTimer); rcViewTimer = null; }
-      return;
-    }
-    view = await resp.json();
+    resp = await fetch(`/api/runs/${encodeURIComponent(requestId)}`);
   } catch (err) {
     // Fail-loud: a network failure must not read as "no such request".
+    if (requestId !== rcViewRequestId) return;  // superseded by a newer open
     box.innerHTML = `<div class="warn">${esc(String(err))}</div>`;
     return;
   }
-  if (requestId !== rcViewRequestId) return;  // superseded by a newer open
+  // Checked the instant fetch() resolves, before branching on resp.ok —
+  // same placement as run-status-check's generation guard (index.html:598-
+  // 599). An in-flight poll for an id the operator has since navigated
+  // away from must touch neither the now-displayed view nor its timer,
+  // on ANY of the three paths below (ok, non-ok, or the catch above): a
+  // stale error landing after a newer #rc-open click must not overwrite
+  // the new view or silently kill its polling.
+  if (requestId !== rcViewRequestId) return;
+  if (!resp.ok) {
+    // 404 (no such request) or 409 (control plane off) — a definitive
+    // server answer, not a transport failure; shown verbatim and not
+    // retried, same as run-status-check's non-ok handling above.
+    const data = await resp.json().catch(() => ({}));
+    box.innerHTML =
+      `<div class="warn">${esc(data.detail ?? `HTTP ${resp.status}`)}</div>`;
+    if (rcViewTimer !== null) { clearInterval(rcViewTimer); rcViewTimer = null; }
+    return;
+  }
+  const view = await resp.json();
+  if (requestId !== rcViewRequestId) return;  // superseded while parsing
   box.innerHTML = renderRunView(view);
   if (rcViewSettled(view)) {
     if (rcViewTimer !== null) { clearInterval(rcViewTimer); rcViewTimer = null; }
@@ -911,7 +920,11 @@ async function rcPollView() {
 
 document.getElementById("rc-open").addEventListener("click", async () => {
   const requestId = document.getElementById("rc-request-id").value.trim();
-  if (!requestId) return;
+  if (!requestId) {
+    document.getElementById("rc-run-view").innerHTML =
+      `<div class="warn">enter a request_id</div>`;
+    return;
+  }
   if (rcViewTimer !== null) { clearInterval(rcViewTimer); rcViewTimer = null; }
   rcViewRequestId = requestId;
   await rcPollView();

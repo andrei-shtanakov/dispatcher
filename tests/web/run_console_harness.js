@@ -504,6 +504,15 @@ testCase('unreadable is NOT absent: the collector warning reaches the screen',
 // there would freeze the run half of the display on whatever it said the
 // moment the directory appeared (usually "running"), forever. So: stop only
 // once BOTH axes are settled.
+//
+// Every test below ticks by exactly 5000ms — under BOTH the page's own
+// global `setInterval(refresh, 10000)` (index.html:2663) and this view's
+// own 5000ms poll period (index.html rcPollView). That is a real coupling,
+// not an arbitrary number: it keeps the global refresh's eight fetches out
+// of `page.calls` while still crossing this view's own period exactly
+// once. If either period changes — the view's to >=10000, or a tick here
+// grows to >=10000 — these counts start measuring the wrong interval and
+// the tests would need re-deriving, not just re-running.
 
 testCase('polling stops once both axes are settled (terminal record, '
   + 'completed run)', async () => {
@@ -550,6 +559,56 @@ testCase('a materialized record with a gone/unreadable run directory (run: '
     await tick(page, 5000);
     check(page.calls.length > before, 'still polling with run:null under a '
       + `materialized record (before=${before}, after=${page.calls.length})`);
+  });
+});
+
+// -- fix round 1: a stale in-flight poll must not clobber a newer view -----
+// The operator has req-1 open and polling; an interval-fired poll for
+// req-1 is in flight; before it lands, they open req-2. That poll's
+// response — here a definitive 404 — must be dropped: it must not
+// overwrite req-2's rendered view and must not clear req-2's OWN timer.
+// The staleness check that makes this true has to run before EVERY branch
+// that touches the DOM or the timer (ok, non-ok, and the network-failure
+// catch), not only after a successful parse — the bug this regresses was
+// exactly that: the guard existed, just not on the non-ok path.
+
+testCase('a stale in-flight poll (non-ok response) does not clobber a '
+  + "newer view or clear the newer view's own timer", async () => {
+  await withPage(async page => {
+    await openView(page, 'req-1', {record: {state: 'materialized', run_id: '01AAA'},
+      run: {status: 'running'}, warnings: []});
+
+    // From here on, req-1's fetches hang until resolveStale() is called —
+    // standing in for "the interval-fired poll is still in flight".
+    let resolveStale;
+    const stalePromise = new Promise(resolve => { resolveStale = resolve; });
+    page.routes.unshift([u => u === '/api/runs/req-1', () => stalePromise]);
+
+    // Fires req-1's own poll interval; it calls fetch() and now sits
+    // awaiting `stalePromise` — genuinely in flight, not yet settled.
+    await tick(page, 5000);
+
+    // The operator opens req-2 (also unsettled) while req-1's poll hangs.
+    // This clears req-1's timer, renders req-2, and starts req-2's OWN
+    // timer.
+    await openView(page, 'req-2', {record: {state: 'materialized', run_id: '01BBB'},
+      run: {status: 'running'}, warnings: []});
+    const viewAfterOpen = el(page, '#rc-run-view').innerHTML;
+
+    // Now let req-1's stale poll land, as a definitive refusal.
+    resolveStale(resp(404, {detail: 'no such request: req-1'}));
+    await drain(10);
+
+    check(el(page, '#rc-run-view').innerHTML === viewAfterOpen,
+      "a stale response for req-1 must not overwrite req-2's view");
+
+    // req-2's own timer must still be alive: tick past its period and
+    // confirm req-2 (not req-1) was polled again.
+    const before = page.calls.filter(c => c.url === '/api/runs/req-2').length;
+    await tick(page, 5000);
+    const after = page.calls.filter(c => c.url === '/api/runs/req-2').length;
+    check(after > before, "req-2's polling must survive the stale req-1 "
+      + `response landing late (before=${before}, after=${after})`);
   });
 });
 
