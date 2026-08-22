@@ -84,6 +84,12 @@ class RunView(BaseModel):
 
     record: LaunchRecord
     run: OrchestrationRunInfo | None = None
+    #: `classified_runs`' collection warnings (an unreadable `state.db`, an
+    #: unreadable `projects/`, ...): without this, a run that is UNREADABLE
+    #: and one that is genuinely ABSENT both surface as `run=None`, which is
+    #: exactly the "unreadable looks clean" shape this codebase refuses
+    #: elsewhere (NFR-02).
+    warnings: list[str] = Field(default_factory=list)
 
 
 class UnknownResolution(BaseModel):
@@ -205,11 +211,21 @@ class RunController:
         if existing is not None and existing.state != "reserved":
             # Idempotency: a repeated request_id continues or returns the
             # existing record and never starts a second process (spec §5.2).
+            reason = existing.reason
+            if reason is None and existing.state == "launching":
+                # `mark_launching` sets no `reason` (only `mark_unknown`
+                # does), so this was the one receipt shape that told the
+                # caller nothing at all: accepted=null AND reason=null.
+                reason = (
+                    f"{request.request_id} is already launching; "
+                    "resubmission does not start a second process — poll "
+                    "this request_id again"
+                )
             return LaunchReceipt(
                 request_id=request.request_id,
                 run_id=existing.run_id,
                 accepted=_accepted_for(existing),
-                reason=existing.reason,
+                reason=reason,
             )
 
         try:
@@ -559,8 +575,9 @@ class RunController:
         # canonical resolver, not a second fallback expression here.
         _, _, home = self._require_on()
         # A throwaway snapshot: `classified_runs` reports unreadable sources
-        # into it, and those warnings belong to the dashboard's snapshot, not
-        # to this lookup.
+        # into it. It is not the dashboard's own snapshot, but its
+        # `warnings` are still surfaced on the view below — an unreadable
+        # run and an absent one must not read the same.
         scratch = ProjectSnapshot(name="maestro", path="")
         match = next(
             (
@@ -570,7 +587,7 @@ class RunController:
             ),
             None,
         )
-        return RunView(record=record, run=match)
+        return RunView(record=record, run=match, warnings=scratch.warnings)
 
     def control(
         self,

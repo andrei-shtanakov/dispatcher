@@ -93,6 +93,47 @@ def test_terminal_releases_the_lock(tmp_path: Path) -> None:
     store.reserve(_OTHER, _KEY, known_runs=[], window_start="t")  # no raise
 
 
+def test_lock_held_states_matches_actual_lock_presence(tmp_path: Path) -> None:
+    """`_LOCK_HELD_STATES` names the states in which the lock must still be
+    held, but nothing asserted it against real transitions (dead code: the
+    plan called for a test here, not deletion). Walks every transition and
+    checks lock presence against membership for each."""
+    from dispatcher.core.run_store import _LOCK_HELD_STATES
+
+    launching_key = RepoKey(host="github.com", owner="owner", repo="launching")
+    store = _store(tmp_path)
+
+    record = store.reserve(_REQ, launching_key, known_runs=[], window_start="t")
+    assert (store.holds_lock(launching_key) is not None) == (
+        record.state in _LOCK_HELD_STATES
+    )
+
+    record = store.mark_launching(_REQ)
+    assert (store.holds_lock(launching_key) is not None) == (
+        record.state in _LOCK_HELD_STATES
+    )
+
+    record = store.mark_unknown(_REQ, "no run appeared within the timeout")
+    assert (store.holds_lock(launching_key) is not None) == (
+        record.state in _LOCK_HELD_STATES
+    )
+
+    materialized_key = RepoKey(host="github.com", owner="owner", repo="materialized")
+    record = store.reserve(_OTHER, materialized_key, known_runs=[], window_start="t")
+    record = store.mark_materialized(_OTHER, "01AAA")
+    assert (store.holds_lock(materialized_key) is not None) == (
+        record.state in _LOCK_HELD_STATES
+    )
+
+    terminal_req = "33333333-3333-4333-8333-333333333333"
+    terminal_key = RepoKey(host="github.com", owner="owner", repo="terminal")
+    record = store.reserve(terminal_req, terminal_key, known_runs=[], window_start="t")
+    record = store.mark_terminal(terminal_req, "cancelled")
+    assert (store.holds_lock(terminal_key) is not None) == (
+        record.state in _LOCK_HELD_STATES
+    )
+
+
 def test_reserve_releases_the_lock_it_just_took_if_the_write_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -63,9 +63,21 @@ async def test_submit_with_the_control_plane_off_is_a_refusal_not_a_crash(
 
 
 async def test_unknown_request_reads_404(tmp_path: Path) -> None:
-    async with _client(tmp_path) as client:
+    """With the control plane off by default, `ControlPlaneOff` would fire
+    before `RunRejectedError` ever could — masking exactly the path this
+    test means to exercise (the same trap the malformed-id tests below
+    already had to route around), so this needs it ON."""
+    async with _client(tmp_path, control_plane=True) as client:
         resp = await client.get("/api/runs/nope")
         assert resp.status_code == 404
+
+
+async def test_control_plane_off_reads_409_not_404(tmp_path: Path) -> None:
+    """`ControlPlaneOff` is not "no such request" — it must match the 409
+    `/resolve` and `/verb` already report for the same condition."""
+    async with _client(tmp_path) as client:
+        resp = await client.get("/api/runs/nope")
+        assert resp.status_code == 409
 
 
 async def test_verb_outside_the_allowlist_is_422(tmp_path: Path) -> None:
@@ -209,3 +221,35 @@ def test_view_resolves_home_from_maestro_db_when_maestro_home_is_unset(
     view = RunController(config).view("req-1")
     assert view.run is not None
     assert view.run.status == "completed"
+
+
+def test_view_surfaces_warnings_for_an_unreadable_run_source(tmp_path: Path) -> None:
+    """An UNREADABLE `runs/` and a genuinely ABSENT one both used to surface
+    as `run=None` with nothing to tell them apart — `view()` now carries
+    `classified_runs`' warnings so they no longer read the same."""
+    from dispatcher.core.run_controller import RunController
+    from dispatcher.core.run_identity import RepoKey
+    from dispatcher.core.run_store import RunStore
+
+    home = tmp_path / "mhome"
+    key = RepoKey(host="github.com", owner="owner", repo="deployer")
+    runs_dir = home / "projects" / "github.com" / "owner" / "deployer" / "runs"
+    runs_dir.mkdir(parents=True)
+    runs_dir.chmod(0o000)
+    try:
+        config = DispatcherConfig(
+            roots=(tmp_path / "ws",),
+            maestro_home=home,
+            run_state_dir=tmp_path / "state",
+            maestro_cli=tmp_path / "unused-maestro",
+        )
+        (tmp_path / "ws").mkdir()
+        store = RunStore(tmp_path / "state")
+        store.reserve("req-1", key, known_runs=[], window_start="t")
+        store.mark_materialized("req-1", "01AAA")
+
+        view = RunController(config).view("req-1")
+        assert view.run is None
+        assert view.warnings, "an unreadable runs/ must not read the same as absent"
+    finally:
+        runs_dir.chmod(0o755)

@@ -232,6 +232,31 @@ def test_launch_that_exits_nonzero_without_publishing_is_a_refusal(
     assert store.holds_lock(key) is None, "the lock must not survive a dead launch"
 
 
+def test_resubmission_against_a_launching_record_carries_a_reason(
+    tmp_path: Path,
+) -> None:
+    """A resubmission mid-launch used to come back as `accepted: null` with
+    `reason: null` — the one receipt shape that told the caller nothing at
+    all (`mark_launching` sets no `reason`; only `mark_unknown` does)."""
+    from dispatcher.core.run_identity import RepoKey
+    from dispatcher.core.run_store import RunStore
+
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    assert config.run_state_dir is not None
+    store = RunStore(config.run_state_dir)
+    key = RepoKey(host="github.com", owner="owner", repo="deployer")
+    store.reserve(_REQ, key, known_runs=[], window_start="t")
+    store.mark_launching(_REQ)
+
+    controller = RunController(config)
+    receipt = controller.submit(_request(head))
+    assert receipt.accepted is None
+    assert receipt.reason is not None
+    assert "already launching" in receipt.reason
+
+
 def test_validation_failure_is_accepted_false(tmp_path: Path) -> None:
     _repo(tmp_path / "ws")
     cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")

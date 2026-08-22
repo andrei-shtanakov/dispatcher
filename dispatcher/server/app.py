@@ -631,8 +631,13 @@ def create_app(
         row (spec §3.2); no mutation, no token."""
         try:
             return runs.view(request_id)
-        except (RunRejectedError, ControlPlaneOff) as err:
+        except RunRejectedError as err:
             raise HTTPException(status_code=404, detail=str(err)) from err
+        except ControlPlaneOff as err:
+            # Matches `/resolve` and `/verb`: "the feature is off" is not
+            # the same fact as "no such request", and 404 told an operator
+            # the wrong one of the two.
+            raise HTTPException(status_code=409, detail=str(err)) from err
 
     @app.post("/api/runs/{request_id}/resolve", response_model=UnknownResolution)
     def resolve_run(
