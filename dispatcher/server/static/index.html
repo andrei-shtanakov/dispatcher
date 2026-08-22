@@ -695,9 +695,15 @@ function renderReceipt(r, blocked) {
   // falsy in JS, so every branch here is an explicit identity check. A
   // truthiness test would merge "no run was created" with "a run may exist",
   // which is the one distinction this console exists to preserve.
+  // Whole-branch review C1: the happy path used to name only run_id — the
+  // one identifier the run view, the three verbs and the resolution flow
+  // do NOT accept. request_id is named here too, the same way both
+  // accepted:null branches below already do, so the operator has
+  // something to open.
   if (r.accepted === true)
     return `<div class="rc-result ok">✓ started — run
-      <code>${esc(r.run_id)}</code></div>`;
+      <code>${esc(r.run_id)}</code> (request_id
+      <code>${esc(r.request_id)}</code>)</div>`;
   if (r.accepted === false)
     return `<div class="rc-result err">✗ refused — ${esc(r.reason ?? "")}</div>`;
   // Fix round 2: `accepted: null` has two origins with two DIFFERENT,
@@ -717,7 +723,9 @@ function renderReceipt(r, blocked) {
       to check or resolve it.`
     : `Submitting again is safe — the same request_id
       (<code>${esc(r.request_id)}</code>) will be reused, so a run that
-      did start cannot be duplicated.`;
+      did start cannot be duplicated. It is the SAME request that is
+      retried, not a new one, so any edits made to the form above will
+      not take effect if the first attempt did reach the server.`;
   return `<div class="rc-result unknown">? unknown — the launch may or may not
     have produced a run. ${esc(r.reason ?? "")}
     <span class="rc-hint">${recovery}</span></div>`;
@@ -762,6 +770,14 @@ function validateRunRequest(fields) {
 //     re-reads that record, which is harmless but useless — the real
 //     recovery is `/resolve`. This is the case B2 is about, and the one
 //     `rcSubmitBlocked` is set true for.
+//
+// Whole-branch review M3: the plan's wording scopes this per-repository;
+// this flag is page-global instead, and that is deliberate, not a shortcut
+// — the console has exactly one form and therefore one repository at a
+// time, so there is nothing narrower to block against, and the divergence
+// is fail-safe in the direction that matters (blocking too much can never
+// produce a second run; blocking too little is what B2 exists to prevent).
+// It clears on `/resolve`d ambiguity or on a page reload.
 let rcSubmitBlocked = false;
 
 // The id of the attempt currently in flight or left unresolved (accepted:
@@ -871,6 +887,16 @@ document.getElementById("rc-submit").addEventListener("click", async () => {
     // for renderReceipt to infer, same as the two transport branches
     // above.
     out.innerHTML = renderReceipt(data, data.accepted === null);
+    // C1: a submit that produced a record — accepted:true (the run exists)
+    // or accepted:null server-declared (a record was reserved and
+    // launched, spec §5.2.1) — pre-fills #rc-request-id so the operator's
+    // next click (#rc-open) just works, with no need to have seen or
+    // copied the id by hand. accepted:false (a decidable refusal) is
+    // deliberately excluded: the refusal reason is already the whole
+    // story, right there in the receipt.
+    if (data.accepted === true || data.accepted === null) {
+      document.getElementById("rc-request-id").value = data.request_id;
+    }
     if (data.accepted !== null) {
       rcPendingRequestId = null;
       rcSubmitBlocked = false;
@@ -1017,8 +1043,16 @@ function renderVerbControls(rec) {
   // "no run to act on" is the server's own phrase (run_controller.py:653-
   // 654), restated here verbatim for the same reason RC_VERB_TASK_ID_MESSAGE
   // restates the task_id refusals — one vocabulary, not two.
+  //
+  // Whole-branch review M1: "yet" is only true for the transient reserved/
+  // launching states, where a run may still arrive. spec §5.2.1's
+  // decidable accepted:false path (the child exited non-zero and a second
+  // look still found nothing) leaves a terminal record with run_id: null
+  // PERMANENTLY — no run is coming, so "yet" would promise one that never
+  // will.
+  const stillComing = rec.state !== "terminal";
   const reason = noRun
-    ? `<p class="rc-hint">no run to act on yet
+    ? `<p class="rc-hint">no run to act on${stillComing ? " yet" : ""}
       (state: ${esc(rec.state)})</p>` : "";
   return `<p><b>controls:</b></p>
     ${reason}
@@ -1108,7 +1142,27 @@ async function rcPollView() {
   }
   const view = await resp.json();
   if (requestId !== rcViewRequestId) return;  // superseded while parsing
+  // Whole-branch review I1: renderRunView rebuilds the WHOLE of
+  // #rc-run-view, including #rc-verb-task-id and #rc-verb-result, which
+  // Task 5 put inside the polled region. A materialized record with a
+  // live run is deliberately never settled (rcViewSettled below), so this
+  // fires every 5s — a poll landing mid-typing would otherwise silently
+  // empty the task-id field, and any verb output (including a status dump
+  // the operator just asked for) would be erased by the next tick.
+  // Captured before the re-render, restored after — `?.` because neither
+  // element exists yet on the very first render, or when the new view has
+  // moved to/from launch_unknown (renderUnknownActions has no such ids).
+  const prevTaskId = document.getElementById("rc-verb-task-id")?.value;
+  const prevVerbResult = document.getElementById("rc-verb-result")?.innerHTML;
   box.innerHTML = renderRunView(view);
+  if (prevTaskId !== undefined) {
+    const taskIdEl = document.getElementById("rc-verb-task-id");
+    if (taskIdEl) taskIdEl.value = prevTaskId;
+  }
+  if (prevVerbResult !== undefined) {
+    const resultEl = document.getElementById("rc-verb-result");
+    if (resultEl) resultEl.innerHTML = prevVerbResult;
+  }
   // B2: while THIS view stands unresolved (launch_unknown), a second
   // submit is the one action the recovery design forbids — the launch may
   // already have happened, and a retry risks a second one. `record.state

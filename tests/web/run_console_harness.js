@@ -343,6 +343,45 @@ testCase('accepted:true renders as started and shows the run id', async () => {
   check(!/error|fail/i.test(html), 'no error/fail wording for accepted:true');
 });
 
+// -- whole-branch review C1: a successful launch must not be a dead end ----
+// accepted:true named only run_id — never request_id — and #rc-request-id
+// was only ever read, never written. Everything downstream (the run view,
+// the three verbs, the resolution flow) is keyed by request_id, which is
+// minted client-side with no listing endpoint to recover it from. The pure
+// renderer test above ("shows the run id") only ever checked run_id, which
+// is exactly how this survived five reviews.
+
+testCase('C1: accepted:true also names the request_id, on the pure renderer',
+  async () => {
+    const page = await boot();
+    const html = receiptHtml(page,
+      {request_id: 'rc-happy-1', run_id: '01AAA', accepted: true, reason: null});
+    check(html.includes('rc-happy-1'),
+      `the request_id is on screen too, not just run_id (got: ${html})`);
+  });
+
+testCase("C1: the operator's actual journey — submit, see the id, open the "
+  + 'run WITHOUT typing anything', async () => {
+  await withPage(async page => {
+    fillValid(page);
+    await click(page, '#rc-submit');
+    const receiptHtmlText = el(page, '#rc-receipt').innerHTML;
+    check(receiptHtmlText.includes('rc-happy-1'),
+      `the request_id reaches the receipt (got: ${receiptHtmlText})`);
+    check(el(page, '#rc-request-id').value === 'rc-happy-1',
+      `#rc-request-id is pre-filled after a successful submit (got: `
+      + `'${el(page, '#rc-request-id').value}')`);
+
+    // The operator's next click: Open run, with nothing typed by hand.
+    page.routes.push([u => u === '/api/runs/rc-happy-1', () => ok(
+      {record: {state: 'materialized', run_id: '01AAA'},
+       run: {status: 'running'}, warnings: []})]);
+    await click(page, '#rc-open');
+    check(/materialized/i.test(el(page, '#rc-run-view').innerHTML),
+      'the run view loads from the pre-filled id, no typing required');
+  }, () => ok({request_id: 'rc-happy-1', run_id: '01AAA', accepted: true, reason: null}));
+});
+
 testCase('accepted:false renders as a refusal WITH the reason', async () => {
   const page = await boot();
   const html = receiptHtml(page,
@@ -792,6 +831,65 @@ testCase('fix round 2: the TRANSPORT-level receipt (not blocked) says '
     check(!/#rc-open|open run/i.test(html), 'must NOT point at #rc-open — '
       + `that leads to a 404 for a request that never reached the server `
       + `(got: ${html})`);
+  });
+
+// -- whole-branch review M2: "safe" over-promises — the SAME request is ------
+// retried, not a new one, so any edits made to the form before resubmitting
+// will not take effect if the first attempt did reach the server
+// (RunController.submit returns the existing record for a repeated
+// request_id without comparing the body). "Safe" (no duplicate run) stays
+// true; the copy just needs to say the pinned id is reused, not that the
+// resubmission is a fresh attempt.
+
+testCase('M2: the transport-level "safe to retry" copy says the SAME '
+  + 'request is reused, not a fresh one — so form edits will not take '
+  + 'effect', async () => {
+  const page = await boot();
+  const html = receiptHtml(page, {request_id: 'rc-xyz789', run_id: null,
+    accepted: null, reason: 'no response reached the browser: network down'},
+    false);
+  check(/edits?/i.test(html) && /(not|won.t|will not) take effect/i.test(html),
+    `warns that form edits will not take effect on a resubmit (got: ${html})`);
+});
+
+// -- whole-branch review I2: the `blocked` flag's WIRING is untested -------
+// The two copy tests above call renderReceipt directly with a hand-passed
+// flag — they prove the pure renderer's two branches read correctly, but
+// nothing pins which flag the SUBMIT HANDLER actually passes it. The review
+// verified by mutation: swapping `data.accepted === null` for `false` at
+// the real call site (or the transport catch's `false` for `true`) left
+// 56/56 green, because the disabled-state checks elsewhere are set by a
+// SEPARATE statement (rcSubmitBlocked) from the one that picks the copy —
+// the class name proves nothing about which sentence rendered. These two
+// drive the REAL handler end-to-end and assert on the sentence itself.
+
+testCase('I2 (wiring): a server-declared accepted:null, driven through the '
+  + 'real submit handler, renders the "resolve it" sentence — not the '
+  + '"safe to retry" one', async () => {
+  const page = await boot(() => ok({request_id: 'rc-server-null', run_id: null,
+    accepted: null, reason: 'launch_unknown: no run appeared within 120s'}));
+  fillValid(page);
+  await click(page, '#rc-submit');
+  const html = el(page, '#rc-receipt').innerHTML;
+  check(/resolve/i.test(html),
+    `the real handler must pick the "resolve it" copy (got: ${html})`);
+  check(/rc-open|open run/i.test(html),
+    `and point at the way out (got: ${html})`);
+  check(!/safe/i.test(html),
+    `must NOT say retrying is safe — that is the transport copy (got: ${html})`);
+});
+
+testCase('I2 (wiring): a rejected fetch(), driven through the real submit '
+  + 'handler, renders the "safe to retry" sentence — never "resolve"',
+  async () => {
+    const page = await boot(() => Promise.reject(new Error('network down')));
+    fillValid(page);
+    await click(page, '#rc-submit');
+    const html = el(page, '#rc-receipt').innerHTML;
+    check(/safe/i.test(html),
+      `the real handler must pick the "safe to retry" copy (got: ${html})`);
+    check(!/resolve/i.test(html),
+      `must NOT say to resolve — there is nothing to resolve (got: ${html})`);
   });
 
 // Fix round 1b: the distinction itself, pinned directly — this is the
@@ -1272,6 +1370,48 @@ testCase('Task 5: a server refusal (non-ok HTTP, e.g. no run to act on) '
   });
 });
 
+// -- whole-branch review I1: the 5s poll must not destroy what the ---------
+// operator is typing or just read. A materialized record with a live run
+// is deliberately never settled (rcViewSettled), so rcPollView re-fires
+// every 5000ms and rebuilds ALL of #rc-run-view — including
+// #rc-verb-task-id and #rc-verb-result, which live inside it. retry/approve
+// require typing a task id and then clicking; a poll landing mid-typing
+// silently empties the field, and any verb output (including a status dump
+// the operator just asked for) is erased by the next poll. No prior verb
+// case ticked the clock, which is how this survived Task 5 and the first
+// fix round.
+
+testCase('I1: a typed (but not yet submitted) task id survives a poll tick',
+  async () => {
+    await withPage(async page => {
+      await openMaterialized(page, 'req-i1a');
+      fill(page, '#rc-verb-task-id', 'task-7');
+      check(el(page, '#rc-verb-task-id').value === 'task-7',
+        'sanity: the task id is in the field before the poll');
+      await tick(page, 5000);
+      check(el(page, '#rc-verb-task-id').value === 'task-7',
+        'the typed task id must survive a poll tick (got: '
+        + `'${el(page, '#rc-verb-task-id').value}')`);
+    });
+  });
+
+testCase('I1: a verb result (e.g. a status dump the operator just asked '
+  + 'for) survives a poll tick', async () => {
+  await withPage(async page => {
+    await openMaterialized(page, 'req-i1b');
+    page.routes.push([u => u === '/api/runs/req-i1b/verb', () => ok(
+      {verb: 'status', run_id: '01AAA', ok: true, stdout: 'RUNNING', stderr: ''})]);
+    await click(page, '#rc-verb-status');
+    const before = text(page, '#rc-verb-result');
+    check(before.includes('RUNNING'),
+      `sanity: the verb result rendered before the poll (got: ${before})`);
+    await tick(page, 5000);
+    const after = text(page, '#rc-verb-result');
+    check(after.includes('RUNNING'),
+      `the verb result must survive a poll tick (got: ${after})`);
+  });
+});
+
 // -- Task 5 fix round 1: gate the verb controls on rec.run_id --------------
 // The record already knows whether a run exists to act on (`rec.run_id`):
 // `reserved`/`launching` have none yet, and `renderRunView`'s OWN "no run
@@ -1352,6 +1492,37 @@ testCase('Task 5 fix round 1: verb controls are enabled for a terminal '
     check(maybeEl(page, '#rc-verb-status') !== null, 'status control rendered');
     check(el(page, '#rc-verb-status').disabled === false,
       'status is enabled for a terminal record with a run_id');
+  });
+});
+
+// -- whole-branch review M1: a terminal record with no run_id must not say --
+// "yet" — spec §5.2.1's decidable accepted:false path (child exited
+// non-zero, runs/ still empty) leaves a record with state: terminal and
+// run_id: null PERMANENTLY. The gate correctly keys on run_id (proven
+// above), but the copy assumed only the transient reserved/launching case.
+
+testCase('M1: a terminal record with no run_id says so without promising '
+  + 'one is still coming', async () => {
+  await withPage(async page => {
+    await openView(page, 'req-terminal-norun',
+      {record: {state: 'terminal', run_id: null}, run: null, warnings: []});
+    const html = text(page, '#rc-run-view');
+    check(/no run to act on/i.test(html),
+      `the reason still appears (got: ${html})`);
+    check(!/no run to act on yet/i.test(html),
+      `"yet" must not appear for a terminal record — no run is coming `
+      + `(got: ${html})`);
+  });
+});
+
+testCase('M1: a launching/reserved record with no run_id still says "yet" '
+  + '— a run may still arrive', async () => {
+  await withPage(async page => {
+    await openView(page, 'req-launching-norun',
+      {record: {state: 'launching', run_id: null}, run: null, warnings: []});
+    const html = text(page, '#rc-run-view');
+    check(/no run to act on yet/i.test(html),
+      `"yet" must still appear while a run may still arrive (got: ${html})`);
   });
 });
 
