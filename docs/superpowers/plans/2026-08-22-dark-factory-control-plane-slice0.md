@@ -15,7 +15,7 @@
 - Python `>=3.12`; run everything through `uv run` (never bare `pytest`/`python`).
 - Line length **88**; `uv run ruff format .` then `uv run ruff check . --fix`; `uv run pyrefly check` must be clean. Type hints on all new code; docstrings on public functions.
 - Tests live in `tests/` (flat, `test_<topic>.py`); builders go in `tests/conftest.py`. Run with `uv run pytest`.
-- **Mode 1 only.** The verb allowlist is exactly `submit · status · stop · retry · approve · run-end` (spec §6). Workstream verbs must not appear anywhere in this plan's code.
+- **Mode 1 only.** The operations are exactly `submit · status · stop · retry · approve · run-end` (spec §6). `submit` is the **launch operation** (Task 4) and is deliberately NOT a member of `_VERBS`: it is long-lived and returns a receipt, while the other five are short and return process output. Do not expose `submit` through the control-verb path. Workstream verbs must not appear anywhere in this plan's code.
 - **No `merge_authority` field** anywhere, and no merge from the UI (spec §2.2).
 - `accepted` is three-valued — `true` / `false` / `null` — and `null` is never collapsed into `false` (spec §5.3).
 - **Neighbour code is cited repository-first** in comments and docstrings (`maestro/maestro/cli.py:1040`), never as a bare path — both repos have a `cli.py` (spec, Citations note).
@@ -51,7 +51,7 @@ The pilot's `tasks.yaml` and the `entrypoint_in_command` fix live in **deployer*
 **Why this is first:** every later task needs `projects/<host>/<owner>/<repo>`. If dispatcher computes a different key than maestro, the controller watches a directory maestro never creates and reports `launch_unknown` for every healthy run (spec §5.2.1).
 
 **Interfaces:**
-- Produces: `RepoKey(host: str, owner: str, repo: str, local: bool = False)` with `as_path_parts() -> tuple[str, ...]`; `parse_remote_url(url: str) -> RepoKey`; `identity_from_checkout(repo_root: Path) -> RepoKey`; `IdentityError`.
+- Produces: `RepoKey(host: str, owner: str, repo: str, local: bool = False)` with `as_path_parts() -> tuple[str, ...]` and `as_text() -> str`; `parse_remote_url(url: str) -> RepoKey`; `safe_path_parts(key: RepoKey) -> tuple[str, ...]`; `identity_from_checkout(repo_root: Path) -> RepoKey`; `IdentityError`. **Every path join uses `safe_path_parts`, never `as_path_parts` directly.**
 
 - [ ] **Step 1: Write the pin file**
 
@@ -92,7 +92,11 @@ guarantee-gap: only copy-integrity (the cases table below) is enforced today.
     {"url": "", "why": "empty remote URL"},
     {"url": "file:///tmp/repo", "why": "non-git scheme"},
     {"url": "git@github.com:repo.git", "why": "no owner/repo"},
-    {"url": "git@github.com:owner/../etc.git", "why": "unsafe path segments"}
+    {"url": "git@github.com:owner/x..y.git", "why": "unsafe repo segment"}
+  ],
+  "producer_accepts_but_dispatcher_must_refuse": [
+    {"url": "git@github.com:owner/../etc.git", "key": ["github.com", "..", "etc"],
+     "why": "the producer's _UNSAFE class allows dots, and only `repo` is checked against {'.','..'} — so `owner` may be '..'. Verified against maestro cb91759. dispatcher joins these segments into a filesystem path, so it guards separately (see safe_path_parts)."}
   ]
 }
 ```
@@ -115,6 +119,7 @@ from dispatcher.core.run_identity import (
     RepoKey,
     identity_from_checkout,
     parse_remote_url,
+    safe_path_parts,
 )
 
 _CASES = json.loads(
@@ -151,6 +156,20 @@ def test_identity_from_checkout_reads_origin(tmp_path: Path) -> None:
     assert identity_from_checkout(tmp_path).as_path_parts() == (
         "github.com", "owner", "repo",
     )
+
+
+def test_traversal_segment_is_refused_before_any_join() -> None:
+    """The producer accepts owner='..'; dispatcher must not join it."""
+    accepted = _CASES["producer_accepts_but_dispatcher_must_refuse"][0]
+    key = parse_remote_url(accepted["url"])
+    assert list(key.as_path_parts()) == accepted["key"], "mirror stays faithful"
+    with pytest.raises(IdentityError, match="unsafe path segment"):
+        safe_path_parts(key)
+
+
+def test_safe_path_parts_passes_a_normal_key() -> None:
+    key = RepoKey(host="github.com", owner="owner", repo="deployer")
+    assert safe_path_parts(key) == ("github.com", "owner", "deployer")
 
 
 def test_identity_from_checkout_without_origin_refuses(tmp_path: Path) -> None:
@@ -251,6 +270,28 @@ def parse_remote_url(url: str) -> RepoKey:
         raise IdentityError(f"remote URL yields unsafe path segments: {url!r}")
     host, owner, repo = _fold(host, owner, repo)
     return RepoKey(host=host, owner=owner, repo=repo)
+
+
+def safe_path_parts(key: RepoKey) -> tuple[str, ...]:
+    """`key.as_path_parts()`, refused if any segment could escape a join.
+
+    The mirror above is deliberately faithful, and the producer's rule has a
+    hole: `_UNSAFE` permits dots and only `repo` is checked against
+    `{'.', '..'}`, so `git@host:owner/../etc.git` yields `('host', '..',
+    'etc')` — verified against maestro cb91759. dispatcher joins these
+    segments into a filesystem path, so it refuses the traversal on its own
+    side rather than diverging from the rule it mirrors. The producer-side
+    gap is filed as maestro inbox issue (slug:
+    `repo-identity-owner-traversal`).
+    """
+    parts = key.as_path_parts()
+    for part in parts:
+        if part in {"", ".", ".."} or "/" in part or "\\" in part:
+            raise IdentityError(
+                f"repository identity has an unsafe path segment {part!r}: "
+                f"{'/'.join(parts)} would not stay under projects/"
+            )
+    return parts
 
 
 def identity_from_checkout(repo_root: Path) -> RepoKey:
@@ -689,10 +730,13 @@ def test_reserve_writes_a_durable_record_before_anything_starts(
     tmp_path: Path,
 ) -> None:
     store = _store(tmp_path)
-    record = store.reserve(_REQ, _KEY, known_runs=["01AAA"], window_start="2026-08-22T00:00:00Z")
+    record = store.reserve(
+        _REQ, _KEY, known_runs=["01AAA"], window_start="2026-08-22T00:00:00Z"
+    )
     assert record.state == "reserved"
-    assert store.get(_REQ) is not None
-    assert store.get(_REQ).known_runs == ["01AAA"]
+    stored = store.get(_REQ)
+    assert stored is not None
+    assert stored.known_runs == ["01AAA"]
 
 
 def test_second_request_for_a_busy_repo_is_refused_not_queued(
@@ -716,7 +760,8 @@ def test_materializing_releases_the_lock(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
     store.mark_materialized(_REQ, "01BBB")
-    assert store.get(_REQ).run_id == "01BBB"
+    stored = store.get(_REQ)
+    assert stored is not None and stored.run_id == "01BBB"
     store.reserve(_OTHER, _KEY, known_runs=[], window_start="t")  # no raise
 
 
@@ -726,7 +771,8 @@ def test_launch_unknown_keeps_the_lock(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
     store.mark_unknown(_REQ, "no run appeared within the timeout")
-    assert store.get(_REQ).state == "launch_unknown"
+    stored = store.get(_REQ)
+    assert stored is not None and stored.state == "launch_unknown"
     with pytest.raises(LockBusyError):
         store.reserve(_OTHER, _KEY, known_runs=[], window_start="t")
 
@@ -779,9 +825,9 @@ import tempfile
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from dispatcher.core.run_identity import RepoKey
+from dispatcher.core.run_identity import RepoKey, safe_path_parts
 
 LaunchState = Literal[
     "reserved", "launching", "materialized", "terminal", "launch_unknown"
@@ -794,7 +840,11 @@ _DIR_MODE = 0o700
 _FILE_MODE = 0o600
 
 
-class LockBusyError(Exception):
+class RunStoreError(Exception):
+    """The store cannot honour the call (→ 422)."""
+
+
+class LockBusyError(RunStoreError):
     """The repository already has a launch in flight (→ 409)."""
 
 
@@ -806,7 +856,7 @@ class LaunchRecord(BaseModel):
     reason: str | None = None
     #: `runs/` as it looked immediately before the launch — the only thing an
     #: orphan can be correlated against (spec §5.2.1).
-    known_runs: list[str] = []
+    known_runs: list[str] = Field(default_factory=list)
     window_start: str = ""
     outcome: str | None = None
 
@@ -827,11 +877,12 @@ class RunStore:
         # request_id reaches this off the wire; it must never shape a path.
         safe = "".join(c for c in request_id if c.isalnum() or c in "-_")
         if not safe or safe != request_id:
-            raise LockBusyError(f"unsafe request_id: {request_id!r}")
+            # Not LockBusyError: nothing is in flight, the input is bad.
+            raise RunStoreError(f"unsafe request_id: {request_id!r}")
         return self._requests / f"{safe}.json"
 
     def _lock_path(self, key: RepoKey) -> Path:
-        slug = "-".join(key.as_path_parts()).replace("/", "-")
+        slug = "-".join(safe_path_parts(key)).replace("/", "-")
         return self._locks / f"{slug}.lock"
 
     def get(self, request_id: str) -> LaunchRecord | None:
@@ -917,7 +968,7 @@ class RunStore:
     def _transition(self, request_id: str, **fields: object) -> LaunchRecord:
         record = self.get(request_id)
         if record is None:
-            raise LockBusyError(f"no launch record for {request_id}")
+            raise RunStoreError(f"no launch record for {request_id}")
         updated = record.model_copy(update=fields)
         self._write(updated)
         return updated
@@ -1146,7 +1197,7 @@ def test_repeated_request_id_does_not_launch_twice(tmp_path: Path) -> None:
             #!/usr/bin/env python3
             import os, pathlib
             p = pathlib.Path({str(marker)!r})
-            p.write_text(str(len(p.read_text()) + 1 if p.exists() else 1))
+            p.write_text(str(int(p.read_text() or 0) + 1 if p.exists() else 1))
             home = pathlib.Path(os.environ["MAESTRO_HOME"])
             d = home / "projects/github.com/owner/deployer/runs/01DDD"
             d.mkdir(parents=True, exist_ok=True)
@@ -1160,7 +1211,7 @@ def test_repeated_request_id_does_not_launch_twice(tmp_path: Path) -> None:
     first = controller.submit(_request(head))
     second = controller.submit(_request(head))
     assert first.run_id == second.run_id
-    assert json.loads(marker.read_text() or "0") == 1
+    assert int(marker.read_text()) == 1, "the second submit must not re-launch"
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -1195,10 +1246,10 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from dispatcher.core.discovery import DispatcherConfig
-from dispatcher.core.run_identity import RepoKey
+from dispatcher.core.run_identity import RepoKey, safe_path_parts
 from dispatcher.core.run_request import (
     RunRejectedError,
     RunRequest,
@@ -1271,7 +1322,7 @@ class RunController:
         watching another is how a healthy run reads as `launch_unknown`.
         """
         _, _, home = self._require_on()
-        return home.joinpath("projects", *key.as_path_parts(), "runs")
+        return home.joinpath("projects", *safe_path_parts(key), "runs")
 
     @staticmethod
     def _listing(runs: Path) -> list[str]:
@@ -1298,7 +1349,7 @@ class RunController:
             return LaunchReceipt(
                 request_id=request.request_id,
                 run_id=existing.run_id,
-                accepted=_accepted_for(existing.state),
+                accepted=_accepted_for(existing),
                 reason=existing.reason,
             )
 
@@ -1329,7 +1380,9 @@ class RunController:
         runs: Path,
     ) -> LaunchReceipt:
         _, cli, home = self._require_on()
-        before = set(store.get(request.request_id).known_runs)
+        reserved = store.get(request.request_id)
+        assert reserved is not None  # just written by `reserve`
+        before = set(reserved.known_runs)
         argv = [str(cli), "run", request.tasks]
         env = {**os.environ, "MAESTRO_HOME": str(home)}
         store.mark_launching(request.request_id)
@@ -1403,14 +1456,20 @@ class RunController:
         return LaunchReceipt(request_id=request_id, accepted=False, reason=reason)
 
 
-def _accepted_for(state: str) -> bool | None:
-    """Map a stored state back to the three-valued receipt."""
-    if state == "materialized":
+def _accepted_for(record: LaunchRecord) -> bool | None:
+    """Map a stored record back to the three-valued receipt.
+
+    Takes the RECORD, not the bare state: `terminal` covers both "the run
+    ended" and "the launch failed before any run existed", and only
+    `run_id` tells those apart. Deciding from `state` alone would report a
+    refusal as `accepted: true` — the exact collapse spec §5.3 forbids.
+    """
+    if record.state == "materialized":
         return True
-    if state == "launch_unknown":
+    if record.state == "terminal":
+        return record.run_id is not None
+    if record.state == "launch_unknown":
         return None
-    if state == "terminal":
-        return True
     return None
 ```
 
@@ -1443,6 +1502,13 @@ git commit -m "feat(run): RunController launch path with a three-valued receipt"
 - [ ] **Step 1: Write the failing tests (append to `tests/test_run_controller.py`)**
 
 ```python
+def _state(controller: RunController, request_id: str) -> str:
+    """The stored state, with the Optional narrowed once instead of per call."""
+    record = controller.record(request_id)
+    assert record is not None
+    return record.state
+
+
 def _unknown(tmp_path: Path) -> tuple[RunController, Path]:
     head = _repo(tmp_path / "ws")
     cli = _fake_maestro(tmp_path / "fake-maestro", creates_run=None)
@@ -1460,14 +1526,14 @@ def test_exactly_one_candidate_is_adopted(tmp_path: Path) -> None:
     (runs / "01LATE").mkdir()
     resolution = controller.resolve_unknown(_REQ)
     assert resolution.adopted_run_id == "01LATE"
-    assert controller.record(_REQ).state == "materialized"
+    assert _state(controller, _REQ) == "materialized"
 
 
 def test_zero_candidates_stays_unknown(tmp_path: Path) -> None:
     controller, _ = _unknown(tmp_path)
     resolution = controller.resolve_unknown(_REQ)
     assert resolution.adopted_run_id is None
-    assert controller.record(_REQ).state == "launch_unknown"
+    assert _state(controller, _REQ) == "launch_unknown"
 
 
 def test_two_candidates_are_never_guessed_between(tmp_path: Path) -> None:
@@ -1477,7 +1543,7 @@ def test_two_candidates_are_never_guessed_between(tmp_path: Path) -> None:
     resolution = controller.resolve_unknown(_REQ)
     assert resolution.adopted_run_id is None
     assert sorted(resolution.candidates) == ["01AAA", "01BBB"]
-    assert controller.record(_REQ).state == "launch_unknown"
+    assert _state(controller, _REQ) == "launch_unknown"
 
 
 def test_adoption_releases_the_lock(tmp_path: Path) -> None:
@@ -1541,7 +1607,7 @@ class UnknownResolution(BaseModel):
 
     request_id: str
     adopted_run_id: str | None = None
-    candidates: list[str] = []
+    candidates: list[str] = Field(default_factory=list)
     reason: str = ""
 ```
 
@@ -2067,7 +2133,7 @@ git commit -m "feat(run): HTTP surface for submit, read, resolve and control ver
 ```python
 def test_view_joins_the_request_to_maestros_own_run_row(tmp_path: Path) -> None:
     """dispatcher renders maestro's FSM; it does not restate it (spec §3.2)."""
-    from tests.conftest import make_maestro_run  # builder added in step 2
+    from conftest import make_maestro_run
 
     from dispatcher.core.run_controller import RunController
     from dispatcher.core.run_identity import RepoKey
@@ -2075,7 +2141,13 @@ def test_view_joins_the_request_to_maestros_own_run_row(tmp_path: Path) -> None:
 
     home = tmp_path / "mhome"
     key = RepoKey(host="github.com", owner="owner", repo="deployer")
-    make_maestro_run(home, key.as_path_parts(), "01AAA", outcome="completed")
+    make_maestro_run(
+        home,
+        key.as_path_parts(),
+        "01AAA",
+        started_at="2026-08-22T00:00:00Z",
+        outcome="completed",
+    )
     config = DispatcherConfig(
         roots=(tmp_path / "ws",),
         maestro_home=home,
@@ -2093,33 +2165,15 @@ def test_view_joins_the_request_to_maestros_own_run_row(tmp_path: Path) -> None:
     assert view.run.status == "completed"
 ```
 
-- [ ] **Step 2: Add the builder to `tests/conftest.py`**
+- [ ] **Step 2: Use the builder that already exists — do not add one**
 
-```python
-def make_maestro_run(
-    home: Path,
-    parts: tuple[str, ...],
-    run_id: str,
-    *,
-    outcome: str | None = None,
-) -> Path:
-    """One per-run state.db under the layout the collector walks (#147)."""
-    run_dir = home.joinpath("projects", *parts, "runs", run_id)
-    run_dir.mkdir(parents=True)
-    db = run_dir / "state.db"
-    conn = sqlite3.connect(db)
-    conn.execute(
-        "CREATE TABLE run (run_id TEXT, started_at TEXT, outcome TEXT, "
-        "ended_at TEXT, reason TEXT, suspended_at TEXT)"
-    )
-    conn.execute(
-        "INSERT INTO run VALUES (?, ?, ?, NULL, NULL, NULL)",
-        (run_id, "2026-08-22T00:00:00Z", outcome),
-    )
-    conn.commit()
-    conn.close()
-    return db
-```
+`tests/conftest.py:50` already has `make_maestro_run(home, repo_parts, run_id, *,
+started_at, outcome=None, ...)`, writing the same layout the collector walks. Adding a
+second builder would give the suite two fixtures that must agree about maestro's schema.
+Reuse it, and import it the way this suite does — `from conftest import ...`, not
+`from tests.conftest import ...` (`tests/` is not a package; see `tests/test_api.py:11`).
+
+No conftest change is needed for this task.
 
 - [ ] **Step 3: Run the test to verify it fails**
 
@@ -2238,7 +2292,16 @@ from dispatcher.core.run_store import LaunchRecord, LockBusyError, RunStore
 
 - [ ] **Step 6: Point the read endpoint at the view**
 
-In `dispatcher/server/app.py`, change `read_run`'s `response_model` to `RunView` and its body to call `runs.view(request_id)`, mapping `RunRejectedError` to 404.
+In `dispatcher/server/app.py`, change `read_run`'s `response_model` to `RunView` and its body to call `runs.view(request_id)`, mapping **both** `RunRejectedError` and `ControlPlaneOff` to 404 — with the control plane off there is no record to show, and a 500 would read as a server fault rather than a feature that is switched off:
+
+```python
+    @app.get("/api/runs/{request_id}", response_model=RunView)
+    def read_run(request_id: str) -> RunView:
+        try:
+            return runs.view(request_id)
+        except (RunRejectedError, ControlPlaneOff) as err:
+            raise HTTPException(status_code=404, detail=str(err)) from err
+```
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
@@ -2272,5 +2335,31 @@ Slice 0's dispatcher half is done when Task 8 lands. Three things are then true 
 **Gap found and filled:** the two-guarantees rule would have been silently half-met by Task 1's vendored mirror; Step 7 of that task files the missing drift watch as a named TODO item instead.
 
 **Placeholders:** none — every code step carries the actual code. Task 8 originally guessed `MaestroCollector.collect(ctx, snap)`; the real signature is `collect(path, ctx) -> ProjectSnapshot` (`dispatcher/core/collectors/maestro.py:67`), so that task now extracts a `classified_runs` helper instead of calling the collector wrongly.
+
+**Second pass — Copilot review plus a pre-execution conflict scan.** Nine defects were
+found in the first draft of this plan and fixed here:
+
+1. `submit` was listed in the Global Constraints allowlist and omitted from `_VERBS` —
+   a contradiction that would have exposed the launch through the control-verb path.
+2. `_accepted_for(state)` returned `True` for `terminal`, which also covers a launch that
+   failed before any run existed — a refusal reported as an acceptance, the exact
+   collapse §5.3 forbids. It now takes the record and reads `run_id`.
+3. The pinned cases table claimed the producer rejects `owner='..'`. It does not:
+   `parse_remote_url("git@github.com:owner/../etc.git")` returns `('github.com', '..',
+   'etc')`, verified against maestro cb91759. The mirror stays faithful and dispatcher
+   guards its own joins with `safe_path_parts`; the producer-side hole is filed as a
+   maestro inbox issue.
+4. Pydantic list defaults used bare `[]` against the house `Field(default_factory=list)`
+   (`dispatcher/core/models.py:150-157`).
+5. Task 8 added a `make_maestro_run` builder that **already exists** at
+   `tests/conftest.py:50` — two fixtures would have had to agree about maestro's schema.
+6. That task also imported it as `from tests.conftest import`; `tests/` is not a package
+   and this suite uses `from conftest import` (`tests/test_api.py:11`).
+7. Tests dereferenced `store.get(...)` and `controller.record(...)` without narrowing the
+   `| None` — a pyrefly failure in a plan whose own constraints demand a clean run.
+8. `RunStore` raised `LockBusyError` for an unsafe `request_id`, where nothing is in
+   flight and the input is simply bad. Added `RunStoreError` as the base.
+9. The idempotency test's counter did `len(read_text())` instead of `int(...)`, so it
+   would have passed without measuring anything.
 
 **Type consistency:** `RepoKey.as_path_parts()`/`as_text()` (T1) are used unchanged in T3, T4, T5. `RunRejectedError` is raised by T2 and caught in T4, T5, T6, T7. `LaunchRecord.state` values match `_LOCK_HELD_STATES` and `_accepted_for`. `_OPERATOR_ENDINGS` is defined once (T5) and reused by T6. `_VERB_TIMEOUT` is flagged in T5 and owned by T6 to avoid a duplicate definition.
