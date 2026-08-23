@@ -1,15 +1,17 @@
 # Dark Factory control plane, slice 0 — dispatcher-side design
 
-**Status:** 2026-08-22, corrected after implementation. The slice-0 server half shipped
-in #167/#168/#169; five things this spec asserted turned out to be wrong or unbuilt, and
-each is corrected in place below rather than left for a reader to trip over. Every
-correction is marked **Correction, 2026-08-22** and says what was believed before.
+**Status:** 2026-08-22, corrected after implementation; updated 2026-08-23 once the UI
+landed. The slice-0 server half shipped in #167/#168/#169; five things this spec asserted
+turned out to be wrong or unbuilt, and each is corrected in place below rather than left
+for a reader to trip over. Corrections are marked **Correction, `<date>`** and say what
+was believed before.
 
 The corrections, in descending order of consequence: §4.2.1 — a run's repository is
-chosen by the `tasks.yaml`, not by the request; §2.1/§9/§10 — the UI was never planned
-and pass 1 cannot be accepted without it; §6 — `stop` is not a run-scoped verb; §5.2.1 —
-one of three named lock-release conditions had no mechanism; §3.1 — the record's join
-was asserted but not implemented.
+chosen by the `tasks.yaml`, not by the request; §2.1/§9/§10 — the UI was never planned as
+part of slice 0's own scope, and this was an omission the plan did not state, not a
+deferral — it has since been built, and §2.1 records both the gap and its closing; §6 —
+`stop` is not a run-scoped verb; §5.2.1 — one of three named lock-release conditions had
+no mechanism; §3.1 — the record's join was asserted but not implemented.
 
 No inbox issue: this is dispatcher's own work, not a cross-repo request.
 
@@ -53,14 +55,25 @@ A durable, idempotent request to start one maestro Mode-1 run against one reposi
 one revision, issued from the dispatcher UI, executed by a controller that owns the
 process, with run state read back from maestro's own store.
 
-**Correction, 2026-08-22: the UI half was never planned and is not built.** The
-implementation (#167, #168, #169) delivers the server half — the request contract, the
-store, the controller, the verbs, the HTTP surface and the read-back — and nothing under
-`dispatcher/server/static/`. Today a request is issued by fetching the CSRF token from
-`/api/actions/session` and posting to `/api/runs/submit` by hand. Narrowing slice 0 to
-the server half is defensible; it is the hard half. What was not defensible was leaving
-the narrowing unstated while §9's acceptance criterion assumed the UI existed. **Pass 1
-cannot be accepted until the UI lands**, and it is owed its own plan.
+**Correction, 2026-08-22: the UI half was never planned, and this was an omission, not a
+choice.** The implementation (#167, #168, #169) delivered the server half — the request
+contract, the store, the controller, the verbs, the HTTP surface and the read-back — and
+nothing under `dispatcher/server/static/`. A request had to be issued by fetching the
+CSRF token from `/api/actions/session` and posting to `/api/runs/submit` by hand.
+Narrowing slice 0 to the server half was defensible; it is the hard half. What was not
+defensible was leaving the narrowing unstated while §9's acceptance criterion assumed the
+UI existed.
+
+**Correction, 2026-08-23: the UI now exists.** It was owed its own plan
+(`docs/superpowers/plans/2026-08-22-dark-factory-console-ui.md`) and was built by it: the
+`RunRequest` form and its three-valued receipt, a run view rendering maestro's own FSM
+(§3.2), the `launch_unknown` resolution flow (§5.2.1), and the `status`/`retry`/`approve`
+controls (§6) all live under `dispatcher/server/static/index.html` now. Issuing a request
+no longer needs a hand-made POST. This does **not** mean pass 1 is accepted — see §9 —
+only that the UI is no longer what blocks it. What still blocks it: authoring the plan and
+`tasks.yaml` for the pilot item (no compiler — §2.2), and running the pilot itself. Logs
+are still read outside dispatcher (§10); that gap is unrelated to the UI's existence and
+was never claimed to close with it.
 
 ### 2.2 Non-goals (explicit, each with its reason)
 
@@ -558,19 +571,12 @@ green" would be reading a signal deployer does not emit.
 
 Steps that are still manual in pass 1, named so the result is not oversold:
 
-- **issuing the request at all — there is no UI** (§2.1). Until one exists, "from the
-  UI" reads as a token fetch and a hand-made POST, which is not what this criterion
-  says and not what pass 1 is meant to demonstrate;
 - authoring the plan and the `tasks.yaml` (no compiler — §2.2);
 - choosing the revision;
 - reading run logs outside the UI (§10).
 
 ## 10. Known gaps, deliberately left open
 
-- **There is no UI, and this gap was not deliberate — it was unnoticed** (§2.1, §9).
-  Every other entry here was a choice; this one was an omission in the plan that the
-  whole-branch review found after the server half had shipped. It is listed first
-  because it is the only gap that blocks pass 1 outright.
 - **Logs are read outside dispatcher.** The acceptance criterion claims "visible in
   dispatcher" while permitting the one detailed channel to sit outside it. This is a
   temporary gap, not a design position; it is cheap to close because maestro already

@@ -43,10 +43,10 @@
      совпадать с порядком чтения, а span состояния распирает строку на 900px и
      выталкивает title под textarea. Логика при этом верна — сломана только
      раскладка, и увидеть это можно лишь в браузере. */
-  #task-authoring label { display: block; margin-bottom: 4px; color: var(--dim);
-    font-size: 13px; }
-  #task-authoring input, #ta-prose { display: block; width: 100%;
-    max-width: 640px; box-sizing: border-box; }
+  #task-authoring label, #run-console label { display: block; margin-bottom: 4px;
+    color: var(--dim); font-size: 13px; }
+  #task-authoring input, #ta-prose, #run-console input { display: block;
+    width: 100%; max-width: 640px; box-sizing: border-box; }
   #ta-prose { margin: 10px 0; font: inherit; padding: 8px 10px;
     background: var(--card); color: var(--ink);
     border: 1px solid var(--line); border-radius: 8px; resize: vertical; }
@@ -62,6 +62,11 @@
   .ok { color: var(--ok); }
   /* attested-only implementation: amber, not machine-green (ADR-ECO-005 D3) */
   .attested { color: var(--warn); }
+  /* accepted: null (launch_unknown) is its own class, deliberately not
+     `.err` — the launch may have happened, so red/"failed" would lie. */
+  .unknown { color: var(--warn); }
+  .rc-hint { display: block; color: var(--dim); font-size: 12px; margin-top: 2px; }
+  #rc-actions { margin-top: 12px; }
   td.msg { white-space: normal; word-break: break-word; max-width: 720px; }
   td.msg[data-full] { cursor: pointer; }
   #errors-toggle { background: none; border: 1px solid var(--line);
@@ -154,6 +159,34 @@
     <input id="run-status-input" type="number" min="1" inputmode="numeric"></label>
     <button id="run-status-check" type="button">Check status</button></div>
   <div id="run-status-result"></div></section>
+
+<section id="run-console"><h2>Run console</h2>
+  <label for="rc-repository">repository</label>
+  <input id="rc-repository" type="text" spellcheck="false">
+  <label for="rc-revision">revision (full 40-hex commit sha)</label>
+  <input id="rc-revision" type="text" spellcheck="false">
+  <label for="rc-tasks">tasks (repo-relative path)</label>
+  <input id="rc-tasks" type="text" spellcheck="false">
+  <label for="rc-work-id">work_id</label>
+  <input id="rc-work-id" type="text" spellcheck="false">
+  <label for="rc-spec-ref-path">spec_ref path (optional)</label>
+  <input id="rc-spec-ref-path" type="text" spellcheck="false">
+  <label for="rc-spec-ref-commit">spec_ref commit (optional, defaults to revision)</label>
+  <input id="rc-spec-ref-commit" type="text" spellcheck="false">
+  <label for="rc-plan-ref-path">plan_ref path (optional)</label>
+  <input id="rc-plan-ref-path" type="text" spellcheck="false">
+  <label for="rc-plan-ref-commit">plan_ref commit (optional, defaults to revision)</label>
+  <input id="rc-plan-ref-commit" type="text" spellcheck="false">
+  <div id="rc-actions">
+    <button id="rc-submit" type="button">Submit run</button>
+  </div>
+  <div id="rc-receipt"></div>
+  <div id="rc-view-open">
+    <label for="rc-request-id">request_id</label>
+    <input id="rc-request-id" type="text" spellcheck="false">
+    <button id="rc-open" type="button">Open run</button>
+  </div>
+  <div id="rc-run-view"></div></section>
 
 <section><h2>Projects</h2>
 <div class="grid" id="projects"></div></section>
@@ -646,6 +679,717 @@ document.getElementById("sync-hosts").addEventListener("click", async e => {
   } finally {
     btn.disabled = false;
   }
+});
+
+// -- Run console: RunRequest → LaunchReceipt (spec §5.3) ---------------------
+// A client-generated idempotency key. dispatcher only constrains the
+// charset (`_REQUEST_ID_RE`, run_request.py), not the algorithm, so a
+// timestamp+random string avoids depending on a `crypto` global this page
+// otherwise never needs.
+function rcRequestId() {
+  return `rc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function renderReceipt(r, blocked) {
+  // `accepted` is three-valued (spec §5.3) and both `false` and `null` are
+  // falsy in JS, so every branch here is an explicit identity check. A
+  // truthiness test would merge "no run was created" with "a run may exist",
+  // which is the one distinction this console exists to preserve.
+  // Whole-branch review C1: the happy path used to name only run_id — the
+  // one identifier the run view, the three verbs and the resolution flow
+  // do NOT accept. request_id is named here too, the same way both
+  // accepted:null branches below already do, so the operator has
+  // something to open.
+  if (r.accepted === true)
+    return `<div class="rc-result ok">✓ started — run
+      <code>${esc(r.run_id)}</code> (request_id
+      <code>${esc(r.request_id)}</code>)</div>`;
+  if (r.accepted === false)
+    return `<div class="rc-result err">✗ refused — ${esc(r.reason ?? "")}</div>`;
+  // Fix round 2: `accepted: null` has two origins with two DIFFERENT,
+  // correct recoveries (see `rcSubmitBlocked`'s declaration below), and
+  // the copy must not say the same thing for both — round 1's "resolve it
+  // / open #rc-open" text was wrong for the transport case: resolving is
+  // not required (the enabled button beside it IS the recovery), and
+  // opening a request that never reached the server 404s. `blocked` is
+  // passed in explicitly by the caller (transport catches pass `false`;
+  // the success path passes `data.accepted === null`) rather than
+  // inferred here, since the two local receipt objects the transport
+  // catches build carry no field that would let this function tell them
+  // apart from the server's own LaunchReceipt body otherwise.
+  const recovery = blocked
+    ? `Resolve it before submitting again — open
+      <code>${esc(r.request_id)}</code> above (request_id field, "Open run")
+      to check or resolve it.`
+    : `Submitting again is safe — the same request_id
+      (<code>${esc(r.request_id)}</code>) will be reused, so a run that
+      did start cannot be duplicated. It is the SAME request that is
+      retried, not a new one, so any edits made to the form above will
+      not take effect if the first attempt did reach the server.`;
+  return `<div class="rc-result unknown">? unknown — the launch may or may not
+    have produced a run. ${esc(r.reason ?? "")}
+    <span class="rc-hint">${recovery}</span></div>`;
+}
+
+// Mirrors exactly two of the server's refusals (dispatcher/core/run_request.py,
+// `validate_request`), in the server's own words, to save an operator a
+// round trip on the two mistakes they make constantly. This is NOT a safety
+// layer: the repository-manifest check, the `git cat-file` existence check
+// and the `repo:` reconciliation happen only on the server and are
+// invisible from here — a client that guessed at them would refuse valid
+// requests, which is worse than the round trip this saves.
+const _RC_SHA_RE = /^[0-9a-f]{40}$/;
+
+function validateRunRequest(fields) {
+  if (!_RC_SHA_RE.test(fields.revision)) {
+    return `revision must be a full 40-hex commit sha, got '${fields.revision}': `
+      + "a ref would make the request non-reproducible on retry";
+  }
+  const tasks = fields.tasks;
+  if (tasks.startsWith("/") || tasks.split("/").includes("..") || !tasks.trim()) {
+    return `tasks must be a repo-relative path without '..', got '${tasks}'`;
+  }
+  return null;
+}
+
+// Fix round 1: `accepted: null` arises two different ways, and only one of
+// them should block resubmission (B2 is about the SERVER-declared case,
+// not every ambiguity). `rcSubmitBlocked` names that distinction directly,
+// so it does not have to be re-derived from `rcPendingRequestId` (which
+// stays set — and MUST stay set — in both cases, for idempotent retry):
+//   - transport failure / unreadable body: no response reached us, so we
+//     do not know whether a record was ever written. A retry WITH THE
+//     PINNED id is the correct, safe recovery — safe by construction,
+//     since the server's own idempotency (keyed on request_id) collapses
+//     a duplicate into the same record. Blocking here would remove the
+//     only recovery from a dropped connection, AND make the pinning
+//     itself dead code (an id that can never be reused is not "pinned
+//     for retry", it is just inert).
+//   - the SERVER answered with `accepted: null` (launch_unknown): a
+//     record was reserved and launched; resubmitting the same id just
+//     re-reads that record, which is harmless but useless — the real
+//     recovery is `/resolve`. This is the case B2 is about, and the one
+//     `rcSubmitBlocked` is set true for.
+//
+// Whole-branch review M3: the plan's wording scopes this per-repository;
+// this flag is page-global instead, and that is deliberate, not a shortcut
+// — the console has exactly one form and therefore one repository at a
+// time, so there is nothing narrower to block against, and the divergence
+// is fail-safe in the direction that matters (blocking too much can never
+// produce a second run; blocking too little is what B2 exists to prevent).
+// It clears on `/resolve`d ambiguity or on a page reload.
+let rcSubmitBlocked = false;
+
+// The id of the attempt currently in flight or left unresolved (accepted:
+// null, a dropped connection, an unreadable response) — not yet known to
+// dispatcher as settled. `RunController.submit` keys idempotency off
+// `request_id` (spec §5.2): a retry that reused it lands on the SAME
+// record instead of starting a second attempt, which matters exactly when
+// the first attempt's outcome is unknown and may already have launched. A
+// fresh id is minted only once an attempt reaches accepted true/false.
+let rcPendingRequestId = null;
+
+document.getElementById("rc-submit").addEventListener("click", async () => {
+  const btn = document.getElementById("rc-submit");
+  const out = document.getElementById("rc-receipt");
+
+  // Validated before anything else runs: a request rejected here was never
+  // sent, so it must not consume or clear rcPendingRequestId.
+  const problem = validateRunRequest({
+    revision: document.getElementById("rc-revision").value,
+    tasks: document.getElementById("rc-tasks").value,
+  });
+  if (problem) {
+    out.innerHTML = renderReceipt(
+      {request_id: null, run_id: null, accepted: false, reason: problem});
+    return;
+  }
+
+  btn.disabled = true;
+  out.textContent = "…";
+  const requestId = rcPendingRequestId ?? rcRequestId();
+  rcPendingRequestId = requestId;
+  try {
+    const body = {
+      request_id: requestId,
+      work_id: document.getElementById("rc-work-id").value,
+      repository: document.getElementById("rc-repository").value,
+      revision: document.getElementById("rc-revision").value,
+      tasks: document.getElementById("rc-tasks").value,
+    };
+    const specPath = document.getElementById("rc-spec-ref-path").value.trim();
+    if (specPath) {
+      const commit = document.getElementById("rc-spec-ref-commit").value.trim();
+      body.spec_ref = {path: specPath, commit: commit || null};
+    }
+    const planPath = document.getElementById("rc-plan-ref-path").value.trim();
+    if (planPath) {
+      const commit = document.getElementById("rc-plan-ref-commit").value.trim();
+      body.plan_ref = {path: planPath, commit: commit || null};
+    }
+
+    let resp;
+    try {
+      resp = await fetch("/api/runs/submit", {
+        method: "POST",
+        headers: {"Content-Type": "application/json",
+                  "X-Action-Token": await ensureActionToken()},
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      // The request may never have reached the server — or it may have
+      // reached it, been accepted, and produced a run, with only the
+      // response lost. Either is possible, so this is launch_unknown, not
+      // a refusal: rcPendingRequestId stays set so a retry lands on the
+      // same idempotency record instead of risking a second run. Fix
+      // round 1: this is the TRANSPORT-level null, not the server's own —
+      // no response reached us, so there is nothing here for `/resolve`
+      // to act on (the operator would open the id and find nothing, or a
+      // 404). The retry the pinned id exists for is the only recovery,
+      // so submission must NOT be blocked.
+      out.innerHTML = renderReceipt({request_id: requestId, run_id: null,
+        accepted: null, reason: `no response reached the browser: ${err}`},
+        false);
+      rcSubmitBlocked = false;
+      return;
+    }
+
+    let data;
+    try {
+      data = await resp.json();
+    } catch (err) {
+      // The server answered but the body could not be read — the same
+      // ambiguity as a dropped connection: what the server decided is
+      // unknown from here, so this is not a refusal either. Fix round 1:
+      // also transport-level (we have a response, but not its content) —
+      // same reasoning as the fetch-rejected branch above.
+      out.innerHTML = renderReceipt({request_id: requestId, run_id: null,
+        accepted: null, reason: `response body was unreadable: ${err}`},
+        false);
+      rcSubmitBlocked = false;
+      return;
+    }
+
+    if (!resp.ok) {
+      // The server received the request and definitively refused it — a
+      // real accepted:false, routed through the one renderer for refusals
+      // even though it arrived as a non-2xx status rather than a
+      // LaunchReceipt body.
+      out.innerHTML = renderReceipt({request_id: requestId, run_id: null,
+        accepted: false, reason: data.detail ?? `HTTP ${resp.status}`});
+      rcPendingRequestId = null;
+      rcSubmitBlocked = false;
+      return;
+    }
+
+    // `blocked` is `data.accepted === null` — the ONLY case this receipt
+    // must steer to #rc-open/resolve; passed explicitly rather than left
+    // for renderReceipt to infer, same as the two transport branches
+    // above.
+    out.innerHTML = renderReceipt(data, data.accepted === null);
+    // C1: a submit that produced a record — accepted:true (the run exists)
+    // or accepted:null server-declared (a record was reserved and
+    // launched, spec §5.2.1) — pre-fills #rc-request-id so the operator's
+    // next click (#rc-open) just works, with no need to have seen or
+    // copied the id by hand. accepted:false (a decidable refusal) is
+    // deliberately excluded: the refusal reason is already the whole
+    // story, right there in the receipt.
+    if (data.accepted === true || data.accepted === null) {
+      document.getElementById("rc-request-id").value = data.request_id;
+    }
+    if (data.accepted !== null) {
+      rcPendingRequestId = null;
+      rcSubmitBlocked = false;
+    } else {
+      // Fix round 1: the SERVER answered with accepted:null — a record
+      // was reserved and launched (spec §5.2.1); this is the case B2 is
+      // about. Resubmitting the same id would just re-read that record,
+      // not resolve anything, so THIS is the case that blocks — the
+      // operator is steered to `/resolve` instead.
+      rcSubmitBlocked = true;
+    }
+  } catch (err) {
+    out.innerHTML = `<div class="rc-result err">✗ ${esc(String(err))}</div>`;
+  } finally {
+    // Fix round 1 (B2): a second submit is the one action the recovery
+    // design forbids while attribution is ambiguous — but ONLY the
+    // server-declared ambiguity (rcSubmitBlocked), not every unresolved
+    // attempt. The DIRECT path — submit, see "unknown", click submit
+    // again, no #rc-open anywhere — used to re-enable unconditionally
+    // here, which was the actual hole; a blanket block on ANY unresolved
+    // attempt was the over-correction (it would also have made the
+    // transport-failure retry, and rcPendingRequestId's whole reason for
+    // existing, unreachable).
+    btn.disabled = rcSubmitBlocked;
+  }
+});
+
+// -- Run view: read a request back and show maestro's own state (spec §3.2) --
+// record.state is dispatcher's launch state machine (reserved / launching /
+// materialized / terminal / launch_unknown); run.status is maestro's own
+// classification of the run (running / interrupted / suspended / completed
+// / cancelled / superseded / failed / unreadable). They are DIFFERENT AXES
+// and are rendered as two separate facts below — dispatcher renders
+// maestro's FSM, it does not restate it as its own.
+const RC_RUN_TERMINAL =
+  new Set(["completed", "cancelled", "superseded", "failed"]);
+
+// The stop rule: poll while there is anything left to learn on EITHER axis,
+// stop only once both are settled. `materialized` is where dispatcher's
+// launch machine finishes and maestro's run begins — treating it as a stop
+// condition on its own would freeze the run half of the display at
+// whatever it said the moment the run directory appeared (usually
+// `running`), which is a confident lie once the run actually finishes.
+function rcViewSettled(view) {
+  const state = view.record.state;
+  if (state === "reserved" || state === "launching") return false;
+  // `terminal` is settled outright; `launch_unknown` is settled UNTIL an
+  // operator acts (Task 4's resolution flow drives it by hand) — either
+  // way, this page must not keep polling into it.
+  if (state === "terminal" || state === "launch_unknown") return true;
+  // state === "materialized": dispatcher's machine is done, but maestro's
+  // run may not be. `run === null` here means the run directory is gone or
+  // unreadable — `warnings` says which — and neither is a stop condition:
+  // both deserve to keep being checked rather than silently freezing.
+  return view.run !== null && RC_RUN_TERMINAL.has(view.run.status);
+}
+
+// -- Task 4: the launch_unknown resolution flow (spec §5.2.1) ---------------
+// accepted:null / record.state === "launch_unknown" is a third state, not
+// an error (B2): the launch may have happened, so the copy below never
+// says error/failed, and the operator is offered a way to find out rather
+// than a red box. `#rc-resolve` attempts adoption (`POST .../resolve {}`);
+// its answer is rendered by the pure `renderResolution` below.
+function renderUnknownActions() {
+  return `<p class="unknown">This request's outcome is unknown — the launch
+    may or may not have produced a run.
+    <span class="rc-hint">Resolve it before submitting again.</span></p>
+    <button id="rc-resolve" type="button">Attempt resolution</button>
+    <div id="rc-resolution"></div>`;
+}
+
+// What `POST .../resolve {}` (adoption attempt) decided, per spec §5.2.1:
+//   - zero candidates: nothing to end — say so, no picker, no run-end (B1).
+//   - exactly one: already adopted by the server: name it, no run-end (B1)
+//     — there is nothing left for an operator to end.
+//   - two or more: genuinely ambiguous. List every candidate and offer the
+//     ONLY picker+button in this whole page that can reach `run-end`
+//     (B1) — ending a NAMED run the operator chose, never a bare verb
+//     beside status/retry/approve.
+function renderResolution(res) {
+  const candidates = res.candidates || [];
+  if (candidates.length === 0) {
+    return `<p class="rc-hint">${esc(res.reason)}</p>`;
+  }
+  if (candidates.length === 1) {
+    return `<p class="ok">✓ adopted run <code>${esc(res.adopted_run_id)}</code>
+      — ${esc(res.reason)}</p>`;
+  }
+  const items = candidates.map(id => `<li><code>${esc(id)}</code></li>`).join("");
+  const options = candidates
+    .map(id => `<option value="${esc(id)}">${esc(id)}</option>`).join("");
+  return `<p class="rc-hint">${esc(res.reason)}</p>
+    <ul>${items}</ul>
+    <label for="rc-end-run">run to end</label>
+    <select id="rc-end-run"><option value="">choose…</option>${options}</select>
+    <label for="rc-end-outcome">outcome</label>
+    <select id="rc-end-outcome"><option value="">choose…</option>
+      <option value="cancelled">cancelled</option>
+      <option value="superseded">superseded</option>
+    </select>
+    <button id="rc-end" type="button" disabled>run-end</button>`;
+}
+
+// -- Task 5: the three Mode-1 verb controls (spec §6) ------------------------
+// The server's allowlist is FOUR verbs — status/retry/approve/run-end — but
+// run-end lives ONLY inside the launch_unknown resolution flow above (B1):
+// it ends a run that cannot observe itself ending, and offering it as a
+// peer of ordinary controls invites ending a healthy run with one click.
+// `stop` is not a verb at all and has no control anywhere on this page:
+// `maestro stop` terminates the SCHEDULER PROCESS, not a run (spec §6 as
+// corrected).
+//
+// `approve` and `retry` are easy to confuse — this exact mix-up already
+// cost a fix round on the server side (run_controller.py:666-681) — so the
+// pre-flight refusal below and the button labels both restate the server's
+// own wording verbatim, the same discipline validateRunRequest uses for the
+// submit form's two client-side checks.
+const RC_VERB_TASK_ID_MESSAGE = {
+  approve: "approve needs a task_id: it releases a task sitting in "
+    + "AWAITING_APPROVAL. A task in NEEDS_REVIEW is cleared by retry instead",
+  retry: "retry needs a task_id: it clears a task sitting in FAILED or "
+    + "NEEDS_REVIEW. A task in AWAITING_APPROVAL is released by approve "
+    + "instead",
+};
+
+// Fix round 1: these controls need a run to act on, and the record ALREADY
+// SAYS whether one exists — `rec.run_id` is null in exactly the two states
+// (`reserved`, `launching`) where `renderRunView`'s own line above this one
+// just printed "no run yet". Rendering three clickable buttons right below
+// that sentence is the same class of defect this branch already shipped
+// once (a UI contradicting a sentence it just printed) — a click would
+// only earn the operator a round trip to learn what this page already
+// knew: `RunController.control` refuses with "{request_id} has no run to
+// act on (state: ...)" (run_controller.py:652-656). validateRunRequest
+// already sets the precedent for predicting a server refusal client-side
+// (Task 2); this case is easier, since the client does not have to predict
+// anything — it already HAS `rec.run_id`. Disabled, not hidden: `reserved`
+// and `launching` are transient and this view polls, so controls that
+// vanish and reappear would make the panel jump — a visibly disabled
+// control with a reason tells the operator what is coming instead.
+function renderVerbControls(rec) {
+  const noRun = rec.run_id === null || rec.run_id === undefined;
+  const disabledAttr = noRun ? "disabled" : "";
+  // "no run to act on" is the server's own phrase (run_controller.py:653-
+  // 654), restated here verbatim for the same reason RC_VERB_TASK_ID_MESSAGE
+  // restates the task_id refusals — one vocabulary, not two.
+  //
+  // Whole-branch review M1: "yet" is only true for the transient reserved/
+  // launching states, where a run may still arrive. spec §5.2.1's
+  // decidable accepted:false path (the child exited non-zero and a second
+  // look still found nothing) leaves a terminal record with run_id: null
+  // PERMANENTLY — no run is coming, so "yet" would promise one that never
+  // will.
+  const stillComing = rec.state !== "terminal";
+  const reason = noRun
+    ? `<p class="rc-hint">no run to act on${stillComing ? " yet" : ""}
+      (state: ${esc(rec.state)})</p>` : "";
+  return `<p><b>controls:</b></p>
+    ${reason}
+    <label for="rc-verb-task-id">task id (for approve / retry)</label>
+    <input id="rc-verb-task-id" type="text">
+    <button id="rc-verb-status" type="button" ${disabledAttr}>status</button>
+    <button id="rc-verb-retry" type="button" ${disabledAttr}
+      >retry — clears a task in FAILED or NEEDS_REVIEW</button>
+    <button id="rc-verb-approve" type="button" ${disabledAttr}
+      >approve — releases a task in AWAITING_APPROVAL</button>
+    <div id="rc-verb-result"></div>`;
+}
+
+// Pure renderer over VerbOutcome {verb, run_id, ok, stdout, stderr}
+// (dispatcher/core/run_controller.py). A failing verb shows the maestro
+// CLI's own stderr, never a bare "failed" — the operator needs the reason,
+// not just the fact that it did not work.
+function renderVerbOutcome(o) {
+  if (o.ok) {
+    return `<div class="rc-result ok">✓ ${esc(o.verb)} on
+      <code>${esc(o.run_id)}</code>${
+        o.stdout ? ` — <pre>${esc(o.stdout)}</pre>` : ""}</div>`;
+  }
+  return `<div class="rc-result err">✗ ${esc(o.verb)} on
+    <code>${esc(o.run_id)}</code> —
+    ${esc(o.stderr || o.stdout || "no output")}</div>`;
+}
+
+function renderRunView(view) {
+  const rec = view.record;
+  const run = view.run;
+  const recordLine = `<p><b>dispatcher:</b>
+    <span class="badge">${esc(rec.state)}</span>${
+      rec.run_id ? ` · run_id <code>${esc(rec.run_id)}</code>` : ""}</p>`;
+  // M1b (re-review): "yet" is only true for the transient reserved/
+  // launching states — the same condition renderVerbControls uses for its
+  // own "no run to act on" reason (M1) below. A terminal record with no
+  // run_id (spec §5.2.1's decidable accepted:false path) has none coming,
+  // ever, so this line must not promise one either.
+  const runLine = run
+    ? `<p><b>maestro:</b> <span class="badge">${esc(run.status)}</span>${
+        run.run_id ? ` · <code>${esc(run.run_id)}</code>` : ""}</p>`
+    : `<p><b>maestro:</b> <span class="dim">no run${
+        rec.state !== "terminal" ? " yet" : ""}</span></p>`;
+  const warningsBlock = (view.warnings || []).length
+    ? `<ul class="warn">${
+        view.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul>`
+    : "";
+  // launch_unknown gets the resolution flow (Task 4); every OTHER state
+  // gets the three verb controls (Task 5) — never both, which is how B1
+  // stays true in both directions: run-end never sits beside status/
+  // retry/approve, and status/retry/approve never sit beside run-end.
+  const actions = rec.state === "launch_unknown"
+    ? renderUnknownActions()
+    : renderVerbControls(rec);
+  return recordLine + runLine + warningsBlock
+    + `<div id="rc-view-actions">${actions}</div>`;
+}
+
+let rcViewTimer = null;
+let rcViewRequestId = null;
+
+async function rcPollView() {
+  const requestId = rcViewRequestId;
+  if (!requestId) return;
+  const box = document.getElementById("rc-run-view");
+  let resp;
+  try {
+    resp = await fetch(`/api/runs/${encodeURIComponent(requestId)}`);
+  } catch (err) {
+    // Fail-loud: a network failure must not read as "no such request".
+    if (requestId !== rcViewRequestId) return;  // superseded by a newer open
+    box.innerHTML = `<div class="warn">${esc(String(err))}</div>`;
+    return;
+  }
+  // Checked the instant fetch() resolves, before branching on resp.ok —
+  // same placement as run-status-check's generation guard (index.html:598-
+  // 599). An in-flight poll for an id the operator has since navigated
+  // away from must touch neither the now-displayed view nor its timer.
+  //
+  // PR #172 Copilot review: this function has FOUR staleness boundaries,
+  // not three — the fetch-catch, the fetch-success (this check), the
+  // non-ok branch's OWN `resp.json()` below, and the ok branch's
+  // `resp.json()` further down. The comment here used to claim this one
+  // check covered "ANY of the three paths below (ok, non-ok, or the catch
+  // above)" — true of the moment fetch() resolves, but the non-ok branch
+  // awaits `resp.json()` a second time, and nothing re-checked staleness
+  // after THAT await resolved. That comment is what told three reviewers
+  // and the branch's own ledger this was already handled; it was wrong,
+  // so it is corrected here rather than left to mislead the next reader.
+  if (requestId !== rcViewRequestId) return;
+  if (!resp.ok) {
+    // 404 (no such request) or 409 (control plane off) — a definitive
+    // server answer, not a transport failure; shown verbatim and not
+    // retried, same as run-status-check's non-ok handling above.
+    const data = await resp.json().catch(() => ({}));
+    // Re-checked after this branch's OWN await, same discipline as the ok
+    // branch below — an operator who opened a different request while
+    // THIS json() was in flight must not have it overwrite the new view
+    // or clear the new view's own timer (`rcViewTimer` is a single
+    // page-global, so clearing it here would kill whichever poll is
+    // actually current).
+    if (requestId !== rcViewRequestId) return;
+    box.innerHTML =
+      `<div class="warn">${esc(data.detail ?? `HTTP ${resp.status}`)}</div>`;
+    if (rcViewTimer !== null) { clearInterval(rcViewTimer); rcViewTimer = null; }
+    return;
+  }
+  const view = await resp.json();
+  if (requestId !== rcViewRequestId) return;  // superseded while parsing
+  // Whole-branch review I1: renderRunView rebuilds the WHOLE of
+  // #rc-run-view, including #rc-verb-task-id and #rc-verb-result, which
+  // Task 5 put inside the polled region. A materialized record with a
+  // live run is deliberately never settled (rcViewSettled below), so this
+  // fires every 5s — a poll landing mid-typing would otherwise silently
+  // empty the task-id field, and any verb output (including a status dump
+  // the operator just asked for) would be erased by the next tick.
+  // Captured before the re-render, restored after — `?.` because neither
+  // element exists yet on the very first render, or when the new view has
+  // moved to/from launch_unknown (renderUnknownActions has no such ids).
+  const prevTaskId = document.getElementById("rc-verb-task-id")?.value;
+  const prevVerbResult = document.getElementById("rc-verb-result")?.innerHTML;
+  box.innerHTML = renderRunView(view);
+  if (prevTaskId !== undefined) {
+    const taskIdEl = document.getElementById("rc-verb-task-id");
+    if (taskIdEl) taskIdEl.value = prevTaskId;
+  }
+  if (prevVerbResult !== undefined) {
+    const resultEl = document.getElementById("rc-verb-result");
+    if (resultEl) resultEl.innerHTML = prevVerbResult;
+  }
+  // B2: while THIS view stands unresolved (launch_unknown), a second
+  // submit is the one action the recovery design forbids — the launch may
+  // already have happened, and a retry risks a second one. `record.state
+  // === "launch_unknown"` is, by definition, the server-declared case
+  // (spec §5.2.1) — the same one `rcSubmitBlocked` tracks for the direct
+  // path. Fix round 1: OR'd with `rcSubmitBlocked`, not overwriting it —
+  // an operator who submitted from THIS tab and is server-blocked, then
+  // opens some OTHER, unrelated, ordinary view, must not have that
+  // unrelated view's settled state silently re-enable submission while
+  // their own attempt is still unresolved. (Deliberately NOT OR'd with
+  // `rcPendingRequestId`: a transport-level null also pins the id, but
+  // must not block — see the comment on `rcSubmitBlocked`'s declaration.)
+  document.getElementById("rc-submit").disabled =
+    rcSubmitBlocked || view.record.state === "launch_unknown";
+  if (rcViewSettled(view)) {
+    if (rcViewTimer !== null) { clearInterval(rcViewTimer); rcViewTimer = null; }
+  } else if (rcViewTimer === null) {
+    rcViewTimer = setInterval(rcPollView, 5000);
+  }
+}
+
+document.getElementById("rc-open").addEventListener("click", async () => {
+  const requestId = document.getElementById("rc-request-id").value.trim();
+  if (!requestId) {
+    document.getElementById("rc-run-view").innerHTML =
+      `<div class="warn">enter a request_id</div>`;
+    return;
+  }
+  if (rcViewTimer !== null) { clearInterval(rcViewTimer); rcViewTimer = null; }
+  rcViewRequestId = requestId;
+  await rcPollView();
+});
+
+// Fires one Mode-1 verb against the currently open request (Task 5, spec
+// §6). `approve`/`retry` are checked for a task id BEFORE anything is sent
+// — a request rejected here never reaches the wire, same discipline as
+// validateRunRequest on the submit form — and the refusal is the server's
+// own wording (RC_VERB_TASK_ID_MESSAGE), so an operator reads one
+// vocabulary for the rule, not two. `status` needs no task id and is sent
+// immediately. Same staleness discipline as #rc-resolve/#rc-end above:
+// requestId is captured before any await and re-checked after each one, so
+// an operator who opens a different request while this is in flight does
+// not have that request's result land in this one's #rc-verb-result.
+async function rcRunVerb(verb, btn) {
+  const requestId = rcViewRequestId;
+  const result = document.getElementById("rc-verb-result");
+  const needsTaskId = verb === "approve" || verb === "retry";
+  const taskId = needsTaskId
+    ? document.getElementById("rc-verb-task-id").value.trim() : "";
+  if (needsTaskId && !taskId) {
+    result.innerHTML =
+      `<div class="rc-result err">${esc(RC_VERB_TASK_ID_MESSAGE[verb])}</div>`;
+    return;
+  }
+  btn.disabled = true;
+  result.textContent = "…";
+  const body = needsTaskId ? {verb, task_id: taskId} : {verb};
+  let resp;
+  try {
+    resp = await fetch(`/api/runs/${encodeURIComponent(requestId)}/verb`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json",
+                "X-Action-Token": await ensureActionToken()},
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    if (requestId !== rcViewRequestId) return;
+    result.innerHTML = `<div class="rc-result err">${esc(String(err))}</div>`;
+    btn.disabled = false;
+    return;
+  }
+  if (requestId !== rcViewRequestId) return;
+  const data = await resp.json().catch(() => ({}));
+  if (requestId !== rcViewRequestId) return;
+  if (!resp.ok) {
+    result.innerHTML =
+      `<div class="rc-result err">${esc(data.detail ?? `HTTP ${resp.status}`)}</div>`;
+    btn.disabled = false;
+    return;
+  }
+  result.innerHTML = renderVerbOutcome(data);
+  btn.disabled = false;
+}
+
+// `#rc-view-actions`, `#rc-resolve`, `#rc-resolution`, `#rc-end-run`,
+// `#rc-end-outcome`, `#rc-end`, `#rc-verb-task-id`, `#rc-verb-status`,
+// `#rc-verb-retry`, `#rc-verb-approve` and `#rc-verb-result` are all
+// re-created on every renderRunView call, so their listeners are delegated
+// on the box that survives re-render — same idiom as
+// `#sync-hosts`/`#sync-proposals` above.
+document.getElementById("rc-run-view").addEventListener("click", async e => {
+  const resolveBtn = e.target.closest("#rc-resolve");
+  if (resolveBtn) {
+    // Captured before any await, checked after each one, same discipline
+    // as rcPollView: an operator who opens a different request_id while
+    // this is in flight must not have their new view clobbered by this
+    // one's stale answer.
+    const requestId = rcViewRequestId;
+    resolveBtn.disabled = true;
+    const box = document.getElementById("rc-resolution");
+    box.textContent = "…";
+    let resp;
+    try {
+      resp = await fetch(`/api/runs/${encodeURIComponent(requestId)}/resolve`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json",
+                  "X-Action-Token": await ensureActionToken()},
+        body: JSON.stringify({}),
+      });
+    } catch (err) {
+      if (requestId !== rcViewRequestId) return;
+      box.innerHTML = `<div class="warn">${esc(String(err))}</div>`;
+      resolveBtn.disabled = false;
+      return;
+    }
+    if (requestId !== rcViewRequestId) return;
+    const data = await resp.json().catch(() => ({}));
+    if (requestId !== rcViewRequestId) return;
+    if (!resp.ok) {
+      box.innerHTML =
+        `<div class="warn">${esc(data.detail ?? `HTTP ${resp.status}`)}</div>`;
+      resolveBtn.disabled = false;
+      return;
+    }
+    box.innerHTML = renderResolution(data);
+    if ((data.candidates || []).length === 1) {
+      // Adopted: record.state has moved off launch_unknown (materialized).
+      // launch_unknown is settled UNTIL an operator acts (rcViewSettled),
+      // so nothing will poll into this on its own — the refresh has to be
+      // deliberate, right here, not left for a timer that was never set.
+      // Fix round 1: if THIS request is the one a direct submit in this
+      // tab pinned, resolving it here is exactly what settles that
+      // attempt — clear both, or the OR'd gate in rcPollView below could
+      // leave #rc-submit disabled with nothing left to resolve.
+      if (requestId === rcPendingRequestId) {
+        rcPendingRequestId = null;
+        rcSubmitBlocked = false;
+      }
+      await rcPollView();
+    } else {
+      // Zero or still-ambiguous: still launch_unknown, so let the operator
+      // try again (e.g. a late run may still appear).
+      resolveBtn.disabled = false;
+    }
+    return;
+  }
+
+  const endBtn = e.target.closest("#rc-end");
+  if (endBtn) {
+    const requestId = rcViewRequestId;
+    const runId = document.getElementById("rc-end-run").value;
+    const outcome = document.getElementById("rc-end-outcome").value;
+    endBtn.disabled = true;
+    const box = document.getElementById("rc-resolution");
+    let resp;
+    try {
+      resp = await fetch(`/api/runs/${encodeURIComponent(requestId)}/resolve`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json",
+                  "X-Action-Token": await ensureActionToken()},
+        body: JSON.stringify({run_id: runId, outcome}),
+      });
+    } catch (err) {
+      if (requestId !== rcViewRequestId) return;
+      box.insertAdjacentHTML("beforeend",
+        `<div class="warn">${esc(String(err))}</div>`);
+      endBtn.disabled = false;
+      return;
+    }
+    if (requestId !== rcViewRequestId) return;
+    const data = await resp.json().catch(() => ({}));
+    if (requestId !== rcViewRequestId) return;
+    if (!resp.ok) {
+      box.insertAdjacentHTML("beforeend",
+        `<div class="warn">${esc(data.detail ?? `HTTP ${resp.status}`)}</div>`);
+      endBtn.disabled = false;
+      return;
+    }
+    // Ended: record.state has moved off launch_unknown (terminal). Same
+    // deliberate-refresh reasoning as the adopt branch above, and the same
+    // fix-round-1 clearing: this request is now settled either way.
+    if (requestId === rcPendingRequestId) {
+      rcPendingRequestId = null;
+      rcSubmitBlocked = false;
+    }
+    await rcPollView();
+    return;
+  }
+
+  const statusBtn = e.target.closest("#rc-verb-status");
+  if (statusBtn) { await rcRunVerb("status", statusBtn); return; }
+  const retryBtn = e.target.closest("#rc-verb-retry");
+  if (retryBtn) { await rcRunVerb("retry", retryBtn); return; }
+  const approveBtn = e.target.closest("#rc-verb-approve");
+  if (approveBtn) { await rcRunVerb("approve", approveBtn); return; }
+});
+
+// `run_id` and `outcome` must be given together (spec §5.2.1, #168): the
+// button stays disabled until both selects carry a value.
+document.getElementById("rc-run-view").addEventListener("change", e => {
+  if (e.target.id !== "rc-end-run" && e.target.id !== "rc-end-outcome") return;
+  const btn = document.getElementById("rc-end");
+  if (!btn) return;
+  const runId = document.getElementById("rc-end-run").value;
+  const outcome = document.getElementById("rc-end-outcome").value;
+  btn.disabled = !(runId && outcome);
 });
 
 async function refresh() {
