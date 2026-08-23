@@ -1131,16 +1131,31 @@ async function rcPollView() {
   // Checked the instant fetch() resolves, before branching on resp.ok —
   // same placement as run-status-check's generation guard (index.html:598-
   // 599). An in-flight poll for an id the operator has since navigated
-  // away from must touch neither the now-displayed view nor its timer,
-  // on ANY of the three paths below (ok, non-ok, or the catch above): a
-  // stale error landing after a newer #rc-open click must not overwrite
-  // the new view or silently kill its polling.
+  // away from must touch neither the now-displayed view nor its timer.
+  //
+  // PR #172 Copilot review: this function has FOUR staleness boundaries,
+  // not three — the fetch-catch, the fetch-success (this check), the
+  // non-ok branch's OWN `resp.json()` below, and the ok branch's
+  // `resp.json()` further down. The comment here used to claim this one
+  // check covered "ANY of the three paths below (ok, non-ok, or the catch
+  // above)" — true of the moment fetch() resolves, but the non-ok branch
+  // awaits `resp.json()` a second time, and nothing re-checked staleness
+  // after THAT await resolved. That comment is what told three reviewers
+  // and the branch's own ledger this was already handled; it was wrong,
+  // so it is corrected here rather than left to mislead the next reader.
   if (requestId !== rcViewRequestId) return;
   if (!resp.ok) {
     // 404 (no such request) or 409 (control plane off) — a definitive
     // server answer, not a transport failure; shown verbatim and not
     // retried, same as run-status-check's non-ok handling above.
     const data = await resp.json().catch(() => ({}));
+    // Re-checked after this branch's OWN await, same discipline as the ok
+    // branch below — an operator who opened a different request while
+    // THIS json() was in flight must not have it overwrite the new view
+    // or clear the new view's own timer (`rcViewTimer` is a single
+    // page-global, so clearing it here would kill whichever poll is
+    // actually current).
+    if (requestId !== rcViewRequestId) return;
     box.innerHTML =
       `<div class="warn">${esc(data.detail ?? `HTTP ${resp.status}`)}</div>`;
     if (rcViewTimer !== null) { clearInterval(rcViewTimer); rcViewTimer = null; }

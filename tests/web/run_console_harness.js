@@ -1561,6 +1561,66 @@ testCase('M1b: a launching/reserved record with no run still says "no run '
   });
 });
 
+// -- PR #172 Copilot review: the non-ok branch's OWN await (resp.json()) ---
+// has no staleness re-check, even though the pre-branch guard's comment
+// claimed all three paths (ok, non-ok, catch) were covered. The existing
+// "stale in-flight poll (non-ok response)" case above stalls fetch()
+// ITSELF, so the pre-branch guard (`requestId !== rcViewRequestId`, right
+// after fetch resolves) catches it before the non-ok branch's own
+// `resp.json()` is ever reached — it never actually exercised that second
+// await. This case stalls ONLY `.json()` on an already-resolved non-ok
+// response, so the race lands inside the non-ok branch, past the
+// pre-branch guard, at the boundary that had no check of its own.
+
+testCase('Copilot #1: a stale non-ok response, unstuck AFTER its own '
+  + '.json() await (not at fetch), must not clobber a newer view or kill '
+  + 'its timer', async () => {
+  await withPage(async page => {
+    await openView(page, 'req-1', {record: {state: 'materialized', run_id: '01AAA'},
+      run: {status: 'running'}, warnings: []});
+
+    // fetch() itself resolves immediately with a non-ok response; only
+    // THAT response's .json() call hangs — the race is inside the non-ok
+    // branch, after the pre-branch guard has already passed.
+    let resolveJson;
+    const jsonPromise = new Promise(resolve => { resolveJson = resolve; });
+    page.routes.unshift([u => u === '/api/runs/req-1', () => ({
+      status: 404, ok: false, json: () => jsonPromise,
+    })]);
+
+    // Fires req-1's own poll interval; fetch() resolves (non-ok), the
+    // pre-branch guard passes (still req-1), and it now sits awaiting
+    // resp.json() — genuinely in flight, past the only check that exists.
+    await tick(page, 5000);
+
+    // The operator opens req-2 (also unsettled) while req-1's non-ok poll
+    // is stuck inside its OWN await. This clears req-1's timer, renders
+    // req-2, and starts req-2's OWN timer — rcViewTimer now holds req-2's
+    // interval id.
+    await openView(page, 'req-2', {record: {state: 'materialized', run_id: '01BBB'},
+      run: {status: 'running'}, warnings: []});
+    const viewAfterOpen = el(page, '#rc-run-view').innerHTML;
+
+    // Now let req-1's stale .json() resolve.
+    resolveJson({detail: 'no such request: req-1'});
+    await drain(10);
+
+    check(el(page, '#rc-run-view').innerHTML === viewAfterOpen,
+      "a stale non-ok response for req-1, unstuck at its OWN .json() "
+      + "await, must not overwrite req-2's view");
+
+    // The worse and easier-to-miss half: without the guard, the stale
+    // path's `clearInterval(rcViewTimer)` would kill req-2's ACTIVE timer
+    // (rcViewTimer is a single page-global holding whichever view is
+    // current). Assert the timer survived, not just the DOM.
+    const before = page.calls.filter(c => c.url === '/api/runs/req-2').length;
+    await tick(page, 5000);
+    const after = page.calls.filter(c => c.url === '/api/runs/req-2').length;
+    check(after > before, "req-2's polling must survive the stale req-1 "
+      + `non-ok .json() landing late (before=${before}, after=${after})`);
+  });
+});
+
 // ---- main -------------------------------------------------------------------
 
 (async () => {

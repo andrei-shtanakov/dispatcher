@@ -34,10 +34,19 @@ _MISSING_NODE = (
 def test_run_console_js_suite_passes() -> None:
     node = shutil.which("node")
     assert node is not None, _MISSING_NODE
+    # PR #172 Copilot review: matches test_task_authoring_js.py's timeout=120
+    # (`_run`, tests/test_task_authoring_js.py:44-52). It matters more here
+    # than in that sibling: this is the only harness that installs a
+    # controllable virtual clock (`makeVirtualClock`,
+    # tests/web/run_console_harness.js) — a regression that let a real
+    # timer loop, or a `tick` that reschedules faster than it drains, hangs
+    # rather than fails. Without a timeout that hangs CI instead of failing
+    # the suite.
     result = subprocess.run(
         [node, str(HARNESS), str(INDEX_HTML)],
         capture_output=True,
         text=True,
+        timeout=120,
     )
     assert result.returncode == 0, (
         f"run console harness failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
