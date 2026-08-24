@@ -273,6 +273,14 @@ class RunController:
 
         try:
             validated = validate_request(request, self._config)
+            # Checked HERE, beside the request's own validation: before the
+            # lock is taken, before a record is written, and before any
+            # process starts. A launch without a resolvable catalog is a
+            # decidable `accepted: false` (spec §5.3) — dispatcher knows no
+            # run was created — not the ambiguity of a child that publishes
+            # a run directory and then halts on the missing catalog, which
+            # is what the pilot saw.
+            catalog = self._catalog_path()
         except RunRejectedError as err:
             return self._refuse(request.request_id, str(err))
 
@@ -306,7 +314,9 @@ class RunController:
             # had fallen behind it.
             return self._refuse(request.request_id, f"cannot use request_id: {err}")
 
-        return self._launch(store, request, validated.checkout, validated.key, runs)
+        return self._launch(
+            store, request, validated.checkout, validated.key, runs, catalog
+        )
 
     def _launch(
         self,
@@ -315,6 +325,7 @@ class RunController:
         checkout: Path,
         key: RepoKey,
         runs: Path,
+        catalog: Path,
     ) -> LaunchReceipt:
         state_dir, cli, home = self._require_on()
         reserved = store.get(request.request_id)
@@ -336,7 +347,18 @@ class RunController:
             # "reserved" and a resubmission will try again.
             return self._refuse(request.request_id, f"cannot start maestro: {err}")
         argv = [str(cli), "run", request.tasks]
-        env = {**os.environ, "MAESTRO_HOME": str(home)}
+        # The CONFIGURED catalog wins over anything ambient: an inherited
+        # `$ATP_CATALOG` would make the launch depend on how the server was
+        # started, which is the failure `_catalog_path` exists to end.
+        # Passed in from `submit`, which validated it, rather than
+        # re-derived here: this call site is NOT inside submit's try, so a
+        # second validation raising here would escape as an unhandled 500
+        # instead of a receipt (PR #176 Copilot review).
+        env = {
+            **os.environ,
+            "MAESTRO_HOME": str(home),
+            "ATP_CATALOG": str(catalog),
+        }
         try:
             store.mark_launching(request.request_id)
         except (RunStoreError, OSError) as err:
@@ -422,6 +444,81 @@ class RunController:
         return LaunchReceipt(
             request_id=request.request_id, accepted=None, reason=reason
         )
+
+    def _verb_env(self, home: Path) -> dict[str, str]:
+        """Child environment for a control verb.
+
+        Injects the CONFIGURED catalog when there is one, for the same
+        reason `_launch` does: an inherited `$ATP_CATALOG` would make the
+        verb depend on how the server was started.
+
+        Unlike `submit`, a missing catalog is NOT refused here. `status`
+        resolves no models and needs no catalog, and refusing it would undo
+        the read path that #174 restored — a control plane that cannot
+        report on a run is worse than one that cannot retry a task. `retry`
+        does need one; without it the child fails and says so, and its
+        stderr reaches the operator through `VerbOutcome`. That is an
+        honest failure of the attempt, not a run created in the dark, so it
+        does not need the pre-flight refusal `submit` gets.
+        """
+        env = {**os.environ, "MAESTRO_HOME": str(home)}
+        catalog = self._config.atp_catalog
+        if catalog is not None:
+            env["ATP_CATALOG"] = str(catalog)
+        else:
+            # Unconfigured means ABSENT, not "whatever the shell had". An
+            # inherited value would be the very dependency on how the server
+            # was started that this ends — and it would answer the same
+            # question two different ways, since `submit` refuses outright
+            # while a verb quietly used the ambient one (PR #176 Copilot
+            # review). An operator with no configured catalog cannot create
+            # runs at all, so nothing legitimate is lost.
+            env.pop("ATP_CATALOG", None)
+        return env
+
+    def _catalog_path(self) -> Path:
+        """The configured ATP catalog, checked before anything is launched.
+
+        maestro resolves a task's model through `$ATP_CATALOG`
+        (`maestro/maestro/catalog.py:388`) and halts the whole run when it
+        is missing. The pilot's first run died two seconds after a receipt
+        that said "started": the variable lived in an interactive shell,
+        the server had been started without it, and the child inherited
+        that absence. The record went to `materialized` because maestro had
+        already published the run directory before it read the catalog, so
+        nothing about the failure was visible from the console.
+
+        The value comes from configuration, never from `os.environ`. An
+        ambient variable is not a declaration: it is invisible to anyone
+        reading the config, differs between an interactive start and a
+        service start, and cannot be checked before use. The controller
+        already treats `MAESTRO_HOME` this way for the same reason.
+
+        Only declaredness and reachability are checked here. Whether the
+        catalog's CONTENTS are valid belongs to ATP and maestro — a
+        malformed catalog stays an honest failure of the run itself, and
+        duplicating that judgement here would put a second, drifting copy
+        of someone else's schema in dispatcher.
+        """
+        catalog = self._config.atp_catalog
+        if catalog is None:
+            raise RunRejectedError(
+                "atp_catalog is not configured: maestro resolves every "
+                "task's model through it and halts without one, so a launch "
+                "would produce a run that dies immediately. Set an absolute "
+                "atp_catalog in dispatcher.toml"
+            )
+        if not catalog.is_absolute():
+            raise RunRejectedError(
+                f"atp_catalog must be an absolute path, got: {catalog}"
+            )
+        if not catalog.is_file():
+            raise RunRejectedError(
+                f"atp_catalog does not exist or is not a regular file: {catalog}"
+            )
+        if not os.access(catalog, os.R_OK):
+            raise RunRejectedError(f"atp_catalog is not readable: {catalog}")
+        return catalog
 
     @staticmethod
     def _verb_cwd(record: LaunchRecord) -> Path:
@@ -779,7 +876,7 @@ class RunController:
                 cwd=str(self._verb_cwd(record)),
                 capture_output=True,
                 text=True,
-                env={**os.environ, "MAESTRO_HOME": str(home)},
+                env=self._verb_env(home),
                 timeout=_VERB_TIMEOUT,
             )
         except (OSError, subprocess.SubprocessError) as err:
@@ -956,7 +1053,7 @@ class RunController:
                 cwd=str(self._verb_cwd(record)),
                 capture_output=True,
                 text=True,
-                env={**os.environ, "MAESTRO_HOME": str(home)},
+                env=self._verb_env(home),
                 timeout=_VERB_TIMEOUT,
             )
         except (OSError, subprocess.SubprocessError) as err:

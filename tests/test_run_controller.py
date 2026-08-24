@@ -114,12 +114,21 @@ def _fake_maestro(
     return path
 
 
+def _catalog(tmp_path: Path) -> Path:
+    """A readable catalog file — declaredness and reachability are all
+    dispatcher checks; the CONTENTS belong to ATP and maestro."""
+    path = tmp_path / "agents-catalog.toml"
+    path.write_text('[[agents]]\nharness = "claude_code"\n')
+    return path
+
+
 def _config(tmp_path: Path, cli: Path) -> DispatcherConfig:
     return DispatcherConfig(
         roots=(tmp_path / "ws",),
         maestro_home=tmp_path / "mhome",
         run_state_dir=tmp_path / "state",
         maestro_cli=cli,
+        atp_catalog=_catalog(tmp_path),
     )
 
 
@@ -1041,3 +1050,155 @@ def test_a_relative_recorded_checkout_is_refused_not_resolved(
 
     with pytest.raises(RunRejectedError, match="relative"):
         controller.control(_REQ, "status")
+
+
+# --- ATP catalog is a declared precondition, not ambient state ------------
+#
+# The slice-0 pilot's first run died two seconds after a receipt that said
+# "started": `$ATP_CATALOG` lived in an interactive shell, the server had
+# been started without it, and the child inherited that absence. maestro had
+# already published the run directory before reading the catalog, so the
+# record went to `materialized` and nothing about the failure was visible
+# from the console.
+
+_RECORD_ENV = """
+import os, pathlib, sys
+log = os.environ["FAKE_MAESTRO_ENV_LOG"]
+with open(log, "a") as fh:
+    fh.write(os.environ.get("ATP_CATALOG", "<unset>") + "\\n")
+home = pathlib.Path(os.environ["MAESTRO_HOME"])
+d = home / "projects/github.com/owner/deployer/runs/01AAA"
+if not d.exists():
+    d.mkdir(parents=True)
+    (d / "state.db").write_text("")
+sys.exit(0)
+"""
+
+
+def test_the_launched_child_gets_the_configured_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Injected from config — and the configured value WINS over ambient."""
+    log = tmp_path / "env.log"
+    monkeypatch.setenv("FAKE_MAESTRO_ENV_LOG", str(log))
+    # An ambient value that must NOT be what the child sees: inheriting it
+    # is the dependency on how the server was started that this ends.
+    monkeypatch.setenv("ATP_CATALOG", "/somewhere/ambient/catalog.toml")
+    head = _repo(tmp_path / "ws")
+    cli = tmp_path / "env-maestro"
+    cli.write_text(
+        "#!/usr/bin/env python3\n" + textwrap.dedent(_RECORD_ENV).strip() + "\n"
+    )
+    cli.chmod(0o755)
+    controller = RunController(_config(tmp_path, cli), materialize_timeout=10.0)
+
+    receipt = controller.submit(_request(head))
+    assert receipt.accepted is True
+
+    seen = log.read_text().split()
+    assert seen, "the child never ran"
+    assert seen[-1] == str(tmp_path / "agents-catalog.toml"), (
+        f"child saw {seen[-1]!r}: the ambient value leaked through"
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "match"),
+    [
+        (lambda tmp_path, c: None, "not configured"),
+        (lambda tmp_path, c: tmp_path / "gone.toml", "does not exist"),
+        (lambda tmp_path, c: tmp_path, "not a regular file"),
+        (lambda tmp_path, c: Path("relative/catalog.toml"), "absolute"),
+    ],
+    ids=["unconfigured", "missing-file", "a-directory", "relative"],
+)
+def test_submit_refuses_before_starting_anything_when_the_catalog_is_unusable(
+    tmp_path: Path, mutate, match: str
+) -> None:
+    """`accepted: false`, and maestro is never executed.
+
+    This is the decidable-false case (spec §5.3): dispatcher KNOWS no run
+    was created, because it refused before the lock, before the record and
+    before the process. Asserting only on the receipt would not show that —
+    a child that ran and failed could produce the same words.
+    """
+    head = _repo(tmp_path / "ws")
+    marker = tmp_path / "maestro-was-executed"
+    cli = tmp_path / "tripwire-maestro"
+    cli.write_text(
+        "#!/usr/bin/env python3\n"
+        f"import pathlib; pathlib.Path({str(marker)!r}).write_text('x')\n"
+    )
+    cli.chmod(0o755)
+    config = dataclasses.replace(
+        _config(tmp_path, cli), atp_catalog=mutate(tmp_path, None)
+    )
+    controller = RunController(config, materialize_timeout=10.0)
+
+    receipt = controller.submit(_request(head))
+
+    assert receipt.accepted is False
+    assert match in (receipt.reason or "")
+    assert not marker.exists(), "maestro was executed despite the refusal"
+    # Nothing was reserved either: no lock to release, no record to resolve.
+    assert RunStore(tmp_path / "state").get(_REQ) is None
+
+
+def test_status_still_works_with_no_catalog_configured(tmp_path: Path) -> None:
+    """A read verb must not be held hostage to a launch precondition.
+
+    `status` resolves no models. Refusing it for a missing catalog would
+    undo the read path #174 restored — a control plane that cannot report
+    on a run is worse than one that cannot retry a task.
+    """
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    controller._config = dataclasses.replace(controller._config, atp_catalog=None)
+    outcome = controller.control(_REQ, "status")
+    assert outcome.ok
+
+
+_ECHO_CATALOG = """
+import os, pathlib, sys
+home = pathlib.Path(os.environ["MAESTRO_HOME"])
+d = home / "projects/github.com/owner/deployer/runs/01AAA"
+if not d.exists():
+    d.mkdir(parents=True)
+    (d / "state.db").write_text("")
+    sys.exit(0)
+print("ATP_CATALOG=" + os.environ.get("ATP_CATALOG", "<unset>"))
+"""
+
+
+def test_a_verb_does_not_inherit_an_ambient_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unconfigured means ABSENT, not "whatever the shell had".
+
+    Inheriting it would be the dependency on how the server was started
+    that this whole precondition ends, and it would answer the same
+    question two ways: `submit` refuses outright while a verb quietly used
+    the ambient value (PR #176 Copilot review).
+    """
+    monkeypatch.setenv("ATP_CATALOG", "/somewhere/ambient/catalog.toml")
+    controller = _materialized(tmp_path, _ECHO_CATALOG)
+    controller._config = dataclasses.replace(controller._config, atp_catalog=None)
+
+    outcome = controller.control(_REQ, "status")
+
+    assert outcome.ok
+    assert "ATP_CATALOG=<unset>" in outcome.stdout, (
+        f"the ambient value leaked into the verb: {outcome.stdout!r}"
+    )
+
+
+def test_a_verb_gets_the_configured_catalog_when_there_is_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """And when configured, the configured value wins over the ambient one."""
+    monkeypatch.setenv("ATP_CATALOG", "/somewhere/ambient/catalog.toml")
+    controller = _materialized(tmp_path, _ECHO_CATALOG)
+
+    outcome = controller.control(_REQ, "status")
+
+    assert outcome.ok
+    assert f"ATP_CATALOG={tmp_path / 'agents-catalog.toml'}" in outcome.stdout
