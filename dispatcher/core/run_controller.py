@@ -26,7 +26,12 @@ from pydantic import BaseModel, Field
 from dispatcher.core.collectors.maestro import classified_runs
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.models import OrchestrationRunInfo, ProjectSnapshot
-from dispatcher.core.run_identity import RepoKey, safe_path_parts
+from dispatcher.core.run_identity import (
+    IdentityError,
+    RepoKey,
+    identity_from_checkout,
+    safe_path_parts,
+)
 from dispatcher.core.run_request import (
     RunRejectedError,
     RunRequest,
@@ -287,6 +292,10 @@ class RunController:
                 spec_commit=validated.spec_commit,
                 plan_ref_path=request.plan_ref.path if request.plan_ref else None,
                 plan_commit=validated.plan_commit,
+                # The checkout the launch will run in, persisted so every
+                # later verb runs maestro from the SAME repository rather
+                # than from the server process's cwd (see `_verb_cwd`).
+                checkout=str(validated.checkout),
             )
         except LockBusyError as err:
             return self._refuse(request.request_id, str(err))
@@ -415,6 +424,61 @@ class RunController:
         )
 
     @staticmethod
+    def _verb_cwd(record: LaunchRecord) -> Path:
+        """The checkout a verb must run maestro from, re-derived and re-checked.
+
+        maestro resolves which repository a run belongs to from the
+        directory it is standing in. `_launch` has always passed
+        `cwd=<checkout>`; `control` and `end_orphan` did not, so every verb
+        inherited the dispatcher SERVER's cwd — normally the dispatcher
+        checkout — and asked maestro about the wrong repository. The run was
+        then reported as missing ("no run <id> for .../dispatcher; known
+        runs: none") no matter how healthy it was. Found by the slice-0
+        pilot, 2026-08-24: the same defect class as the launch-side one the
+        whole-branch review caught, which is that a repository is named by
+        the request and the DAG, never by whatever directory a child happens
+        to start in.
+
+        The path comes from the durable record written at `reserve()`, never
+        from the caller: a verb must not be re-pointed at another repository
+        by its own request body. It is then re-checked rather than trusted —
+        a directory can be moved, replaced, or re-pointed at a different
+        remote between launch and verb, and acting on the wrong repository
+        is worse than refusing.
+        """
+        if not record.checkout:
+            # Written before this field existed. Falling back to the process
+            # cwd is exactly the bug, and guessing a checkout from `repo_key`
+            # would pick one of possibly several clones, so this refuses.
+            raise RunRejectedError(
+                f"{record.request_id} predates checkout binding: its record "
+                "carries no checkout, and running a verb from the server's "
+                "own directory would ask maestro about the wrong repository. "
+                "Re-submit the request to get a record that carries one"
+            )
+        checkout = Path(record.checkout)
+        if not (checkout / ".git").exists():
+            raise RunRejectedError(
+                f"{record.request_id}: the checkout recorded at launch is "
+                f"gone or is no longer a git repository ({checkout})"
+            )
+        try:
+            actual = identity_from_checkout(checkout)
+        except IdentityError as err:
+            raise RunRejectedError(
+                f"{record.request_id}: cannot read the identity of the "
+                f"recorded checkout {checkout}: {err}"
+            ) from err
+        if actual.as_text() != record.repo_key:
+            raise RunRejectedError(
+                f"{record.request_id}: the checkout recorded at launch "
+                f"({checkout}) now resolves to {actual.as_text()}, not "
+                f"{record.repo_key} — refusing to act on a different "
+                "repository than the one the run belongs to"
+            )
+        return checkout
+
+    @staticmethod
     def _validate_maestro_cli(cli: Path) -> None:
         """Refuse a `maestro_cli` that is not what it claims to be (I6).
 
@@ -424,6 +488,13 @@ class RunController:
         that uses it, a relative value containing a slash
         (`./bin/maestro`, `tools/maestro`) would execute a binary from
         INSIDE the target repository instead of the configured location.
+
+        "Every call site" became true only on 2026-08-24. When this was
+        written, `_launch` passed `cwd=` and `control`/`end_orphan` did not,
+        so the sentence described a guarantee two thirds of the code did not
+        provide — and the pilot found the verbs asking maestro about the
+        dispatcher repository. The absolute-path check below always held; it
+        was the cwd half of the claim that was false.
         Mirrors the existing pattern at
         `dispatcher/core/suggest_cli.py:128-133` (H-1): absolute, and the
         file must actually exist.
@@ -692,6 +763,10 @@ class RunController:
         try:
             proc = subprocess.run(  # noqa: S603 — argv is a fixed shape
                 argv,
+                # maestro reads a run's repository from the directory it is
+                # standing in, so every verb must run in the SAME checkout
+                # the launch used — see `_verb_cwd`.
+                cwd=str(self._verb_cwd(record)),
                 capture_output=True,
                 text=True,
                 env={**os.environ, "MAESTRO_HOME": str(home)},
@@ -853,6 +928,12 @@ class RunController:
                 f"candidates are: {', '.join(candidates) or 'none'}"
             )
         _, cli, home = self._require_on()
+        record = self._store().get(request_id)
+        if record is None:
+            # `_candidates` above resolved this request_id, so its record
+            # existed moments ago; its absence now is a store invariant
+            # violation, not an ordinary failure with a safe fallback.
+            raise RunStoreError(f"{request_id} vanished from the store")
         try:
             self._validate_maestro_cli(cli)
         except RunRejectedError as err:
@@ -860,6 +941,9 @@ class RunController:
         try:
             proc = subprocess.run(  # noqa: S603 — argv is a fixed shape
                 [str(cli), "run-end", run_id, "--outcome", outcome],
+                # Same binding as `control` — this path ends a run too, and
+                # ending the wrong repository's run is the worse mistake.
+                cwd=str(self._verb_cwd(record)),
                 capture_output=True,
                 text=True,
                 env={**os.environ, "MAESTRO_HOME": str(home)},

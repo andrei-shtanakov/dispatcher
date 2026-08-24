@@ -77,6 +77,17 @@ class LaunchRecord(BaseModel):
     spec_commit: str | None = None
     plan_ref_path: str | None = None
     plan_commit: str | None = None
+    #: The checkout `submit` resolved and launched in, persisted so a later
+    #: verb can run maestro from the SAME repository instead of inheriting
+    #: the server process's cwd. maestro derives a run's repository from the
+    #: directory it is standing in, so a verb run from anywhere else asks
+    #: about the wrong repository and reports the run as missing. Stored as
+    #: text rather than re-derived from `repo_key` because a `RepoKey` names
+    #: an identity, not a location, and the same identity can be checked out
+    #: more than once. Empty on records written before this field existed —
+    #: callers must refuse rather than fall back to the process cwd, which
+    #: is precisely the bug.
+    checkout: str = ""
 
 
 class RunStore:
@@ -138,6 +149,7 @@ class RunStore:
         work_id: str = "",
         revision: str = "",
         tasks: str = "",
+        checkout: str = "",
         spec_ref_path: str | None = None,
         spec_commit: str | None = None,
         plan_ref_path: str | None = None,
@@ -184,6 +196,7 @@ class RunStore:
             spec_commit=spec_commit,
             plan_ref_path=plan_ref_path,
             plan_commit=plan_commit,
+            checkout=checkout,
         )
         try:
             self._write(record)
