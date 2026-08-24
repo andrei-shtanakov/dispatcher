@@ -1,6 +1,7 @@
 """RunController launch path (spec §5.3, §5.4)."""
 
 import dataclasses
+import json
 import os
 import subprocess
 import textwrap
@@ -90,6 +91,16 @@ def _fake_maestro(
         msg = {stderr_msg!r}
         if msg:
             print(msg, file=sys.stderr)
+        cwd_log = os.environ.get("FAKE_MAESTRO_CWD_LOG")
+        if cwd_log:
+            # The pilot (2026-08-24) found every verb running in the SERVER's
+            # cwd, so maestro resolved the wrong repository and reported a
+            # healthy run as missing. Nothing observed cwd, which is why a
+            # green suite said nothing about it. Recorded per invocation as
+            # "<verb> <cwd>" so a test can assert it per verb.
+            with open(cwd_log, "a") as fh:
+                verb = sys.argv[1] if len(sys.argv) > 1 else "<none>"
+                fh.write(verb + " " + os.getcwd() + "\\n")
         if run_id:
             home = pathlib.Path(os.environ["MAESTRO_HOME"])
             runs = home / "projects/github.com/owner/deployer/runs" / run_id
@@ -822,3 +833,211 @@ def test_end_orphan_refuses_rather_than_a_stale_candidate_set_when_unreadable(
             controller.end_orphan(_REQ, "01AAA", "cancelled")
     finally:
         runs.chmod(0o755)
+
+
+# --- Repository binding of the verbs (pilot finding, 2026-08-24) -------------
+#
+# maestro derives which repository a run belongs to from the directory it is
+# standing in. `_launch` always passed `cwd=<checkout>`; `control` and
+# `end_orphan` did not, so every verb inherited the dispatcher SERVER's cwd
+# and asked maestro about the wrong repository — the slice-0 pilot got
+# "no run 01M0SB13... for github.com/andrei-shtanakov/dispatcher; known runs:
+# none" for a run that was alive and progressing. Nothing observed the child's
+# cwd, so the suite stayed green through the whole of it.
+
+_RECORD_CWD = """
+import os, pathlib, sys
+# Logged BEFORE any branch: an earlier version logged after the publish
+# shortcut and silently recorded nothing for the verbs that take it, which
+# would have let this very test pass while measuring the launch instead.
+log = os.environ["FAKE_MAESTRO_CWD_LOG"]
+with open(log, "a") as fh:
+    fh.write(sys.argv[1] + " " + os.getcwd() + "\\n")
+home = pathlib.Path(os.environ["MAESTRO_HOME"])
+d = home / "projects/github.com/owner/deployer/runs/01AAA"
+if not d.exists():
+    d.mkdir(parents=True)
+    (d / "state.db").write_text("")
+    sys.exit(0)
+print(" ".join(sys.argv[1:]))
+"""
+
+
+def _cwd_log_lines(log: Path) -> list[tuple[str, str]]:
+    if not log.exists():
+        return []
+    return [
+        (line.split(" ", 1)[0], line.split(" ", 1)[1])
+        for line in log.read_text().splitlines()
+        if line
+    ]
+
+
+@pytest.mark.parametrize(
+    ("verb", "kwargs"),
+    [
+        ("status", {}),
+        ("retry", {"task_id": "red-test"}),
+        ("approve", {"task_id": "red-test"}),
+        ("run-end", {"outcome": "cancelled"}),
+    ],
+)
+def test_every_verb_runs_maestro_in_the_run_s_own_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verb: str, kwargs: dict
+) -> None:
+    """All four verbs, one guarantee — the checkout, never the process cwd."""
+    log = tmp_path / "cwd.log"
+    monkeypatch.setenv("FAKE_MAESTRO_CWD_LOG", str(log))
+    controller = _materialized(tmp_path, _RECORD_CWD)
+    checkout = tmp_path / "ws" / "deployer"
+
+    # The server's own cwd is deliberately NOT the checkout — inheriting it
+    # is the defect, so a test run from inside the checkout would pass while
+    # measuring nothing.
+    assert Path.cwd() != checkout
+
+    outcome = controller.control(_REQ, verb, **kwargs)
+    assert outcome.ok
+
+    recorded = _cwd_log_lines(log)
+    assert recorded, f"{verb} never reached the fake maestro"
+    ran_verb, ran_cwd = recorded[-1]
+    assert ran_verb == verb
+    assert Path(ran_cwd).resolve() == checkout.resolve(), (
+        f"{verb} ran in {ran_cwd}, not the run's checkout {checkout}: "
+        "maestro would resolve the wrong repository and report the run missing"
+    )
+
+
+def test_run_end_through_the_resolution_path_also_binds_to_the_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`end_orphan` is a second subprocess site and needs the same binding.
+
+    Ending the wrong repository's run is the worse of the two mistakes, so
+    this path is pinned separately rather than assumed to follow `control`.
+    """
+    log = tmp_path / "cwd.log"
+    monkeypatch.setenv("FAKE_MAESTRO_CWD_LOG", str(log))
+    # `_unknown` leaves the request in launch_unknown, which is the only
+    # state end_orphan acts from; its fake never publishes, so the two
+    # candidates below are what the operator would be shown.
+    controller, runs = _unknown(tmp_path)
+    checkout = tmp_path / "ws" / "deployer"
+    cli = tmp_path / "fake-maestro"
+    cli.write_text(
+        "#!/usr/bin/env python3\n" + textwrap.dedent(_RECORD_CWD).strip() + "\n"
+    )
+    cli.chmod(0o755)
+    (runs / "01BBB").mkdir(exist_ok=True)
+    (runs / "01CCC").mkdir(exist_ok=True)
+
+    controller.end_orphan(_REQ, "01BBB", "cancelled")
+
+    recorded = _cwd_log_lines(log)
+    assert recorded, "end_orphan never reached the fake maestro"
+    ran_verb, ran_cwd = recorded[-1]
+    assert ran_verb == "run-end"
+    assert Path(ran_cwd).resolve() == checkout.resolve()
+
+
+def test_a_verb_refuses_when_the_recorded_checkout_moved_to_another_repo(
+    tmp_path: Path,
+) -> None:
+    """The recorded path is re-checked, not trusted.
+
+    A directory can be moved, replaced, or re-pointed at a different remote
+    between launch and verb. Acting on the wrong repository is worse than
+    refusing, so the identity is verified against the record's `repo_key`.
+    """
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    checkout = tmp_path / "ws" / "deployer"
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(checkout),
+            "remote",
+            "set-url",
+            "origin",
+            "git@github.com:owner/somewhere-else.git",
+        ],
+        check=True,
+    )
+    with pytest.raises(RunRejectedError, match="somewhere-else"):
+        controller.control(_REQ, "status")
+
+
+def test_a_record_with_no_checkout_is_refused_not_run_from_the_server_cwd(
+    tmp_path: Path,
+) -> None:
+    """A pre-binding record must fail loud.
+
+    Falling back to the process cwd is precisely the defect, and guessing a
+    checkout from `repo_key` would pick one of possibly several clones.
+    """
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    store = RunStore(tmp_path / "state")
+    record = store.get(_REQ)
+    assert record is not None
+    path = tmp_path / "state" / "requests" / f"{_REQ}.json"
+    data = json.loads(path.read_text())
+    del data["checkout"]  # a record written before the field existed
+    path.write_text(json.dumps(data))
+
+    with pytest.raises(RunRejectedError, match="predates checkout binding"):
+        controller.control(_REQ, "status")
+
+
+def test_the_launch_persists_the_checkout_it_used(tmp_path: Path) -> None:
+    """The binding is durable — a verb reads it back, never the request body."""
+    _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    record = RunStore(tmp_path / "state").get(_REQ)
+    assert record is not None
+    assert Path(record.checkout).resolve() == (tmp_path / "ws" / "deployer").resolve()
+
+
+def test_a_relative_workspace_root_still_persists_an_absolute_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relative root must not put the cwd dependency back (PR #174 review).
+
+    `config.roots` is only `expanduser()`-normalised, so a relative root in
+    dispatcher.toml produced a relative checkout — which the launch passed
+    to `cwd=` and the record persisted for later verbs. Both then resolve
+    against whatever directory the server happens to be in, which is the
+    dependency this whole binding exists to remove, and it survives a
+    restart from elsewhere as a wrong path rather than an error.
+    """
+    _repo(tmp_path / "ws")
+    monkeypatch.chdir(tmp_path)
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = dataclasses.replace(_config(tmp_path, cli), roots=(Path("ws"),))
+    controller = RunController(config, materialize_timeout=10.0)
+    controller.submit(_request(_repo_head(tmp_path / "ws")))
+
+    record = RunStore(tmp_path / "state").get(_REQ)
+    assert record is not None
+    assert Path(record.checkout).is_absolute(), (
+        f"persisted {record.checkout!r}: a later verb would resolve it "
+        "against the server's cwd"
+    )
+    assert Path(record.checkout).resolve() == (tmp_path / "ws" / "deployer").resolve()
+
+
+def test_a_relative_recorded_checkout_is_refused_not_resolved(
+    tmp_path: Path,
+) -> None:
+    """An older record holding a relative path fails loud.
+
+    Resolving it at verb time would resolve against the server's cwd, which
+    is exactly the defect — so this refuses rather than guesses.
+    """
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    path = tmp_path / "state" / "requests" / f"{_REQ}.json"
+    data = json.loads(path.read_text())
+    data["checkout"] = "ws/deployer"
+    path.write_text(json.dumps(data))
+
+    with pytest.raises(RunRejectedError, match="relative"):
+        controller.control(_REQ, "status")

@@ -96,7 +96,15 @@ def _checkout(repository: str, config: DispatcherConfig) -> Path:
     target = workspace / repository
     if not (target / ".git").exists():
         raise RunRejectedError(f"not a git repo in workspace: {repository}")
-    return target
+    # ABSOLUTE, always. `config.roots` is only `expanduser()`-normalised
+    # (`dispatcher/core/discovery.py:104`), so a relative root in
+    # dispatcher.toml yields a relative checkout — and every consumer of
+    # this path then silently depends on the server process's cwd: the
+    # launch's own `cwd=`, and the checkout persisted into `LaunchRecord`
+    # for later verbs, which must survive a server restart from a different
+    # directory. Resolving here fixes all of them at the source rather than
+    # at each call site (PR #174 Copilot review).
+    return target.resolve()
 
 
 def validate_request(request: RunRequest, config: DispatcherConfig) -> ValidatedRequest:
