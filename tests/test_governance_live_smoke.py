@@ -68,14 +68,18 @@ status: approved
 - **checked_by**: `status: planned` `kind: e2e` `owner: @qa` `target: t.py::x`
 """
 
+# Каноническая v2-форма (DEC-007): ровно один слаг без '@' — legacy
+# '@role[,@role]' у gate-check @ 9916787+ это ProfileError, exit 2
+# (чек-лист «The next gate-check binary re-pin» в
+# docs/revendor-steward-roles-catalog.md).
 _PROFILE = """profile: team-exp-smoke
 solo_auto_approve: true
 artifacts:
   - id: requirements
-    owner_role: "@product"
+    owner_role: product
     upstream: []
   - id: behaviour-spec
-    owner_role: "@qa"
+    owner_role: qa
     upstream: [requirements]
 """
 
@@ -105,9 +109,10 @@ async def test_live_smoke_real_gate_check_to_http_state(tmp_path: Path) -> None:
     profile = tmp_path / "profile.yaml"
     profile.write_text(_PROFILE)
     # gate-check @ пине steward#50+ требует для --emit-verdicts sibling-файлы
-    # профиля: gate-catalog.yaml (эмиттер-гейт по active-каталогу — берём наш
-    # ВЕНДОРЕННЫЙ канон, он и есть предмет этого смоука) и roles.yaml
-    # (минимальная валидная форма — ролей каталог не ссылается).
+    # профиля: gate-catalog.yaml (эмиттер-гейт по active-каталогу) и roles.yaml
+    # (с b79c858 — обязательный сосед, резолвящий роли профиля). Оба — наши
+    # ВЕНДОРЕННЫЕ копии: они и есть предмет этого смоука; минимальный
+    # однослаговый каталог не резолвит `product`/`qa` бандла — exit 2.
     vendored_catalog = (
         Path(__file__).resolve().parents[1]
         / "contracts"
@@ -116,10 +121,14 @@ async def test_live_smoke_real_gate_check_to_http_state(tmp_path: Path) -> None:
         / "gate-catalog.yaml"
     )
     (tmp_path / "gate-catalog.yaml").write_bytes(vendored_catalog.read_bytes())
-    (tmp_path / "roles.yaml").write_text(
-        'version: 1\nslug_pattern: "^[a-z][a-z0-9-]{1,31}$"\n'
-        "roles:\n  - {slug: owner, display: Owner}\n"
+    vendored_roles = (
+        Path(__file__).resolve().parents[1]
+        / "contracts"
+        / "steward-roles-catalog"
+        / "v1"
+        / "roles.yaml"
     )
+    (tmp_path / "roles.yaml").write_bytes(vendored_roles.read_bytes())
     _git(repo, "init", "--quiet", "-b", "master")
     _git(repo, "add", "-A")
     _git(repo, "commit", "--quiet", "-m", "seed")

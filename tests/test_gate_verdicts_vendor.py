@@ -22,7 +22,7 @@ from pathlib import Path
 VENDORED_ROOT = (
     Path(__file__).parent.parent / "contracts" / "steward-gate-verdicts" / "v1"
 )
-PRODUCER_COMMIT = "9b79700cb7edb7b6930734ecd10b7ad230870bc6"
+PRODUCER_COMMIT = "9916787ff53946612922d65bd7c4ccfc4b0868bd"
 _EXCLUDED_NAMES = {"PINNED.txt", "manifest.json"}
 
 
@@ -69,7 +69,7 @@ def test_pinned_txt_names_the_same_commit() -> None:
 
 
 def test_the_expected_surface_is_present() -> None:
-    """The five canon fixtures and the schema are what the collector tests
+    """The seven canon fixtures and the schema are what the collector tests
     stand on; a re-vendor that silently loses one must fail here, not there."""
     paths = set(_on_disk())
     assert {
@@ -80,4 +80,6 @@ def test_the_expected_surface_is_present() -> None:
         "fixtures/malformed_line.jsonl",
         "fixtures/future_schema.jsonl",
         "fixtures/dangling_artifact.jsonl",
+        "fixtures/chained.jsonl",
+        "fixtures/broken_chain.jsonl",
     } == paths

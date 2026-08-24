@@ -156,6 +156,37 @@ def test_findings_classify_as_blocked_with_findings_exposed(tmp_path: Path) -> N
     assert result.unresolvable_findings == []
 
 
+def test_chained_ledger_is_read_not_unreadable(tmp_path: Path) -> None:
+    """A hash-chained file (steward#105, emitted since steward PR #109) must
+    classify like its unchained twin — ``prev_hash`` is additive, and a copy
+    still pinned to the pre-chain schema read every new ledger as unreadable
+    (inbox #173)."""
+    repo = repo_with(tmp_path, "chained.jsonl")
+    result = collect_governance(repo, git_facts=fresh)
+    assert result.state == "blocked"
+    assert {f.artifact for f in result.findings} == {
+        "15-behaviour-spec.md",
+        "10-requirements.md",
+    }
+    assert all(a.prev_hash is not None for a in result.artifacts)
+    assert all(f.prev_hash is not None for f in result.findings)
+
+
+def test_broken_chain_reads_the_same_because_the_chain_is_not_verified(
+    tmp_path: Path,
+) -> None:
+    """Characterization, not an endorsement: every line of the canon
+    broken-chain fixture is schema-valid on its own, and this collector does
+    not (yet) run the chain verification of README §'Целостность' — so a
+    tampered ledger classifies exactly like the intact one. Running the
+    verifier is an explicit open follow-up (TODO.md
+    ``@id:gate-verdicts-chain-verification``); when it lands, this test must
+    flip to expecting ``unreadable``."""
+    repo = repo_with(tmp_path, "broken_chain.jsonl")
+    result = collect_governance(repo, git_facts=fresh)
+    assert result.state == "blocked"
+
+
 def test_dangling_finding_is_unresolvable_not_pass_not_blocked(
     tmp_path: Path,
 ) -> None:

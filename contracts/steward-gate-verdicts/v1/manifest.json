@@ -1,17 +1,25 @@
 {
   "contract": "steward-gate-verdicts",
   "contract_version": 1,
-  "producer_commit": "9b79700cb7edb7b6930734ecd10b7ad230870bc6",
+  "producer_commit": "9916787ff53946612922d65bd7c4ccfc4b0868bd",
   "surface_note": "sha256 of every vendored file; excludes PINNED.txt and this manifest",
-  "tree_sha256": "e7b425333f069fb7a627a30f216364f8bb8931b35765a23140afe85fbeb65cf3",
+  "tree_sha256": "4e45f7fbefffd176687281009457505ae3731f684b75d6d6ced212c4bbdb1fab",
   "surface": [
     {
       "path": "README.md",
-      "sha256": "eccec8c15dd772a546b46612db46beb1ea4c0a881bd00c2bf4b8ccfafd017612"
+      "sha256": "e9267b113104c84b45eb7117470933dc27552c9780355bd0816eebfa45c75a47"
     },
     {
       "path": "SCHEMA.json",
-      "sha256": "67aa22de2e2a8db0061e1c1323a846c716d9bc37b62e40c566880c91bb9a36dc"
+      "sha256": "2b79dfd95ce9142a25ad686561455ef59562bc0255a0bbca6a39f3addd8956d8"
+    },
+    {
+      "path": "fixtures/broken_chain.jsonl",
+      "sha256": "4629565da590953b0f13038feb26341929d3f60bade3b0e13b8525380b5f99e9"
+    },
+    {
+      "path": "fixtures/chained.jsonl",
+      "sha256": "d3d8cc6b54e4e7f1e81fae75fcbfa21a8d21247a7a41b9598f7a84510e441bd1"
     },
     {
       "path": "fixtures/clean.jsonl",
