@@ -381,7 +381,7 @@
       перепину gate-check записан в
       `docs/revendor-steward-roles-catalog.md` — сам перепин произойдёт в
       `@id:revendor-gate-verdicts-obligation-bundle`.
-- [x] Ре-вендор `gate-verdicts/v1` бандлом steward: README-активация obligation + fixtures с obligation + stale-фраза в SCHEMA — PR #174 @owner:github:andrei-shtanakov @trigger:"steward обновил fixtures+SCHEMA gate-verdicts одним бандлом (inbox #125 п.3) — либо красный drift-steward-gate-verdicts" @id:revendor-gate-verdicts-obligation-bundle
+- [x] Ре-вендор `gate-verdicts/v1` бандлом steward: README-активация obligation + fixtures с obligation + stale-фраза в SCHEMA — PR #177 @owner:github:andrei-shtanakov @trigger:"steward обновил fixtures+SCHEMA gate-verdicts одним бандлом (inbox #125 п.3) — либо красный drift-steward-gate-verdicts" @id:revendor-gate-verdicts-obligation-bundle
       Из inbox #125 п.2–3: README контракта уже изменён точечно на пине
       `c26ca38` (активация obligation), SCHEMA.json не тронут побайтово —
       advisory `drift-steward-gate-verdicts` до ре-вендора может гореть, и
@@ -393,7 +393,7 @@
       Закрыто тем же ре-вендором, что и `gate-verdicts-v1-prev-hash-revendor`
       (пин `9916787`): апстрим привёз obligation-фикстуры и hash-chain одним
       срезом master, отдельного бандл-коммита ждать было не нужно.
-- [x] Ре-вендор `gate-verdicts/v1`: аддитивное поле `prev_hash` (hash-chain, steward#105/PR #109) — PR #174 @owner:github:andrei-shtanakov @id:gate-verdicts-v1-prev-hash-revendor
+- [x] Ре-вендор `gate-verdicts/v1`: аддитивное поле `prev_hash` (hash-chain, steward#105/PR #109) — PR #177 @owner:github:andrei-shtanakov @id:gate-verdicts-v1-prev-hash-revendor
       Принятие inbox-issue #173 от steward (ADR-ECO-006). Пин `9b79700` →
       `9916787ff53946612922d65bd7c4ccfc4b0868bd` (steward master после PR #109
       + фиксы верификатора b7036c5/ac738bb); поверхность 7 → 9 файлов
