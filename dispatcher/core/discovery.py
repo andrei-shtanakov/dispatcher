@@ -60,6 +60,16 @@ class DispatcherConfig:
     # `maestro_db`, which say where maestro's STATE is; this says what to
     # execute.
     maestro_cli: Path | None = None
+    # ABSOLUTE path to the ATP model catalog the launched maestro child must
+    # read (`$ATP_CATALOG`). Declared here rather than inherited from the
+    # server's environment: the controller already sets `MAESTRO_HOME`
+    # explicitly for the same reason — a launch must not depend on how the
+    # server process happened to be started. The slice-0 pilot's first run
+    # died two seconds in with `CatalogNotConfigured` while the receipt said
+    # "started", because the variable lived in an interactive shell and not
+    # in any configuration. None → `submit` refuses with `accepted: false`
+    # instead of launching a child that cannot resolve a model.
+    atp_catalog: Path | None = None
 
     @property
     def effective_maestro_home(self) -> Path:
@@ -117,6 +127,8 @@ def load_config(config_path: Path | None = None) -> DispatcherConfig:
     run_state_dir = Path(raw_state_dir).expanduser() if raw_state_dir else None
     raw_maestro_cli = data.get("maestro_cli")
     maestro_cli = Path(raw_maestro_cli).expanduser() if raw_maestro_cli else None
+    raw_catalog = data.get("atp_catalog")
+    atp_catalog = Path(raw_catalog).expanduser() if raw_catalog else None
     raw_benchmarks = data.get("benchmarks", {})
     if not isinstance(raw_benchmarks, dict):
         # A present-but-malformed section must error, not silently disable
@@ -157,6 +169,7 @@ def load_config(config_path: Path | None = None) -> DispatcherConfig:
         benchmarks_token_file=benchmarks_token_file,
         run_state_dir=run_state_dir,
         maestro_cli=maestro_cli,
+        atp_catalog=atp_catalog,
     )
 
 

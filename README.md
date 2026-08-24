@@ -227,6 +227,23 @@ does not skip — CI pins Node 22.
 Without a config, dispatcher scans its own parent directory (monorepo
 layout). Standalone installs must list `roots` explicitly.
 
+### Control plane (slice 0)
+
+The `/api/runs/*` endpoints exist regardless, but launching needs three
+absolute paths. Any one of them missing and `submit` refuses with
+`accepted: false` rather than starting a run that cannot finish:
+
+    run_state_dir = "~/.dispatcher/runs"
+    maestro_cli   = "/abs/path/to/maestro"
+    atp_catalog   = "/abs/path/to/atp-platform/method/agents-catalog.toml"
+
+`atp_catalog` is passed to the launched maestro child as `$ATP_CATALOG`,
+and the configured value **overrides** anything in the server's own
+environment. That is deliberate: an inherited variable differs between an
+interactive start and a service start, is invisible to anyone reading this
+config, and cannot be checked before use. The first pilot run died two
+seconds after a receipt that said "started" for exactly that reason.
+
 ## Sync snapshots (per-machine cron)
 
     uv run dispatcher publish-snapshot               # snapshot → KB → commit+push
