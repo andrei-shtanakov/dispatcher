@@ -419,6 +419,27 @@
 
 ## Хвосты качества
 
+- [ ] Проход 1 слайса 0: принять после изоляции ветки уровня прогона в maestro @owner:github:andrei-shtanakov @blocked_by:todo://maestro/mode1-branch-isolation @id:df-slice0-pass1-acceptance
+      Прогон 2026-08-24 отработал функционально: три задачи DONE, красно-зелёная пара
+      проверена (новый тест падает на до-фиксовом `verify.py`), `status` из консоли
+      отвечает `acting on github.com/andrei-shtanakov/deployer`. Но приёмку это не
+      закрывает: контур положил коммиты прямо в `master` deployer, потому что в Mode 1
+      `branch_prefix` молча игнорируется (`GitManager` только в `_run_orchestrator`,
+      `maestro/cli.py:1783`). Условие «без прямых коммитов в protected-ветку»
+      обеспечило ручное восстановление постфактум, а не система. Контракт запрошен —
+      maestro#216 (часть 1: отвергать `branch_prefix` в Mode-1 валидации; часть 2:
+      run-level изоляция до публикации прогона). Предусловие в пилотном DAG —
+      deployer#34. Ручное создание ветки до запуска допустимо только как явно
+      названный временный шаг; если критерий требует полностью UI-driven запуск,
+      ждать часть 2.
+- [ ] Закрепить `ATP_CATALOG` в конфигурации запуска сервиса dispatcher @owner:github:andrei-shtanakov @id:atp-catalog-in-service-config
+      Контроллер передаёт ребёнку `os.environ` серверного процесса, а у сервиса нет
+      того, что есть в интерактивной оболочке: первый прогон пилота умер за секунды на
+      `CatalogNotConfigured`. Значение — SSOT экосистемы
+      `atp-platform/method/agents-catalog.toml` абсолютным путём (решение владельца
+      2026-08-24: `maestro models init` завёл бы отдельный локальный каталог и лишний
+      источник дрейфа). Сейчас держится на том, как запущен сервер, — воспроизводимости
+      это не даёт.
 - [x] Прогнать live-смоук write-path с реальным `github-checker` на PATH — PR #98 @owner:github:andrei-shtanakov @id:live-smoke-write-path
       Выполнено 2026-08-01 локально: `test_write_path_live_smoke_real_binary` прошёл на
       `dispatcher@b571cba` против бинаря, установленного из `github-checker@ef03fef`
