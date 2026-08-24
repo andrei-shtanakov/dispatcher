@@ -995,3 +995,49 @@ def test_the_launch_persists_the_checkout_it_used(tmp_path: Path) -> None:
     record = RunStore(tmp_path / "state").get(_REQ)
     assert record is not None
     assert Path(record.checkout).resolve() == (tmp_path / "ws" / "deployer").resolve()
+
+
+def test_a_relative_workspace_root_still_persists_an_absolute_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relative root must not put the cwd dependency back (PR #174 review).
+
+    `config.roots` is only `expanduser()`-normalised, so a relative root in
+    dispatcher.toml produced a relative checkout — which the launch passed
+    to `cwd=` and the record persisted for later verbs. Both then resolve
+    against whatever directory the server happens to be in, which is the
+    dependency this whole binding exists to remove, and it survives a
+    restart from elsewhere as a wrong path rather than an error.
+    """
+    _repo(tmp_path / "ws")
+    monkeypatch.chdir(tmp_path)
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = dataclasses.replace(_config(tmp_path, cli), roots=(Path("ws"),))
+    controller = RunController(config, materialize_timeout=10.0)
+    controller.submit(_request(_repo_head(tmp_path / "ws")))
+
+    record = RunStore(tmp_path / "state").get(_REQ)
+    assert record is not None
+    assert Path(record.checkout).is_absolute(), (
+        f"persisted {record.checkout!r}: a later verb would resolve it "
+        "against the server's cwd"
+    )
+    assert Path(record.checkout).resolve() == (tmp_path / "ws" / "deployer").resolve()
+
+
+def test_a_relative_recorded_checkout_is_refused_not_resolved(
+    tmp_path: Path,
+) -> None:
+    """An older record holding a relative path fails loud.
+
+    Resolving it at verb time would resolve against the server's cwd, which
+    is exactly the defect — so this refuses rather than guesses.
+    """
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    path = tmp_path / "state" / "requests" / f"{_REQ}.json"
+    data = json.loads(path.read_text())
+    data["checkout"] = "ws/deployer"
+    path.write_text(json.dumps(data))
+
+    with pytest.raises(RunRejectedError, match="relative"):
+        controller.control(_REQ, "status")

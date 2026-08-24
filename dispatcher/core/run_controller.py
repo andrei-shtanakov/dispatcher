@@ -457,6 +457,16 @@ class RunController:
                 "Re-submit the request to get a record that carries one"
             )
         checkout = Path(record.checkout)
+        if not checkout.is_absolute():
+            # `_checkout` resolves before persisting, so this can only be a
+            # record written before it did. Resolving it HERE would resolve
+            # against the server process's cwd — the very dependency this
+            # binding removes — so it refuses instead.
+            raise RunRejectedError(
+                f"{record.request_id}: the recorded checkout is relative "
+                f"({checkout}); resolving it now would depend on the "
+                "server's own directory. Re-submit the request"
+            )
         if not (checkout / ".git").exists():
             raise RunRejectedError(
                 f"{record.request_id}: the checkout recorded at launch is "
