@@ -46,7 +46,8 @@
           "type": "array",
           "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
           "description": "DEC-007 role slugs (no '@'). A list because profile data still carries the legacy multi-role form; collapses to a single accountable slug when the DEC-007 migration lands."
-        }
+        },
+        "prev_hash": {"$ref": "#/$defs/prev_hash"}
       }
     },
     "finding": {
@@ -66,8 +67,14 @@
         "tier": {"type": ["string", "null"], "description": "Reserved: risk-model tier (WS-006 integration)."},
         "phase": {"type": ["string", "null"], "description": "Reserved: lifecycle phase policy (severity-by-stage, ADR open question 4)."},
         "risk_model_version": {"type": ["string", "null"], "description": "Reserved: profiles/risk-model.yaml version in force."},
-        "waiver_ref": {"type": ["string", "null"], "description": "Reserved: SHA-bound waiver reference (steward waivers-check)."}
+        "waiver_ref": {"type": ["string", "null"], "description": "Reserved: SHA-bound waiver reference (steward waivers-check)."},
+        "prev_hash": {"$ref": "#/$defs/prev_hash"}
       }
+    },
+    "prev_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Tamper-evidence chain (steward#105): SHA-256 hex of the previous line's exact UTF-8 bytes, newline excluded. Optional in the schema — files predating the field are legacy-valid; from the first record that carries it, every following record must carry a matching one (verifier: `steward verdicts-verify`). The header (line 1) is the chain anchor and never carries the field — its def deliberately omits it, so a chained header fails validation. The chain proves mid-ledger integrity only: tail truncation or a wholesale rewrite with recomputed hashes needs an external anchor, documented as out of scope in README.md."
     }
   }
 }

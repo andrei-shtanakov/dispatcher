@@ -381,7 +381,7 @@
       перепину gate-check записан в
       `docs/revendor-steward-roles-catalog.md` — сам перепин произойдёт в
       `@id:revendor-gate-verdicts-obligation-bundle`.
-- [ ] Ре-вендор `gate-verdicts/v1` бандлом steward: README-активация obligation + fixtures с obligation + stale-фраза в SCHEMA @owner:github:andrei-shtanakov @trigger:"steward обновил fixtures+SCHEMA gate-verdicts одним бандлом (inbox #125 п.3) — либо красный drift-steward-gate-verdicts" @id:revendor-gate-verdicts-obligation-bundle
+- [x] Ре-вендор `gate-verdicts/v1` бандлом steward: README-активация obligation + fixtures с obligation + stale-фраза в SCHEMA — PR #177 @owner:github:andrei-shtanakov @trigger:"steward обновил fixtures+SCHEMA gate-verdicts одним бандлом (inbox #125 п.3) — либо красный drift-steward-gate-verdicts" @id:revendor-gate-verdicts-obligation-bundle
       Из inbox #125 п.2–3: README контракта уже изменён точечно на пине
       `c26ca38` (активация obligation), SCHEMA.json не тронут побайтово —
       advisory `drift-steward-gate-verdicts` до ре-вендора может гореть, и
@@ -390,6 +390,34 @@
       stale-фразу в SCHEMA одним бандлом; ре-вендорим один раз после него
       (`docs/revendor-steward-gate-verdicts.md`), чтобы не расширять
       advisory-blast дважды.
+      Закрыто тем же ре-вендором, что и `gate-verdicts-v1-prev-hash-revendor`
+      (пин `9916787`): апстрим привёз obligation-фикстуры и hash-chain одним
+      срезом master, отдельного бандл-коммита ждать было не нужно.
+- [x] Ре-вендор `gate-verdicts/v1`: аддитивное поле `prev_hash` (hash-chain, steward#105/PR #109) — PR #177 @owner:github:andrei-shtanakov @id:gate-verdicts-v1-prev-hash-revendor
+      Принятие inbox-issue #173 от steward (ADR-ECO-006). Пин `9b79700` →
+      `9916787ff53946612922d65bd7c4ccfc4b0868bd` (steward master после PR #109
+      + фиксы верификатора b7036c5/ac738bb); поверхность 7 → 9 файлов
+      (`chained.jsonl`, `broken_chain.jsonl`). Схемного ре-вендора было
+      недостаточно: pydantic-модели коллектора держат `extra="forbid"`, и без
+      аддитивного `prev_hash: str | None` на artifact/finding каждый новый
+      сцепленный леджер оставался unreadable — направление отказа верное
+      (fail-closed), но панель горела бы и после обновления копии. Header
+      поля не несёт по контракту (якорь цепочки) — его модель не тронута,
+      сцепленный header остаётся невалидным. Acceptance issue: копия
+      byte-equal master, copy-integrity зелёная, chained-фикстура читается
+      (`test_chained_ledger_is_read_not_unreadable`).
+- [ ] Верификатор hash-chain перед чтением леджера: broken-файл читать как unreadable @owner:github:andrei-shtanakov @id:gate-verdicts-chain-verification
+      Опциональная половина inbox #173, вынесенная продюсером в «отдельное
+      решение» — потому и отдельный пункт, а не часть ре-вендора. Сегодня
+      цепочка НЕ проверяется: канонная фикстура `broken_chain.jsonl`
+      (подменённый message при сохранённом prev_hash) классифицируется как
+      обычный blocked — задокументировано характеризационным тестом
+      `test_broken_chain_reads_the_same_because_the_chain_is_not_verified`,
+      который при реализации обязан перевернуться на unreadable. Варианты по
+      issue: гонять `steward verdicts-verify` (рантайм-зависимость от бинаря
+      соседа — против дисциплины вендоринга) либо своя реализация по README
+      §«Целостность» (механика SHA-256 предыдущей строки — контрактная
+      арифметика, не вторая policy engine). Решение владельца.
 - [ ] `contracts/executor-config/v0-provisional`: довести до реального потребителя либо явно пометить контракт отложенным @owner:github:andrei-shtanakov @blocked_by:todo://maestro/specrunnerconfig-passthrough @trigger:"Maestro начал читать contracts/executor-config" @id:executor-config-consumer
       Статус-обзор экосистемы 07-24 назвал это watch-item: схема запинена (DESIGN-301),
       но единственная ссылка в экосистеме — план-док Maestro

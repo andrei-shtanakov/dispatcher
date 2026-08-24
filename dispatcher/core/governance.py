@@ -77,6 +77,7 @@ class VerdictArtifact(BaseModel):
     node_id: str | None
     status: str
     owner_roles: list[str]
+    prev_hash: str | None = None
 
 
 class VerdictFinding(BaseModel):
@@ -94,6 +95,7 @@ class VerdictFinding(BaseModel):
     phase: str | None = None
     risk_model_version: str | None = None
     waiver_ref: str | None = None
+    prev_hash: str | None = None
 
 
 class BundleFreshness(BaseModel):
