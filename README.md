@@ -229,9 +229,12 @@ layout). Standalone installs must list `roots` explicitly.
 
 ### Control plane (slice 0)
 
-The `/api/runs/*` endpoints exist regardless, but launching needs three
-absolute paths. Any one of them missing and `submit` refuses with
-`accepted: false` rather than starting a run that cannot finish:
+The `/api/runs/*` endpoints exist regardless, but launching needs all three
+of these. Any one missing and `submit` refuses with `accepted: false`
+rather than starting a run that cannot finish. `~` is expanded in all of
+them; `maestro_cli` and `atp_catalog` must additionally resolve to an
+absolute path, because both are handed to a child process whose working
+directory is not this one:
 
     run_state_dir = "~/.dispatcher/runs"
     maestro_cli   = "/abs/path/to/maestro"

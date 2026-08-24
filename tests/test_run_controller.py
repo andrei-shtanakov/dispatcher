@@ -115,7 +115,7 @@ def _fake_maestro(
 
 
 def _catalog(tmp_path: Path) -> Path:
-    """A readable catalog file — declaredness and reachability is all
+    """A readable catalog file — declaredness and reachability are all
     dispatcher checks; the CONTENTS belong to ATP and maestro."""
     path = tmp_path / "agents-catalog.toml"
     path.write_text('[[agents]]\nharness = "claude_code"\n')
@@ -1155,3 +1155,50 @@ def test_status_still_works_with_no_catalog_configured(tmp_path: Path) -> None:
     controller._config = dataclasses.replace(controller._config, atp_catalog=None)
     outcome = controller.control(_REQ, "status")
     assert outcome.ok
+
+
+_ECHO_CATALOG = """
+import os, pathlib, sys
+home = pathlib.Path(os.environ["MAESTRO_HOME"])
+d = home / "projects/github.com/owner/deployer/runs/01AAA"
+if not d.exists():
+    d.mkdir(parents=True)
+    (d / "state.db").write_text("")
+    sys.exit(0)
+print("ATP_CATALOG=" + os.environ.get("ATP_CATALOG", "<unset>"))
+"""
+
+
+def test_a_verb_does_not_inherit_an_ambient_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unconfigured means ABSENT, not "whatever the shell had".
+
+    Inheriting it would be the dependency on how the server was started
+    that this whole precondition ends, and it would answer the same
+    question two ways: `submit` refuses outright while a verb quietly used
+    the ambient value (PR #176 Copilot review).
+    """
+    monkeypatch.setenv("ATP_CATALOG", "/somewhere/ambient/catalog.toml")
+    controller = _materialized(tmp_path, _ECHO_CATALOG)
+    controller._config = dataclasses.replace(controller._config, atp_catalog=None)
+
+    outcome = controller.control(_REQ, "status")
+
+    assert outcome.ok
+    assert "ATP_CATALOG=<unset>" in outcome.stdout, (
+        f"the ambient value leaked into the verb: {outcome.stdout!r}"
+    )
+
+
+def test_a_verb_gets_the_configured_catalog_when_there_is_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """And when configured, the configured value wins over the ambient one."""
+    monkeypatch.setenv("ATP_CATALOG", "/somewhere/ambient/catalog.toml")
+    controller = _materialized(tmp_path, _ECHO_CATALOG)
+
+    outcome = controller.control(_REQ, "status")
+
+    assert outcome.ok
+    assert f"ATP_CATALOG={tmp_path / 'agents-catalog.toml'}" in outcome.stdout

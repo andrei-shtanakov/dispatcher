@@ -280,7 +280,7 @@ class RunController:
             # run was created — not the ambiguity of a child that publishes
             # a run directory and then halts on the missing catalog, which
             # is what the pilot saw.
-            self._catalog_path()
+            catalog = self._catalog_path()
         except RunRejectedError as err:
             return self._refuse(request.request_id, str(err))
 
@@ -314,7 +314,9 @@ class RunController:
             # had fallen behind it.
             return self._refuse(request.request_id, f"cannot use request_id: {err}")
 
-        return self._launch(store, request, validated.checkout, validated.key, runs)
+        return self._launch(
+            store, request, validated.checkout, validated.key, runs, catalog
+        )
 
     def _launch(
         self,
@@ -323,6 +325,7 @@ class RunController:
         checkout: Path,
         key: RepoKey,
         runs: Path,
+        catalog: Path,
     ) -> LaunchReceipt:
         state_dir, cli, home = self._require_on()
         reserved = store.get(request.request_id)
@@ -346,13 +349,15 @@ class RunController:
         argv = [str(cli), "run", request.tasks]
         # The CONFIGURED catalog wins over anything ambient: an inherited
         # `$ATP_CATALOG` would make the launch depend on how the server was
-        # started, which is the failure `_catalog_path` exists to end. The
-        # precondition was checked in `submit` before this point, so this
-        # is the already-validated value.
+        # started, which is the failure `_catalog_path` exists to end.
+        # Passed in from `submit`, which validated it, rather than
+        # re-derived here: this call site is NOT inside submit's try, so a
+        # second validation raising here would escape as an unhandled 500
+        # instead of a receipt (PR #176 Copilot review).
         env = {
             **os.environ,
             "MAESTRO_HOME": str(home),
-            "ATP_CATALOG": str(self._catalog_path()),
+            "ATP_CATALOG": str(catalog),
         }
         try:
             store.mark_launching(request.request_id)
@@ -460,6 +465,15 @@ class RunController:
         catalog = self._config.atp_catalog
         if catalog is not None:
             env["ATP_CATALOG"] = str(catalog)
+        else:
+            # Unconfigured means ABSENT, not "whatever the shell had". An
+            # inherited value would be the very dependency on how the server
+            # was started that this ends — and it would answer the same
+            # question two different ways, since `submit` refuses outright
+            # while a verb quietly used the ambient one (PR #176 Copilot
+            # review). An operator with no configured catalog cannot create
+            # runs at all, so nothing legitimate is lost.
+            env.pop("ATP_CATALOG", None)
         return env
 
     def _catalog_path(self) -> Path:
