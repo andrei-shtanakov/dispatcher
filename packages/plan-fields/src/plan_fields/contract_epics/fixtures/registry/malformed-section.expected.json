@@ -1,0 +1,11 @@
+{
+  "diagnostics": [
+    {
+      "code": "EP-REG-MALFORMED",
+      "severity": "error",
+      "message": "registry section is not the shape the schema declares",
+      "subject_key": "epics",
+      "raw": "str"
+    }
+  ]
+}

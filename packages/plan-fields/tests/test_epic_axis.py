@@ -8,6 +8,7 @@ read, and must not let the two axes contaminate each other.
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -152,7 +153,7 @@ def test_registry_fixtures_reproduce_their_pinned_diagnostics() -> None:
         (p, p.with_suffix(".expected.json"))
         for p in sorted((_FIXTURES / "registry").glob("*.toml"))
     ]
-    assert len(cases) == 11
+    assert len(cases) == 12
     for toml_path, expected_path in cases:
         want = sorted(
             d["code"] for d in json.loads(expected_path.read_text())["diagnostics"]
@@ -210,3 +211,87 @@ def test_every_emitted_code_is_declared_by_the_vendored_epics_registry() -> None
     assert declared, "vendored diagnostics.yaml declares no codes — wrong copy?"
     emitted = set(EPIC_MESSAGES) | {"EP-UNKNOWN", "EP-MOVED", "EP-DEFECT-UNKNOWN"}
     assert emitted <= declared, f"undeclared codes: {sorted(emitted - declared)}"
+
+
+def test_registry_schema_agrees_with_the_explicit_checks() -> None:
+    """The schema and the hand-written checks must agree on every registry fixture.
+
+    `_structural_diagnostics` classifies defects explicitly instead of reading
+    jsonschema's error text, which buys precise codes and costs a guarantee: the two
+    can drift apart. This test is that guarantee — the docstring used to claim it
+    before it existed, which is the same defect class as a named-but-untested rule.
+
+    The split it pins comes from the contract's own fixtures/README: some registry
+    defects are schema-expressible, the rest are referential (they hold BETWEEN keys)
+    and no JSON Schema can state them.
+    """
+    from jsonschema import Draft202012Validator
+
+    schema = json.loads((_CONTRACT_EPICS / "registry.schema.json").read_text())
+    validator = Draft202012Validator(schema)
+    referential = {
+        "program-unknown.toml",
+        "moved-dangling.toml",
+        "moved-chain.toml",
+        "moved-cycle.toml",
+    }
+    checked = 0
+    for toml_path in sorted((_FIXTURES / "registry").glob("*.toml")):
+        rejected = bool(
+            list(validator.iter_errors(tomllib.loads(toml_path.read_text())))
+        )
+        expected = toml_path.name not in referential
+        assert rejected is expected, (
+            f"{toml_path.name}: schema {'rejects' if rejected else 'accepts'}, "
+            f"fixtures/README says it should {'reject' if expected else 'accept'}"
+        )
+        checked += 1
+    assert checked == 11  # every registry case except the baseline `registry.toml`
+    # and the baseline itself must be clean under both halves
+    assert not list(
+        validator.iter_errors(tomllib.loads((_FIXTURES / "registry.toml").read_text()))
+    )
+    assert load_registry(_FIXTURES / "registry.toml").diagnostics == ()
+
+
+def test_a_section_of_the_wrong_shape_is_reported_not_raised() -> None:
+    """`load_registry` promises never to raise; a non-table section is the case that would.
+
+    "The tool crashed" and "the registry has a defect" look identical to an operator,
+    so the malformed section must come back as a finding.
+    """
+    registry = load_registry(_FIXTURES / "registry/malformed-section.toml")
+    assert [d["code"] for d in registry.diagnostics] == ["EP-REG-MALFORMED"]
+    assert registry.epics == {}
+
+
+def test_the_schema_backstop_catches_what_no_explicit_check_names(tmp_path) -> None:
+    """A schema violation with no dedicated code must still surface."""
+    bad = tmp_path / "epics.toml"
+    bad.write_text(
+        (_FIXTURES / "registry.toml")
+        .read_text()
+        .replace('schema_version = "1.0.0"', 'schema_version = "9.9.9-nope"')
+    )
+    codes = [d["code"] for d in load_registry(bad).diagnostics]
+    assert codes == ["EP-REG-MALFORMED"]
+
+
+def test_the_backstop_does_not_suppress_findings_that_merely_share_a_name(
+    tmp_path,
+) -> None:
+    """Dedup is by section and entry key, never by any matching path segment.
+
+    An epic whose own key collides with an unrelated schema path segment must not make
+    that unrelated finding vanish: a backstop that silently drops diagnostics is worse
+    than no backstop, because it looks like a clean registry.
+    """
+    text = (
+        (_FIXTURES / "registry.toml")
+        .read_text()
+        .replace('schema_version = "1.0.0"', 'schema_version = "nope"')
+    )
+    bad = tmp_path / "epics.toml"
+    bad.write_text(text)
+    codes = [d["code"] for d in load_registry(bad).diagnostics]
+    assert codes == ["EP-REG-MALFORMED"], codes

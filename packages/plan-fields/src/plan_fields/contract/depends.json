@@ -6,7 +6,7 @@
       "contract": "epics",
       "contract_version": 1,
       "schema_id": "urn:ecosystem:epics:v1:classification",
-      "tree_sha256": "d7cfcfd2777ae43b205fd6daa5351ff9bddb47de5eff0e73ec51e214eb36b878",
+      "tree_sha256": "4bf65a4d4526e24b58f85d21a6c1eaaaca6dcff28803cb8f0306917c344c289e",
       "source_commit": null,
       "delegated": [
         "epic grammar",

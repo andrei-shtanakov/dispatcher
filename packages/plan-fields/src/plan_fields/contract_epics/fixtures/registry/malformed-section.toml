@@ -1,0 +1,24 @@
+schema_version = "1.0.0"
+adopted_at = "2026-09-01"
+
+# `epics` must be a table of entries; here it is a bare string. A validator cannot
+# iterate it to report anything more specific, which is exactly why this case has a
+# code of its own instead of borrowing one that implies a bad VALUE.
+#
+# The key sits ABOVE every table header on purpose: in TOML a bare key written after
+# `[section]` belongs to that section, so the same line placed at the bottom of the
+# file would quietly become `defect_classes.pipeline.epics` and test nothing.
+epics = "eco.ops"
+
+[coverage_policy]
+robin_cutover_todo   = 0.98
+robin_cutover_issues = 0.90
+robin_cutover_prs    = 0.90
+missing_error_after  = "2026-11-01"
+
+[programs.eco]
+title = "AI orchestrators ecosystem"
+kind  = "ecosystem"
+
+[defect_classes.pipeline]
+title = "Pipeline failures"

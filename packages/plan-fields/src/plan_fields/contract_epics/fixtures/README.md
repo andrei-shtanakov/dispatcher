@@ -64,7 +64,7 @@ Fixed identities, so expected outputs are byte-comparable:
 
 ## Registry cases
 
-Six of the ten defects are expressible in `registry.schema.json` and are rejected by schema
+Seven of the eleven defects are expressible in `registry.schema.json` and are rejected by schema
 validation alone; four are **referential** — they hold between keys and cannot be stated in
 the schema, so only a semantic validator finds them. Both halves are normative, and a
 conforming validator must report the diagnostic in either case:
@@ -78,6 +78,7 @@ conforming validator must report the diagnostic in either case:
 | `registry/kind-unknown` | rejects | `EP-REG-KIND-UNKNOWN` |
 | `registry/standing-fields` | rejects | `EP-REG-STANDING-FIELDS` — a standing epic carrying `goal`/`closed` |
 | `registry/policy-invalid` | rejects | `EP-REG-POLICY-INVALID` (ratio > 1, missing threshold, malformed date) |
+| `registry/malformed-section` | rejects | `EP-REG-MALFORMED` — `epics` is a string, so no entry-level finding is even reachable |
 | `registry/program-unknown` | accepts | `EP-REG-PROGRAM-UNKNOWN` — referential |
 | `registry/moved-dangling` | accepts | `EP-REG-MOVED-DANGLING` — referential |
 | `registry/moved-chain` | accepts | `EP-REG-MOVED-CHAIN` — referential |

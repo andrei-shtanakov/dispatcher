@@ -3,7 +3,7 @@
   "contract_version": 1,
   "schema_id": "urn:ecosystem:epics:v1:classification",
   "surface_note": "sha256 of every frozen contract file consumers vendor; excludes drift-control meta (manifest.json, drift-control.md) and vendor-only PINNED.txt. Construction is byte-identical to plan-fields v2 so one checker serves both. The registry data model is urn:ecosystem:epics:v1:registry; VALUES live in the umbrella epics.toml and are read live, never vendored. See drift-control.md.",
-  "tree_sha256": "d7cfcfd2777ae43b205fd6daa5351ff9bddb47de5eff0e73ec51e214eb36b878",
+  "tree_sha256": "4bf65a4d4526e24b58f85d21a6c1eaaaca6dcff28803cb8f0306917c344c289e",
   "surface": [
     {
       "path": "README.md",
@@ -15,11 +15,11 @@
     },
     {
       "path": "diagnostics.yaml",
-      "sha256": "de48ec48b5d1537440508d219a7dc0ad7e77fce0ece6b6a218c8ac212cd093cd"
+      "sha256": "a1271441a5f850c9a554ec91f24869e023dfa3c6409d9953c47f8676abae658f"
     },
     {
       "path": "fixtures/README.md",
-      "sha256": "5385d5832f8004fe5ffda39393f30c64337cf85f673f2d93fc24fd384155b033"
+      "sha256": "f1d9ce02a38308444ffc910ab7e75ccfa227ee01be8d2c2623da303ee009e043"
     },
     {
       "path": "fixtures/invalid/conflict/context.json",
@@ -140,6 +140,14 @@
     {
       "path": "fixtures/registry/kind-unknown.toml",
       "sha256": "1c8c5fcd1e6e5287a45b95b3d5ed23806e3f853ec16b99a8e1fb47b9f56fe17f"
+    },
+    {
+      "path": "fixtures/registry/malformed-section.expected.json",
+      "sha256": "c2bf2ad1b5297c7054f8cb249377fdf043ff99d1e1a811ae054d95baaacbb5ba"
+    },
+    {
+      "path": "fixtures/registry/malformed-section.toml",
+      "sha256": "04d6d5be3303fb26b24b958285e737cd95005d3a02e31e6f0d659e76f5abff3c"
     },
     {
       "path": "fixtures/registry/moved-chain.expected.json",
