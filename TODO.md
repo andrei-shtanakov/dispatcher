@@ -800,3 +800,21 @@
       чинить наблюдение, а не вендорить с коммита, который никто не прочитал.
       Не required и не на PR. Процедура ре-вендоринга:
       `docs/revendor-github-checker-actions.md`.
+
+## codex-review: потребитель кита steward (принят 2026-08-25)
+
+- [ ] PR-B: caller-workflow гейта codex-review (по образцу пилота spec-runner:
+      механика из base, потолки, generated-декларация, экономный триггер по
+      драфту/лейблу) + лейбл `codex-review` + секрет `CODEX_REVIEW_API_KEY`
+      (кладёт владелец в настройки репо) — после мержа PR-A
+      @owner:github:andrei-shtanakov @id:codex-review-caller
+
+  PR-A (этот): кит завендорен — `scripts/review/` (5 POSIX-скриптов) +
+  `.github/codex/review-schema.json`, PIN @ steward `e4c43cc`;
+  copy-integrity — джоба `review-kit-integrity` в ci.yml, чекер из base
+  (на первом PR — бутстрап-notice); upstream-drift — вахта
+  `review-kit-drift.yml` (не PR-гейт); `review-prompt.md` — данные репо,
+  вне integrity; generated-декларация — `.gitattributes`. Ре-вендор —
+  рецепт в комментарии PIN; дисциплина раундов гейта — спека steward §13;
+  умолчание итераций — экономный цикл (local.sh → драфт → один платный
+  прогон, см. Git workflow в CLAUDE.md).
