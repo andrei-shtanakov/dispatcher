@@ -80,13 +80,13 @@
 
 ## Governance-плоскость (ADR-ECO-004)
 
-- [ ] Governance view: рендерить `declared vs observed` enforcement-зрелость правил (ADR-ECO-004 D3, Batch 2 §6) @owner:github:andrei-shtanakov @blocked_by:todo://prograph-vault/governance-observed-derived @trigger:"в prograph-vault появился derived/governance/ с observed-зрелостью" @id:governance-declared-vs-observed
+- [ ] Governance view: рендерить `declared vs observed` enforcement-зрелость правил (ADR-ECO-004 D3, Batch 2 §6) @owner:github:andrei-shtanakov @blocked_by:todo://prograph-vault/governance-observed-derived @trigger:"в prograph-vault появился derived/governance/ с observed-зрелостью" @id:governance-declared-vs-observed @epic:eco.governance-plane
       Declared-сторона готова: `../prograph-vault/authored/registry/governance.yaml`
       (v1, 2026-07-18) и сам файл называет ожидаемый путь observed —
       `derived/governance/`, который на 2026-07-26 не существует. Сравнивать не с чем,
       поэтому пункт заблокирован, а не «в работе»: dispatcher здесь рендерер, не
       источник, и читать «на будущее» нечего.
-- [ ] Actor-aware evidence мержа: `agent_merge` / `human_merge` в наблюдении (ADR-ECO-004 I4, ADR-ECO-008 D6) @owner:github:andrei-shtanakov @id:agent-merge-observability
+- [ ] Actor-aware evidence мержа: `agent_merge` / `human_merge` в наблюдении (ADR-ECO-004 I4, ADR-ECO-008 D6) @owner:github:andrei-shtanakov @id:agent-merge-observability @epic:eco.governance-plane
       Принятие inbox-issue #159 (ADR-ECO-006, from: prograph-vault#adr-eco-008).
       **Предпосылка выполнена 2026-08-21, ожидание снято 2026-08-22.** steward#72
       закрыт: опубликован `contracts/approval-facts/v2/` (`SCHEMA.json` с `actor_class`
@@ -406,7 +406,7 @@
       сцепленный header остаётся невалидным. Acceptance issue: копия
       byte-equal master, copy-integrity зелёная, chained-фикстура читается
       (`test_chained_ledger_is_read_not_unreadable`).
-- [ ] Верификатор hash-chain перед чтением леджера: broken-файл читать как unreadable @owner:github:andrei-shtanakov @id:gate-verdicts-chain-verification
+- [ ] Верификатор hash-chain перед чтением леджера: broken-файл читать как unreadable @owner:github:andrei-shtanakov @id:gate-verdicts-chain-verification @epic:eco.governance-plane
       Опциональная половина inbox #173, вынесенная продюсером в «отдельное
       решение» — потому и отдельный пункт, а не часть ре-вендора. Сегодня
       цепочка НЕ проверяется: канонная фикстура `broken_chain.jsonl`
@@ -418,13 +418,13 @@
       соседа — против дисциплины вендоринга) либо своя реализация по README
       §«Целостность» (механика SHA-256 предыдущей строки — контрактная
       арифметика, не вторая policy engine). Решение владельца.
-- [ ] `contracts/executor-config/v0-provisional`: довести до реального потребителя либо явно пометить контракт отложенным @owner:github:andrei-shtanakov @blocked_by:todo://maestro/specrunnerconfig-passthrough @trigger:"Maestro начал читать contracts/executor-config" @id:executor-config-consumer
+- [ ] `contracts/executor-config/v0-provisional`: довести до реального потребителя либо явно пометить контракт отложенным @owner:github:andrei-shtanakov @blocked_by:todo://maestro/specrunnerconfig-passthrough @trigger:"Maestro начал читать contracts/executor-config" @id:executor-config-consumer @epic:eco.spec-toolchain
       Статус-обзор экосистемы 07-24 назвал это watch-item: схема запинена (DESIGN-301),
       но единственная ссылка в экосистеме — план-док Maestro
       `2026-07-17-specrunnerconfig-passthrough.md`, потребителя нет. Риск — зомби-пин,
       который «застыл» без интеграции. Наша часть — решение: ждать потребителя или
       написать в README контракта, что он отложен.
-- [ ] Заморозить схемы MCP-тулзов (вендоринг пиненой копией по дисциплине ADR-ECO-003) @owner:github:andrei-shtanakov @trigger:"robin или Maestro начали вызывать dispatcher mcp" @id:freeze-mcp-tool-schemas
+- [ ] Заморозить схемы MCP-тулзов (вендоринг пиненой копией по дисциплине ADR-ECO-003) @owner:github:andrei-shtanakov @trigger:"robin или Maestro начали вызывать dispatcher mcp" @id:freeze-mcp-tool-schemas @epic:eco.tooling
       Схемы 15 тулзов сознательно UNSTABLE: фиксировать контракт до первого потребителя
       значит заморозить угаданную форму.
 - [x] Вендорить `contracts/actions/v1`, когда github-checker его опубликует — PR #97 @owner:github:andrei-shtanakov @blocked_by:github-checker#contracts-actions-v1 @trigger:"github-checker опубликовал контракт действий" @id:vendor-contracts-actions-v1
@@ -437,7 +437,7 @@
       Процедура жила только в историческом плане `2026-07-31-vendor-actions-v1.md`,
       а пин правился руками в трёх местах: согласованная правка всех трёх
       оставляла сьют зелёным, заверяя новые байты старым коммитом.
-- [ ] Upstream-drift вахта для `contracts/maestro-repo-identity/v1` @owner:repo:dispatcher @id:maestro-identity-drift-watch
+- [ ] Upstream-drift вахта для `contracts/maestro-repo-identity/v1` @owner:repo:dispatcher @id:maestro-identity-drift-watch @epic:eco.distributed-execution
       — сегодня есть только copy-integrity (таблица `cases.json`), второй гарантии нет;
       правило именования репозитория зеркалится из maestro, и расхождение делает
       контроллер слепым к собственному прогону (план среза 0, задача 1).
@@ -470,7 +470,7 @@
       `.refused`, — но приёмка состоялась без них, и переписывать это задним
       числом нельзя: два следа были наблюдаемым состоянием репозитория, а не
       самоотчётом системы, и их хватило.
-- [ ] Закрепить `ATP_CATALOG` в конфигурации запуска сервиса dispatcher @owner:github:andrei-shtanakov @id:atp-catalog-in-service-config
+- [ ] Закрепить `ATP_CATALOG` в конфигурации запуска сервиса dispatcher @owner:github:andrei-shtanakov @id:atp-catalog-in-service-config @epic:eco.ops
       Контроллер передаёт ребёнку `os.environ` серверного процесса, а у сервиса нет
       того, что есть в интерактивной оболочке: первый прогон пилота умер за секунды на
       `CatalogNotConfigured`. Значение — SSOT экосистемы
@@ -573,7 +573,7 @@
       топ-левел позиции (только через `<<: *anchor`), потому что
       безспановый fallback Check B там уже не слабее для реальной
       правки, а Check C иначе отказал бы и no-op'у, ничего не защищая.
-- [ ] Read-путь `project.yaml` эхом печатает PyYAML-ошибку с исходной строкой файла @owner:github:andrei-shtanakov @id:read-path-yaml-error-leak
+- [ ] Read-путь `project.yaml` эхом печатает PyYAML-ошибку с исходной строкой файла @owner:github:andrei-shtanakov @id:read-path-yaml-error-leak @epic:eco.ops
       Найдено во время работы над `@id:render-outside-block-fail-closed`
       (write-путь). `dispatcher/core/collectors/base.py:203`
       (`read_yaml`/`SourceReadError`) кладёт `str(err)` от PyYAML в сообщение,
@@ -587,7 +587,7 @@
       достигает — не блокер, а долг: любое будущее место, которое начнёт
       читать вторую компоненту кортежа, унаследует утечку молча. Код здесь не
       трогаем — вне диффа этой задачи.
-- [ ] `UnsafeEditError`'а traceback всё ещё несёт кадры с секретом — принятый остаток, не баг @owner:github:andrei-shtanakov @id:exception-traceback-frame-locals @trigger:"в dispatcher появляется traceback-форматтер/репортер с locals capture (Sentry include_local_variables, better-exceptions, rich) или иной потребитель полного traceback"
+- [ ] `UnsafeEditError`'а traceback всё ещё несёт кадры с секретом — принятый остаток, не баг @owner:github:andrei-shtanakov @id:exception-traceback-frame-locals @trigger:"в dispatcher появляется traceback-форматтер/репортер с locals capture (Sentry include_local_variables, better-exceptions, rich) или иной потребитель полного traceback" @epic:eco.ops
       Измерено при закрытии `@id:render-outside-block-fail-closed`. Гарантия
       «ни одна ссылка на оригинал не переживает» (Finding из ревью Task 2,
       round 1+2) закрывает сам объект исключения — сообщение, `args`,
@@ -644,7 +644,7 @@
       видно в сигнатурах. Отсутствующий `dirName` не откатывается к имени:
       запрос не уходит, панель скрыта. Коллектор по-прежнему отдаёт `Maestro`
       при каноне каталога `maestro` — см. `maestro-double-name` ниже.
-- [ ] Merge-gate: список открытых PR по репо (номер + заголовок), чтобы `#merge-gate` открывался кликом, а не ручным вводом номера @owner:github:andrei-shtanakov @id:merge-gate-pr-listing
+- [ ] Merge-gate: список открытых PR по репо (номер + заголовок), чтобы `#merge-gate` открывался кликом, а не ручным вводом номера @owner:github:andrei-shtanakov @id:merge-gate-pr-listing @epic:eco.ops
       Task 4 (2026-07-30) исходно планировала клик по существующему PR-рендерингу
       в карточке проекта — такого рендеринга нет: read-модель несёт GitHub-состояние
       только как непрозрачный `github: dict[str, Any]` (`core/snapshot_contract.py`),
@@ -690,7 +690,7 @@
       выходам `_invoke` (включая таймаут — единственный, у кого своего теста не было)
       требует аудит-строку с фазой на каждом. Мутации проверены поимённо.
 
-- [ ] Вёрстка экранов (`<style>` в `<head>` у `index.html`) вне досягаемости Node-харнесса: удаление всего блока оставляет сьют зелёным @owner:github:andrei-shtanakov @id:web-harness-does-not-see-css
+- [ ] Вёрстка экранов (`<style>` в `<head>` у `index.html`) вне досягаемости Node-харнесса: удаление всего блока оставляет сьют зелёным @owner:github:andrei-shtanakov @id:web-harness-does-not-see-css @epic:eco.ops
       Найдено финальным ревью ветки task-authoring (2026-07-31, coverage-gap,
       не блокер). Харнесс исполняет `<script>` из `<body>` над распарсенной
       разметкой и проверяет поведение, а не внешний вид; CSS он не применяет и
@@ -698,7 +698,7 @@
       «экран не разъехался» сьют не говорит ничего, и говорить не начнёт без
       настоящего браузера (Playwright + скриншот-диффы). Записано, чтобы зелёный
       прогон не читался как «вёрстка проверена».
-- [ ] Визуальное различие B2 (`accepted: null` не выглядит отказом) держится только на CSS, которую харнесс не видит @owner:github:andrei-shtanakov @id:b2-visual-distinction-untested
+- [ ] Визуальное различие B2 (`accepted: null` не выглядит отказом) держится только на CSS, которую харнесс не видит @owner:github:andrei-shtanakov @id:b2-visual-distinction-untested @epic:eco.ops
       Найдено при финальной сверке ветки консоли Dark Factory (PR по
       `feat/dark-factory-console`). Сегодня цвет верный: `.unknown` →
       `--warn: #b26a00` (янтарный), отличимый от `--bad: #c0392b` у `.err`.
@@ -707,17 +707,17 @@
       на `var(--bad)` нарушит владельческое решение B2 визуально при полностью
       зелёных тестах. Не дефект — непокрытая граница; закрывается тем же
       настоящим браузером, что и родительский пункт.
-- [ ] Сбой `ensureActionToken()` рисуется как `accepted: null`, хотя доказуемо «не отправлено» @owner:github:andrei-shtanakov @id:console-token-failure-is-not-unknown
+- [ ] Сбой `ensureActionToken()` рисуется как `accepted: null`, хотя доказуемо «не отправлено» @owner:github:andrei-shtanakov @id:console-token-failure-is-not-unknown @epic:eco.ops
       Токен запрашивается внутри `try` вокруг `fetch`, поэтому его падение
       попадает в транспортную ветку и даёт третье состояние. Неточно, но в
       безопасную сторону: консоль никогда не заявит «прогона нет», когда он мог
       начаться. Цена ошибки — оператор встречает поток разрешения из-за рядовой
       осечки авторизации. Принято сознательно на ревью задачи 1.
-- [ ] Путь 404/409 в `rcPollView` не покрыт тестом @owner:github:andrei-shtanakov @id:console-poll-error-path-untested
+- [ ] Путь 404/409 в `rcPollView` не покрыт тестом @owner:github:andrei-shtanakov @id:console-poll-error-path-untested @epic:eco.ops
       Проверка `resp.ok` добавлена вместе со стражем устаревания и разбирает
       случаи «запись исчезла» и «контур выключен», но ни один кейс харнесса её
       не исполняет. Состояние `#rc-submit` эти пути намеренно не трогают.
-- [ ] Зависший maestro-ребёнок: у оператора нет способа сдаться из консоли @owner:github:andrei-shtanakov @id:console-hung-child-no-give-up
+- [ ] Зависший maestro-ребёнок: у оператора нет способа сдаться из консоли @owner:github:andrei-shtanakov @id:console-hung-child-no-give-up @epic:eco.ops
       Найдено ревью ветки консоли, признано остатком по решению спеки, а не
       пробелом UI. §5.2.1 в редакции 2026-08-22 убрала «явное разрешение
       оператора» из условий освобождения лока именно потому, что механизма у
@@ -730,7 +730,7 @@
       который не опубликует уже никогда; спека прямо называет восстановление
       действием в файловой системе. Кнопку «отменить» не добавлять: она дала бы
       отмахнуться от подлинной неоднозначности, что §5.2.1 запрещает.
-- [ ] `tests/web/dom.js` — рукописная DOM-заглушка для task-authoring Node-харнесса; `jsdom` предпочтительнее, но отсутствует осознанно @owner:github:andrei-shtanakov @id:web-tests-hand-rolled-dom
+- [ ] `tests/web/dom.js` — рукописная DOM-заглушка для task-authoring Node-харнесса; `jsdom` предпочтительнее, но отсутствует осознанно @owner:github:andrei-shtanakov @id:web-tests-hand-rolled-dom @epic:eco.ops
       Python-сьют не ставит npm-пакеты (`uv`-only дисциплина этого репо), поэтому
       `jsdom` как test-only devDependency потребовал бы отдельного `npm install`
       шага в CI и локально — цена, которую задача не оправдала. Компромисс держит
@@ -775,16 +775,16 @@
 
 ## Наблюдения (работу не начинаем, пока не сработает триггер)
 
-- [ ] Пин `fastmcp<3` и три отклонённых GHSA (OpenAPI SSRF, OAuth proxy, Gemini-CLI injection) — переоценить @owner:github:andrei-shtanakov @trigger:"бамп fastmcp до 3.x" @id:fastmcp-pin-reeval
+- [ ] Пин `fastmcp<3` и три отклонённых GHSA (OpenAPI SSRF, OAuth proxy, Gemini-CLI injection) — переоценить @owner:github:andrei-shtanakov @trigger:"бамп fastmcp до 3.x" @id:fastmcp-pin-reeval @epic:eco.ops
       Отклонены обоснованно: путь только stdio, без OpenAPI/OAuth/HTTP. Патчи есть лишь
       в 3.2.0, а пин `<3` держит мажор общим с Maestro.
-- [ ] Двойное имя Maestro: коллектор отдаёт `"Maestro"`, канон репо — `maestro` @owner:github:andrei-shtanakov @trigger:"каталог Maestro/ переименован в maestro/ на диске" @id:maestro-double-name
+- [ ] Двойное имя Maestro: коллектор отдаёт `"Maestro"`, канон репо — `maestro` @owner:github:andrei-shtanakov @trigger:"каталог Maestro/ переименован в maestro/ на диске" @id:maestro-double-name @epic:eco.ops
       Детект коллектора content-based (`maestro/` + `pyproject.toml`), поэтому
       переименование каталога discovery не сломает — но в Sync-вкладке repo придёт под
       именем каталога, и два пространства имён разойдутся. Тот же класс, что discovery-имя
       vs service-id у proctor: слепое переименование запрещено, нужна осознанная
       нормализация.
-- [ ] Handoff в arbiter по ошибке `agent_id` в `report_benchmark` @owner:github:andrei-shtanakov @id:arbiter-agent-id-handoff
+- [ ] Handoff в arbiter по ошибке `agent_id` в `report_benchmark` @owner:github:andrei-shtanakov @id:arbiter-agent-id-handoff @epic:eco.ops
       Дефект соседа, который dispatcher только показывает; наша часть — написать
       handoff/issue, править чужой репо нельзя.
 - [x] Для `contracts/github-checker-actions/v1` нет drift-сигнала: о том, что продюсер уехал, узнаём только вручную — PR #110 @owner:github:andrei-shtanakov @id:actions-v1-no-drift-signal
