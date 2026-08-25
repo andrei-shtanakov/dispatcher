@@ -1,0 +1,229 @@
+{
+  "schema_version": 2,
+  "workspace": "/home/dev/workspace",
+  "host": "machine-a",
+  "generated_at": "2026-08-25T12:00:00Z",
+  "gh_error": null,
+  "repos": [
+    {
+      "dir": "alpha",
+      "remote": "owner/alpha",
+      "local": {
+        "branch": "master",
+        "ahead": 2,
+        "behind": 0,
+        "dirty": true,
+        "error": null
+      },
+      "github": {
+        "name": "owner/alpha",
+        "pulls": [
+          {
+            "number": 7,
+            "title": "Fix sync",
+            "author": "dev",
+            "head_branch": "fix/sync",
+            "is_dependabot": false,
+            "copilot_review": {
+              "state": "COMMENTED",
+              "comment_count": 3
+            },
+            "epic": {
+              "epic": "eco.ops",
+              "defect": null,
+              "classification": "tagged",
+              "diagnostics": [],
+              "subject_uri": "gh://alpha/pull/7",
+              "carrier": "pull_request",
+              "observed_at": "2026-08-25T12:00:00Z"
+            }
+          },
+          {
+            "number": 9,
+            "title": "Body never arrived",
+            "author": "dev",
+            "head_branch": "feat/quiet",
+            "is_dependabot": false,
+            "copilot_review": null,
+            "epic": {
+              "epic": null,
+              "defect": null,
+              "classification": "unavailable",
+              "diagnostics": [
+                {
+                  "code": "EP-UNAVAILABLE",
+                  "severity": "warning",
+                  "message": "artifact body was not retrieved",
+                  "subject_uri": "gh://alpha/pull/9",
+                  "raw": null
+                }
+              ],
+              "subject_uri": "gh://alpha/pull/9",
+              "carrier": "pull_request",
+              "observed_at": "2026-08-25T12:00:00Z"
+            }
+          }
+        ],
+        "issues": [
+          {
+            "number": 12,
+            "title": "Stale snapshot",
+            "author": "dev",
+            "labels": [
+              "bug"
+            ],
+            "epic": {
+              "epic": null,
+              "defect": null,
+              "classification": "missing",
+              "diagnostics": [
+                {
+                  "code": "EP-MISSING",
+                  "severity": "warning",
+                  "message": "artifact carries no Epic trailer",
+                  "subject_uri": "gh://alpha/issues/12",
+                  "raw": null
+                }
+              ],
+              "subject_uri": "gh://alpha/issues/12",
+              "carrier": "issue",
+              "observed_at": "2026-08-25T12:00:00Z"
+            }
+          },
+          {
+            "number": 13,
+            "title": "Case-folded tag",
+            "author": "dev",
+            "labels": [],
+            "epic": {
+              "epic": null,
+              "defect": null,
+              "classification": "invalid",
+              "diagnostics": [
+                {
+                  "code": "EP-GRAMMAR",
+                  "severity": "error",
+                  "message": "Epic 'Eco.Ops' does not match <program>.<epic> (epics/v1)",
+                  "subject_uri": "gh://alpha/issues/13",
+                  "raw": "Eco.Ops"
+                }
+              ],
+              "subject_uri": "gh://alpha/issues/13",
+              "carrier": "issue",
+              "observed_at": "2026-08-25T12:00:00Z"
+            }
+          }
+        ],
+        "branches": [
+          {
+            "name": "master"
+          },
+          {
+            "name": "fix/sync"
+          }
+        ],
+        "alerts": 0,
+        "rulesets": null,
+        "merged": {
+          "window_days": 30,
+          "truncated": false,
+          "prs": [
+            {
+              "number": 5,
+              "merge_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "commit_shas": [
+                "1111111111111111111111111111111111111111",
+                "2222222222222222222222222222222222222222"
+              ],
+              "commit_shas_truncated": false,
+              "merged_at": "2026-08-20T10:00:00Z",
+              "epic": {
+                "epic": "eco.ops",
+                "defect": "pipeline",
+                "classification": "tagged",
+                "diagnostics": [],
+                "subject_uri": "gh://alpha/pull/5",
+                "carrier": "pull_request",
+                "observed_at": "2026-08-25T12:00:00Z"
+              }
+            },
+            {
+              "number": 6,
+              "merge_commit_sha": null,
+              "commit_shas": [
+                "3333333333333333333333333333333333333333"
+              ],
+              "commit_shas_truncated": true,
+              "merged_at": "2026-08-22T10:00:00Z",
+              "epic": {
+                "epic": null,
+                "defect": null,
+                "classification": "missing",
+                "diagnostics": [
+                  {
+                    "code": "EP-MISSING",
+                    "severity": "warning",
+                    "message": "artifact carries no Epic trailer",
+                    "subject_uri": "gh://alpha/pull/6",
+                    "raw": null
+                  }
+                ],
+                "subject_uri": "gh://alpha/pull/6",
+                "carrier": "pull_request",
+                "observed_at": "2026-08-25T12:00:00Z"
+              }
+            }
+          ]
+        },
+        "error": null,
+        "updated_at": "2026-08-25T12:00:00Z",
+        "path": null,
+        "local": null
+      }
+    },
+    {
+      "dir": "beta",
+      "remote": "owner/beta",
+      "local": {
+        "branch": "main",
+        "ahead": 0,
+        "behind": 0,
+        "dirty": false,
+        "error": null
+      },
+      "github": {
+        "name": "owner/beta",
+        "pulls": [],
+        "issues": [],
+        "branches": [
+          {
+            "name": "main"
+          }
+        ],
+        "alerts": null,
+        "rulesets": null,
+        "merged": {
+          "window_days": 30,
+          "truncated": true,
+          "prs": []
+        },
+        "error": null,
+        "updated_at": "2026-08-25T12:00:00Z",
+        "path": null,
+        "local": null
+      }
+    },
+    {
+      "dir": "no-remote",
+      "remote": null,
+      "local": {
+        "branch": "main",
+        "ahead": null,
+        "behind": null,
+        "dirty": false,
+        "error": "no upstream"
+      },
+      "github": null
+    }
+  ]
+}

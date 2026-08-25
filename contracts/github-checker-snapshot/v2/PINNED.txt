@@ -1,0 +1,7 @@
+source: github-checker contracts/snapshot/v2
+commit: ca5518755b7d4b987cf0079a7ade9d6ac453f05b
+vendored: 2026-08-25
+note: pinned copy (repo-boundaries vendoring). Do not edit here; re-vendor from
+  the pin. v1 stays beside it: a producer that still publishes v1 is a supported
+  state, not a failure — its GitHub planes simply carry no epic classification,
+  and the read-model reports that as "unavailable" rather than as zero.
