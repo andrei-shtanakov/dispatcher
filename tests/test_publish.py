@@ -159,10 +159,33 @@ def test_take_snapshot_missing_producer_fails(tmp_path: Path) -> None:
 
 
 def test_take_snapshot_rejects_contract_violation(tmp_path: Path) -> None:
-    # «продюсер», выдающий версию вне вендоренного набора — публиковать нельзя.
-    # Раньше здесь стояла v2: она была неподдержанной. С ADR-ECO-010 Ф3 v2
-    # завендорена и легитимна, поэтому проверяется то, что и проверялось по сути —
-    # отказ публиковать контракт, которого у нас нет, а не конкретное число.
+    """Публиковать снапшот, формы которого мы не проверяем, нельзя.
+
+    Исходный смысл теста, восстановленный после Ф3 (см. regression finding в
+    `docs/findings/2026-08-25-epics-read-model-p0.md`). До Ф3 здесь стояла v2 —
+    тогда неподдержанная. Когда v2 стала легитимной, я поменял число на 99 вместо
+    того, чтобы восстановить ИНВАРИАНТ, и предохранитель снялся ровно в тот момент,
+    когда стал нужен: непротиворечивость v2 по СОДЕРЖАНИЮ никто не проверял.
+
+    Номер версии — частный случай. Общий: продюсер заявляет контракт, а отдаёт
+    что-то другое.
+    """
+    payload = json.loads(make_snapshot().model_dump_json())
+    payload["schema_version"] = 2
+    payload["repos"][0]["github"] = {
+        "name": "alpha",
+        "pulls": [],
+        "issues": [{"number": 7, "title": "an issue", "epic": {"ЧУШЬ": 123}}],
+    }
+    bad = json.dumps(payload)
+    script = tmp_path / "fake.py"
+    script.write_text(f"import sys; sys.stdout.write({bad!r})")
+    with pytest.raises(PublishError, match="contract"):
+        take_snapshot(tmp_path, command=("python3", str(script), "--ignored"))
+
+
+def test_take_snapshot_rejects_an_unvendored_version(tmp_path: Path) -> None:
+    """Отдельно — версия вне вендоренного набора: это уже другая проверка."""
     bad = json.dumps(
         {**json.loads(make_snapshot().model_dump_json()), "schema_version": 99}
     )
