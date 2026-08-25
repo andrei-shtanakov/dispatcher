@@ -282,6 +282,21 @@
       <th>Sync</th>
       </tr></thead><tbody></tbody></table></div></section>
 
+<section><h2>Epics <span id="epics-planes" class="sub"></span></h2>
+  <div id="epics-registry" class="fresh"></div>
+  <div style="margin:6px 0">
+    <button type="button" data-epic-kind="">all</button>
+    <button type="button" data-epic-kind="ecosystem">ecosystem</button>
+    <button type="button" data-epic-kind="external">external</button>
+  </div>
+  <div class="tablewrap"><table id="epics">
+    <thead><tr><th>Epic</th><th>Program</th><th>Status</th>
+      <th>TODO</th><th>Issues</th><th>PRs</th><th>Defects</th><th>Last activity</th>
+      </tr></thead><tbody></tbody></table></div>
+  <div class="tablewrap" style="margin-top:10px"><table id="defects">
+    <thead><tr><th>Defect class</th><th>Count</th><th>By epic</th></tr></thead>
+    <tbody></tbody></table></div></section>
+
 <section><h2>Roadmap <span id="roadmap-names" class="sub"></span></h2>
   <div class="tablewrap" style="margin-bottom:10px"><table id="roadmap-summary">
     <thead><tr><th>Project</th><th>Done</th><th>Readiness</th>
@@ -613,6 +628,83 @@ document.getElementById("run-status-check").addEventListener("click", async () =
   } finally {
     if (myGen === runStatusGen) btn.disabled = false;
   }
+});
+
+
+// ── Epics (ADR-ECO-010 Ф3) ───────────────────────────────────────────────
+// A count is rendered PER PLANE, never summed into one number: a plane that
+// was not read contributes "—", and "—" must not be mistaken for zero. That
+// is the whole reason the classification is four-state upstream.
+let epicsKind = "";
+
+function planeCell(plane) {
+  if (!plane || plane.state !== "read") {
+    const why = plane && plane.detail ? plane.detail : "not read";
+    return `<td class="warn" title="${esc(why)}">—</td>`;
+  }
+  return `<td>${plane.count}</td>`;
+}
+
+function renderEpics(view) {
+  const byPlane = {};
+  (view.planes || []).forEach(p => { byPlane[p.plane] = p; });
+  document.getElementById("epics-planes").textContent =
+    (view.planes || []).map(p =>
+      `${p.plane}: ${p.state === "read" ? p.count : "unavailable"}`).join(" · ");
+
+  const reg = document.getElementById("epics-registry");
+  const errs = (view.registry_diagnostics || []).filter(d => d.severity === "error");
+  reg.className = errs.length ? "err" : "fresh";
+  reg.textContent = errs.length
+    ? `registry: ${errs.length} error(s) — ${errs.map(d => d.code).join(", ")}`
+    : `registry: ${view.registry_path || "not found"} — clean`;
+
+  document.querySelector("#epics tbody").innerHTML = (view.rows || []).map(r => {
+    const plane = name => (r.planes || []).find(p => p.plane === name);
+    const defects = Object.entries(r.defects || {})
+      .map(([k, v]) => `${esc(k)} ${v}`).join(", ") || "—";
+    // the bucket is a row of its own kind: it is not an epic, has no program,
+    // and stays visible under every filter
+    const isBucket = r.type === "classification_bucket";
+    return `<tr class="${isBucket ? "warn" : ""}">
+      <td>${esc(r.id)}${isBucket ? "" : ` <span class="sub">${esc(r.title || "")}</span>`}</td>
+      <td>${isBucket ? "—" : esc(r.program || "")} ${isBucket ? "" : `<span class="sub">${esc(r.kind || "")}</span>`}</td>
+      <td>${isBucket ? "—" : esc(r.status || (r.moved_to ? `moved → ${r.moved_to}` : ""))}</td>
+      ${planeCell(plane("todo"))}${planeCell(plane("issues"))}${planeCell(plane("pull_requests"))}
+      <td>${defects}</td>
+      <td>${r.last_activity_at
+            ? `${esc(r.last_activity_at)} <span class="sub">${esc((r.activity_sources || []).join(","))}</span>`
+            : "—"}</td></tr>`;
+  }).join("") || `<tr><td colspan="8">no epics</td></tr>`;
+
+  document.querySelector("#defects tbody").innerHTML = (view.defects || []).map(d => `
+    <tr><td>${esc(d.defect)} <span class="sub">${esc(d.title || "")}</span></td>
+    <td>${d.count}</td>
+    <td>${Object.entries(d.by_epic || {}).map(([k, v]) => `${esc(k)} ${v}`).join(", ")}</td>
+    </tr>`).join("") || `<tr><td colspan="3">no defect-tagged items</td></tr>`;
+}
+
+async function refreshEpics() {
+  try {
+    renderEpics(await get("/api/epics" + (epicsKind ? `?kind=${epicsKind}` : "")));
+  } catch (err) {
+    // named, not silent: an empty table would read as "no epics", which is a
+    // claim about the fleet rather than about this request
+    const reg = document.getElementById("epics-registry");
+    if (reg) {
+      reg.className = "err";
+      reg.textContent = `epics unavailable: ${err && err.message ? err.message : err}`;
+    }
+    document.querySelector("#epics tbody").innerHTML =
+      `<tr><td colspan="8" class="err">not read — see above</td></tr>`;
+  }
+}
+
+document.querySelectorAll("button[data-epic-kind]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    epicsKind = btn.dataset.epicKind;
+    refreshEpics();
+  });
 });
 
 function renderSummary(summary) {
@@ -1406,6 +1498,12 @@ async function refresh() {
       get("/api/models"), get("/api/contracts"), get("/api/roadmap"),
       get("/api/sync"), get("/api/roadmap/summary"), get("/api/benchmarks")]);
     renderSync(sync);
+    // Epics is fetched OUTSIDE the Promise.all above, deliberately. Joining it
+    // there makes one panel's endpoint able to blank the whole dashboard — the
+    // rest of this page has nothing to do with the stream axis, and a reader
+    // looking at Sync should not lose it because the registry is unreadable.
+    // The failure is shown in the panel instead of swallowed.
+    refreshEpics();
     // one global section, one writer, one polling loop — refresh() itself
     // IS the stale-response guard; no generation counter needed here.
     renderBenchmarks(benchmarks);

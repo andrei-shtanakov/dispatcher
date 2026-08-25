@@ -159,9 +159,12 @@ def test_take_snapshot_missing_producer_fails(tmp_path: Path) -> None:
 
 
 def test_take_snapshot_rejects_contract_violation(tmp_path: Path) -> None:
-    # «продюсер», выдающий v2 — публиковать такое нельзя
+    # «продюсер», выдающий версию вне вендоренного набора — публиковать нельзя.
+    # Раньше здесь стояла v2: она была неподдержанной. С ADR-ECO-010 Ф3 v2
+    # завендорена и легитимна, поэтому проверяется то, что и проверялось по сути —
+    # отказ публиковать контракт, которого у нас нет, а не конкретное число.
     bad = json.dumps(
-        {**json.loads(make_snapshot().model_dump_json()), "schema_version": 2}
+        {**json.loads(make_snapshot().model_dump_json()), "schema_version": 99}
     )
     script = tmp_path / "fake.py"
     script.write_text(f"import sys; sys.stdout.write({bad!r})")

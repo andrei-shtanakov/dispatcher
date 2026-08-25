@@ -45,6 +45,9 @@ EXPECTED_TOOLS = {
     "onboarding",
     "product_proposals",
     "benchmarks",
+    # ADR-ECO-010 Ф3 — read-only, same read-model the HTTP surface uses
+    "epics",
+    "epic",
 }
 
 # A minimal roadmap item so the fixture workspace's /api/roadmap is

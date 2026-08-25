@@ -1,0 +1,21 @@
+{
+  "schema_version": 2,
+  "workspace": "/home/dev/workspace",
+  "host": "machine-a",
+  "generated_at": "2026-08-25T12:00:00Z",
+  "gh_error": "gh не авторизован. Выполните `gh auth login`.",
+  "repos": [
+    {
+      "dir": "alpha",
+      "remote": "owner/alpha",
+      "local": {
+        "branch": "master",
+        "ahead": 0,
+        "behind": 1,
+        "dirty": false,
+        "error": null
+      },
+      "github": null
+    }
+  ]
+}

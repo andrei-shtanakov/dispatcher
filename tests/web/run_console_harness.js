@@ -115,6 +115,10 @@ function defaultRoutes(submitRoute) {
       fetch_in_flight: false,
       report: {top_line: 'ok', top_reason: null, proposals: [], hosts: []},
     })],
+    [u => u.startsWith('/api/epics'), () => ok({
+      generated_at: null, registry_path: '/ws/epics.toml', registry_ok: true,
+      registry_diagnostics: [], programs: {}, planes: [], rows: [], defects: [],
+    })],
     [u => u.startsWith('/api/benchmarks'), () => ok({
       fetch_in_flight: false,
       report: {status: 'unconfigured', url: null, fetched_at: null,

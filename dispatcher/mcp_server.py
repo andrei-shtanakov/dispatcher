@@ -133,6 +133,60 @@ def build_server(
         return [c.model_dump(mode="json") for c in read_api.contracts(cache)]
 
     @mcp.tool
+    def epics(
+        kind: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Filter epics by their program's kind: 'ecosystem' (the platform "
+                    "itself) or 'external' (a third-party product built with it). "
+                    "The unclassified bucket is returned regardless."
+                )
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Stream axis: programs, epics, per-plane counts, unclassified bucket.
+
+        `kind` is `ecosystem` or `external` and filters EPICS only — the
+        unclassified bucket is always present, because an unmarked artifact
+        belongs to no program and filtering it away would return a partial
+        aggregate that looks complete. Counts are per plane: a plane reported
+        `unavailable` was not read, which is not the same as zero.
+        """
+        from dispatcher.core.epics import build_view
+        from dispatcher.core.sync import kb_snapshot_dirs, load_kb_snapshots
+
+        # The HTTP surface constrains `kind` with a pattern; without the same check
+        # here an unknown value would filter every epic out and return just the
+        # bucket — an empty-looking answer to a malformed question, which reads as
+        # "there are no epics" rather than "you asked wrongly".
+        if kind is not None and kind not in ("ecosystem", "external"):
+            raise ValueError(
+                f"unknown kind {kind!r}; expected 'ecosystem' or 'external'"
+            )
+        snapshots, errors = load_kb_snapshots(kb_snapshot_dirs(config.roots))
+        return build_view(
+            config, snapshots, kind=kind, snapshot_errors=errors
+        ).model_dump()
+
+    @mcp.tool
+    def epic(
+        epic_id: Annotated[
+            str,
+            Field(description="Canonical epic id, '<program>.<epic>' (e.g. 'eco.ops')"),
+        ],
+    ) -> dict[str, Any]:
+        """One epic with every artifact behind it, across the planes that were read."""
+        from dispatcher.core.epics import build_detail
+        from dispatcher.core.sync import kb_snapshot_dirs, load_kb_snapshots
+
+        snapshots, _ = load_kb_snapshots(kb_snapshot_dirs(config.roots))
+        detail = build_detail(config, epic_id, snapshots)
+        if detail is None:
+            raise ValueError(f"unknown epic {epic_id!r}")
+        return detail.model_dump()
+
+    @mcp.tool
     def work_items(
         cross_only: Annotated[
             bool,
