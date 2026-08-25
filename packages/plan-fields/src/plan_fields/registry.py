@@ -20,6 +20,7 @@ the VALUES it validates are the umbrella's. Shape is pinned, content is live.
 
 from __future__ import annotations
 
+import json
 import re
 import tomllib
 from dataclasses import dataclass, field
@@ -113,9 +114,46 @@ def load_registry(path: Path) -> EpicsRegistry:
             )
         )
 
-    diagnostics: list[dict[str, Any]] = list(_structural_diagnostics(data))
-    programs = data.get("programs", {})
-    epics = data.get("epics", {})
+    # Shape BEFORE content, and before anything else touches the sections. A section
+    # that is not a table cannot be iterated at all, so a check running first would
+    # raise on it — and "the tool crashed" reads to an operator exactly like "the
+    # registry is fine and something else broke". Ordering is the whole guarantee here:
+    # this pass previously sat after the structural one and protected nothing.
+    diagnostics: list[dict[str, Any]] = []
+    sections: dict[str, dict[str, Any]] = {}
+    for key in ("programs", "epics", "defect_classes", "coverage_policy"):
+        value = data.get(key, {})
+        if isinstance(value, dict):
+            sections[key] = {
+                k: v
+                for k, v in value.items()
+                if key == "coverage_policy" or isinstance(v, dict)
+            }
+            for k, v in value.items():
+                if key != "coverage_policy" and not isinstance(v, dict):
+                    diagnostics.append(
+                        _diag(
+                            "EP-REG-MALFORMED",
+                            "error",
+                            str(k),
+                            "registry entry is not the shape the schema declares",
+                            type(v).__name__,
+                        )
+                    )
+            continue
+        sections[key] = {}
+        diagnostics.append(
+            _diag(
+                "EP-REG-MALFORMED",
+                "error",
+                key,
+                "registry section is not the shape the schema declares",
+                type(value).__name__,
+            )
+        )
+    diagnostics.extend(_structural_diagnostics({**data, **sections}))
+    programs = sections["programs"]
+    epics = sections["epics"]
 
     # Referential checks — these hold BETWEEN keys and no JSON Schema can express them
     # (epics/v1 fixtures/README.md names exactly these four).
@@ -156,15 +194,67 @@ def load_registry(path: Path) -> EpicsRegistry:
             )
             diagnostics.append(_diag(code, "error", key, message, moved_to))
 
+    diagnostics.extend(_schema_backstop(data, diagnostics))
     return EpicsRegistry(
         programs=programs,
         epics=epics,
-        defect_classes=data.get("defect_classes", {}),
-        coverage_policy=data.get("coverage_policy", {}),
+        defect_classes=sections["defect_classes"],
+        coverage_policy=sections["coverage_policy"],
         diagnostics=tuple(
             sorted(diagnostics, key=lambda d: (d["code"], d.get("subject_key") or ""))
         ),
     )
+
+
+def _schema_backstop(data: dict[str, Any], found: list[dict[str, Any]]):
+    """The vendored schema, run AFTER the explicit checks, for what they do not name.
+
+    The explicit checks own classification (see `_structural_diagnostics`), but they
+    only cover the defects that have a code. Without this pass the module's promise to
+    validate against `registry.schema.json` would be prose: a registry could violate
+    the schema in an unclassified way and load clean. Anything the explicit pass
+    already reported is skipped, so one defect never appears twice under two codes.
+
+    jsonschema is an optional dependency of the parser path; when it is absent the
+    structural half still runs, and the absence is reported rather than swallowed.
+    """
+    try:
+        from jsonschema import Draft202012Validator
+    except ImportError:  # pragma: no cover - exercised only without the extra
+        return [
+            _diag(
+                "EP-REG-MALFORMED",
+                "warning",
+                None,
+                "jsonschema unavailable; schema backstop did not run",
+            )
+        ]
+    schema = json.loads(_REGISTRY_SCHEMA.read_text(encoding="utf-8"))
+    # Dedup by the whole path, not by the leaf. `[coverage_policy]` with a bad ratio is
+    # reported once as EP-REG-POLICY-INVALID against `coverage_policy`, while the schema
+    # errors point at `coverage_policy.robin_cutover_todo`; matching only the leaf let
+    # the same defect through a second time under a second code, which is worse than no
+    # backstop — two codes for one defect makes a reader hunt for a defect that is not
+    # there.
+    covered = {d.get("subject_key") for d in found if d.get("subject_key")}
+    out: list[dict[str, Any]] = []
+    for err in Draft202012Validator(schema).iter_errors(data):
+        path = [str(part) for part in err.path]
+        if covered & set(path):
+            continue
+        subject = path[1] if len(path) > 1 else (path[0] if path else None)
+        out.append(
+            _diag(
+                "EP-REG-MALFORMED",
+                "error",
+                subject,
+                "registry does not satisfy the vendored schema",
+                err.message,
+            )
+        )
+        if subject:
+            covered.add(subject)
+    return out
 
 
 def _walk(epics: dict[str, Any], start: str) -> list[str] | None:
@@ -184,8 +274,9 @@ def _walk(epics: dict[str, Any], start: str) -> list[str] | None:
 def _structural_diagnostics(data: dict[str, Any]):
     """Structural defects, checked explicitly rather than read out of jsonschema text.
 
-    The schema stays the contract — `test_registry_schema_agrees` asserts that it accepts
-    and rejects exactly the fixtures this function classifies. But its ERROR MESSAGES are
+    The schema stays the contract — `test_registry_schema_agrees_with_the_explicit_checks`
+    asserts it rejects exactly the fixtures this function classifies as structural, and
+    `_schema_backstop` runs it for anything unclassified. But its ERROR MESSAGES are
     not a classification API: with the LiveEpic/TombstonedEpic ``oneOf``, every shape
     violation collapses into one "not valid under any of the given schemas", so mapping
     codes from message text would report four different defects as the same one.

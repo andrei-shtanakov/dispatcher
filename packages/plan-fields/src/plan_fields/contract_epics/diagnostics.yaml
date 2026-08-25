@@ -137,6 +137,12 @@ codes:
     escalation: immediate
     summary: "a standing epic carries goal or closed — it has no finish criterion and no end date by construction; a standing epic that ended is a status change, not a closed date"
 
+  EP-REG-MALFORMED:
+    default_severity: error
+    scope: registry
+    escalation: immediate
+    summary: "a top-level registry section is not the shape the schema declares (e.g. `epics` is a string, `programs` a list) — distinct from a well-shaped registry with a bad value, and the only finding a validator can report without first being able to iterate the section"
+
   EP-REG-POLICY-INVALID:
     default_severity: error
     scope: registry
