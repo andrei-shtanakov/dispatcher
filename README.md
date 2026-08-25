@@ -247,6 +247,32 @@ interactive start and a service start, is invisible to anyone reading this
 config, and cannot be checked before use. The first pilot run died two
 seconds after a receipt that said "started" for exactly that reason.
 
+## Run it as a service (macOS launchd)
+
+    scripts/dispatcher_launchd.sh install      # generate the plist and load it
+    scripts/dispatcher_launchd.sh status       # loaded? which pid? does it answer?
+    scripts/dispatcher_launchd.sh uninstall    # unload and remove
+
+The plist is **generated, never committed**: every path it needs is absolute
+and machine-specific — the repo, `uv`, the config, the log files. A committed
+plist would be one machine's paths dressed as a universal artifact, and the
+first person to copy it would get a service that fails to start quietly.
+
+`install` refuses when the configured port is already served, instead of
+letting a `KeepAlive` agent lose a bind race forever and look "loaded" while
+being unreachable. It also refuses to run from a git worktree: an agent
+outlives the shell that installed it, a worktree does not, and baking a
+disposable directory into `WorkingDirectory` produces a service that restarts
+into a path that no longer exists.
+
+`ATP_CATALOG` is deliberately **absent** from the plist. It is declared in
+`dispatcher.toml` and the controller hands the configured value to the maestro
+child (see the control-plane section above); repeating it in the plist would
+create a second source of truth for the same fact.
+
+Logs land in `~/Library/Logs/dispatcher/`. launchd does not rotate them — add
+a `newsyslog.d` rule if the machine runs the agent continuously.
+
 ## Sync snapshots (per-machine cron)
 
     uv run dispatcher publish-snapshot               # snapshot → KB → commit+push
