@@ -97,17 +97,28 @@ def _snapshot(version: int, *, issue_epic: dict | None = None) -> Snapshot:
         }
         github = {"name": "owner/demo", "issues": [issue], "pulls": []}
     else:
-        github = {"issues": [issue], "pulls": []}
+        # v1 тоже типизирован: `name` обязателен, у issue обязателен `author`
+        issue["author"] = "dev"
+        github = {"name": "owner/demo", "issues": [issue], "pulls": []}
     payload = {
         "schema_version": version,
         "workspace": "/ws",
         "host": "h1",
         "generated_at": generated,
+        "gh_error": None,
         "repos": [
             {
                 "dir": "demo",
                 "remote": "owner/demo",
-                "local": {"branch": "master", "dirty": False},
+                # required-but-nullable в обоих пинах: `null` — «апстрима нет»,
+                # отсутствие ключа — «не измеряли». Помощник раньше опускал их и
+                # проходил только потому, что модель была мягче пина.
+                "local": {
+                    "branch": "master",
+                    "ahead": 0,
+                    "behind": 0,
+                    "dirty": False,
+                },
                 "github": github,
             }
         ],

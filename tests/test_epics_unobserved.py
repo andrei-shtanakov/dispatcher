@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from dispatcher.core.discovery import DispatcherConfig
-from dispatcher.core.epics import build_view
+from dispatcher.core.epics import EpicsView, PlaneState, build_view
 from dispatcher.core.snapshot_contract import Snapshot, parse_snapshot
 
 _NOW = datetime(2026, 8, 25, 10, 30, tzinfo=UTC)
@@ -82,7 +82,7 @@ def _snapshot(*, github: dict | None, gh_error: str | None = None) -> Snapshot:
     )
 
 
-def _issues(view) -> object:
+def _issues(view: EpicsView) -> PlaneState:
     return next(p for p in view.planes if p.plane == "issues")
 
 

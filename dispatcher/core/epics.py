@@ -368,12 +368,64 @@ def _github_planes(
     seen: set[tuple[str, str, int]] = set()
     seen_merged: set[tuple[str, int]] = set()
     totals = {"issues": 0, "pull_requests": 0}
+    # A gap is per REPOSITORY and per PLANE, and it is only a gap if NO producer
+    # observed it: one host failing on a repo another host read fine is not a hole in
+    # the fleet's picture. Collapsing that would make everything permanently
+    # `partial`, and a completeness marker that is always on marks nothing.
+    observed: dict[str, set[str]] = {p: set() for p in totals}
+    gaps: dict[str, dict[str, str]] = {p: {} for p in totals}
+
+    def _gap(planes_affected: tuple[str, ...], repo_key: str, why: str) -> None:
+        for plane in planes_affected:
+            gaps[plane].setdefault(repo_key, why)
+
     for snapshot in ordered:
         for repo in snapshot.repos:
+            key_repo = _repo_key(repo)
+            if snapshot.gh_error:
+                # The producer is telling us outright that it never reached GitHub.
+                # This field was read by nobody: a snapshot saying "gh is not
+                # authorised" with empty lists produced a confident `read 0`, i.e. the
+                # panel reported a fact about the fleet that the producer had just
+                # disclaimed.
+                _gap(
+                    ("issues", "pull_requests"),
+                    key_repo,
+                    f"{key_repo}: GitHub not queried on {snapshot.host} "
+                    f"({snapshot.gh_error})",
+                )
+                continue
             github = repo.github
             if github is None:
+                # No remote means there is genuinely no GitHub side to observe; a repo
+                # that HAS a remote and no github block was simply not looked at.
+                if repo.remote is not None:
+                    _gap(
+                        ("issues", "pull_requests"),
+                        key_repo,
+                        f"{key_repo}: no GitHub state published by {snapshot.host}",
+                    )
                 continue
-            key_repo = _repo_key(repo)
+            if github.error:
+                _gap(
+                    ("issues", "pull_requests"),
+                    key_repo,
+                    f"{key_repo}: {github.error} (on {snapshot.host})",
+                )
+                continue
+            # `pulls` is non-nullable in the pin and defaults to empty, so its absence
+            # really does mean "none open". `issues` is nullable precisely because the
+            # producer needs a way to say "I did not retrieve this list" — and
+            # `issues or []` erased exactly that distinction.
+            observed["pull_requests"].add(key_repo)
+            if github.issues is None:
+                _gap(
+                    ("issues",),
+                    key_repo,
+                    f"{key_repo}: issue list not retrieved on {snapshot.host}",
+                )
+            else:
+                observed["issues"].add(key_repo)
             for plane, items in (
                 ("issues", github.issues or []),
                 ("pull_requests", github.pulls),
@@ -444,11 +496,22 @@ def _github_planes(
             f"stale beyond {int(STALE_AFTER_SECONDS)}s, counts may lag: "
             + ", ".join(stale_hosts)
         )
-    state = "partial" if reasons else "read"
-    detail = "; ".join(reasons) or None
-    planes = [
-        PlaneState(plane=p, state=state, count=totals[p], detail=detail) for p in totals
-    ]
+    planes = []
+    for plane in totals:
+        unobserved = [
+            why
+            for key, why in sorted(gaps[plane].items())
+            if key not in observed[plane]
+        ]
+        why = [*reasons, *unobserved]
+        planes.append(
+            PlaneState(
+                plane=plane,
+                state="partial" if why else "read",
+                count=totals[plane],
+                detail="; ".join(why) or None,
+            )
+        )
     return planes, counted, findings
 
 
