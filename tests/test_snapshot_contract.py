@@ -115,3 +115,75 @@ def test_a_v1_payload_is_still_accepted_and_marked_as_carrying_no_axis() -> None
     assert snapshot.schema_version == 1
     assert carries_epic_axis(snapshot) is False
     assert carries_epic_axis(parse_snapshot(FIXTURES_V2[0].read_text())) is True
+
+
+def _mutations(base: dict) -> dict[str, dict]:
+    """Deliberate v2 violations, each one a way a producer could actually break."""
+    import copy
+
+    def mutate(fn) -> dict:
+        payload = copy.deepcopy(base)
+        fn(payload)
+        return payload
+
+    def issues(p: dict) -> list:
+        return p["repos"][0]["github"]["issues"]
+
+    return {
+        "epic block replaced by junk": mutate(
+            lambda p: issues(p)[0].__setitem__("epic", {"ЧУШЬ": 123})
+        ),
+        "epic block is a string": mutate(
+            lambda p: issues(p)[0].__setitem__("epic", "eco.ops")
+        ),
+        "classification outside the four states": mutate(
+            lambda p: issues(p)[0]["epic"].__setitem__("classification", "probably")
+        ),
+        "classification dropped": mutate(
+            lambda p: issues(p)[0]["epic"].pop("classification")
+        ),
+        "carrier dropped": mutate(lambda p: issues(p)[0]["epic"].pop("carrier")),
+        "diagnostics is not a list": mutate(
+            lambda p: issues(p)[0]["epic"].__setitem__("diagnostics", "none")
+        ),
+        "diagnostic severity outside the set": mutate(
+            lambda p: issues(p)[0]["epic"].__setitem__(
+                "diagnostics", [{"code": "X", "severity": "meh", "message": "m"}]
+            )
+        ),
+        "issue number is a string": mutate(
+            lambda p: issues(p)[0].__setitem__("number", "12")
+        ),
+        "epic axis missing from an issue": mutate(lambda p: issues(p)[0].pop("epic")),
+        "merged window loses truncated": mutate(
+            lambda p: p["repos"][0]["github"]["merged"].pop("truncated")
+        ),
+    }
+
+
+def test_the_typed_models_reject_what_the_vendored_schema_rejects() -> None:
+    """Anti-drift: the models are a restatement of the pin, so they must agree with it.
+
+    Hand-written models beside a vendored schema are two sources of truth, and the
+    dangerous direction is one-way: a model LOOSER than the pin accepts payloads the
+    contract forbids, and does so silently. Asserting agreement on deliberate
+    violations is what keeps the restatement honest between re-vendorings.
+    """
+    from jsonschema import Draft202012Validator
+
+    schema = json.loads((VENDORED_V2 / "snapshot.schema.json").read_text())
+    validator = Draft202012Validator(schema)
+    base = json.loads((VENDORED_V2 / "fixtures" / "snapshot_full.json").read_text())
+
+    assert validator.is_valid(base), "the pinned fixture must satisfy its own pin"
+    assert parse_snapshot(json.dumps(base)).schema_version == 2
+
+    for name, payload in _mutations(base).items():
+        schema_rejects = not validator.is_valid(payload)
+        try:
+            parse_snapshot(json.dumps(payload))
+            model_rejects = False
+        except SnapshotContractError:
+            model_rejects = True
+        assert schema_rejects, f"the pin itself does not reject {name!r} — fix the case"
+        assert model_rejects, f"models accept what the pin rejects: {name}"

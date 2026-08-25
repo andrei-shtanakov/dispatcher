@@ -23,6 +23,7 @@ Three rules this module exists to keep, all from ADR-ECO-010 D10/D11:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -30,21 +31,37 @@ from pydantic import BaseModel, Field
 
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.snapshot_contract import (
-    WorkspaceSnapshotV1,
+    EpicClassificationV2,
+    Snapshot,
+    WorkspaceSnapshotV2,
     carries_epic_axis,
 )
+from dispatcher.core.sync import STALE_AFTER_SECONDS
 
 UNCLASSIFIED = "unclassified"
 _PLANES = ("todo", "issues", "pull_requests")
+
+#: A plane is `read` only when every producer that should have contributed did, and
+#: recently. `partial` is the third state the first cut of this module lacked: it
+#: reported `read` for a fleet it had only half-observed and put the reason in a
+#: human-readable `detail`, which no consumer branches on. State is the machine-readable
+#: field — web, MCP and Robin all decide by it — so an incompleteness that lives only in
+#: prose is an incompleteness nobody downstream can see.
+PLANE_STATES = ("read", "partial", "unavailable")
 
 
 class PlaneState(BaseModel):
     """One plane's contribution to one row, with its completeness attached."""
 
     plane: str
-    state: str  # read | unavailable
+    state: str  # read | partial | unavailable
     count: int = 0
     detail: str | None = None
+
+    @property
+    def is_complete(self) -> bool:
+        """Whether this count may be read as the whole truth for its plane."""
+        return self.state == "read"
 
 
 class EpicRow(BaseModel):
@@ -64,6 +81,7 @@ class EpicRow(BaseModel):
 
     @property
     def total_read(self) -> int:
+        """Sum over COMPLETE planes only — a partial plane's count is a lower bound."""
         return sum(p.count for p in self.planes if p.state == "read")
 
 
@@ -98,6 +116,11 @@ class EpicsView(BaseModel):
     registry_path: str | None = None
     registry_ok: bool = True
     registry_diagnostics: list[dict[str, Any]] = Field(default_factory=list)
+    #: Per-ARTIFACT findings (EP-UNKNOWN, EP-MOVED, EP-DEFECT-UNKNOWN), deliberately
+    #: separate from the registry's own: a typo in one issue's trailer says nothing
+    #: about the registry, and folding it into `registry_diagnostics` would flip
+    #: `registry_ok` to false and send an operator to fix the wrong file.
+    classification_diagnostics: list[dict[str, Any]] = Field(default_factory=list)
     programs: dict[str, dict[str, str]] = Field(default_factory=dict)
     planes: list[PlaneState] = Field(default_factory=list)
     rows: list[EpicRow] = Field(default_factory=list)
@@ -151,11 +174,18 @@ def _workspace_root(manifest: Path) -> Path:
     return manifest.parent.parent
 
 
-def _todo_plane(config: DispatcherConfig, registry: Any) -> tuple[PlaneState, _Counted]:
+def _todo_plane(
+    config: DispatcherConfig, registry: Any
+) -> tuple[PlaneState, _Counted, list[dict[str, Any]]]:
     """Parse every checked-out `TODO.md` and classify its open items.
 
     Only OPEN, non-tombstoned items count: a closed item carries no obligation, and
     including it would make the backlog look larger the more work the fleet finished.
+
+    The registry findings travel OUT with the counts. They were being computed and
+    dropped on the floor: `apply_registry` returned EP-UNKNOWN for a typo'd tag, the
+    item was downgraded into the bucket, and the reason never reached a surface — so a
+    misspelled epic looked exactly like an unmarked one, and the fix for it was invisible.
     """
     counted = _Counted({}, {}, {}, {})
     manifest = _manifest_path(config)
@@ -167,6 +197,7 @@ def _todo_plane(config: DispatcherConfig, registry: Any) -> tuple[PlaneState, _C
                 detail="workspace-manifest.toml not found; repo identity unresolvable",
             ),
             counted,
+            [],
         )
     from plan_fields import (
         RepoInput,
@@ -188,9 +219,12 @@ def _todo_plane(config: DispatcherConfig, registry: Any) -> tuple[PlaneState, _C
                 plane="todo", state="unavailable", detail="no TODO.md checked out"
             ),
             counted,
+            [],
         )
     doc = parse_fleet(inputs, index)
-    apply_registry(doc, registry)  # downgrades unknown/retired epics in place
+    findings = apply_registry(
+        doc, registry
+    )  # downgrades unknown/retired epics in place
     total = 0
     for node in doc["nodes"]:
         if node["declared_status"] != "open" or node["tombstone"]:
@@ -211,21 +245,84 @@ def _todo_plane(config: DispatcherConfig, registry: Any) -> tuple[PlaneState, _C
                 defect=node["defect"],
             )
         )
-    return PlaneState(plane="todo", state="read", count=total), counted
+    return PlaneState(plane="todo", state="read", count=total), counted, list(findings)
+
+
+def _repo_key(repo: Any) -> str:
+    """Fleet-wide identity of one repository, stable across producers.
+
+    The REMOTE is the identity; the directory name is one host's spelling of it. Two
+    machines of the same owner check the same repo out under different paths (and, on a
+    case-insensitive filesystem, under different casings), so keying on `dir` would file
+    one repository under two names and count everything inside it twice.
+    """
+    return repo.remote or repo.dir
+
+
+def _classify(
+    classification: EpicClassificationV2, registry: Any, subject: str
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Resolve one artifact's tag to an aggregate key, plus the finding it produced.
+
+    Returns ``(None, ...)`` for an artifact that must not be counted at all — an
+    unretrieved body. Everything else lands somewhere visible: an epic the registry
+    knows, or the bucket. Nothing may fall between them, and that is what broke: the
+    GitHub plane keyed straight off the producer's string without asking the registry,
+    so a typo'd epic became a row that does not exist, vanished from the bucket too,
+    and still counted into the plane total. The rows stopped summing to the total, in
+    an aggregate whose entire promise is that they do.
+    """
+    state = classification.classification
+    if state == "unavailable":
+        # the body was never retrieved: counting it as unmarked would invent a fact
+        # about an artifact nobody read
+        return None, None
+    epic = classification.epic
+    if state != "tagged" or not isinstance(epic, str):
+        return UNCLASSIFIED, None
+    if registry is None:
+        # no registry reachable: the typo guard is absent, and saying so beats
+        # pretending every tag checked out
+        return epic, None
+    final, code = registry.resolve(epic)
+    if code is None:
+        return epic, None
+    # Same rule as the TODO plane's `apply_registry`: a value the registry does not
+    # recognise cannot be counted into any stream, so it goes to the bucket and the
+    # reason is NAMED. Both planes must agree here — two planes disagreeing about what
+    # a retired id means would split one stream across two rows in half the surfaces.
+    message = (
+        "epic is absent from the registry"
+        if code == "EP-UNKNOWN"
+        else f"epic is retired; the registry moves it to {final}"
+    )
+    return UNCLASSIFIED, {
+        "code": code,
+        "severity": "error",
+        "message": message,
+        "subject_uri": subject,
+        "raw": epic,
+    }
 
 
 def _github_planes(
-    snapshots: list[WorkspaceSnapshotV1],
+    snapshots: list[Snapshot],
+    registry: Any = None,
     load_errors: list[tuple[str, str]] | None = None,
-) -> tuple[list[PlaneState], _Counted]:
+    now: datetime | None = None,
+) -> tuple[list[PlaneState], _Counted, list[dict[str, Any]]]:
     """Issues and pull requests, from published snapshots only.
 
     Dispatcher never calls the GitHub API (ADR-ECO-004 D1), so these planes exist only
     as far as github-checker publishes them. A producer still on snapshot v1 publishes
     no epic classification at all: that is `unavailable`, not zero, and the distinction
     is the whole reason the classification is four-state.
+
+    Three things degrade a plane below `read`, and each of them names itself: a producer
+    on v1, a producer whose snapshot has gone stale, and nothing published at all.
     """
     counted = _Counted({}, {}, {}, {})
+    findings: list[dict[str, Any]] = []
     if not snapshots:
         # "nothing was published" and "what was published could not be read" are
         # different facts about the fleet, and an operator acts on them differently.
@@ -243,9 +340,10 @@ def _github_planes(
                 for p in ("issues", "pull_requests")
             ],
             counted,
+            findings,
         )
     v1_hosts = [s.host for s in snapshots if not carries_epic_axis(s)]
-    usable = [s for s in snapshots if carries_epic_axis(s)]
+    usable = [s for s in snapshots if isinstance(s, WorkspaceSnapshotV2)]
     if not usable:
         detail = (
             "producer publishes snapshot v1 (no epic classification): "
@@ -257,33 +355,48 @@ def _github_planes(
                 for p in ("issues", "pull_requests")
             ],
             counted,
+            findings,
         )
 
+    stale_hosts = sorted(
+        s.host for s in usable if s.age_seconds(now) > STALE_AFTER_SECONDS
+    )
+
+    # Freshest producer first, so that when two hosts saw the same artifact the value
+    # kept is the more recent observation rather than whichever file sorted first.
+    ordered = sorted(usable, key=lambda s: s.generated_at, reverse=True)
+    seen: set[tuple[str, str, int]] = set()
+    seen_merged: set[tuple[str, int]] = set()
     totals = {"issues": 0, "pull_requests": 0}
-    for snapshot in usable:
+    for snapshot in ordered:
         for repo in snapshot.repos:
-            github = repo.github or {}
-            for plane, field in (("issues", "issues"), ("pull_requests", "pulls")):
-                for item in github.get(field) or []:
-                    classification = item.get("epic") or {}
-                    state = classification.get("classification")
-                    if state == "unavailable":
-                        # the body was never retrieved: counting it as unmarked would
-                        # invent a fact about an artifact nobody read
+            github = repo.github
+            if github is None:
+                continue
+            key_repo = _repo_key(repo)
+            for plane, items in (
+                ("issues", github.issues or []),
+                ("pull_requests", github.pulls),
+            ):
+                for item in items:
+                    # One artifact observed by two producers is ONE artifact. Two
+                    # machines of the same owner is a normal configuration, not a
+                    # fault, and without this the whole overlap counted twice — the
+                    # backlog grew because the owner bought a laptop.
+                    identity = (plane, key_repo, item.number)
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
+                    subject = f"{key_repo}#{item.number}"
+                    key, finding = _classify(item.epic, registry, subject)
+                    if finding is not None:
+                        findings.append(finding)
+                    if key is None:
                         continue
                     totals[plane] += 1
-                    tagged_epic = classification.get("epic")
-                    # `tagged` without an epic string cannot happen in a conforming
-                    # producer, but a consumer that trusts that would key the whole
-                    # aggregate on None the day it does.
-                    key = (
-                        tagged_epic
-                        if state == "tagged" and isinstance(tagged_epic, str)
-                        else UNCLASSIFIED
-                    )
                     counted.per_plane.setdefault(key, {}).setdefault(plane, 0)
                     counted.per_plane[key][plane] += 1
-                    defect = classification.get("defect")
+                    defect = item.epic.defect
                     if defect:
                         counted.per_defect.setdefault(key, {}).setdefault(defect, 0)
                         counted.per_defect[key][defect] += 1
@@ -291,28 +404,52 @@ def _github_planes(
                         EpicArtifact(
                             plane=plane,
                             repo=repo.dir,
-                            ref=f"{repo.dir}#{item.get('number')}",
-                            title=item.get("title"),
+                            ref=f"{repo.dir}#{item.number}",
+                            title=item.title,
                             defect=defect,
                         )
                     )
-            for merged in (github.get("merged") or {}).get("prs") or []:
-                classification = merged.get("epic") or {}
-                if classification.get("classification") != "tagged":
+            merged = github.merged
+            for pr in merged.prs if merged else []:
+                if (key_repo, pr.number) in seen_merged:
                     continue
-                key = classification["epic"]
-                stamp = merged.get("merged_at")
-                if stamp and stamp > counted.activity.get(key, ""):
-                    counted.activity[key] = stamp
+                seen_merged.add((key_repo, pr.number))
+                if pr.epic.classification != "tagged" or pr.epic.epic is None:
+                    continue
+                final, code = (
+                    registry.resolve(pr.epic.epic) if registry else (pr.epic.epic, None)
+                )
+                if code is not None:
+                    continue  # an unknown stream has no row to carry an activity date
+                if final is not None and pr.merged_at > counted.activity.get(final, ""):
+                    counted.activity[final] = pr.merged_at
 
-    planes = [PlaneState(plane=p, state="read", count=totals[p]) for p in totals]
+    reasons = []
+    if load_errors:
+        # A host whose snapshot would not parse is an UNOBSERVED host, exactly like a
+        # host still on v1. These errors used to count only when nothing at all
+        # parsed — so one readable snapshot was enough for the plane to call itself
+        # complete while an unknown number of others contributed nothing.
+        reasons.append(
+            "published snapshots unreadable: "
+            + "; ".join(f"{host}: {reason}" for host, reason in sorted(load_errors))
+        )
     if v1_hosts:
-        for plane in planes:
-            plane.detail = (
-                "partial: hosts still on snapshot v1 contribute nothing — "
-                + ", ".join(sorted(v1_hosts))
-            )
-    return planes, counted
+        reasons.append(
+            "hosts still on snapshot v1 contribute nothing: "
+            + ", ".join(sorted(v1_hosts))
+        )
+    if stale_hosts:
+        reasons.append(
+            f"stale beyond {int(STALE_AFTER_SECONDS)}s, counts may lag: "
+            + ", ".join(stale_hosts)
+        )
+    state = "partial" if reasons else "read"
+    detail = "; ".join(reasons) or None
+    planes = [
+        PlaneState(plane=p, state=state, count=totals[p], detail=detail) for p in totals
+    ]
+    return planes, counted, findings
 
 
 def _merge(*counted: _Counted) -> _Counted:
@@ -339,11 +476,12 @@ def _merge(*counted: _Counted) -> _Counted:
 
 def build_view(
     config: DispatcherConfig,
-    snapshots: list[WorkspaceSnapshotV1] | None = None,
+    snapshots: list[Snapshot] | None = None,
     *,
     kind: str | None = None,
     generated_at: str | None = None,
     snapshot_errors: list[tuple[str, str]] | None = None,
+    now: datetime | None = None,
 ) -> EpicsView:
     """Assemble the epics view over every plane this dispatcher can honestly read."""
     from plan_fields import load_registry
@@ -368,8 +506,10 @@ def build_view(
         )
 
     registry = load_registry(path)
-    todo_plane, todo_counted = _todo_plane(config, registry)
-    gh_planes, gh_counted = _github_planes(snapshots or [], snapshot_errors)
+    todo_plane, todo_counted, todo_findings = _todo_plane(config, registry)
+    gh_planes, gh_counted, gh_findings = _github_planes(
+        snapshots or [], registry, snapshot_errors, now
+    )
     counted = _merge(todo_counted, gh_counted)
     planes = [todo_plane, *gh_planes]
     plane_state = {p.plane: p for p in planes}
@@ -445,6 +585,10 @@ def build_view(
         registry_path=str(path),
         registry_ok=not any(d["severity"] == "error" for d in registry.diagnostics),
         registry_diagnostics=[dict(d) for d in registry.diagnostics],
+        classification_diagnostics=sorted(
+            ({**d} for d in (*todo_findings, *gh_findings)),
+            key=lambda d: (d["code"], str(d.get("subject_uri") or "")),
+        ),
         programs={
             k: {"title": v.get("title", k), "kind": v.get("kind", "?")}
             for k, v in sorted(registry.programs.items())
@@ -458,7 +602,7 @@ def build_view(
 def build_detail(
     config: DispatcherConfig,
     epic_id: str,
-    snapshots: list[WorkspaceSnapshotV1] | None = None,
+    snapshots: list[Snapshot] | None = None,
 ) -> EpicDetail | None:
     """One epic's row plus every artifact behind it, across planes."""
     view = build_view(config, snapshots)
@@ -469,10 +613,10 @@ def build_detail(
 
     path = registry_path(config)
     registry = load_registry(path) if path else None
-    todo_plane, todo_counted = (
-        _todo_plane(config, registry) if registry else (None, _Counted({}, {}, {}, {}))
+    todo_counted = (
+        _todo_plane(config, registry)[1] if registry else _Counted({}, {}, {}, {})
     )
-    _, gh_counted = _github_planes(snapshots or [])
+    _, gh_counted, _ = _github_planes(snapshots or [], registry)
     counted = _merge(todo_counted, gh_counted)
     artifacts = sorted(
         counted.artifacts.get(epic_id, []), key=lambda a: (a.plane, a.repo, a.ref)

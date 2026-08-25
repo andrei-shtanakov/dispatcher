@@ -638,9 +638,26 @@ document.getElementById("run-status-check").addEventListener("click", async () =
 let epicsKind = "";
 
 function planeCell(plane) {
-  if (!plane || plane.state !== "read") {
-    const why = plane && plane.detail ? plane.detail : "not read";
+  // Whitelist, not blacklist: a state this client does not know must fall to the
+  // SAFE side. Treating "anything not unavailable" as complete means the next state
+  // the server grows renders as a measured number the day it ships, and nothing
+  // fails — the same silent-confidence failure this whole panel is about.
+  if (!plane || (plane.state !== "read" && plane.state !== "partial")) {
+    // Both fall to "—", but they are different facts and the tooltip must say
+    // which: `unavailable` is the server reporting a known gap, an unrecognised
+    // state is THIS CLIENT being out of date. Labelling the first as the second
+    // sends the operator looking for a bug in the wrong half of the system.
+    const why = plane && plane.detail ? plane.detail
+      : !plane ? "not read"
+      : plane.state === "unavailable" ? "not read"
+      : `unknown plane state: ${plane.state} — this page may be out of date`;
     return `<td class="warn" title="${esc(why)}">—</td>`;
+  }
+  if (plane.state === "partial") {
+    // "≥" rather than the bare number: the count is real but it is a LOWER
+    // BOUND — some producer is on v1 or has gone stale. Rendering it as a
+    // plain number would let a half-observed fleet read as a measured one.
+    return `<td class="warn" title="${esc(plane.detail || "partial")}">≥${plane.count}</td>`;
   }
   return `<td>${plane.count}</td>`;
 }
@@ -649,15 +666,22 @@ function renderEpics(view) {
   const byPlane = {};
   (view.planes || []).forEach(p => { byPlane[p.plane] = p; });
   document.getElementById("epics-planes").textContent =
-    (view.planes || []).map(p =>
-      `${p.plane}: ${p.state === "read" ? p.count : "unavailable"}`).join(" · ");
+    (view.planes || []).map(p => {
+      if (p.state === "read") return `${p.plane}: ${p.count}`;
+      if (p.state === "partial") return `${p.plane}: ≥${p.count} (partial)`;
+      return `${p.plane}: unavailable`;
+    }).join(" · ");
 
   const reg = document.getElementById("epics-registry");
   const errs = (view.registry_diagnostics || []).filter(d => d.severity === "error");
   reg.className = errs.length ? "err" : "fresh";
-  reg.textContent = errs.length
+  const tags = view.classification_diagnostics || [];
+  const tagNote = tags.length
+    ? ` · tags: ${tags.length} finding(s) — ${[...new Set(tags.map(d => d.code))].join(", ")}`
+    : "";
+  reg.textContent = (errs.length
     ? `registry: ${errs.length} error(s) — ${errs.map(d => d.code).join(", ")}`
-    : `registry: ${view.registry_path || "not found"} — clean`;
+    : `registry: ${view.registry_path || "not found"} — clean`) + tagNote;
 
   document.querySelector("#epics tbody").innerHTML = (view.rows || []).map(r => {
     const plane = name => (r.planes || []).find(p => p.plane === name);

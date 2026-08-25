@@ -15,8 +15,8 @@ import tempfile
 from pathlib import Path
 
 from dispatcher.core.snapshot_contract import (
+    Snapshot,
     SnapshotContractError,
-    WorkspaceSnapshotV1,
     parse_snapshot,
 )
 from dispatcher.core.sync import KB_REPO
@@ -50,7 +50,7 @@ _SAFE_HOST_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")  # без ведущ
 
 def take_snapshot(
     workspace: Path, *, command: tuple[str, ...] = ("github-checker",)
-) -> WorkspaceSnapshotV1:
+) -> Snapshot:
     """Full snapshot (gh data when available, git-only otherwise) of *workspace*."""
     out = _run(
         [*command, "snapshot", "--workspace", str(workspace), "--indent", "0"],
@@ -59,10 +59,12 @@ def take_snapshot(
     try:
         return parse_snapshot(out)
     except SnapshotContractError as err:
-        raise PublishError(f"producer output violates contract v1: {err}") from err
+        raise PublishError(
+            f"producer output violates the github-checker snapshot contract: {err}"
+        ) from err
 
 
-def write_snapshot(snapshot: WorkspaceSnapshotV1, snapshots_dir: Path) -> Path:
+def write_snapshot(snapshot: Snapshot, snapshots_dir: Path) -> Path:
     """Atomically (re)place `<host>.json`; the filename IS the host identity."""
     host = snapshot.host
     if not _SAFE_HOST_RE.fullmatch(host) or host in (".", ".."):
@@ -126,7 +128,7 @@ def publish(
     *,
     command: tuple[str, ...] = ("github-checker",),
     push: bool = True,
-    snapshot: WorkspaceSnapshotV1 | None = None,
+    snapshot: Snapshot | None = None,
 ) -> str:
     """Full pipeline: snapshot → atomic write → KB commit (+push)."""
     vault_repo = workspace / KB_REPO
