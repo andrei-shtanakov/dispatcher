@@ -270,8 +270,20 @@ into a path that no longer exists.
 child (see the control-plane section above); repeating it in the plist would
 create a second source of truth for the same fact.
 
-Logs land in `~/Library/Logs/dispatcher/`. launchd does not rotate them — add
-a `newsyslog.d` rule if the machine runs the agent continuously.
+Logs land in `~/Library/Logs/dispatcher/` and are rotated by a companion
+agent installed alongside the service: daily, keeping 5 files of 10 MiB
+(`DISPATCHER_LOG_MAX_BYTES` overrides the threshold). `status` reports whether
+it is loaded, because a service whose logs grow without bound fails slowly and
+invisibly.
+
+Rotation is **copy-truncate**, not rename, and `newsyslog` is deliberately not
+used. launchd opens the log once and holds the descriptor for the life of the
+service; renaming the file — which is what newsyslog does — leaves the service
+writing into the rotated file while the fresh one stays empty forever. That was
+measured, not assumed. Copying the content aside and truncating the same inode
+keeps the descriptor valid. The trade is a window between copy and truncate in
+which a write can be lost, which beats losing the whole file to a rotation that
+silently detached it.
 
 ## Sync snapshots (per-machine cron)
 
