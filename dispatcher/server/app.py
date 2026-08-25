@@ -335,15 +335,16 @@ def create_app(
         except read_api.ReadLookupError as err:
             raise HTTPException(status_code=404, detail=str(err)) from err
 
-    def _epic_snapshots() -> list[Any]:
+    def _epic_snapshots() -> tuple[list[Any], list[tuple[str, str]]]:
         """Published snapshots for the GitHub planes — never a live GitHub call.
 
         Dispatcher does not talk to the GitHub API (ADR-ECO-004 D1). If nothing is
         published, the planes come back `unavailable`, which is the honest answer and
-        deliberately not zero.
+        deliberately not zero. The load ERRORS travel with the snapshots: "nothing was
+        published" and "what was published could not be read" are different facts, and
+        dropping the second one would leave `unavailable` without its reason.
         """
-        snapshots, _errors = load_kb_snapshots(kb_snapshot_dirs(config.roots))
-        return snapshots
+        return load_kb_snapshots(kb_snapshot_dirs(config.roots))
 
     @app.get("/api/epics", response_model=EpicsView)
     def epics(
@@ -355,11 +356,13 @@ def create_app(
         artifact belongs to no program, so filtering it away would hand back a partial
         aggregate with nothing marking it partial.
         """
-        return build_view(config, _epic_snapshots(), kind=kind)
+        snapshots, errors = _epic_snapshots()
+        return build_view(config, snapshots, kind=kind, snapshot_errors=errors)
 
     @app.get("/api/epics/{epic_id}", response_model=EpicDetail)
     def epic_detail(epic_id: str) -> EpicDetail:
-        detail = build_detail(config, epic_id, _epic_snapshots())
+        snapshots, _ = _epic_snapshots()
+        detail = build_detail(config, epic_id, snapshots)
         if detail is None:
             raise HTTPException(status_code=404, detail=f"unknown epic {epic_id!r}")
         return detail
@@ -367,7 +370,8 @@ def create_app(
     @app.get("/api/defects", response_model=list[DefectRow])
     def defects() -> list[DefectRow]:
         """The reverse cut: defect class × epic — where the fleet breaks most."""
-        return build_view(config, _epic_snapshots()).defects
+        snapshots, errors = _epic_snapshots()
+        return build_view(config, snapshots, snapshot_errors=errors).defects
 
     @app.get("/api/sync", response_model=SyncStatus)
     def sync() -> SyncStatus:

@@ -156,8 +156,18 @@ def build_server(
         from dispatcher.core.epics import build_view
         from dispatcher.core.sync import kb_snapshot_dirs, load_kb_snapshots
 
-        snapshots, _ = load_kb_snapshots(kb_snapshot_dirs(config.roots))
-        return build_view(config, snapshots, kind=kind).model_dump()
+        # The HTTP surface constrains `kind` with a pattern; without the same check
+        # here an unknown value would filter every epic out and return just the
+        # bucket — an empty-looking answer to a malformed question, which reads as
+        # "there are no epics" rather than "you asked wrongly".
+        if kind is not None and kind not in ("ecosystem", "external"):
+            raise ValueError(
+                f"unknown kind {kind!r}; expected 'ecosystem' or 'external'"
+            )
+        snapshots, errors = load_kb_snapshots(kb_snapshot_dirs(config.roots))
+        return build_view(
+            config, snapshots, kind=kind, snapshot_errors=errors
+        ).model_dump()
 
     @mcp.tool
     def epic(

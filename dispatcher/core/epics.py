@@ -139,6 +139,18 @@ def _manifest_path(config: DispatcherConfig) -> Path | None:
     return None
 
 
+def _workspace_root(manifest: Path) -> Path:
+    """The root the manifest was found under — NOT `roots[0]`.
+
+    `DispatcherConfig.roots` is a list, and the manifest may live under any of them.
+    Scanning the first root regardless would silently read a different workspace: repos
+    would resolve to nothing, their TODO items would vanish from the counts, and the
+    plane would still report `read`. A wrong number that calls itself complete is worse
+    than an `unavailable`.
+    """
+    return manifest.parent.parent
+
+
 def _todo_plane(config: DispatcherConfig, registry: Any) -> tuple[PlaneState, _Counted]:
     """Parse every checked-out `TODO.md` and classify its open items.
 
@@ -166,7 +178,7 @@ def _todo_plane(config: DispatcherConfig, registry: Any) -> tuple[PlaneState, _C
 
     index = manifest_index(manifest)
     inputs: list[RepoInput] = []
-    for name, root in sorted(checkout_map(config.roots[0], index).items()):
+    for name, root in sorted(checkout_map(_workspace_root(manifest), index).items()):
         todo = root / "TODO.md"
         if todo.is_file():
             inputs.append(RepoInput(name, todo.read_text(encoding="utf-8")))
@@ -204,6 +216,7 @@ def _todo_plane(config: DispatcherConfig, registry: Any) -> tuple[PlaneState, _C
 
 def _github_planes(
     snapshots: list[WorkspaceSnapshotV1],
+    load_errors: list[tuple[str, str]] | None = None,
 ) -> tuple[list[PlaneState], _Counted]:
     """Issues and pull requests, from published snapshots only.
 
@@ -214,9 +227,19 @@ def _github_planes(
     """
     counted = _Counted({}, {}, {}, {})
     if not snapshots:
+        # "nothing was published" and "what was published could not be read" are
+        # different facts about the fleet, and an operator acts on them differently.
+        # Collapsing both into "no published snapshot" is the same silent-degradation
+        # the four-state classification exists to prevent, one level up.
+        detail = (
+            "published snapshots unreadable: "
+            + "; ".join(f"{host}: {reason}" for host, reason in sorted(load_errors))
+            if load_errors
+            else "no published snapshot"
+        )
         return (
             [
-                PlaneState(plane=p, state="unavailable", detail="no published snapshot")
+                PlaneState(plane=p, state="unavailable", detail=detail)
                 for p in ("issues", "pull_requests")
             ],
             counted,
@@ -320,6 +343,7 @@ def build_view(
     *,
     kind: str | None = None,
     generated_at: str | None = None,
+    snapshot_errors: list[tuple[str, str]] | None = None,
 ) -> EpicsView:
     """Assemble the epics view over every plane this dispatcher can honestly read."""
     from plan_fields import load_registry
@@ -345,7 +369,7 @@ def build_view(
 
     registry = load_registry(path)
     todo_plane, todo_counted = _todo_plane(config, registry)
-    gh_planes, gh_counted = _github_planes(snapshots or [])
+    gh_planes, gh_counted = _github_planes(snapshots or [], snapshot_errors)
     counted = _merge(todo_counted, gh_counted)
     planes = [todo_plane, *gh_planes]
     plane_state = {p.plane: p for p in planes}

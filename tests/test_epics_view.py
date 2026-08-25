@@ -272,3 +272,54 @@ def test_api_and_mcp_expose_the_same_view(tmp_path: Path) -> None:
 
     assert payload, "MCP tool returned no structured content"
     assert rows(api) == rows(payload)
+
+
+def test_the_manifest_root_is_scanned_not_the_first_root(tmp_path: Path) -> None:
+    """Многокорневой конфиг: сканируется корень, где ЛЕЖИТ манифест.
+
+    Иначе плоскость честно рапортует `read`, а пункты молча теряются — число,
+    называющее себя полным, хуже, чем `unavailable`.
+    """
+    first = tmp_path / "empty-root"
+    first.mkdir()
+    second = tmp_path / "real-root"
+    second.mkdir()
+    config = _workspace(second, {"demo": "- [ ] work @id:a @epic:eco.ops\n"})
+    multi = DispatcherConfig(roots=(first, *config.roots))
+
+    view = build_view(multi, [])
+    todo = next(p for p in view.planes if p.plane == "todo")
+    assert todo.state == "read" and todo.count == 1
+    ops = next(r for r in view.rows if r.id == "eco.ops")
+    assert {p.plane: p.count for p in ops.planes}["todo"] == 1
+
+
+def test_unreadable_snapshots_are_distinguished_from_none_published(
+    tmp_path: Path,
+) -> None:
+    """«Ничего не опубликовано» и «опубликованное не читается» — разные факты."""
+    config = _workspace(tmp_path, {"demo": "- [ ] work @id:a @epic:eco.ops\n"})
+
+    silent = build_view(config, [])
+    issues = next(p for p in silent.planes if p.plane == "issues")
+    assert issues.detail == "no published snapshot"
+
+    broken = build_view(
+        config, [], snapshot_errors=[("host-a", "unsupported schema_version=99")]
+    )
+    issues = next(p for p in broken.planes if p.plane == "issues")
+    assert issues.state == "unavailable"
+    assert "unreadable" in (issues.detail or "")
+    assert "host-a" in (issues.detail or "")
+
+
+def test_mcp_rejects_a_kind_the_http_surface_would_refuse(tmp_path: Path) -> None:
+    """Пустой ответ на неверный вопрос читается как «эпиков нет»."""
+    import asyncio
+
+    from dispatcher.mcp_server import build_server
+
+    config = _workspace(tmp_path, {"demo": "- [ ] work @id:a @epic:eco.ops\n"})
+    tools = asyncio.run(build_server(config).get_tools())
+    with pytest.raises(Exception, match="unknown kind"):
+        asyncio.run(tools["epics"].run({"kind": "nonsense"}))
