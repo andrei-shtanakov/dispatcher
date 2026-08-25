@@ -60,6 +60,22 @@ def _local() -> dict:
     return {"branch": "master", "ahead": 0, "behind": 0, "dirty": False, "error": None}
 
 
+def _empty(*, gh_error: str | None = None) -> Snapshot:
+    """Снапшот без репозиториев — `repos` обязателен, но пустой список разрешён."""
+    return parse_snapshot(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "workspace": "/ws",
+                "host": "h1",
+                "generated_at": _FRESH,
+                "gh_error": gh_error,
+                "repos": [],
+            }
+        )
+    )
+
+
 def _snapshot(*, github: dict | None, gh_error: str | None = None) -> Snapshot:
     return parse_snapshot(
         json.dumps(
@@ -165,3 +181,40 @@ def test_a_fully_observed_repo_still_reads_clean(tmp_path: Path) -> None:
     assert issues.state == "read"
     assert issues.count == 0
     assert issues.detail is None
+
+
+def test_a_host_wide_gh_error_survives_an_empty_repo_list(tmp_path: Path) -> None:
+    """`gh_error` при `repos: []` — провал, которому не к чему прицепиться.
+
+    Проверка `gh_error` стояла ВНУТРИ обхода репозиториев, поэтому пустой список
+    молча её отменял: цикл не выполнялся ни разу, ошибка терялась, и плоскость
+    объявляла `read 0`. Форма дефекта та же, что и во всех предыдущих, — провал,
+    о котором продюсер сказал прямо, превращается в уверенное число.
+
+    И закрыть такой пробел другой продюсер НЕ может: когда список репозиториев
+    пуст, неизвестно даже, что этот хост должен был покрыть.
+    """
+    view = build_view(
+        _workspace(tmp_path), [_empty(gh_error="GitHub unavailable")], now=_NOW
+    )
+    for plane in ("issues", "pull_requests"):
+        state = next(p for p in view.planes if p.plane == plane)
+        assert state.state != "read", plane
+        assert "h1" in (state.detail or ""), plane
+        assert "GitHub unavailable" in (state.detail or ""), plane
+
+
+def test_an_empty_but_successful_workspace_is_an_honest_zero(tmp_path: Path) -> None:
+    """Обратная сторона: пустой воркспейс без ошибки — это честный ноль.
+
+    Семантика зафиксирована тестом намеренно. `repos: []` при `gh_error: null` —
+    продюсер отработал и сообщает, что наблюдать нечего; это НЕ пробел. Если бы
+    правка выше загнала и этот случай в `partial`, панель стала бы `partial`
+    всегда, а признак неполноты, который горит постоянно, не отмечает ничего.
+    """
+    view = build_view(_workspace(tmp_path), [_empty()], now=_NOW)
+    for plane in ("issues", "pull_requests"):
+        state = next(p for p in view.planes if p.plane == plane)
+        assert state.state == "read", plane
+        assert state.count == 0
+        assert state.detail is None

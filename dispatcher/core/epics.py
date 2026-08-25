@@ -375,26 +375,38 @@ def _github_planes(
     observed: dict[str, set[str]] = {p: set() for p in totals}
     gaps: dict[str, dict[str, str]] = {p: {} for p in totals}
 
+    # A host-wide failure with NO repositories to pin it on cannot be closed by
+    # another producer, so it is tracked apart from the per-repo gaps: when the repo
+    # list is empty we do not even know what this host was supposed to cover.
+    host_gaps: list[str] = []
+
     def _gap(planes_affected: tuple[str, ...], repo_key: str, why: str) -> None:
         for plane in planes_affected:
             gaps[plane].setdefault(repo_key, why)
 
     for snapshot in ordered:
+        if snapshot.gh_error:
+            # The producer is telling us outright that it never reached GitHub. This
+            # field was read by nobody, and then — once it was — the check sat INSIDE
+            # the repo loop, so an empty `repos` silently cancelled it: the loop never
+            # ran, the disclaimer was dropped, and the plane went back to a confident
+            # `read 0`. `repos: []` is explicitly allowed by the pin, and a guard that
+            # a legal payload can skip is not a guard.
+            why = f"GitHub not queried on {snapshot.host} ({snapshot.gh_error})"
+            if snapshot.repos:
+                # We know which repositories this host would have covered, so another
+                # producer that read them closes the gap.
+                for repo in snapshot.repos:
+                    _gap(
+                        ("issues", "pull_requests"),
+                        _repo_key(repo),
+                        f"{_repo_key(repo)}: {why}",
+                    )
+            else:
+                host_gaps.append(why)
+            continue
         for repo in snapshot.repos:
             key_repo = _repo_key(repo)
-            if snapshot.gh_error:
-                # The producer is telling us outright that it never reached GitHub.
-                # This field was read by nobody: a snapshot saying "gh is not
-                # authorised" with empty lists produced a confident `read 0`, i.e. the
-                # panel reported a fact about the fleet that the producer had just
-                # disclaimed.
-                _gap(
-                    ("issues", "pull_requests"),
-                    key_repo,
-                    f"{key_repo}: GitHub not queried on {snapshot.host} "
-                    f"({snapshot.gh_error})",
-                )
-                continue
             github = repo.github
             if github is None:
                 # No remote means there is genuinely no GitHub side to observe; a repo
@@ -503,7 +515,7 @@ def _github_planes(
             for key, why in sorted(gaps[plane].items())
             if key not in observed[plane]
         ]
-        why = [*reasons, *unobserved]
+        why = [*reasons, *host_gaps, *unobserved]
         planes.append(
             PlaneState(
                 plane=plane,
