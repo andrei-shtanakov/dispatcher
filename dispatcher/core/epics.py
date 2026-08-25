@@ -425,6 +425,15 @@ def _github_planes(
                     counted.activity[final] = pr.merged_at
 
     reasons = []
+    if load_errors:
+        # A host whose snapshot would not parse is an UNOBSERVED host, exactly like a
+        # host still on v1. These errors used to count only when nothing at all
+        # parsed — so one readable snapshot was enough for the plane to call itself
+        # complete while an unknown number of others contributed nothing.
+        reasons.append(
+            "published snapshots unreadable: "
+            + "; ".join(f"{host}: {reason}" for host, reason in sorted(load_errors))
+        )
     if v1_hosts:
         reasons.append(
             "hosts still on snapshot v1 contribute nothing: "

@@ -272,3 +272,43 @@ def test_the_unclassified_bucket_survives_all_of_it(tmp_path: Path) -> None:
     config = _workspace(tmp_path, {"demo": "- [ ] bare @id:a\n"})
     view = build_view(config, [_parse(v2_payload())], now=_NOW)
     assert any(r.id == UNCLASSIFIED for r in view.rows)
+
+
+# ------------------------------------------- находки ревью к самому исправлению
+
+
+@pytest.mark.parametrize("version", [True, False, 1.0, "1", None])
+def test_a_non_integer_schema_version_is_refused(version: object) -> None:
+    """`True == 1` в Python, и на этом membership-тест версии ломается молча.
+
+    `schema_version: true` проходило проверку «версия в поддержанном наборе» и
+    уезжало в модель v1, где lax-режим достраивал `True` до `1`. Продюсер,
+    отдающий чушь на месте версии, получал полноценно разобранный снапшот — это
+    та же болезнь, что и P0-1, этажом выше: проверка есть, а проверяет она не то.
+    """
+    payload = v2_payload()
+    payload["schema_version"] = version
+    with pytest.raises(SnapshotContractError, match="schema_version"):
+        _parse(payload)
+
+
+def test_unreadable_snapshots_degrade_a_plane_that_others_could_read(
+    tmp_path: Path,
+) -> None:
+    """Хост, чей снапшот не прочитался, — это НЕнаблюдённый хост.
+
+    Ошибки загрузки учитывались только когда не прочиталось вообще ничего. Стоило
+    одному снапшоту разобраться — и плоскость объявляла себя `read`, хотя вклад
+    остальных неизвестен ровно так же, как у продюсера на v1.
+    """
+    config = _workspace(tmp_path, {"demo": "- [ ] work @id:a @epic:eco.dark-factory\n"})
+    view = build_view(
+        config,
+        [_parse(v2_payload(host="h-ok"))],
+        snapshot_errors=[("h-broken", "unsupported schema_version=99")],
+        now=_NOW,
+    )
+    issues = next(p for p in view.planes if p.plane == "issues")
+    assert issues.state == "partial"
+    assert "h-broken" in (issues.detail or "")
+    assert issues.count == 1, "прочитанное не выбрасывается, а помечается неполным"

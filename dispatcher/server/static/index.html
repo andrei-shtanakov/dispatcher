@@ -638,8 +638,13 @@ document.getElementById("run-status-check").addEventListener("click", async () =
 let epicsKind = "";
 
 function planeCell(plane) {
-  if (!plane || plane.state === "unavailable") {
-    const why = plane && plane.detail ? plane.detail : "not read";
+  // Whitelist, not blacklist: a state this client does not know must fall to the
+  // SAFE side. Treating "anything not unavailable" as complete means the next state
+  // the server grows renders as a measured number the day it ships, and nothing
+  // fails — the same silent-confidence failure this whole panel is about.
+  if (!plane || (plane.state !== "read" && plane.state !== "partial")) {
+    const why = plane && plane.detail ? plane.detail
+      : (plane ? `unknown plane state: ${plane.state}` : "not read");
     return `<td class="warn" title="${esc(why)}">—</td>`;
   }
   if (plane.state === "partial") {

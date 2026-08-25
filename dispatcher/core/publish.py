@@ -59,7 +59,9 @@ def take_snapshot(
     try:
         return parse_snapshot(out)
     except SnapshotContractError as err:
-        raise PublishError(f"producer output violates contract v1: {err}") from err
+        raise PublishError(
+            f"producer output violates the github-checker snapshot contract: {err}"
+        ) from err
 
 
 def write_snapshot(snapshot: Snapshot, snapshots_dir: Path) -> Path:

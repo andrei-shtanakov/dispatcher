@@ -281,6 +281,15 @@ def parse_snapshot(payload: str) -> Snapshot:
             f"snapshot must be a JSON object, got {type(raw).__name__}"
         )
     version = raw.get("schema_version")
+    # `isinstance(True, int)` is True and `True == 1`, so a membership test alone
+    # routes `schema_version: true` into the v1 model, where lax validation rounds it
+    # off to 1. The version is the one field that decides how everything else is
+    # checked; it does not get to be approximately right.
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise SnapshotContractError(
+            f"schema_version must be an integer, got {version!r} "
+            f"({type(version).__name__})"
+        )
     if version not in SUPPORTED_SCHEMA_VERSIONS:
         supported = ", ".join(f"v{v}" for v in SUPPORTED_SCHEMA_VERSIONS)
         raise SnapshotContractError(

@@ -133,7 +133,21 @@ const cells = document => Array.from(
   check('partial names its reason on hover', html.includes('h-old'), html);
 }
 
-// ---- case 4: a tag finding is reported without blaming the registry --------
+// ---- case 4: a state this client has never heard of falls to the safe side --
+{
+  const {ctx, document} = boot();
+  ctx.renderEpics(view([
+    plane('todo', 'read', 3),
+    plane('issues', 'sampled', 2, 'a state the server grew after this client shipped'),
+    plane('pull_requests', 'read', 0),
+  ]));
+  const text = cells(document).join('|');
+  check('an unknown state does not render as a measured count',
+    !/(^|\|)2(\||$)/.test(text), text);
+  check('an unknown state renders as not-read', text.includes('—'), text);
+}
+
+// ---- case 5: a tag finding is reported without blaming the registry --------
 {
   const {ctx, document} = boot();
   ctx.renderEpics(view(
