@@ -643,8 +643,14 @@ function planeCell(plane) {
   // the server grows renders as a measured number the day it ships, and nothing
   // fails — the same silent-confidence failure this whole panel is about.
   if (!plane || (plane.state !== "read" && plane.state !== "partial")) {
+    // Both fall to "—", but they are different facts and the tooltip must say
+    // which: `unavailable` is the server reporting a known gap, an unrecognised
+    // state is THIS CLIENT being out of date. Labelling the first as the second
+    // sends the operator looking for a bug in the wrong half of the system.
     const why = plane && plane.detail ? plane.detail
-      : (plane ? `unknown plane state: ${plane.state}` : "not read");
+      : !plane ? "not read"
+      : plane.state === "unavailable" ? "not read"
+      : `unknown plane state: ${plane.state} — this page may be out of date`;
     return `<td class="warn" title="${esc(why)}">—</td>`;
   }
   if (plane.state === "partial") {

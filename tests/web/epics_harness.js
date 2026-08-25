@@ -145,6 +145,33 @@ const cells = document => Array.from(
   check('an unknown state does not render as a measured count',
     !/(^|\|)2(\||$)/.test(text), text);
   check('an unknown state renders as not-read', text.includes('—'), text);
+  const html = document.querySelector('#epics tbody').innerHTML;
+  check('a server-supplied reason wins over any generic wording',
+    html.includes('a state the server grew'), html);
+
+  // ...and with no reason supplied, the wording points at THIS page
+  const bare = boot();
+  bare.ctx.renderEpics(view([
+    plane('todo', 'read', 1),
+    plane('issues', 'sampled', 2),
+    plane('pull_requests', 'read', 0),
+  ]));
+  const bareHtml = bare.document.querySelector('#epics tbody').innerHTML;
+  check('an unrecognised state blames the client, not the fleet',
+    bareHtml.includes('out of date'), bareHtml);
+}
+
+// ---- case 4b: `unavailable` without a detail is not called "unknown" -------
+{
+  const {ctx, document} = boot();
+  ctx.renderEpics(view([
+    plane('todo', 'read', 1),
+    plane('issues', 'unavailable', 0),
+    plane('pull_requests', 'unavailable', 0),
+  ]));
+  const html = document.querySelector('#epics tbody').innerHTML;
+  check('a known gap is not reported as an unknown state',
+    !html.includes('unknown plane state'), html);
 }
 
 // ---- case 5: a tag finding is reported without blaming the registry --------
