@@ -1,0 +1,11 @@
+{
+  "diagnostics": [
+    {
+      "code": "EP-REG-MOVED-DANGLING",
+      "severity": "error",
+      "message": "moved_to names an epic that does not exist",
+      "subject_key": "eco.old",
+      "raw": "eco.absent"
+    }
+  ]
+}

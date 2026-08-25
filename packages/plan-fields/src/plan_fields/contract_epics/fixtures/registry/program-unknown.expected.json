@@ -1,0 +1,11 @@
+{
+  "diagnostics": [
+    {
+      "code": "EP-REG-PROGRAM-UNKNOWN",
+      "severity": "error",
+      "message": "epic key's program prefix is not a declared program",
+      "subject_key": "ghost.stream",
+      "raw": "ghost"
+    }
+  ]
+}

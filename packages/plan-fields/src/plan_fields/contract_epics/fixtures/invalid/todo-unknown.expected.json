@@ -1,0 +1,17 @@
+{
+  "epic": null,
+  "defect": null,
+  "classification": "invalid",
+  "diagnostics": [
+    {
+      "code": "EP-UNKNOWN",
+      "severity": "error",
+      "message": "epic is absent from the registry",
+      "subject_uri": "todo://demo/console",
+      "raw": "eco.dark-factroy"
+    }
+  ],
+  "subject_uri": "todo://demo/console",
+  "carrier": "todo",
+  "observed_at": "2026-08-25T00:00:00Z"
+}

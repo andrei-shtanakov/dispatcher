@@ -1,0 +1,16 @@
+{
+  "epic": null,
+  "defect": null,
+  "classification": "missing",
+  "diagnostics": [
+    {
+      "code": "EP-MISSING",
+      "severity": "warning",
+      "message": "item carries no @epic",
+      "subject_uri": "todo://demo/onboarding-refresh"
+    }
+  ],
+  "subject_uri": "todo://demo/onboarding-refresh",
+  "carrier": "todo",
+  "observed_at": "2026-08-25T00:00:00Z"
+}

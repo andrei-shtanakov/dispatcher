@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:ecosystem:plan-fields:v2:schema",
-  "title": "plan-fields v2 — canonical parser output",
-  "description": "The canonical JSON a plan-fields parser emits over a fleet snapshot. contract_version identifies the plan-fields contract; schema_version identifies this envelope shape. References carry every extracted @blocked_by (raw/legacy/unresolved); only resolved canonical todo:// -> todo:// relations appear in edges.",
+  "$id": "urn:ecosystem:plan-fields:v3:schema",
+  "title": "plan-fields v3 — canonical parser output",
+  "description": "The canonical JSON a plan-fields parser emits over a fleet snapshot. contract_version identifies the plan-fields contract; schema_version identifies this envelope shape. References carry every extracted @blocked_by (raw/legacy/unresolved); only resolved canonical todo:// -> todo:// relations appear in edges. v3 adds the stream axis (@epic/@defect) whose GRAMMAR is owned by the epics/v1 contract and is deliberately not restated here — see depends.json.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -15,13 +15,39 @@
     "diagnostics"
   ],
   "properties": {
-    "contract_version": { "const": 2 },
-    "schema_version": { "const": 2 },
-    "generated_at": { "type": "string" },
-    "nodes": { "type": "array", "items": { "$ref": "#/$defs/OperationalNode" } },
-    "references": { "type": "array", "items": { "$ref": "#/$defs/Reference" } },
-    "edges": { "type": "array", "items": { "$ref": "#/$defs/Edge" } },
-    "diagnostics": { "type": "array", "items": { "$ref": "#/$defs/Diagnostic" } }
+    "contract_version": {
+      "const": 3
+    },
+    "schema_version": {
+      "const": 3
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/OperationalNode"
+      }
+    },
+    "references": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Reference"
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Edge"
+      }
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Diagnostic"
+      }
+    }
   },
   "$defs": {
     "RepoName": {
@@ -44,25 +70,62 @@
     "Provenance": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repo", "path", "line"],
+      "required": [
+        "repo",
+        "path",
+        "line"
+      ],
       "properties": {
-        "repo": { "$ref": "#/$defs/RepoName" },
+        "repo": {
+          "$ref": "#/$defs/RepoName"
+        },
         "remote_origin": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "origin URL — kept for cross-check/diagnostics only; NOT the identity source"
         },
-        "commit": { "type": ["string", "null"] },
-        "path": { "type": "string" },
-        "line": { "type": "integer", "minimum": 1 }
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "Freshness": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "additionalProperties": false,
       "properties": {
-        "source_ref": { "type": ["string", "null"] },
-        "observed_at": { "type": ["string", "null"] },
-        "recheck_by": { "type": ["string", "null"] }
+        "source_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recheck_by": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       }
     },
     "RawTags": {
@@ -71,15 +134,34 @@
       "additionalProperties": true
     },
     "OwnerRef": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "additionalProperties": false,
-      "required": ["kind", "id", "raw"],
+      "required": [
+        "kind",
+        "id",
+        "raw"
+      ],
       "properties": {
         "kind": {
-          "enum": ["github_user", "github_team", "repository", "tbd"]
+          "enum": [
+            "github_user",
+            "github_team",
+            "repository",
+            "tbd"
+          ]
         },
-        "id": { "type": ["string", "null"] },
-        "raw": { "type": "string" }
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "raw": {
+          "type": "string"
+        }
       },
       "description": "Typed accountable principal parsed from operational @owner; null for missing, invalid, or transitional DEC-007 role values"
     },
@@ -95,25 +177,85 @@
         "declared_status",
         "owner_ref",
         "tombstone",
-        "provenance"
+        "provenance",
+        "epic",
+        "defect",
+        "epic_classification"
       ],
       "properties": {
-        "node_id": { "$ref": "#/$defs/TodoUri" },
-        "kind": { "const": "operational_item" },
-        "id": { "$ref": "#/$defs/ItemId" },
-        "repo": { "$ref": "#/$defs/RepoName" },
-        "title": { "type": "string" },
-        "declared_status": { "enum": ["open", "closed", "unknown"] },
+        "node_id": {
+          "$ref": "#/$defs/TodoUri"
+        },
+        "kind": {
+          "const": "operational_item"
+        },
+        "id": {
+          "$ref": "#/$defs/ItemId"
+        },
+        "repo": {
+          "$ref": "#/$defs/RepoName"
+        },
+        "title": {
+          "type": "string"
+        },
+        "declared_status": {
+          "enum": [
+            "open",
+            "closed",
+            "unknown"
+          ]
+        },
         "owner_role": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "Transitional DEC-007 role-slug (no @); null for typed owner principals"
         },
-        "owner_ref": { "$ref": "#/$defs/OwnerRef" },
-        "trigger": { "type": ["string", "null"] },
-        "freshness": { "$ref": "#/$defs/Freshness" },
-        "tombstone": { "type": "boolean" },
-        "raw": { "$ref": "#/$defs/RawTags" },
-        "provenance": { "$ref": "#/$defs/Provenance" }
+        "owner_ref": {
+          "$ref": "#/$defs/OwnerRef"
+        },
+        "trigger": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "freshness": {
+          "$ref": "#/$defs/Freshness"
+        },
+        "tombstone": {
+          "type": "boolean"
+        },
+        "raw": {
+          "$ref": "#/$defs/RawTags"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "epic": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "the @epic value exactly as written, after epics/v1 grammar validation; null when absent or malformed. The GRAMMAR PATTERN IS NOT RESTATED HERE — it belongs to urn:ecosystem:epics:v1:classification, pinned in depends.json. A second copy of the regex is exactly the drift this delegation exists to prevent."
+        },
+        "defect": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "the @defect class, orthogonal to the epic and never a substitute for it; grammar and the closed class set belong to epics/v1 and its registry"
+        },
+        "epic_classification": {
+          "enum": [
+            "tagged",
+            "missing",
+            "invalid",
+            "unavailable"
+          ],
+          "description": "epics/v1 four-state, at THIS layer's confidence: a single-repo parser can prove the tag is well-formed and present (`tagged`) but cannot prove the epic exists in the registry — the fleet layer, which holds epics.toml, may downgrade it to `invalid` (EP-UNKNOWN / EP-MOVED). Same split as `repo:<manifest-key>` owner validation in v2. `unavailable` never occurs on this plane: a TODO item that could not be read yields no node."
+        }
       }
     },
     "Reference": {
@@ -129,47 +271,114 @@
         "provenance"
       ],
       "properties": {
-        "kind": { "const": "blocked_by" },
-        "source_node_id": { "$ref": "#/$defs/TodoUri" },
+        "kind": {
+          "const": "blocked_by"
+        },
+        "source_node_id": {
+          "$ref": "#/$defs/TodoUri"
+        },
         "raw_ref": {
           "type": "string",
           "description": "the @blocked_by value exactly as written (todo:// or legacy <repo>#<slug>)"
         },
         "resolved_target": {
-          "oneOf": [{ "$ref": "#/$defs/CanonicalUri" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "$ref": "#/$defs/CanonicalUri"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "legacy_blocker_ref": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "<repo>#<slug> — set for legacy/unresolved refs; NEVER promoted to a canonical edge"
         },
-        "provenance": { "$ref": "#/$defs/Provenance" }
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        }
       }
     },
     "Edge": {
       "type": "object",
       "additionalProperties": false,
       "description": "a resolved canonical relation only (source todo:// -> resolved canonical target)",
-      "required": ["kind", "source_node_id", "target_node_id"],
+      "required": [
+        "kind",
+        "source_node_id",
+        "target_node_id"
+      ],
       "properties": {
-        "kind": { "const": "blocked_by" },
-        "source_node_id": { "$ref": "#/$defs/TodoUri" },
-        "target_node_id": { "$ref": "#/$defs/CanonicalUri" }
+        "kind": {
+          "const": "blocked_by"
+        },
+        "source_node_id": {
+          "$ref": "#/$defs/TodoUri"
+        },
+        "target_node_id": {
+          "$ref": "#/$defs/CanonicalUri"
+        }
       }
     },
     "Diagnostic": {
       "type": "object",
       "additionalProperties": false,
       "description": "severity here is the COMPUTED severity for this instance; diagnostics.yaml holds the default_severity policy and Phase 0b applies escalation history",
-      "required": ["code", "severity", "subject_uri", "related_uri", "rule_id", "message"],
+      "required": [
+        "code",
+        "severity",
+        "subject_uri",
+        "related_uri",
+        "rule_id",
+        "message"
+      ],
       "properties": {
-        "code": { "type": "string", "pattern": "^PF-[A-Z0-9-]+$" },
-        "severity": { "enum": ["info", "warning", "error"] },
-        "subject_uri": { "type": ["string", "null"] },
-        "related_uri": { "type": ["string", "null"] },
-        "rule_id": { "type": ["string", "null"] },
-        "message": { "type": "string" },
+        "code": {
+          "type": "string",
+          "pattern": "^(PF-[A-Z0-9-]+|EP-[A-Z][A-Z0-9-]*)$",
+          "description": "PF-* codes are declared in this contract's diagnostics.yaml; EP-* codes are declared by epics/v1 and emitted verbatim — this contract does not redeclare them; the EP branch mirrors epics/v1's own code grammar so a malformed code (EP-1) fails at schema time. This is the code NAME shape, not the epic grammar — and depends.json is what forces a re-look if epics/v1 changes it"
+        },
+        "severity": {
+          "enum": [
+            "info",
+            "warning",
+            "error"
+          ]
+        },
+        "subject_uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "related_uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rule_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
         "provenance": {
-          "oneOf": [{ "$ref": "#/$defs/Provenance" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Provenance"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     }

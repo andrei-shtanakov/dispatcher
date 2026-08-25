@@ -1,0 +1,18 @@
+{
+  "epic": null,
+  "defect": null,
+  "classification": "invalid",
+  "diagnostics": [
+    {
+      "code": "EP-CONFLICT",
+      "severity": "error",
+      "message": "linked artifacts carry different epics",
+      "subject_uri": "gh://demo/pull/7",
+      "related_uri": "todo://demo/pipe-resume",
+      "raw": "eco.dark-factory-slice0 vs eco.ops"
+    }
+  ],
+  "subject_uri": "gh://demo/pull/7",
+  "carrier": "pull_request",
+  "observed_at": "2026-08-25T00:00:00Z"
+}

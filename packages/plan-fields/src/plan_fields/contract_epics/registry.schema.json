@@ -1,0 +1,346 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ecosystem:epics:v1:registry",
+  "title": "epics v1 — registry data model (epics.toml)",
+  "description": "The shape of `ai-orchestrators-workspace/epics.toml` after TOML parsing. The KB owns this SHAPE; the umbrella owns the VALUES and is read live by path (never vendored — a weekly-changing registry is stale the moment it is pinned). Structural violations expressible here are EP-REG-* diagnostics; a few (a program still referenced by history) are history-dependent and cannot be proven from one snapshot.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "adopted_at",
+    "coverage_policy",
+    "programs",
+    "epics",
+    "defect_classes"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^1\\.[0-9]+\\.[0-9]+$"
+    },
+    "adopted_at": {
+      "$ref": "#/$defs/Date",
+      "description": "history before this date carries no obligation — the denominator of every coverage ratio starts here"
+    },
+    "coverage_policy": {
+      "$ref": "#/$defs/CoveragePolicy"
+    },
+    "exclusions": {
+      "$ref": "#/$defs/Exclusions"
+    },
+    "grandfather": {
+      "$ref": "#/$defs/Grandfather"
+    },
+    "programs": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/ProgramId"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/Program"
+      }
+    },
+    "epics": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/EpicId"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/Epic"
+      },
+      "description": "the key IS the tag as written, program prefix included, so a value can be looked up without parsing it"
+    },
+    "defect_classes": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/DefectSlug"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/DefectClass"
+      }
+    }
+  },
+  "$defs": {
+    "Date": {
+      "type": "string",
+      "description": "ISO calendar date, YYYY-MM-DD",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"
+    },
+    "Ratio": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "ProgramId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+    },
+    "EpicId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,31}\\.[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "DefectSlug": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+    },
+    "CoveragePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "robin_cutover_todo",
+        "robin_cutover_issues",
+        "robin_cutover_prs",
+        "missing_error_after"
+      ],
+      "description": "two DISTINCT points: the cutover ratios permit switching the digest axis; missing_error_after permits EP-MISSING to block. Equating them would stall CI on the last few percent.",
+      "properties": {
+        "robin_cutover_todo": {
+          "$ref": "#/$defs/Ratio"
+        },
+        "robin_cutover_issues": {
+          "$ref": "#/$defs/Ratio"
+        },
+        "robin_cutover_prs": {
+          "$ref": "#/$defs/Ratio"
+        },
+        "missing_error_after": {
+          "$ref": "#/$defs/Date"
+        },
+        "min_sample": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 10,
+          "description": "below this many artifacts a plane reports `insufficient_sample` instead of a ratio and takes no part in the cutover decision. Measured 2026-08-25: 2 open issues and 1 open PR fleet-wide — a percentage over that denominator is noise, and one untagged artifact would drive it to zero."
+        }
+      }
+    },
+    "Exclusions": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "the ONLY place obligation exemptions are declared; an unlisted exemption does not exist",
+      "properties": {
+        "merge_commits": {
+          "type": "boolean",
+          "default": true
+        },
+        "bot_authors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "commit/PR/issue authors exempt by login, e.g. dependabot[bot]"
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "glob patterns for imported or vendored trees"
+        }
+      }
+    },
+    "Grandfather": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "artifacts open before adopted_at that EP-MISSING must not block until they are edited or closed",
+      "properties": {
+        "pull_requests": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RepoNumber"
+          }
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RepoNumber"
+          }
+        }
+      }
+    },
+    "RepoNumber": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*#[1-9][0-9]*$"
+    },
+    "Program": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "kind"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "ecosystem",
+            "external"
+          ],
+          "description": "the filter that separates work on the platform itself from third-party product work"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "Epic": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/LiveEpic"
+        },
+        {
+          "$ref": "#/$defs/TombstonedEpic"
+        }
+      ],
+      "description": "live or tombstoned, never both — moved_to is mutually exclusive with a live status (EP-REG-MOVED-STATUS)"
+    },
+    "LiveEpic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "status"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "active",
+            "standing",
+            "paused",
+            "done",
+            "abandoned"
+          ]
+        },
+        "goal": {
+          "type": "string",
+          "description": "for a finite arc, the finish criterion; omitted for `standing`, which has none by construction"
+        },
+        "opened": {
+          "$ref": "#/$defs/Date"
+        },
+        "closed": {
+          "$ref": "#/$defs/Date"
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "active",
+                  "paused",
+                  "done",
+                  "abandoned"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "opened"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "done",
+                  "abandoned"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "closed"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "standing"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "goal"
+                  ]
+                },
+                {
+                  "required": [
+                    "closed"
+                  ]
+                }
+              ]
+            },
+            "description": "a standing epic has no finish criterion and no end date by construction; a standing epic that ended is a status change, not a closed date"
+          }
+        }
+      ]
+    },
+    "TombstonedEpic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "moved_to"
+      ],
+      "description": "a retired id: accepted on historical artifacts, EP-MOVED on newly opened ones, never reused for a different stream",
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "moved_to": {
+          "$ref": "#/$defs/EpicId",
+          "description": "the FINAL id — chains and cycles are forbidden (EP-REG-MOVED-CHAIN / EP-REG-MOVED-CYCLE)"
+        },
+        "moved_at": {
+          "$ref": "#/$defs/Date"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "DefectClass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

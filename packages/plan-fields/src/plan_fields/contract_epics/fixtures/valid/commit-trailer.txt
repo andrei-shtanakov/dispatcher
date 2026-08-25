@@ -1,0 +1,7 @@
+fix(runtime): restore pipeline resume after a worker restart
+
+The resume path lost its cursor when a worker died mid-batch.
+
+Epic: eco.ops
+Defect: pipeline
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>

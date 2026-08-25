@@ -1,0 +1,10 @@
+{
+  "diagnostics": [
+    {
+      "code": "EP-REG-OPENED-MISSING",
+      "severity": "error",
+      "message": "epic with status active/paused/done/abandoned carries no opened date",
+      "subject_key": "eco.undated"
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-# plan-fields v2 — diagnostic code registry.
+# plan-fields v3 — diagnostic code registry.
 #
 # This registry describes POLICY, not per-instance outcome:
 #   * default_severity — the severity a fresh occurrence starts at.
@@ -14,8 +14,16 @@
 # A Diagnostic instance (schema.json) carries the already-COMPUTED severity. Phase 0b owns
 # the history that applies escalation; the contract only states the policy.
 
-contract_version: 2
-version: 2
+contract_version: 3
+version: 3
+
+# EP-* codes are NOT declared here. The stream axis (@epic/@defect) is owned by the epics/v1
+# contract, and a plan-fields parser emits its codes verbatim (EP-MISSING, EP-GRAMMAR,
+# EP-MULTIPLE on this plane). Registry-dependent codes — EP-UNKNOWN, EP-MOVED — belong to the
+# FLEET layer, which holds epics.toml: a single-repo parser can prove a tag is well-formed but
+# cannot prove the epic exists, exactly as it can validate `repo:<manifest-key>` syntax without
+# proving the repository exists. Redeclaring EP-* here would fork the registry.
+
 
 codes:
   PF-BLOCKER-DANGLING:

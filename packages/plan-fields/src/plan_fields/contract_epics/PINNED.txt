@@ -1,0 +1,7 @@
+source: prograph-vault authored/contracts/epics/v1
+commit: a0aac1ccd2b15c5a1b12187a7799a549943135ed
+vendored: 2026-08-25
+note: pinned copy (repo-boundaries vendoring). Do not edit here; re-vendor from
+  the pin. Vendored ALONGSIDE plan-fields v3, which delegates epic/defect
+  grammar here rather than restating it; the parser compiles its patterns from
+  this copy, so the delegation is executable, not merely documented.

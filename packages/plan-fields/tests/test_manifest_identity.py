@@ -544,8 +544,13 @@ def test_a_self_reference_keeps_parse_todos_verdict_exactly(tmp_path: Path) -> N
 
     alone = parse_todo(keyed_text, "demo")
     in_fleet = parse_fleet([RepoInput("demo", keyed_text)], idx)
+    # EP-* is v3's stream axis: these fixtures predate it and carry no @epic, so
+    # every open item legitimately reports EP-MISSING. This assertion is about the
+    # legacy-reference verdict, so it stays scoped to that.
     assert [
-        d["code"] for d in alone["diagnostics"] if not d["code"].startswith("PF-OWNER")
+        d["code"]
+        for d in alone["diagnostics"]
+        if not d["code"].startswith(("PF-OWNER", "EP-"))
     ] == ["PF-LEGACY-AMBIGUOUS"]
     alone_ambiguity = next(
         d for d in alone["diagnostics"] if d["code"] == "PF-LEGACY-AMBIGUOUS"
@@ -562,7 +567,7 @@ def test_a_self_reference_keeps_parse_todos_verdict_exactly(tmp_path: Path) -> N
     assert [
         d["code"]
         for d in aliased["diagnostics"]
-        if not d["code"].startswith("PF-OWNER")
+        if not d["code"].startswith(("PF-OWNER", "EP-"))
     ] == ["PF-LEGACY-AMBIGUOUS"]
     aliased_ambiguity = next(
         d for d in aliased["diagnostics"] if d["code"] == "PF-LEGACY-AMBIGUOUS"
@@ -589,11 +594,13 @@ def test_a_self_reference_keeps_parse_todos_verdict_exactly(tmp_path: Path) -> N
         idx,
     )
     assert not [
-        d for d in alone["diagnostics"] if not d["code"].startswith("PF-OWNER")
+        d for d in alone["diagnostics"] if not d["code"].startswith(("PF-OWNER", "EP-"))
     ]  # a unique hit is a reference, not a defect
     assert in_fleet["diagnostics"] == alone["diagnostics"]
     assert not [
-        d for d in aliased["diagnostics"] if not d["code"].startswith("PF-OWNER")
+        d
+        for d in aliased["diagnostics"]
+        if not d["code"].startswith(("PF-OWNER", "EP-"))
     ]  # ...and the alias must not invent one
 
     # Same-repo UNIQUE match, both spellings: agreeing on silence is not enough

@@ -1,0 +1,10 @@
+{
+  "epic": "eco.dark-factory-slice0",
+  "defect": null,
+  "classification": "tagged",
+  "diagnostics": [],
+  "subject_uri": "git://demo/0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c",
+  "carrier": "commit",
+  "inherited_from": "gh://demo/pull/7",
+  "observed_at": "2026-08-25T00:00:00Z"
+}

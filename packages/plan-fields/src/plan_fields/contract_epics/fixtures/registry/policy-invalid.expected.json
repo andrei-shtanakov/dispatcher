@@ -1,0 +1,11 @@
+{
+  "diagnostics": [
+    {
+      "code": "EP-REG-POLICY-INVALID",
+      "severity": "error",
+      "message": "[coverage_policy] is absent, incomplete, or carries an out-of-range ratio or malformed date",
+      "subject_key": "coverage_policy",
+      "raw": "robin_cutover_todo=1.4; robin_cutover_prs missing; missing_error_after=not-a-date"
+    }
+  ]
+}

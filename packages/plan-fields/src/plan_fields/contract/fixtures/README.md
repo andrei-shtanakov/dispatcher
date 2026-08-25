@@ -1,12 +1,12 @@
 ---
-title: "plan-fields v2 — conformance fixtures"
+title: "plan-fields v3 — conformance fixtures"
 type: contract
 status: proposed
 owner: Andrei
-updated: 2026-08-07
+updated: 2026-08-25
 ---
 
-# plan-fields v2 — fixtures
+# plan-fields v3 — fixtures
 
 Normative input → expected-output pairs. They are the machine-checkable spec; the executable
 validator that runs them is a **PF-3** deliverable (not in the KB — see the contract README).
@@ -33,6 +33,20 @@ validator that runs them is a **PF-3** deliverable (not in the KB — see the co
 | `invalid/dangling-id` | pair | canonical ref to an absent `@id` → `PF-ID-DANGLING`; reference kept, no edge |
 | `invalid/ambiguous-legacy-ref` | pair | `PF-LEGACY-AMBIGUOUS`; `legacy_blocker_ref` kept, no edge |
 | `invalid/reused-id` | bundle | retired `@id` reused → `PF-ID-REUSED` (error) |
+| `valid/epic-tagged` | pair | the stream axis in normal form: `@epic` on both items, `@defect` on the fix; `epic_classification: tagged` |
+| `invalid/epic-grammar` | pair | `@epic:eco` (no dot) → `EP-GRAMMAR`, `epic_classification: invalid` |
+| `invalid/epic-multiple` | pair | two identical `@epic` tags → `EP-MULTIPLE`; a duplicate is a defect, not a consensus |
 
 Expected outputs follow the canonical ordering in the contract README (nodes by `node_id`,
 etc.), so a conforming parser's output should compare equal after canonicalization.
+
+## What these fixtures deliberately cannot prove (v3)
+
+Every pre-existing case now also carries `EP-MISSING` on its open nodes: those inputs were
+written before the stream axis existed, and a conforming v3 parser must say so rather than
+stay silent. Closed and tombstoned items get no such diagnostic — they carry no obligation.
+
+No fixture here expects `EP-UNKNOWN` or `EP-MOVED`. Those need `epics.toml`, which a
+single-repo parser does not read; they are fleet-layer findings and are fixtured in
+`../../epics/v1/fixtures/`. A v3 fixture asserting them would be asserting a capability this
+layer does not have.

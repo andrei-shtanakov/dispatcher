@@ -1,0 +1,20 @@
+{
+  "contract": "plan-fields",
+  "contract_version": 3,
+  "depends_on": [
+    {
+      "contract": "epics",
+      "contract_version": 1,
+      "schema_id": "urn:ecosystem:epics:v1:classification",
+      "tree_sha256": "5a77175d4caf016a3c93c301d327d1bedcf7bc1c3e87d828c93359f39b9fe7ac",
+      "source_commit": null,
+      "delegated": [
+        "epic grammar",
+        "defect grammar",
+        "EP-* diagnostic codes",
+        "the four-state epic_classification vocabulary"
+      ],
+      "note": "This contract carries @epic/@defect but does NOT restate their grammar. `tree_sha256` pins which epics/v1 surface the delegation was written against; `source_commit` is null in canon and MUST be filled by the vendoring consumer, whose conformance suite then verifies that the epics/v1 copy it vendored fingerprints to this same tree. Delegation that is only prose becomes a second copy of the regex; delegation that is pinned and checked cannot."
+    }
+  ]
+}

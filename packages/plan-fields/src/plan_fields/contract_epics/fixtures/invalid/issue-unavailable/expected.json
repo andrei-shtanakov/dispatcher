@@ -1,0 +1,16 @@
+{
+  "epic": null,
+  "defect": null,
+  "classification": "unavailable",
+  "diagnostics": [
+    {
+      "code": "EP-UNAVAILABLE",
+      "severity": "warning",
+      "message": "artifact body was not retrieved",
+      "subject_uri": "gh://demo/issues/11"
+    }
+  ],
+  "subject_uri": "gh://demo/issues/11",
+  "carrier": "issue",
+  "observed_at": "2026-08-25T00:00:00Z"
+}

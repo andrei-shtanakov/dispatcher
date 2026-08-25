@@ -1,0 +1,7 @@
+{
+  "carrier": "pull_request",
+  "subject_uri": "gh://demo/pull/7",
+  "observed_at": "2026-08-25T00:00:00Z",
+  "linked_todo": "todo://demo/pipe-resume",
+  "note": "the classified artifact is the PR; the linked plan item carries a different epic"
+}

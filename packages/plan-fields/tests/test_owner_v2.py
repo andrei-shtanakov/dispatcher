@@ -48,7 +48,11 @@ def test_legacy_role_is_explicit_transition() -> None:
     doc = parse_todo("- [ ] old @id:x @owner:tech-lead\n", "demo")
     assert doc["nodes"][0]["owner_ref"] is None
     assert doc["nodes"][0]["owner_role"] == "tech-lead"
-    assert [d["code"] for d in doc["diagnostics"]] == ["PF-OWNER-LEGACY-ROLE"]
+    # the item carries no @epic, so v3 also reports EP-MISSING; this test is about
+    # the owner axis and must not become an assertion about the stream axis too
+    assert [
+        d["code"] for d in doc["diagnostics"] if not d["code"].startswith("EP-")
+    ] == ["PF-OWNER-LEGACY-ROLE"]
 
 
 def test_unknown_repository_owner_is_a_fleet_diagnostic() -> None:

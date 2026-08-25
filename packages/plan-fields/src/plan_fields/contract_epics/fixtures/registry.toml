@@ -1,0 +1,55 @@
+# Baseline registry every artifact fixture is resolved against. Also the `registry/valid`
+# case: validating this file must produce zero diagnostics.
+
+schema_version = "1.0.0"
+adopted_at = "2026-09-01"
+
+[coverage_policy]
+robin_cutover_todo   = 0.98
+robin_cutover_issues = 0.90
+robin_cutover_prs    = 0.90
+missing_error_after  = "2026-11-01"
+min_sample           = 10
+
+[exclusions]
+merge_commits = true
+bot_authors   = ["dependabot[bot]"]
+
+[programs.eco]
+title = "AI orchestrators ecosystem"
+kind  = "ecosystem"
+
+[programs.airun]
+title = "airun"
+kind  = "external"
+
+[epics."eco.dark-factory-slice0"]
+title  = "AI Dark Factory — slice 0"
+status = "active"
+goal   = "slice 0 executed end to end, producer console included"
+opened = "2026-08-01"
+
+[epics."eco.ops"]
+title  = "Ecosystem operations and tails"
+status = "standing"
+
+[epics."eco.codex-review-rollout"]
+title  = "codex-review rollout"
+status = "active"
+opened = "2026-08-10"
+
+[epics."eco.codex-review"]                 # retired id, kept forever
+title    = "codex-review rollout (retired spelling)"
+moved_to = "eco.codex-review-rollout"
+moved_at = "2026-08-20"
+
+[epics."airun.kapelle-m3"]
+title  = "airun M3 — Kapelle"
+status = "active"
+opened = "2026-08-05"
+
+[defect_classes.pipeline]
+title = "Pipeline failures"
+
+[defect_classes.agent]
+title = "Agent failures"

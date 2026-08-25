@@ -1,4 +1,4 @@
-# plan-fields v2 — evidence rule registry.
+# plan-fields v3 — evidence rule registry.
 #
 # The closed governance evidence vocabulary with an evidence_grade per rule
 # (ADR-ECO-005 D2/D3). Consumers (dispatcher roadmap engine, PF-4) read this to know
@@ -13,8 +13,8 @@
 #
 # kinds: which evidence roles a rule may play (implementation | verification).
 
-contract_version: 2
-version: 2
+contract_version: 3
+version: 3
 
 rules:
   project_detected:

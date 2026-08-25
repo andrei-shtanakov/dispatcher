@@ -1,0 +1,11 @@
+{
+  "diagnostics": [
+    {
+      "code": "EP-REG-KIND-UNKNOWN",
+      "severity": "error",
+      "message": "program declares a kind outside {ecosystem, external}",
+      "subject_key": "side",
+      "raw": "internal"
+    }
+  ]
+}

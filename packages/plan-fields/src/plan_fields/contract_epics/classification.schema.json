@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ecosystem:epics:v1:classification",
+  "title": "epics v1 — normalized artifact classification",
+  "description": "The canonical object every carrier emits for one artifact (TODO item, commit, pull request, issue). One shape for all planes so aggregates never have to reconcile producer-specific vocabularies. `classification` is four-state on purpose: `epic: null` alone cannot distinguish a producer that never collected epics, a body read with no tag, a truncated body, and a parser failure.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "epic",
+    "defect",
+    "classification",
+    "diagnostics",
+    "subject_uri",
+    "carrier",
+    "observed_at"
+  ],
+  "properties": {
+    "epic": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/EpicId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "the epic exactly as written, after grammar validation; null unless classification is `tagged`"
+    },
+    "defect": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/DefectSlug"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "optional defect class; orthogonal to the epic and never a substitute for it"
+    },
+    "classification": {
+      "$ref": "#/$defs/ClassificationState"
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Diagnostic"
+      },
+      "description": "ordered by (code, subject_key, subject_uri, related_uri) over raw Unicode code points, null sorting before any string — see the contract README's Canonicalization section"
+    },
+    "subject_uri": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ArtifactUri"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "identity of the classified artifact; null only where the carrier has no addressable identity"
+    },
+    "carrier": {
+      "$ref": "#/$defs/Carrier",
+      "description": "which plane produced this classification — required, because per-plane completeness cannot be assembled from objects that may omit it"
+    },
+    "inherited_from": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ArtifactUri"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "set when a commit's epic was inherited from its pull request (never derived from a `#123` subject reference)"
+    },
+    "observed_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "when the artifact was read (observation time, NOT activity time — see ADR-ECO-010 D11); required and nullable: a producer that does not stamp it must say so, not stay silent"
+    },
+    "resolved_from": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/EpicId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "set when a historical artifact carried a tombstoned id: `epic` holds the final id it resolves to, `resolved_from` the retired id as written. Aggregates stay single-valued; the retirement stays visible."
+    }
+  },
+  "$defs": {
+    "ProgramId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+    },
+    "EpicId": {
+      "type": "string",
+      "description": "always two levels, exactly one dot; the program prefix is part of the identity",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,31}\\.[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "DefectSlug": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+    },
+    "ClassificationState": {
+      "enum": [
+        "tagged",
+        "missing",
+        "invalid",
+        "unavailable"
+      ],
+      "description": "tagged = read and valid; missing = read, no epic; invalid = read, epic unusable; unavailable = not read. `unavailable` is never counted as `missing`."
+    },
+    "Carrier": {
+      "enum": [
+        "todo",
+        "commit",
+        "pull_request",
+        "issue"
+      ]
+    },
+    "ArtifactUri": {
+      "type": "string",
+      "description": "todo://<repo>/<id> for plan items; git://<repo>/<sha> for commits; gh://<repo>/pull/<n> and gh://<repo>/issues/<n> for GitHub artifacts",
+      "pattern": "^(todo://[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9._-]{0,63}|git://[a-z0-9][a-z0-9-]*/[0-9a-f]{7,40}|gh://[a-z0-9][a-z0-9-]*/(pull|issues)/[1-9][0-9]*)$"
+    },
+    "Severity": {
+      "enum": [
+        "warning",
+        "error"
+      ]
+    },
+    "Diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "severity",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "a code declared in diagnostics.yaml",
+          "pattern": "^EP-[A-Z][A-Z0-9-]*$"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity",
+          "description": "the COMPUTED severity for this instance; diagnostics.yaml states the policy that computes it"
+        },
+        "message": {
+          "type": "string"
+        },
+        "subject_uri": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ArtifactUri"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "related_uri": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ArtifactUri"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "the second artifact of a cross-plane finding (EP-CONFLICT)"
+        },
+        "raw": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "the offending value exactly as written, so a grammar diagnostic never loses the original"
+        },
+        "subject_key": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "the registry key a registry-scope finding is about (an epic id or a program id); artifact-scope findings leave it null and use subject_uri"
+        }
+      }
+    }
+  }
+}

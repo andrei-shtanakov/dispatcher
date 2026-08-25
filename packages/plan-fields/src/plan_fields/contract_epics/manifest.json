@@ -1,0 +1,273 @@
+{
+  "contract": "epics",
+  "contract_version": 1,
+  "schema_id": "urn:ecosystem:epics:v1:classification",
+  "surface_note": "sha256 of every frozen contract file consumers vendor; excludes drift-control meta (manifest.json, drift-control.md) and vendor-only PINNED.txt. Construction is byte-identical to plan-fields v2 so one checker serves both. The registry data model is urn:ecosystem:epics:v1:registry; VALUES live in the umbrella epics.toml and are read live, never vendored. See drift-control.md.",
+  "tree_sha256": "5a77175d4caf016a3c93c301d327d1bedcf7bc1c3e87d828c93359f39b9fe7ac",
+  "surface": [
+    {
+      "path": "README.md",
+      "sha256": "9638cc6070fa24dd212f3508a34a471eb2abc5f7de955d92e9fc59290c6a9c5d"
+    },
+    {
+      "path": "classification.schema.json",
+      "sha256": "bd59fd6d8fd30fdc9cb46b71e311419a8b32495af5513ceb065ad02858334cd2"
+    },
+    {
+      "path": "diagnostics.yaml",
+      "sha256": "62b0046c3939a2af9e0951eb1b9a71ed46203023461cc7731ab18309627c83eb"
+    },
+    {
+      "path": "fixtures/README.md",
+      "sha256": "b4f566004ca685a90f02bf0003c4d0ae470faa5babad21b484af5275c1aed046"
+    },
+    {
+      "path": "fixtures/invalid/conflict/context.json",
+      "sha256": "ef92d2d0f8ba784ab0f0edd1ebaf7336de63336072e87e300f71a9499417af6a"
+    },
+    {
+      "path": "fixtures/invalid/conflict/expected.json",
+      "sha256": "1b6c30899013b00c9490066800d5558baf4db941e315a445725610a53fe6460e"
+    },
+    {
+      "path": "fixtures/invalid/conflict/pr-body.txt",
+      "sha256": "87da339be9ea3a9d359bb5e52b14b72a2d6f8a24c5ed86105f846909b7f99f3d"
+    },
+    {
+      "path": "fixtures/invalid/conflict/todo.md",
+      "sha256": "66c1607bf4792317f81daa64da960e474d52533485ec85ad9b0f7a8ccd0ab441"
+    },
+    {
+      "path": "fixtures/invalid/issue-unavailable/context.json",
+      "sha256": "88e874d6f2a115e5fc8c6832f10f00a929eb4f307a62091000ff64595dd689d4"
+    },
+    {
+      "path": "fixtures/invalid/issue-unavailable/expected.json",
+      "sha256": "9c991fdc61d98ebc32731f816ec4ed27e8a5cb00f3c27e10b3c30925683d1ff8"
+    },
+    {
+      "path": "fixtures/invalid/pr-moved/body.txt",
+      "sha256": "e04aab62c828c5ff531223c35f90de768beafd305fd8cb081638fe44134fa91d"
+    },
+    {
+      "path": "fixtures/invalid/pr-moved/context.json",
+      "sha256": "6ec8aa488fd973b9a4b44237cc2e6aee7230c59d230b7e7827b6a6613c077949"
+    },
+    {
+      "path": "fixtures/invalid/pr-moved/expected.json",
+      "sha256": "8dd3a7612cef4a05f40a6f0d8b9926b3617c235d336e7a28319adc5d974b9145"
+    },
+    {
+      "path": "fixtures/invalid/todo-defect-grammar.expected.json",
+      "sha256": "aee14189368694b501da9cf490bc89eb6117650169c3286fdf24889e38fda10a"
+    },
+    {
+      "path": "fixtures/invalid/todo-defect-grammar.md",
+      "sha256": "6257b3a21c79f8c256ff85b6a8bdfafaefc779c24770433f219c19a23c570300"
+    },
+    {
+      "path": "fixtures/invalid/todo-defect-unknown.expected.json",
+      "sha256": "75d7dac05b1af5d193578df4641cb3a41b61351909aeaa391b75cb7df18fba7d"
+    },
+    {
+      "path": "fixtures/invalid/todo-defect-unknown.md",
+      "sha256": "66e29f538c88339acc802b1d3709a7c0b6661daca047b18b4fa7e8cae8e03160"
+    },
+    {
+      "path": "fixtures/invalid/todo-grammar-case.expected.json",
+      "sha256": "a6cbfa319834427f95666d81456854828b0483d2100d7765d2c3f41ef7ec739c"
+    },
+    {
+      "path": "fixtures/invalid/todo-grammar-case.md",
+      "sha256": "b47c672bd3cc5b54693b8961d62d19b713face7e5bc0ef9300067eccb80dcea5"
+    },
+    {
+      "path": "fixtures/invalid/todo-grammar.expected.json",
+      "sha256": "8645a3ef5ea7a0d24971d9702a617b1abd78385df0661a5cafb27eea6512c879"
+    },
+    {
+      "path": "fixtures/invalid/todo-grammar.md",
+      "sha256": "f49b738782d9a06f9fbbafed22d67fe8c454624a94e04d4d485907d39b69dbb6"
+    },
+    {
+      "path": "fixtures/invalid/todo-missing.expected.json",
+      "sha256": "67559e86c08c5aff9adfe85e188c7dfddec8e025556aaab4ca819ac0c09fc1d5"
+    },
+    {
+      "path": "fixtures/invalid/todo-missing.md",
+      "sha256": "c75c9de0934b3d5faffad93fcf50321126fc45ec1118fe507ca44d462fb85afd"
+    },
+    {
+      "path": "fixtures/invalid/todo-multiple.expected.json",
+      "sha256": "3cfa1901d4508c853a0ba5faeb9f150add8483d96ab63ff341f25b882120e8a0"
+    },
+    {
+      "path": "fixtures/invalid/todo-multiple.md",
+      "sha256": "2d356b7b32bf92457e6e9855dd5ee5dcf20dd965ef7c5e1dd41e952f1163966e"
+    },
+    {
+      "path": "fixtures/invalid/todo-unknown.expected.json",
+      "sha256": "c7a284282a982dbb0a77cf06d57991f140999edcd80b4b8ee0b8ccff1428dfc8"
+    },
+    {
+      "path": "fixtures/invalid/todo-unknown.md",
+      "sha256": "b2c9ca71e2bd55f7ea0cd40e2ae5bc2bc3ee1531eaa5065b097c2ef6d3f428dc"
+    },
+    {
+      "path": "fixtures/registry.toml",
+      "sha256": "cabf7563af78057dbb3cb40240cf65ebd2af117097a11319e768303a1cadcadf"
+    },
+    {
+      "path": "fixtures/registry/closed-missing.expected.json",
+      "sha256": "910a7215f4b7ef52113896434306a7a6d7b445767403652608d282ede6eeb945"
+    },
+    {
+      "path": "fixtures/registry/closed-missing.toml",
+      "sha256": "3339e1dc876dc760ce4692e002d2566da6f771887404a94f5f246d7dea5acbc4"
+    },
+    {
+      "path": "fixtures/registry/kind-unknown.expected.json",
+      "sha256": "1c5412397ab49024b46b5c574a86b16e56b020e4ec1dc44110da2827a9f39ae8"
+    },
+    {
+      "path": "fixtures/registry/kind-unknown.toml",
+      "sha256": "1c8c5fcd1e6e5287a45b95b3d5ed23806e3f853ec16b99a8e1fb47b9f56fe17f"
+    },
+    {
+      "path": "fixtures/registry/moved-chain.expected.json",
+      "sha256": "a4762efce3720743043d8847be97bf4896e1de7f272574a586454e455cd77956"
+    },
+    {
+      "path": "fixtures/registry/moved-chain.toml",
+      "sha256": "7c728fc9b404acf9f1426c811367fe49c7c8852c774e84a1dae691fd77343b8a"
+    },
+    {
+      "path": "fixtures/registry/moved-cycle.expected.json",
+      "sha256": "85a8b006c424f14ebcb48c20c57050cc8f15514eb3b30bb15bddd58ffaa132f3"
+    },
+    {
+      "path": "fixtures/registry/moved-cycle.toml",
+      "sha256": "291a06a65e3c9f368a4b396fa9e5535fa46d72350d46bea2e9dba8acc3d570f6"
+    },
+    {
+      "path": "fixtures/registry/moved-dangling.expected.json",
+      "sha256": "9093c88c9b7a7f3a0f162bc816d5d3c2bf8590d4e1c198f35d07d9f809a1bea9"
+    },
+    {
+      "path": "fixtures/registry/moved-dangling.toml",
+      "sha256": "1d018962f3f64ae8ef5340a3b6f5224ceedea9461a8578eeb907bd4457160984"
+    },
+    {
+      "path": "fixtures/registry/moved-with-status.expected.json",
+      "sha256": "6898ba7a45c6208a6a89bfd4270511648770c0afd96b148f9449c9bb2ff3436d"
+    },
+    {
+      "path": "fixtures/registry/moved-with-status.toml",
+      "sha256": "331b555796d8e31a8de4b619f0f6f645c2984ff2af75aabf5c449e8cf246c4e6"
+    },
+    {
+      "path": "fixtures/registry/opened-missing.expected.json",
+      "sha256": "582386aa636384cb416671e55ec68242eefe45121a97534ed0da39dc127dcde0"
+    },
+    {
+      "path": "fixtures/registry/opened-missing.toml",
+      "sha256": "b6793b41b836006f101c3d10b927b2f3779681b9224ae45838900d860fcb71f9"
+    },
+    {
+      "path": "fixtures/registry/policy-invalid.expected.json",
+      "sha256": "894d5ff8f7d28f0d67974b84ed52db2d09212297bddfc77d88c80b6c820349f0"
+    },
+    {
+      "path": "fixtures/registry/policy-invalid.toml",
+      "sha256": "c72a195f478636e4094a67be64993251dee2c8607f50e973864dca50ad330da8"
+    },
+    {
+      "path": "fixtures/registry/program-unknown.expected.json",
+      "sha256": "07773c4caeb1e7afd0491f526ad666260d64182d807c956f3bfa9160aaab02f9"
+    },
+    {
+      "path": "fixtures/registry/program-unknown.toml",
+      "sha256": "9ea90920c0a8b686684c837ac1167fa13596fb2d61a36f6894751c03ac58b010"
+    },
+    {
+      "path": "fixtures/registry/standing-fields.expected.json",
+      "sha256": "e73e8a5810ed7c8b4f8276cefee72220b844e1663f2704350e0ab3a8f89ba39b"
+    },
+    {
+      "path": "fixtures/registry/standing-fields.toml",
+      "sha256": "3270430e7a713ca68dc7884881713088a36aed96ca0b234138a43e665d91aba6"
+    },
+    {
+      "path": "fixtures/registry/valid.expected.json",
+      "sha256": "6a433a9fa8b2f0e1086630be475634181285c41b0357b9bf34cbe0dcbe62a881"
+    },
+    {
+      "path": "fixtures/valid/commit-inherited/context.json",
+      "sha256": "eb09b5c5ec6c9334d6cc121bf924fe9d0ab9d0ad88029d1280343c7ecdd4657e"
+    },
+    {
+      "path": "fixtures/valid/commit-inherited/expected.json",
+      "sha256": "3947e618e28dbc73adec3902af9e9aced265160d2c4baf0e47449e953c8c7741"
+    },
+    {
+      "path": "fixtures/valid/commit-inherited/message.txt",
+      "sha256": "dc190bab742696dac416459a1c141fd269f4724a5a03d9ab6e985fea4cc5b70e"
+    },
+    {
+      "path": "fixtures/valid/commit-trailer.expected.json",
+      "sha256": "d558c2df74ac48f58060619d57033af48c4f40fa713da200d70d04d5fd1cb53f"
+    },
+    {
+      "path": "fixtures/valid/commit-trailer.txt",
+      "sha256": "a0336a29047cdde4e1281e6d8ac1caeb4149f27dbf2557b714e3d8a8bbe1b865"
+    },
+    {
+      "path": "fixtures/valid/historical-moved/body.txt",
+      "sha256": "5ec97c42a15d6235a28f4a2510d989124a09dc2e2dbb4316ed3702bfc0a93966"
+    },
+    {
+      "path": "fixtures/valid/historical-moved/context.json",
+      "sha256": "1cb057a6b87e48c9efc719af2c00765814b48eeeff5ff8dfbb9cf46c1c5cacd1"
+    },
+    {
+      "path": "fixtures/valid/historical-moved/expected.json",
+      "sha256": "e7790e66649a235e81cef47864a58fbb24f6d15cff5dcf5d4b7fb3eba3da7a53"
+    },
+    {
+      "path": "fixtures/valid/pr-body.expected.json",
+      "sha256": "0d0fccb747d08cc22b7c71528f17bc0874d4a8a7bc66c99fc795919a99f1ec0d"
+    },
+    {
+      "path": "fixtures/valid/pr-body.txt",
+      "sha256": "c8512177b6f70082b4b81ebc221bbfab5c7af373519322930223faf007044080"
+    },
+    {
+      "path": "fixtures/valid/prose-mention-is-not-a-trailer.expected.json",
+      "sha256": "d8b37567fbf0c6fd5bbdb7d10eb08ad60784de78942bc31d95c5cf0a363d0bb2"
+    },
+    {
+      "path": "fixtures/valid/prose-mention-is-not-a-trailer.txt",
+      "sha256": "de4ba238f4fbae0a584f060f26b43f8c594bf86787e9f40d6ef6352cbb93a706"
+    },
+    {
+      "path": "fixtures/valid/todo-defect.expected.json",
+      "sha256": "1e5ddb07437601586da87ad0d820b004116d2899a6960af8c6ef9d9540b83264"
+    },
+    {
+      "path": "fixtures/valid/todo-defect.md",
+      "sha256": "66c1607bf4792317f81daa64da960e474d52533485ec85ad9b0f7a8ccd0ab441"
+    },
+    {
+      "path": "fixtures/valid/todo-tagged.expected.json",
+      "sha256": "10dea95fcefacea664b79e5d338d4e87b003b2a4c8588c0e358eadf118ae7a31"
+    },
+    {
+      "path": "fixtures/valid/todo-tagged.md",
+      "sha256": "191511fb51aee407a9d20d6f8e8ce5dddb9dedc5c3607472aa46b51948815845"
+    },
+    {
+      "path": "registry.schema.json",
+      "sha256": "75949da7f429b9e900f253d9c03b6284679ec74c2d2aa01b18edc93a513b5dc4"
+    }
+  ]
+}

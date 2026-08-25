@@ -1,0 +1,12 @@
+{
+  "carrier": "commit",
+  "subject_uri": "git://demo/0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c",
+  "observed_at": "2026-08-25T00:00:00Z",
+  "attributed_pull_request": {
+    "uri": "gh://demo/pull/7",
+    "epic": "eco.dark-factory-slice0",
+    "defect": null,
+    "classification": "tagged"
+  },
+  "note": "attribution comes from the snapshot's PR->SHA projection; the subject line's `(#7)` is NOT evidence and must not be parsed"
+}
