@@ -14,10 +14,16 @@ import re
 from typing import Any
 
 from plan_fields.canonical import canonicalize
+from plan_fields.epic import (
+    EPIC_MESSAGES,
+    EPIC_SEVERITY,
+    parse_defect,
+    parse_epic,
+)
 from plan_fields.scrape import _canonical_title, scrape_items
 
-CONTRACT_VERSION = 2
-SCHEMA_VERSION = 2
+CONTRACT_VERSION = 3
+SCHEMA_VERSION = 3
 
 TODO_URI_RE = re.compile(r"^todo://([a-z0-9][a-z0-9-]*)/([a-z0-9][a-z0-9._-]{0,63})$")
 LEGACY_RE = re.compile(r"^([a-z0-9][a-z0-9-]*)#(\S+)$")
@@ -114,6 +120,10 @@ def parse_todo(
         node_id = f"todo://{repo}/{item_id}"
         owner = raw.get("owner")
         owner_ref, owner_role, owner_diag = parse_owner(owner)
+        epic_values = item.values("epic")
+        epic, epic_class, epic_diag = parse_epic(epic_values)
+        defect_values = item.values("defect")
+        defect, defect_diag = parse_defect(defect_values)
         node = {
             "node_id": node_id,
             "kind": "operational_item",
@@ -123,6 +133,9 @@ def parse_todo(
             "declared_status": status,
             "owner_role": owner_role,
             "owner_ref": owner_ref,
+            "epic": epic,
+            "defect": defect,
+            "epic_classification": epic_class,
             "trigger": raw.get("trigger"),
             "freshness": _freshness(raw),
             "tombstone": status == "closed",
@@ -130,6 +143,22 @@ def parse_todo(
             "provenance": prov,
         }
         nodes.append(node)
+        # EP-MISSING is deferred debt, not a defect in the record: it is emitted for
+        # OPEN items only, because a closed item carries no obligation (ADR-ECO-010
+        # marks open work only). The structural codes fire regardless of status —
+        # a malformed tag on a closed item is still malformed.
+        for code, values in ((epic_diag, epic_values), (defect_diag, defect_values)):
+            if code is None or (code == "EP-MISSING" and status != "open"):
+                continue
+            message = EPIC_MESSAGES[code].format(
+                node_id=node_id,
+                count=len(values),
+                values=", ".join(values),
+                value=values[0] if values else "",
+            )
+            diagnostics.append(
+                _diag(code, EPIC_SEVERITY[code], node_id, None, None, message, prov)
+            )
         # every @blocked_by on the item, in source order — a key can repeat, and
         # each blocker gets its own reference below (never collapsed to one)
         parsed.append((node, item.values("blocked_by")))

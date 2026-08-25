@@ -1,12 +1,12 @@
 ---
-title: "plan-fields v2 — drift control"
+title: "plan-fields v3 — drift control"
 type: contract
 status: proposed
 owner: Andrei
-updated: 2026-08-07
+updated: 2026-08-25
 ---
 
-# plan-fields v2 — drift control (PF-6)
+# plan-fields v3 — drift control (PF-6)
 
 Normative drift-control for the `plan-fields` contract. The vault owns the
 **data** that makes drift machine-detectable; the **executable checkers** live
@@ -18,7 +18,7 @@ ADR-ECO-005.
 ## Canonical surface
 
 The frozen contract surface is every file under
-`authored/contracts/plan-fields/v2/` **except** the drift-control meta files
+`authored/contracts/plan-fields/v3/` **except** the drift-control meta files
 (`manifest.json`, `drift-control.md`) and the vendor-only `PINNED.txt`. Exactly
 these files are what a consumer vendors and depends on.
 
@@ -70,12 +70,12 @@ A surface change is classified before it lands:
 
 - **Additive (minor).** Backward-compatible: a new **optional** schema property,
   a new diagnostic **code**, a new fixture, additional prose. Existing consumers
-  keep validating. Bump `manifest.json`; `contract_version` stays `v2`.
+  keep validating. Bump `manifest.json`; `contract_version` stays `v3`.
 - **Breaking (major).** Removing or renaming a schema property or diagnostic
   code, tightening a previously optional field to required, changing canonical
   JSON node/edge ordering, or altering an existing fixture's `expected.json`.
-  Breaking changes require a **new contract version** (`v3`), never an in-place
-  `v2` edit — consumers migrate deliberately.
+  Breaking changes require a **new contract version** (`v4`), never an in-place
+  `v3` edit — consumers migrate deliberately.
 
 Fixtures are the executable spec: any change to an `*.expected.json` is treated
 as **breaking** unless it only *adds* a fixture pair, because a changed
@@ -106,3 +106,16 @@ Vendored copies under drift control (each pins a canonical commit in its
 
 Future consumers (devtools, atp-platform, robin-runtime, umbrella sensor) are
 added here as PF-7 migrates them onto the package.
+
+## The third comparison — delegated grammar (v3)
+
+v3 carries `@epic`/`@defect` without restating their grammar, so a consumer holds **two**
+pinned surfaces. Guarantee A therefore gains a third, still offline, check: the `tree_sha256`
+in `depends.json` must equal the fingerprint of the `epics/v1` copy the consumer actually
+vendored. A consumer that vendors plan-fields v3 against one epics surface while its validator
+reads another is internally inconsistent even though both copies pass their own integrity
+check — that gap is exactly what this comparison closes.
+
+`source_commit` in `depends.json` is `null` in canon by construction: the KB cannot know the
+commit that will carry this file. The vendoring consumer fills it, and reviewable provenance —
+not cryptographic attestation — is what it provides, the same limit guarantee A already states.

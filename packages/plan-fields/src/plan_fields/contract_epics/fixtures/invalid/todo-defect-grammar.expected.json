@@ -1,0 +1,17 @@
+{
+  "epic": "eco.ops",
+  "defect": null,
+  "classification": "tagged",
+  "diagnostics": [
+    {
+      "code": "EP-DEFECT-GRAMMAR",
+      "severity": "error",
+      "message": "defect value does not match the slug grammar",
+      "subject_uri": "todo://demo/panel-fix-2",
+      "raw": "UI"
+    }
+  ],
+  "subject_uri": "todo://demo/panel-fix-2",
+  "carrier": "todo",
+  "observed_at": "2026-08-25T00:00:00Z"
+}

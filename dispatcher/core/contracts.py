@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from dispatcher.core.models import ContractStatus
@@ -27,18 +28,25 @@ _SCHEMA_DIR = Path("schemas")
 # Neither is a "detected project", so resolve them from the monorepo layout
 # (overridable via the projects map, which keeps this hermetically testable).
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_PF_CONTRACT_NAME = "plan-fields-v2"  # matches ADR-ECO-005a contract identity
+_PF_CONTRACT_NAME = "plan-fields-v3"  # matches ADR-ECO-005a contract identity
+_EPICS_CONTRACT_NAME = "epics-v1"  # ADR-ECO-010; delegated grammar, vendored beside it
 # What the vendored manifest must declare itself to be. Checked by the product,
 # not only by a test against the real file: the PINNED.txt cross-reference
 # takes its authority FROM the manifest, so a manifest that keeps a
 # self-consistent surface while declaring another contract — or none — would
 # disarm that cross-check without failing anything else.
 _PF_MANIFEST_CONTRACT = "plan-fields"
-_PF_MANIFEST_VERSION = 2
+_PF_MANIFEST_VERSION = 3
 _PF_CANON_PROJECT = "prograph-vault"
-_PF_CANON_DIR_REL = Path("authored/contracts/plan-fields/v2")
+_PF_CANON_DIR_REL = Path("authored/contracts/plan-fields/v3")
 _PF_MANIFEST_REL = _PF_CANON_DIR_REL / "manifest.json"
 _PF_VENDORED_REL = Path("packages/plan-fields/src/plan_fields/contract")
+# The epics/v1 contract is vendored ALONGSIDE plan-fields v3, which delegates the
+# stream-axis grammar to it. Two vendored copies mean two of each guarantee: a
+# second contract sitting in the tree with neither integrity nor drift coverage
+# would be exactly the "checked by nothing" hole this module was hardened against.
+_EPICS_VENDORED_REL = Path("packages/plan-fields/src/plan_fields/contract_epics")
+_EPICS_CANON_DIR_REL = Path("authored/contracts/epics/v1")
 # Excluded from the fingerprinted surface (parity with the vault generator):
 # drift-control meta + the vendor-only pin marker. The exclusion is
 # legitimate — a manifest cannot hash itself, and policy/provenance are not
@@ -54,7 +62,12 @@ _PF_META_HASHES = {
     # Recorded when vendored; a re-vendor that updates the file and forgets
     # this line fails its own test rather than certifying a stale copy.
     "drift-control.md": (
-        "8f44b1bd9834b7645f4cf7621a8e98f856e51c4cb3e5f221c9479e9501637f05"
+        "d0dcc015f94fe34106d3e055a427a83fb4fb0a5a2eb057716f2d6a32a3dc89cb"
+    ),
+}
+_EPICS_META_HASHES = {
+    "drift-control.md": (
+        "5d3e074e9cf647fb2bb3ee3d35afd5397680d8b4a8a819e9777560ccb1b4b9b5"
     ),
 }
 # Checked by shape and cross-reference instead of by hash: `manifest.json`
@@ -65,6 +78,53 @@ _PF_META = set(_PF_META_HASHES) | _PF_META_STRUCTURAL
 _KIND_INTEGRITY = "vendored_integrity"
 _KIND_DRIFT = "upstream_drift"
 _KIND_LISTING = "listing"
+
+
+@dataclass(frozen=True)
+class _VendoredContract:
+    """One pinned contract copy and everything both guarantees need about it.
+
+    The verdicts used to read module constants directly, which silently made
+    "the vendored contract" mean "the only one". Naming the copies in a table is
+    what lets a second one be covered instead of merely present.
+    """
+
+    name: str
+    manifest_contract: str
+    manifest_version: int
+    vendored_rel: Path
+    canon_dir_rel: Path
+    meta_hashes: dict[str, str]
+
+    @property
+    def manifest_rel(self) -> Path:
+        return self.canon_dir_rel / "manifest.json"
+
+    @property
+    def meta(self) -> set[str]:
+        return set(self.meta_hashes) | _PF_META_STRUCTURAL
+
+
+_VENDORED_CONTRACTS = (
+    _VendoredContract(
+        name=_PF_CONTRACT_NAME,
+        manifest_contract=_PF_MANIFEST_CONTRACT,
+        manifest_version=_PF_MANIFEST_VERSION,
+        vendored_rel=_PF_VENDORED_REL,
+        canon_dir_rel=_PF_CANON_DIR_REL,
+        meta_hashes=_PF_META_HASHES,
+    ),
+    _VendoredContract(
+        name=_EPICS_CONTRACT_NAME,
+        manifest_contract="epics",
+        manifest_version=1,
+        vendored_rel=_EPICS_VENDORED_REL,
+        canon_dir_rel=_EPICS_CANON_DIR_REL,
+        meta_hashes=_EPICS_META_HASHES,
+    ),
+)
+
+
 _PIN_COMMIT_RE = re.compile(r"^commit:\s*[0-9a-f]{40}\s*$", re.M)
 _PIN_SOURCE_RE = re.compile(r"^source:\s*\S.*$", re.M)
 
@@ -113,7 +173,9 @@ def _surface_drift(root: Path, surface: list[dict]) -> str | None:
     return None
 
 
-def _canon_stale(canon_dir: Path, surface: list[dict]) -> str | None:
+def _canon_stale(
+    canon_dir: Path, surface: list[dict], meta: set[str] | None = None
+) -> str | None:
     """Reason the manifest no longer matches the live canon surface, else None.
 
     Compares the *whole* live surface (every file under `canon_dir` minus the
@@ -125,7 +187,7 @@ def _canon_stale(canon_dir: Path, surface: list[dict]) -> str | None:
     live = {
         p.relative_to(canon_dir).as_posix(): _sha256(p)
         for p in canon_dir.rglob("*")
-        if p.is_file() and p.relative_to(canon_dir).as_posix() not in _PF_META
+        if p.is_file() and p.relative_to(canon_dir).as_posix() not in (meta or _PF_META)
     }
     if set(live) != set(recorded):
         added = sorted(set(live) - set(recorded))
@@ -145,12 +207,12 @@ def _tree_sha256(surface: list[dict]) -> str:
     return digest.hexdigest()
 
 
-def _live_surface(root: Path) -> dict[str, str | None]:
+def _live_surface(root: Path, meta: set[str] | None = None) -> dict[str, str | None]:
     """Every non-meta file under `root`, by relative path, hashed."""
     return {
         p.relative_to(root).as_posix(): _sha256(p)
         for p in root.rglob("*")
-        if p.is_file() and p.relative_to(root).as_posix() not in _PF_META
+        if p.is_file() and p.relative_to(root).as_posix() not in (meta or _PF_META)
     }
 
 
@@ -182,7 +244,9 @@ def _pin_problem(vendored_dir: Path, contract: str) -> str | None:
     return None
 
 
-def _pf_vendored_integrity(vendored_dir: Path) -> ContractStatus:
+def _pf_vendored_integrity(
+    spec: _VendoredContract, vendored_dir: Path
+) -> ContractStatus:
     """A: the vendored surface matches the manifest travelling with it.
 
     Reads nothing outside dispatcher and never returns "cannot compare": the
@@ -193,7 +257,7 @@ def _pf_vendored_integrity(vendored_dir: Path) -> ContractStatus:
 
     def status(in_sync: bool | None, detail: str | None) -> ContractStatus:
         return ContractStatus(
-            name=_PF_CONTRACT_NAME,
+            name=spec.name,
             canonical_path=str(manifest_path),
             vendored_path=str(vendored_dir),
             kind=_KIND_INTEGRITY,
@@ -208,18 +272,18 @@ def _pf_vendored_integrity(vendored_dir: Path) -> ContractStatus:
     except json.JSONDecodeError as exc:
         return status(False, f"vendored manifest.json is unreadable: {exc.msg}")
     declared = manifest.get("contract")
-    if declared != _PF_MANIFEST_CONTRACT:
+    if declared != spec.manifest_contract:
         return status(
             False,
             f"vendored manifest declares contract {declared!r}, "
-            f"not {_PF_MANIFEST_CONTRACT!r}",
+            f"not {spec.manifest_contract!r}",
         )
     version = manifest.get("contract_version")
-    if version != _PF_MANIFEST_VERSION:
+    if version != spec.manifest_version:
         return status(
             False,
             f"vendored manifest declares contract version {version!r}, "
-            f"not {_PF_MANIFEST_VERSION!r}",
+            f"not {spec.manifest_version!r}",
         )
     surface = manifest.get("surface", [])
     if not _valid_surface(surface):
@@ -229,7 +293,7 @@ def _pf_vendored_integrity(vendored_dir: Path) -> ContractStatus:
         return status(
             False, "manifest tree_sha256 does not fingerprint its own surface"
         )
-    live = _live_surface(vendored_dir)
+    live = _live_surface(vendored_dir, spec.meta)
     listed = {str(e["path"]): str(e["sha256"]) for e in surface}
     if set(live) != set(listed):
         unlisted = sorted(set(live) - set(listed))
@@ -247,30 +311,32 @@ def _pf_vendored_integrity(vendored_dir: Path) -> ContractStatus:
             return status(False, f"vendored file is unreadable: {rel}")
         if digest != listed[rel]:
             return status(False, f"vendored file differs from its fingerprint: {rel}")
-    for name, expected in sorted(_PF_META_HASHES.items()):
+    for name, expected in sorted(spec.meta_hashes.items()):
         actual = _sha256(vendored_dir / name)
         if actual is None:
             return status(False, f"excluded file is absent or unreadable: {name}")
         if actual != expected:
             return status(False, f"excluded file differs from its record: {name}")
-    pin = _pin_problem(vendored_dir, _PF_MANIFEST_CONTRACT)
+    pin = _pin_problem(vendored_dir, spec.manifest_contract)
     if pin is not None:
         return status(False, pin)
     return status(True, None)
 
 
-def _pf_upstream_drift(vault: Path | None, vendored_dir: Path) -> ContractStatus:
+def _pf_upstream_drift(
+    vault: Path | None, spec: _VendoredContract, vendored_dir: Path
+) -> ContractStatus:
     """B: an observation about canon, never a fallback to a sibling on disk.
 
     Only answers when a canon checkout is handed over explicitly. Reaching for
     `../prograph-vault` is what made the same dispatcher commit answer
     differently on two machines and vanish into a skip on CI.
     """
-    manifest_path = None if vault is None else vault / _PF_MANIFEST_REL
+    manifest_path = None if vault is None else vault / spec.manifest_rel
 
     def status(in_sync: bool | None, detail: str | None) -> ContractStatus:
         return ContractStatus(
-            name=_PF_CONTRACT_NAME,
+            name=spec.name,
             canonical_path="" if manifest_path is None else str(manifest_path),
             vendored_path=str(vendored_dir),
             kind=_KIND_DRIFT,
@@ -287,7 +353,7 @@ def _pf_upstream_drift(vault: Path | None, vendored_dir: Path) -> ContractStatus
     surface = manifest.get("surface", [])
     if not _valid_surface(surface):
         return status(None, "malformed manifest surface")
-    stale = _canon_stale(vault / _PF_CANON_DIR_REL, surface)
+    stale = _canon_stale(vault / spec.canon_dir_rel, surface, spec.meta)
     if stale is not None:
         return status(False, f"canonical manifest stale: {stale}")
     drifted = _surface_drift(vendored_dir, surface)
@@ -297,13 +363,20 @@ def _pf_upstream_drift(vault: Path | None, vendored_dir: Path) -> ContractStatus
 
 
 def _plan_fields_rows(projects: dict[str, Path]) -> list[ContractStatus]:
-    """Both PF-6 verdicts, side by side and never folded together."""
+    """Both PF-6 verdicts, per vendored contract, side by side and never folded.
+
+    Two rows per copy, not one verdict per copy: integrity is offline and provable,
+    upstream drift needs canon and may honestly be unknown. Collapsing them would
+    let "no canon available" read as "in sync" — the failure #99 removed.
+    """
     self_root = projects.get("dispatcher") or _REPO_ROOT
-    vendored_dir = self_root / _PF_VENDORED_REL
-    return [
-        _pf_vendored_integrity(vendored_dir),
-        _pf_upstream_drift(projects.get(_PF_CANON_PROJECT), vendored_dir),
-    ]
+    vault = projects.get(_PF_CANON_PROJECT)
+    rows: list[ContractStatus] = []
+    for spec in _VENDORED_CONTRACTS:
+        vendored_dir = self_root / spec.vendored_rel
+        rows.append(_pf_vendored_integrity(spec, vendored_dir))
+        rows.append(_pf_upstream_drift(vault, spec, vendored_dir))
+    return rows
 
 
 def _catalog_drift(projects: dict[str, Path]) -> list[ContractStatus]:

@@ -1,6 +1,21 @@
 {
-  "contract_version": 2,
+  "contract_version": 3,
   "diagnostics": [
+    {
+      "code": "EP-MISSING",
+      "message": "item todo://demo/benchmark-2 carries no @epic",
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "warning",
+      "subject_uri": "todo://demo/benchmark-2"
+    },
     {
       "code": "PF-ID-REUSED",
       "message": "@id 'benchmark-2' was tombstoned in the previous snapshot and is reused by a different open item",
@@ -37,6 +52,9 @@
   "nodes": [
     {
       "declared_status": "open",
+      "defect": null,
+      "epic": null,
+      "epic_classification": "missing",
       "freshness": null,
       "id": "benchmark-2",
       "kind": "operational_item",
@@ -57,5 +75,5 @@
     }
   ],
   "references": [],
-  "schema_version": 2
+  "schema_version": 3
 }

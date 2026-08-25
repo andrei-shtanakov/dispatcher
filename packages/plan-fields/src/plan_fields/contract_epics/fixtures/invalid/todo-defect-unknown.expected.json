@@ -1,0 +1,17 @@
+{
+  "epic": "eco.ops",
+  "defect": null,
+  "classification": "tagged",
+  "diagnostics": [
+    {
+      "code": "EP-DEFECT-UNKNOWN",
+      "severity": "error",
+      "message": "defect class is absent from the registry",
+      "subject_uri": "todo://demo/panel-fix",
+      "raw": "ui"
+    }
+  ],
+  "subject_uri": "todo://demo/panel-fix",
+  "carrier": "todo",
+  "observed_at": "2026-08-25T00:00:00Z"
+}

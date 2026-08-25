@@ -1,12 +1,12 @@
 ---
-title: "plan-fields contract v2"
+title: "plan-fields contract v3"
 type: contract
 status: proposed
 owner: Andrei
-updated: 2026-08-07
+updated: 2026-08-25
 ---
 
-# plan-fields contract — v2
+# plan-fields contract — v3
 
 Canonical, cross-cutting contract for the **operational plan plane** (per-repo `TODO.md`)
 and the evidence vocabulary that the governance plane consumes. Decided in
@@ -27,8 +27,8 @@ pinned copy inward; nothing reads this directory at run time.
 
 ## Versions
 
-- `contract_version: 2` — typed operational-owner semantics from ADR-ECO-005a.
-- `schema_version: 2` — the JSON envelope shape in `schema.json`.
+- `contract_version: 3` — adds the stream axis (`@epic`/`@defect`) from ADR-ECO-010, delegating its grammar to the `epics/v1` contract.
+- `schema_version: 3` — the JSON envelope shape in `schema.json`.
 
 They are intentionally separate: the envelope shape can rev without changing contract
 semantics, and vice versa.
@@ -41,6 +41,7 @@ semantics, and vice versa.
 | `rules.yaml` | evidence rule registry with `evidence_grade` (machine \| attestation) |
 | `diagnostics.yaml` | diagnostic code registry — `default_severity` / `scope` / `escalation` policy |
 | `fixtures/` | input `.md` + pinned `expected.json` (the machine-checkable spec) |
+| `depends.json` | the pinned delegation to `epics/v1` — version + `tree_sha256`; `source_commit` is filled by the vendoring consumer |
 | `manifest.json` | canonical surface fingerprint — per-file `sha256` + `tree_sha256` rollup (drift control, PF-6) |
 | `drift-control.md` | drift-control policy — surface, compatibility, warn→error escalation, consumer registry (PF-6) |
 
@@ -56,11 +57,40 @@ nodes, references, edges, diagnostics}`:
 
 - **nodes** — `OperationalNode` per `@id`-bearing checkbox item. Required: `node_id`
   (`todo://<repo>/<id>`), `id`, `repo`, `title`, `declared_status` (from the checkbox),
-  `tombstone`, `provenance`, and nullable `owner_ref`. Optional: transitional
+  `tombstone`, `provenance`, nullable `owner_ref`, and — new in v3 — `epic`, `defect`,
+  `epic_classification`. Optional: transitional
   `owner_role` (DEC-007 slug), `trigger`, `freshness`,
   and `raw` (the open map of tag values exactly as written). `raw` **MAY** be omitted; when an
   item carries tags a parser **SHOULD** include it so grammar diagnostics keep the original.
   Fixtures include `raw` illustratively on at least one node per case, not on every node.
+
+### Stream axis (v3)
+
+`@epic` names the flow of work an item belongs to; `@defect` optionally classifies a fix. Both
+are carried here and **neither grammar is restated in this contract** — they belong to
+`epics/v1`, pinned in `depends.json`. This is the one place where a second copy of a regex
+would be cheapest to write and most expensive to own: two parsers, two spellings, one silent
+divergence a quarter later.
+
+The split of authority follows v2's precedent for `repo:<manifest-key>` owners exactly:
+
+| Layer | Can prove | Codes it emits |
+|---|---|---|
+| single-repo parser | the tag is present and well-formed | `EP-MISSING`, `EP-GRAMMAR`, `EP-MULTIPLE` |
+| fleet layer (holds `epics.toml`) | the epic exists, is not retired | `EP-UNKNOWN`, `EP-MOVED` |
+
+So `epic_classification: "tagged"` from this layer means *well-formed and present*, and the
+fleet layer may downgrade it to `invalid`. A parser that claimed registry membership it cannot
+check would be asserting, not parsing.
+
+`EP-MISSING` is emitted per **node**, and only for items still open: a closed or tombstoned
+item carries no obligation (ADR-ECO-010 marks open work only). An item with no `@id` produces
+no node at all, and `PF-ID-MISSING` already covers it — it does not additionally get an epic
+diagnostic it has no identity to attach to.
+
+`unavailable`, the fourth `epic_classification` state, never occurs on this plane: a `TODO.md`
+item that could not be read yields no node. It exists in the shared vocabulary for the GitHub
+planes, where a body genuinely can fail to arrive.
 
 ### Operational owner
 

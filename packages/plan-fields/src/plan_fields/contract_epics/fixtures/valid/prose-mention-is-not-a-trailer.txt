@@ -1,0 +1,6 @@
+The reviewer asked which stream this belongs to.
+
+Epic: eco.ops mentioned in passing is prose, not a trailer — it sits mid-body and is
+followed by more prose, so the final trailer block below is the only one that classifies.
+
+Epic: airun.kapelle-m3

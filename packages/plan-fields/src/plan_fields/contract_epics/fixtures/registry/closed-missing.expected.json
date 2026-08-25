@@ -1,0 +1,10 @@
+{
+  "diagnostics": [
+    {
+      "code": "EP-REG-CLOSED-MISSING",
+      "severity": "error",
+      "message": "epic with status done/abandoned carries no closed date",
+      "subject_key": "eco.finished"
+    }
+  ]
+}

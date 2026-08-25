@@ -1,0 +1,7 @@
+{
+  "carrier": "pull_request",
+  "subject_uri": "gh://demo/pull/7",
+  "observed_at": "2026-08-25T00:00:00Z",
+  "opened_at": "2026-08-15",
+  "note": "opened before the registry's moved_at (2026-08-20) \u2014 historical, so the retired id is accepted"
+}

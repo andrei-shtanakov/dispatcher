@@ -1,0 +1,58 @@
+{
+  "contract_version": 3,
+  "diagnostics": [
+    {
+      "code": "EP-GRAMMAR",
+      "message": "@epic eco does not match <program>.<epic> (epics/v1)",
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "error",
+      "subject_uri": "todo://demo/collector"
+    }
+  ],
+  "edges": [],
+  "generated_at": "2026-07-28T00:00:00Z",
+  "nodes": [
+    {
+      "declared_status": "open",
+      "defect": null,
+      "epic": null,
+      "epic_classification": "invalid",
+      "freshness": null,
+      "id": "collector",
+      "kind": "operational_item",
+      "node_id": "todo://demo/collector",
+      "owner_ref": {
+        "id": "andrei-shtanakov",
+        "kind": "github_user",
+        "raw": "github:andrei-shtanakov"
+      },
+      "owner_role": null,
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "raw": {
+        "epic": "eco",
+        "id": "collector",
+        "owner": "github:andrei-shtanakov"
+      },
+      "repo": "demo",
+      "title": "Wire the collector",
+      "tombstone": false,
+      "trigger": null
+    }
+  ],
+  "references": [],
+  "schema_version": 3
+}

@@ -1,0 +1,17 @@
+{
+  "epic": null,
+  "defect": null,
+  "classification": "invalid",
+  "diagnostics": [
+    {
+      "code": "EP-MULTIPLE",
+      "severity": "error",
+      "message": "more than one epic on one artifact",
+      "subject_uri": "todo://demo/twice",
+      "raw": "eco.ops, eco.ops"
+    }
+  ],
+  "subject_uri": "todo://demo/twice",
+  "carrier": "todo",
+  "observed_at": "2026-08-25T00:00:00Z"
+}

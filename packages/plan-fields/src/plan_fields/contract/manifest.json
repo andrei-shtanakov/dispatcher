@@ -1,25 +1,29 @@
 {
   "contract": "plan-fields",
-  "contract_version": 2,
-  "schema_id": "urn:ecosystem:plan-fields:v2:schema",
-  "surface_note": "sha256 of every frozen contract file consumers vendor; excludes drift-control meta (manifest.json, drift-control.md) and vendor-only PINNED.txt. See drift-control.md.",
-  "tree_sha256": "e98073e14e1de5000981550013396d5f66208301841eb659b4ebff624a871b6f",
+  "contract_version": 3,
+  "schema_id": "urn:ecosystem:plan-fields:v3:schema",
+  "surface_note": "sha256 of every frozen contract file consumers vendor; excludes drift-control meta (manifest.json, drift-control.md) and vendor-only PINNED.txt. depends.json is part of the surface: it pins the epics/v1 delegation. See drift-control.md.",
+  "tree_sha256": "e5fc325a2c4cb276610057b88a3d77927b943b200adeb3456a3e6fb0a1a27207",
   "surface": [
     {
       "path": "README.md",
-      "sha256": "596f0210f2e3acb5c0d22278789836f61a49fb7744ceb086019aae9fa81330f2"
+      "sha256": "d1dd5f0ee817234602f49274cc228eeca3e633920bf1c35ce4e4625bb9ec656e"
+    },
+    {
+      "path": "depends.json",
+      "sha256": "485c0c8e34ae32602580a7e7258d9f1b5589bf5268ee8779ea06ee09d2910ae6"
     },
     {
       "path": "diagnostics.yaml",
-      "sha256": "360e8a7cea6eaf3550cfd2da663da751e5590126496747cee4fffbe884853e60"
+      "sha256": "04f6cc732058fa9a3692a1a77b8cf8014732242506eb38318a1e85bab636ef96"
     },
     {
       "path": "fixtures/README.md",
-      "sha256": "9324cc063bb95c1ff5b3bd33a6f005dcc2136676d57509d59c256227cde2ea0e"
+      "sha256": "090ec47d0acf141ced86a54ded87935a26b8227c96a60319757c0eb48c3b332f"
     },
     {
       "path": "fixtures/invalid/ambiguous-legacy-ref.expected.json",
-      "sha256": "80ea01794a5c3a61104c8c982c6d66584a2b3181d652ed33a4b5c6fffa16e69a"
+      "sha256": "5a9a687193626a421c8ee43d76ae047a76b57bfaee46a165020eb37b98acf624"
     },
     {
       "path": "fixtures/invalid/ambiguous-legacy-ref.md",
@@ -27,7 +31,7 @@
     },
     {
       "path": "fixtures/invalid/dangling-id.expected.json",
-      "sha256": "efd05168cd8595caf296dfdc923d2135f452b6692850c8260e3cda2ae0da1a02"
+      "sha256": "15db48c8b7cb71607fe6e2d7a159f4f44b288a586f32a25670178853f235b175"
     },
     {
       "path": "fixtures/invalid/dangling-id.md",
@@ -35,15 +39,31 @@
     },
     {
       "path": "fixtures/invalid/duplicate-id.expected.json",
-      "sha256": "33d0608555dc411f45ff02167f3a07fa639d102076de7990d53c009d864f6e83"
+      "sha256": "861b26497d5f227c3be7f845fc9db99c64cdecd21ca3d3fa67dad385536f8f5e"
     },
     {
       "path": "fixtures/invalid/duplicate-id.md",
       "sha256": "90d39ba3e73ebe56e6e84219e08936062d5c0ec3cb39e8f2314806a09d152cbb"
     },
     {
+      "path": "fixtures/invalid/epic-grammar.expected.json",
+      "sha256": "9ed06dbab44127d56245028e82216d8057b14e490b6dd2e1c3bb58885dbe49ae"
+    },
+    {
+      "path": "fixtures/invalid/epic-grammar.md",
+      "sha256": "9d72d5429aecc965f356b7aa0ef0343765c5012f8d198ab3c6bb85dc376143d5"
+    },
+    {
+      "path": "fixtures/invalid/epic-multiple.expected.json",
+      "sha256": "1c6fafa38f9df86e963f35ebf208ab97f8f7b82a2d1986801ac189ed74a5a011"
+    },
+    {
+      "path": "fixtures/invalid/epic-multiple.md",
+      "sha256": "bbcb3d1a0abdb66719dc2ed039eb02b1253e8ff21fd8e2f4ca83947259580a0d"
+    },
+    {
       "path": "fixtures/invalid/missing-id.expected.json",
-      "sha256": "8d68d6debdfaf9871bc2db8ce208f97bb0fae4f02225790d5c29f38c5aab8c5e"
+      "sha256": "1915b085c5617c61de66f7a82150d3fa3f7d0b3639e1709866fefab435708f11"
     },
     {
       "path": "fixtures/invalid/missing-id.md",
@@ -59,7 +79,7 @@
     },
     {
       "path": "fixtures/invalid/reused-id/expected.json",
-      "sha256": "c6d83a81cf9c501bd41a58e7514100d408bd2fbd003c5b3af18cc32963142a55"
+      "sha256": "ce385e23f7a43d4fb259e3d97f4863ad2ef17bac6ebc613b9ecc21264fb7e7c5"
     },
     {
       "path": "fixtures/invalid/reused-id/previous.md",
@@ -67,15 +87,23 @@
     },
     {
       "path": "fixtures/valid/basic.expected.json",
-      "sha256": "bd76dec2ffe4e2a538a21d2f635dd25d74e3f5763b2807fff54e1bf9b29790d4"
+      "sha256": "19575ade8d99ccb183401beab96dcdc0b8ba9f1d2bbe92e035215fa35746220d"
     },
     {
       "path": "fixtures/valid/basic.md",
       "sha256": "bf559c99100a6e734c815e2c3ae822acc6855cbe9719b8dc8edb71890c1501e8"
     },
     {
+      "path": "fixtures/valid/epic-tagged.expected.json",
+      "sha256": "2480325a28963faf2546f4e84da13f1bf74f508d4eee20a0f11782ad0ffa86a2"
+    },
+    {
+      "path": "fixtures/valid/epic-tagged.md",
+      "sha256": "f2776f0541c3d982499720df800d2c9948582e4db51bc9347640ecf8126955b3"
+    },
+    {
       "path": "fixtures/valid/tombstone.expected.json",
-      "sha256": "5574c4bec3dd270db90edbbaf570472c05fe07bbcaf3308b5aae863cad9486f4"
+      "sha256": "8062e4fbbf043e6d7486667f1850c1e5cbe21e8515df8f920577d77b52381db5"
     },
     {
       "path": "fixtures/valid/tombstone.md",
@@ -83,7 +111,7 @@
     },
     {
       "path": "fixtures/valid/typed-owner.expected.json",
-      "sha256": "ef2e2ce5488618c85de0f3bc00ea704a84bca6cd7bbffaf1aee33068e04b5303"
+      "sha256": "b2fd17796357e217f295b0d448b41a4894e77403da1ea3122e51ce487276c2d7"
     },
     {
       "path": "fixtures/valid/typed-owner.md",
@@ -91,11 +119,11 @@
     },
     {
       "path": "rules.yaml",
-      "sha256": "8665a64b0dd2164566b9ba2c64031b894c11613e5d7d74181d3d5cde3a8b0127"
+      "sha256": "22ca23ae54129a40292695a9e79939474103368b1b6e8e7b736a71ac96a506bd"
     },
     {
       "path": "schema.json",
-      "sha256": "968811eb9d86edabd0ac01c53534d412027132214a5a72ecf5988508cfb70669"
+      "sha256": "bfa8ac4eae1aace252eba26621c5f54b118597dd9a86ddd7618dc4b71f078ec1"
     }
   ]
 }

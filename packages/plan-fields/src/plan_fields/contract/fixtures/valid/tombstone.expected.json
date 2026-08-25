@@ -1,6 +1,21 @@
 {
-  "contract_version": 2,
+  "contract_version": 3,
   "diagnostics": [
+    {
+      "code": "EP-MISSING",
+      "message": "item todo://demo/followup carries no @epic",
+      "provenance": {
+        "commit": null,
+        "line": 4,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "warning",
+      "subject_uri": "todo://demo/followup"
+    },
     {
       "code": "PF-OWNER-LEGACY-ROLE",
       "message": "@owner tech-lead is a transitional DEC-007 role-slug",
@@ -37,6 +52,9 @@
   "nodes": [
     {
       "declared_status": "closed",
+      "defect": null,
+      "epic": null,
+      "epic_classification": "missing",
       "freshness": null,
       "id": "benchmark-2",
       "kind": "operational_item",
@@ -57,6 +75,9 @@
     },
     {
       "declared_status": "open",
+      "defect": null,
+      "epic": null,
+      "epic_classification": "missing",
       "freshness": null,
       "id": "followup",
       "kind": "operational_item",
@@ -77,5 +98,5 @@
     }
   ],
   "references": [],
-  "schema_version": 2
+  "schema_version": 3
 }

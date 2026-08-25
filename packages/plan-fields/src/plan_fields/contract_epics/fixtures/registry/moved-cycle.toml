@@ -1,0 +1,23 @@
+schema_version = "1.0.0"
+adopted_at = "2026-09-01"
+
+[coverage_policy]
+robin_cutover_todo   = 0.98
+robin_cutover_issues = 0.90
+robin_cutover_prs    = 0.90
+missing_error_after  = "2026-11-01"
+
+[programs.eco]
+title = "AI orchestrators ecosystem"
+kind  = "ecosystem"
+
+[defect_classes.pipeline]
+title = "Pipeline failures"
+
+[epics."eco.a"]
+title    = "a"
+moved_to = "eco.b"
+
+[epics."eco.b"]
+title    = "b"
+moved_to = "eco.a"

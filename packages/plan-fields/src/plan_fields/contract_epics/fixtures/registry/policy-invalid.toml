@@ -1,0 +1,18 @@
+schema_version = "1.0.0"
+adopted_at = "2026-09-01"
+
+[coverage_policy]
+robin_cutover_todo   = 1.4
+robin_cutover_issues = 0.90
+missing_error_after  = "not-a-date"
+
+[programs.eco]
+title = "AI orchestrators ecosystem"
+kind  = "ecosystem"
+
+[defect_classes.pipeline]
+title = "Pipeline failures"
+
+[epics."eco.ops"]
+title  = "Ecosystem operations and tails"
+status = "standing"

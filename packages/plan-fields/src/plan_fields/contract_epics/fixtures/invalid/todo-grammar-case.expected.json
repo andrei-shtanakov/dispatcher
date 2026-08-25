@@ -1,0 +1,17 @@
+{
+  "epic": null,
+  "defect": null,
+  "classification": "invalid",
+  "diagnostics": [
+    {
+      "code": "EP-GRAMMAR",
+      "severity": "error",
+      "message": "epic value does not match <program>.<epic>",
+      "subject_uri": "todo://demo/collector-case",
+      "raw": "Eco.Ops"
+    }
+  ],
+  "subject_uri": "todo://demo/collector-case",
+  "carrier": "todo",
+  "observed_at": "2026-08-25T00:00:00Z"
+}

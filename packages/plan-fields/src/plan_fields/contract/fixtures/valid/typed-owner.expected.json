@@ -1,11 +1,75 @@
 {
-  "contract_version": 2,
-  "diagnostics": [],
+  "contract_version": 3,
+  "diagnostics": [
+    {
+      "code": "EP-MISSING",
+      "message": "item todo://demo/human carries no @epic",
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "warning",
+      "subject_uri": "todo://demo/human"
+    },
+    {
+      "code": "EP-MISSING",
+      "message": "item todo://demo/repo carries no @epic",
+      "provenance": {
+        "commit": null,
+        "line": 5,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "warning",
+      "subject_uri": "todo://demo/repo"
+    },
+    {
+      "code": "EP-MISSING",
+      "message": "item todo://demo/tbd carries no @epic",
+      "provenance": {
+        "commit": null,
+        "line": 6,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "warning",
+      "subject_uri": "todo://demo/tbd"
+    },
+    {
+      "code": "EP-MISSING",
+      "message": "item todo://demo/team carries no @epic",
+      "provenance": {
+        "commit": null,
+        "line": 4,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "warning",
+      "subject_uri": "todo://demo/team"
+    }
+  ],
   "edges": [],
   "generated_at": "2026-07-28T00:00:00Z",
   "nodes": [
     {
       "declared_status": "open",
+      "defect": null,
+      "epic": null,
+      "epic_classification": "missing",
       "freshness": null,
       "id": "human",
       "kind": "operational_item",
@@ -34,6 +98,9 @@
     },
     {
       "declared_status": "open",
+      "defect": null,
+      "epic": null,
+      "epic_classification": "missing",
       "freshness": null,
       "id": "repo",
       "kind": "operational_item",
@@ -62,6 +129,9 @@
     },
     {
       "declared_status": "open",
+      "defect": null,
+      "epic": null,
+      "epic_classification": "missing",
       "freshness": null,
       "id": "tbd",
       "kind": "operational_item",
@@ -90,6 +160,9 @@
     },
     {
       "declared_status": "open",
+      "defect": null,
+      "epic": null,
+      "epic_classification": "missing",
       "freshness": null,
       "id": "team",
       "kind": "operational_item",
@@ -118,5 +191,5 @@
     }
   ],
   "references": [],
-  "schema_version": 2
+  "schema_version": 3
 }

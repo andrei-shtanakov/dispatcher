@@ -1,0 +1,11 @@
+{
+  "diagnostics": [
+    {
+      "code": "EP-REG-MOVED-CHAIN",
+      "severity": "error",
+      "message": "moved_to points at another tombstone; a move must name the final id",
+      "subject_key": "eco.first",
+      "raw": "eco.second"
+    }
+  ]
+}

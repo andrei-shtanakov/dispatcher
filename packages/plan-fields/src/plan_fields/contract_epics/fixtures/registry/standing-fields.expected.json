@@ -1,0 +1,11 @@
+{
+  "diagnostics": [
+    {
+      "code": "EP-REG-STANDING-FIELDS",
+      "severity": "error",
+      "message": "standing epic carries goal or closed",
+      "subject_key": "eco.ops",
+      "raw": "goal, closed"
+    }
+  ]
+}

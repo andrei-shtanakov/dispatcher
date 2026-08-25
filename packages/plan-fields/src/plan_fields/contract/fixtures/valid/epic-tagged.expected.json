@@ -1,0 +1,75 @@
+{
+  "contract_version": 3,
+  "diagnostics": [],
+  "edges": [],
+  "generated_at": "2026-07-28T00:00:00Z",
+  "nodes": [
+    {
+      "declared_status": "open",
+      "defect": null,
+      "epic": "eco.dark-factory-slice0",
+      "epic_classification": "tagged",
+      "freshness": null,
+      "id": "df-console",
+      "kind": "operational_item",
+      "node_id": "todo://demo/df-console",
+      "owner_ref": {
+        "id": "andrei-shtanakov",
+        "kind": "github_user",
+        "raw": "github:andrei-shtanakov"
+      },
+      "owner_role": null,
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "raw": {
+        "epic": "eco.dark-factory-slice0",
+        "id": "df-console",
+        "owner": "github:andrei-shtanakov"
+      },
+      "repo": "demo",
+      "title": "Build the producer console",
+      "tombstone": false,
+      "trigger": null
+    },
+    {
+      "declared_status": "open",
+      "defect": "pipeline",
+      "epic": "eco.ops",
+      "epic_classification": "tagged",
+      "freshness": null,
+      "id": "pipe-resume",
+      "kind": "operational_item",
+      "node_id": "todo://demo/pipe-resume",
+      "owner_ref": {
+        "id": "andrei-shtanakov",
+        "kind": "github_user",
+        "raw": "github:andrei-shtanakov"
+      },
+      "owner_role": null,
+      "provenance": {
+        "commit": null,
+        "line": 4,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "raw": {
+        "defect": "pipeline",
+        "epic": "eco.ops",
+        "id": "pipe-resume",
+        "owner": "github:andrei-shtanakov"
+      },
+      "repo": "demo",
+      "title": "Fix pipeline resume crash",
+      "tombstone": false,
+      "trigger": null
+    }
+  ],
+  "references": [],
+  "schema_version": 3
+}

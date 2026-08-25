@@ -1,0 +1,150 @@
+# epics v1 — diagnostic code registry.
+#
+# This registry describes POLICY, not per-instance outcome:
+#   * default_severity — the severity a fresh occurrence starts at.
+#   * scope            — what is needed to prove the finding:
+#       intra_artifact — the artifact plus the registry.
+#       cross_plane    — at least two artifact planes (item / commit / PR / issue).
+#       registry       — the registry alone; no artifact involved.
+#   * escalation       — when a still-present diagnostic hardens:
+#       immediate  — already at its terminal severity on first observation.
+#       policy_date— warning until coverage_policy.missing_error_after, error on and after
+#                    that date, and only for planes whose escalation has been switched on
+#                    (ADR-ECO-010 D8). Grandfathered artifacts stay warning until edited.
+#       never      — environmental / advisory; never becomes an error.
+#
+# A Diagnostic instance (classification.schema.json) carries the already-COMPUTED severity;
+# this file states the policy that computes it.
+#
+# Structural codes are `immediate` by design: the transition period exists to clear old
+# missing tags, not to license new ambiguity (ADR-ECO-010 D8).
+
+contract_version: 1
+version: 1
+
+codes:
+  EP-MISSING:
+    default_severity: warning
+    scope: intra_artifact
+    escalation: policy_date
+    summary: "an artifact under the obligation carries no epic — the one code the adoption period defers"
+
+  EP-GRAMMAR:
+    default_severity: error
+    scope: intra_artifact
+    escalation: immediate
+    summary: "the epic value does not match <program>.<epic> (missing dot, extra dot, illegal character, case)"
+
+  EP-UNKNOWN:
+    default_severity: error
+    scope: intra_artifact
+    escalation: immediate
+    summary: "the epic is well-formed but absent from the registry — the typo guard (eco.dark-factroy)"
+
+  EP-MULTIPLE:
+    default_severity: error
+    scope: intra_artifact
+    escalation: immediate
+    summary: "more than one epic tag or trailer on one artifact, INCLUDING two identical values — a duplicate is a defect, not a consensus"
+
+  EP-MOVED:
+    default_severity: error
+    scope: intra_artifact
+    escalation: immediate
+    summary: "a newly opened artifact carries a tombstoned epic id; the retired id is accepted only on historical artifacts"
+
+  EP-DEFECT-GRAMMAR:
+    default_severity: error
+    scope: intra_artifact
+    escalation: immediate
+    summary: "the defect value does not match the slug grammar"
+
+  EP-DEFECT-MULTIPLE:
+    default_severity: error
+    scope: intra_artifact
+    escalation: immediate
+    summary: "more than one defect tag or trailer on one artifact, INCLUDING two identical values — the defect axis carries the same multiplicity rule as the epic"
+
+  EP-DEFECT-UNKNOWN:
+    default_severity: error
+    scope: intra_artifact
+    escalation: immediate
+    summary: "the defect class is absent from the registry's closed [defect_classes] set"
+
+  EP-CONFLICT:
+    default_severity: error
+    scope: cross_plane
+    escalation: immediate
+    summary: "related artifacts (item -> commit -> PR -> issue) carry different epics; no winner is chosen by precedence, because choosing one would hide the defect"
+
+  EP-UNAVAILABLE:
+    default_severity: warning
+    scope: intra_artifact
+    escalation: never
+    summary: "the artifact could not be read (body not retrieved, truncated, plane offline) — environmental, and never counted as missing"
+
+  EP-REG-PROGRAM-UNKNOWN:
+    default_severity: error
+    scope: registry
+    escalation: immediate
+    summary: "an epic key's program prefix is not a declared program"
+
+  EP-REG-KIND-UNKNOWN:
+    default_severity: error
+    scope: registry
+    escalation: immediate
+    summary: "a program declares a kind outside {ecosystem, external}"
+
+  EP-REG-MOVED-STATUS:
+    default_severity: error
+    scope: registry
+    escalation: immediate
+    summary: "an entry carries moved_to together with a live status — tombstoned and live at once"
+
+  EP-REG-MOVED-DANGLING:
+    default_severity: error
+    scope: registry
+    escalation: immediate
+    summary: "moved_to names an epic that does not exist"
+
+  EP-REG-MOVED-CHAIN:
+    default_severity: error
+    scope: registry
+    escalation: immediate
+    summary: "moved_to points at another tombstone; a move must name the final id"
+
+  EP-REG-MOVED-CYCLE:
+    default_severity: error
+    scope: registry
+    escalation: immediate
+    summary: "moved_to relations form a cycle"
+
+  EP-REG-OPENED-MISSING:
+    default_severity: error
+    scope: registry
+    escalation: immediate
+    summary: "an epic with status active/paused/done/abandoned carries no opened date (standing epics are exempt: they have no start commitment)"
+
+  EP-REG-CLOSED-MISSING:
+    default_severity: error
+    scope: registry
+    escalation: immediate
+    summary: "an epic with status done/abandoned carries no closed date"
+
+  EP-REG-STANDING-FIELDS:
+    default_severity: error
+    scope: registry
+    escalation: immediate
+    summary: "a standing epic carries goal or closed — it has no finish criterion and no end date by construction; a standing epic that ended is a status change, not a closed date"
+
+  EP-REG-POLICY-INVALID:
+    default_severity: error
+    scope: registry
+    escalation: immediate
+    summary: "[coverage_policy] is absent, incomplete, or carries a ratio outside [0,1] / a malformed date — coverage cannot be judged against an undefined policy"
+
+  EP-REG-PROGRAM-IN-USE:
+    default_severity: error
+    scope: registry
+    escalation: immediate
+    summary: "a program was removed while epics still reference it; removal of a program referenced by HISTORY is history-dependent and not provable from one snapshot"

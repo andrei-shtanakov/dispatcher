@@ -1,0 +1,7 @@
+{
+  "carrier": "issue",
+  "subject_uri": "gh://demo/issues/11",
+  "observed_at": "2026-08-25T00:00:00Z",
+  "body_retrieved": false,
+  "note": "the body was never retrieved \u2014 unavailable, never missing"
+}

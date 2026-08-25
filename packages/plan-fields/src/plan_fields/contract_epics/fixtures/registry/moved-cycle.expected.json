@@ -1,0 +1,18 @@
+{
+  "diagnostics": [
+    {
+      "code": "EP-REG-MOVED-CYCLE",
+      "severity": "error",
+      "message": "moved_to relations form a cycle",
+      "subject_key": "eco.a",
+      "raw": "eco.a -> eco.b -> eco.a"
+    },
+    {
+      "code": "EP-REG-MOVED-CYCLE",
+      "severity": "error",
+      "message": "moved_to relations form a cycle",
+      "subject_key": "eco.b",
+      "raw": "eco.b -> eco.a -> eco.b"
+    }
+  ]
+}

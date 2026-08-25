@@ -1,6 +1,21 @@
 {
-  "contract_version": 2,
+  "contract_version": 3,
   "diagnostics": [
+    {
+      "code": "EP-MISSING",
+      "message": "item todo://demo/needer carries no @epic",
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "warning",
+      "subject_uri": "todo://demo/needer"
+    },
     {
       "code": "PF-ID-DANGLING",
       "message": "canonical reference todo://demo/ghost points to an @id absent from repo demo",
@@ -37,6 +52,9 @@
   "nodes": [
     {
       "declared_status": "open",
+      "defect": null,
+      "epic": null,
+      "epic_classification": "missing",
       "freshness": null,
       "id": "needer",
       "kind": "operational_item",
@@ -72,5 +90,5 @@
       "source_node_id": "todo://demo/needer"
     }
   ],
-  "schema_version": 2
+  "schema_version": 3
 }

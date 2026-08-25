@@ -1,0 +1,10 @@
+{
+  "diagnostics": [
+    {
+      "code": "EP-REG-MOVED-STATUS",
+      "severity": "error",
+      "message": "entry carries moved_to together with a live status",
+      "subject_key": "eco.old"
+    }
+  ]
+}
