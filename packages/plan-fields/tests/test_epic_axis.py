@@ -275,3 +275,23 @@ def test_the_schema_backstop_catches_what_no_explicit_check_names(tmp_path) -> N
     )
     codes = [d["code"] for d in load_registry(bad).diagnostics]
     assert codes == ["EP-REG-MALFORMED"]
+
+
+def test_the_backstop_does_not_suppress_findings_that_merely_share_a_name(
+    tmp_path,
+) -> None:
+    """Dedup is by section and entry key, never by any matching path segment.
+
+    An epic whose own key collides with an unrelated schema path segment must not make
+    that unrelated finding vanish: a backstop that silently drops diagnostics is worse
+    than no backstop, because it looks like a clean registry.
+    """
+    text = (
+        (_FIXTURES / "registry.toml")
+        .read_text()
+        .replace('schema_version = "1.0.0"', 'schema_version = "nope"')
+    )
+    bad = tmp_path / "epics.toml"
+    bad.write_text(text)
+    codes = [d["code"] for d in load_registry(bad).diagnostics]
+    assert codes == ["EP-REG-MALFORMED"], codes

@@ -27,6 +27,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+# jsonschema is a hard dependency of this package (see pyproject) and `validator`
+# already imports it at module level, so guarding this import would be dead code
+# resting on a false premise — and the earlier guard reported its own absence as
+# EP-REG-MALFORMED, i.e. as a registry defect it had not established.
+from jsonschema import Draft202012Validator
+
 _CONTRACT_DIR = Path(__file__).parent / "contract_epics"
 _REGISTRY_SCHEMA = _CONTRACT_DIR / "registry.schema.json"
 
@@ -214,33 +220,21 @@ def _schema_backstop(data: dict[str, Any], found: list[dict[str, Any]]):
     validate against `registry.schema.json` would be prose: a registry could violate
     the schema in an unclassified way and load clean. Anything the explicit pass
     already reported is skipped, so one defect never appears twice under two codes.
-
-    jsonschema is an optional dependency of the parser path; when it is absent the
-    structural half still runs, and the absence is reported rather than swallowed.
     """
-    try:
-        from jsonschema import Draft202012Validator
-    except ImportError:  # pragma: no cover - exercised only without the extra
-        return [
-            _diag(
-                "EP-REG-MALFORMED",
-                "warning",
-                None,
-                "jsonschema unavailable; schema backstop did not run",
-            )
-        ]
     schema = json.loads(_REGISTRY_SCHEMA.read_text(encoding="utf-8"))
-    # Dedup by the whole path, not by the leaf. `[coverage_policy]` with a bad ratio is
-    # reported once as EP-REG-POLICY-INVALID against `coverage_policy`, while the schema
-    # errors point at `coverage_policy.robin_cutover_todo`; matching only the leaf let
-    # the same defect through a second time under a second code, which is worse than no
-    # backstop — two codes for one defect makes a reader hunt for a defect that is not
-    # there.
+    # Dedup against the SECTION and ENTRY keys — `path[:2]` — never against every
+    # segment. `[coverage_policy]` with a bad ratio is reported once as
+    # EP-REG-POLICY-INVALID against `coverage_policy`, while the schema errors point at
+    # `coverage_policy.robin_cutover_todo`, so matching the leaf alone would let one
+    # defect through twice under two codes. Matching EVERY segment overcorrects the
+    # other way: a deep field name that happens to equal a covered key (an epic titled
+    # `status`, a property named `epics`) would suppress an unrelated finding — and a
+    # silently dropped diagnostic is the one outcome a backstop must never produce.
     covered = {d.get("subject_key") for d in found if d.get("subject_key")}
     out: list[dict[str, Any]] = []
     for err in Draft202012Validator(schema).iter_errors(data):
         path = [str(part) for part in err.path]
-        if covered & set(path):
+        if covered & set(path[:2]):
             continue
         subject = path[1] if len(path) > 1 else (path[0] if path else None)
         out.append(
