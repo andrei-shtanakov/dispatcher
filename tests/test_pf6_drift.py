@@ -504,7 +504,7 @@ def test_the_manifest_shape_and_its_exclusion_note_are_pinned() -> None:
     # the normative surface is pinned here so a re-vendor is a deliberate, reviewed
     # edit rather than a fingerprint that quietly follows whatever is on disk
     assert manifest["tree_sha256"] == (
-        "999806dd71233ee61320122ca2fdd9e8823d56e1bcfd5867923558d4fb14af4e"
+        "e5fc325a2c4cb276610057b88a3d77927b943b200adeb3456a3e6fb0a1a27207"
     )
     note = manifest["surface_note"]
     for excluded in ("manifest.json", "drift-control.md", "PINNED.txt"):
@@ -525,7 +525,7 @@ def test_the_epics_contract_is_vendored_with_the_same_discipline() -> None:
     assert manifest["contract"] == "epics"
     assert manifest["contract_version"] == 1
     assert manifest["tree_sha256"] == (
-        "5a77175d4caf016a3c93c301d327d1bedcf7bc1c3e87d828c93359f39b9fe7ac"
+        "d7cfcfd2777ae43b205fd6daa5351ff9bddb47de5eff0e73ec51e214eb36b878"
     )
     depends = json.loads((root / "contract/depends.json").read_text())
     delegation = depends["depends_on"][0]

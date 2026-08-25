@@ -57,6 +57,7 @@ Fixed identities, so expected outputs are byte-comparable:
 | `invalid/todo-multiple` | pair | two identical `@epic` tags → `EP-MULTIPLE`; a duplicate is a defect, not a consensus |
 | `invalid/todo-defect-unknown` | pair | epic stays `tagged`; `EP-DEFECT-UNKNOWN` — the defect axis fails independently |
 | `invalid/todo-defect-grammar` | pair | epic stays `tagged`; `EP-DEFECT-GRAMMAR` |
+| `invalid/todo-defect-multiple` | pair | epic stays `tagged`; `EP-DEFECT-MULTIPLE` — the defect axis has the same multiplicity rule as the epic |
 | `invalid/pr-moved` | bundle | opened after `moved_at` → `EP-MOVED` |
 | `invalid/conflict` | bundle | PR and its linked plan item disagree → `EP-CONFLICT`, no winner chosen |
 | `invalid/issue-unavailable` | bundle | body never retrieved → `unavailable` + `EP-UNAVAILABLE`, **never** `missing` |

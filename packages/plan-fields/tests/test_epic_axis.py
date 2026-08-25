@@ -185,3 +185,28 @@ def test_registry_also_guards_the_defect_class_without_touching_the_stream() -> 
     extra = apply_registry(doc, registry)
     assert [d["code"] for d in extra] == ["EP-DEFECT-UNKNOWN"]
     assert doc["nodes"][0]["epic_classification"] == "tagged"
+
+
+def test_every_emitted_code_is_declared_by_the_vendored_epics_registry() -> None:
+    """No EP-* code may exist only in this package's head.
+
+    This is the invariant that actually broke while Ф1a was being written: the parser
+    needed a code for a duplicate @defect, epics/v1 had none, and for a while the
+    package could emit something the contract did not declare. A consumer inventing
+    codes is how a "closed registry" quietly stops being closed — so the check is a
+    test rather than a habit.
+
+    The registry is read as text, not with a YAML parser: pyyaml is not a dependency
+    of this package (jsonschema is the only one) and adding one for a test would put a
+    runtime dependency on the standalone-by-design parser.
+    """
+    from plan_fields.epic import EPIC_MESSAGES
+
+    declared = {
+        line.strip().rstrip(":")
+        for line in (_CONTRACT_EPICS / "diagnostics.yaml").read_text().splitlines()
+        if line.startswith("  EP-") and line.rstrip().endswith(":")
+    }
+    assert declared, "vendored diagnostics.yaml declares no codes — wrong copy?"
+    emitted = set(EPIC_MESSAGES) | {"EP-UNKNOWN", "EP-MOVED", "EP-DEFECT-UNKNOWN"}
+    assert emitted <= declared, f"undeclared codes: {sorted(emitted - declared)}"

@@ -3,7 +3,7 @@
   "contract_version": 1,
   "schema_id": "urn:ecosystem:epics:v1:classification",
   "surface_note": "sha256 of every frozen contract file consumers vendor; excludes drift-control meta (manifest.json, drift-control.md) and vendor-only PINNED.txt. Construction is byte-identical to plan-fields v2 so one checker serves both. The registry data model is urn:ecosystem:epics:v1:registry; VALUES live in the umbrella epics.toml and are read live, never vendored. See drift-control.md.",
-  "tree_sha256": "5a77175d4caf016a3c93c301d327d1bedcf7bc1c3e87d828c93359f39b9fe7ac",
+  "tree_sha256": "d7cfcfd2777ae43b205fd6daa5351ff9bddb47de5eff0e73ec51e214eb36b878",
   "surface": [
     {
       "path": "README.md",
@@ -15,11 +15,11 @@
     },
     {
       "path": "diagnostics.yaml",
-      "sha256": "62b0046c3939a2af9e0951eb1b9a71ed46203023461cc7731ab18309627c83eb"
+      "sha256": "de48ec48b5d1537440508d219a7dc0ad7e77fce0ece6b6a218c8ac212cd093cd"
     },
     {
       "path": "fixtures/README.md",
-      "sha256": "b4f566004ca685a90f02bf0003c4d0ae470faa5babad21b484af5275c1aed046"
+      "sha256": "5385d5832f8004fe5ffda39393f30c64337cf85f673f2d93fc24fd384155b033"
     },
     {
       "path": "fixtures/invalid/conflict/context.json",
@@ -64,6 +64,14 @@
     {
       "path": "fixtures/invalid/todo-defect-grammar.md",
       "sha256": "6257b3a21c79f8c256ff85b6a8bdfafaefc779c24770433f219c19a23c570300"
+    },
+    {
+      "path": "fixtures/invalid/todo-defect-multiple.expected.json",
+      "sha256": "16082b524e78d264b74f6101fe649dfdc9b6da3d21213a8ef974951ccc2e42c8"
+    },
+    {
+      "path": "fixtures/invalid/todo-defect-multiple.md",
+      "sha256": "515f374eb7eee700a4e7aa22f32ee114fca09e7c0dd53e7fc68d47245c1d7988"
     },
     {
       "path": "fixtures/invalid/todo-defect-unknown.expected.json",

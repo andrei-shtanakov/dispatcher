@@ -1,0 +1,17 @@
+{
+  "epic": "eco.ops",
+  "defect": null,
+  "classification": "tagged",
+  "diagnostics": [
+    {
+      "code": "EP-DEFECT-MULTIPLE",
+      "severity": "error",
+      "message": "more than one defect on one artifact",
+      "subject_uri": "todo://demo/twice-defect",
+      "raw": "pipeline, pipeline"
+    }
+  ],
+  "subject_uri": "todo://demo/twice-defect",
+  "carrier": "todo",
+  "observed_at": "2026-08-25T00:00:00Z"
+}
