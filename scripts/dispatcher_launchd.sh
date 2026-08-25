@@ -30,8 +30,12 @@
 set -euo pipefail
 
 LABEL="dev.atp.dispatcher"
+ROTATE_LABEL="dev.atp.dispatcher.logrotate"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+ROTATE_PLIST="$HOME/Library/LaunchAgents/$ROTATE_LABEL.plist"
+ROTATE_MAX_BYTES="${DISPATCHER_LOG_MAX_BYTES:-10485760}"   # 10 MiB
+ROTATE_KEEP=5
 LOG_DIR="$HOME/Library/Logs/dispatcher"
 DEFAULT_CONFIG="$HOME/.config/dispatcher/dispatcher.toml"
 
@@ -104,6 +108,68 @@ generate() {
 PLIST
 }
 
+# Rotate by COPY-TRUNCATE, not rename.
+#
+# launchd opens StandardOutPath/StandardErrorPath once and holds the
+# descriptor for the life of the service. Renaming the file — which is what
+# `newsyslog`, the obvious platform answer, does — leaves the service writing
+# into the *rotated* file while the fresh one stays empty forever. Measured,
+# not assumed: with a held descriptor, `rename` then `write` put the bytes in
+# `app.log.1` and left `app.log` at zero. That is rotation which looks
+# configured and does nothing, and it would be discovered by a full disk.
+#
+# Copying the content aside and truncating the SAME inode keeps the
+# descriptor valid: the service goes on writing, into a file that now starts
+# empty. The cost is a window between copy and truncate in which a write can
+# be lost; for a service log that is the right trade against losing the whole
+# file to a rename that silently detaches it.
+rotate_logs() {
+    local f archived=0
+    for f in "$LOG_DIR/out.log" "$LOG_DIR/err.log"; do
+        [ -f "$f" ] || continue
+        local size
+        size="$(stat -f%z "$f")"
+        [ "$size" -ge "$ROTATE_MAX_BYTES" ] || continue
+        local i
+        for (( i = ROTATE_KEEP - 1; i >= 1; i-- )); do
+            [ -f "$f.$i" ] && mv "$f.$i" "$f.$((i + 1))"
+        done
+        cp "$f" "$f.1"
+        : > "$f"
+        archived=$((archived + 1))
+        echo "rotated $f ($size bytes)" >&2
+    done
+    [ "$archived" -gt 0 ] || echo "nothing to rotate (both under $ROTATE_MAX_BYTES bytes)" >&2
+}
+
+# A companion agent, not a cron line and not root. `newsyslog` would need
+# /etc/newsyslog.d and sudo, and — see `rotate_logs` — would rotate by rename,
+# which does not work on a descriptor launchd holds open. A user-level agent
+# calling this same script keeps the whole mechanism inside the repo, visible
+# and testable by the person who installs it.
+generate_rotate_plist() {
+    cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$ROTATE_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$REPO_ROOT/scripts/dispatcher_launchd.sh</string>
+    <string>rotate</string>
+  </array>
+  <key>WorkingDirectory</key><string>$REPO_ROOT</string>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>17</integer></dict>
+  <key>StandardOutPath</key><string>$LOG_DIR/rotate.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/rotate.log</string>
+</dict>
+</plist>
+PLIST
+}
+
 install_agent() {
     local cfg port holder
     cfg="$(resolve_config "${1:-}")"
@@ -120,7 +186,15 @@ install_agent() {
     generate "$cfg" > "$PLIST"
     launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
     launchctl bootstrap "gui/$UID" "$PLIST"
+
+    # Installed together on purpose: a service whose logs grow without bound
+    # is a slow failure, and one installed separately is one forgotten.
+    generate_rotate_plist > "$ROTATE_PLIST"
+    launchctl bootout "gui/$UID/$ROTATE_LABEL" 2>/dev/null || true
+    launchctl bootstrap "gui/$UID" "$ROTATE_PLIST"
+
     echo "installed $LABEL -> port $port, logs in $LOG_DIR" >&2
+    echo "installed $ROTATE_LABEL -> daily, keeps $ROTATE_KEEP x $ROTATE_MAX_BYTES bytes" >&2
 }
 
 status() {
@@ -137,12 +211,18 @@ print(args[args.index("--config") + 1])
     echo "config: $cfg"
     echo -n "http: "
     curl -s -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:$port/" || echo "unreachable"
+    if launchctl print "gui/$UID/$ROTATE_LABEL" >/dev/null 2>&1; then
+        echo "rotation: $ROTATE_LABEL loaded ($ROTATE_KEEP x $ROTATE_MAX_BYTES bytes)"
+    else
+        echo "rotation: NOT loaded — logs will grow without bound"
+    fi
 }
 
 uninstall() {
     launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
-    rm -f "$PLIST"
-    echo "removed $LABEL (logs in $LOG_DIR are left alone)" >&2
+    launchctl bootout "gui/$UID/$ROTATE_LABEL" 2>/dev/null || true
+    rm -f "$PLIST" "$ROTATE_PLIST"
+    echo "removed $LABEL and $ROTATE_LABEL (logs in $LOG_DIR are left alone)" >&2
 }
 
 cmd="${1:-}"; shift || true
@@ -156,8 +236,9 @@ done
 
 case "$cmd" in
     generate) generate "$cfg" ;;
+    rotate)   rotate_logs ;;
     install)  install_agent "$cfg" ;;
     status)   status ;;
     uninstall) uninstall ;;
-    *) die "usage: $(basename "$0") generate|install|status|uninstall [--config PATH]" ;;
+    *) die "usage: $(basename "$0") generate|install|status|uninstall|rotate [--config PATH]" ;;
 esac
