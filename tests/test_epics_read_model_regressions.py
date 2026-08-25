@@ -17,8 +17,8 @@ import pytest
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.epics import UNCLASSIFIED, build_view
 from dispatcher.core.snapshot_contract import (
+    Snapshot,
     SnapshotContractError,
-    WorkspaceSnapshotV1,
     parse_snapshot,
 )
 
@@ -45,6 +45,7 @@ opened = "2026-08-01"
 title = "Pipeline failures"
 """
 
+_NOW = datetime(2026, 8, 25, 10, 30, tzinfo=UTC)
 _FRESH = "2026-08-25T10:00:00Z"
 
 
@@ -71,7 +72,7 @@ def epic_block(epic: str | None, classification: str = "tagged") -> dict:
         "defect": None,
         "classification": classification,
         "diagnostics": [],
-        "subject_uri": f"github://demo/issues/7#epic",
+        "subject_uri": "github://demo/issues/7#epic",
         "carrier": "issue",
         "observed_at": _FRESH,
     }
@@ -138,7 +139,7 @@ def v1_payload(host: str = "h-old") -> dict:
     }
 
 
-def _parse(payload: dict) -> WorkspaceSnapshotV1:
+def _parse(payload: dict) -> Snapshot:
     return parse_snapshot(json.dumps(payload))
 
 
@@ -184,7 +185,7 @@ def test_a_mixed_v1_v2_fleet_does_not_get_the_read_state(tmp_path: Path) -> None
     решение, а не в строке рядом.
     """
     config = _workspace(tmp_path, {"demo": "- [ ] work @id:a @epic:eco.dark-factory\n"})
-    view = build_view(config, [_parse(v1_payload()), _parse(v2_payload())])
+    view = build_view(config, [_parse(v1_payload()), _parse(v2_payload())], now=_NOW)
     planes = {p.plane: p for p in view.planes}
     assert planes["issues"].state != "read"
     assert "h-old" in (planes["issues"].detail or "")
@@ -205,20 +206,27 @@ def test_an_unknown_github_epic_is_reported_and_stays_in_the_aggregate(
     """
     config = _workspace(tmp_path, {"demo": "- [ ] work @id:a @epic:eco.dark-factory\n"})
     view = build_view(
-        config, [_parse(v2_payload(epic=epic_block("eco.dark-factroy")))]
+        config, [_parse(v2_payload(epic=epic_block("eco.dark-factroy")))], now=_NOW
     )
 
-    codes = {d["code"] for d in view.registry_diagnostics}
+    # Проверка намеренно не привязана к полю: инвариант — находка ОБЯЗАНА быть
+    # названа хоть где-то. Где именно, решает исправление, и оно решило — в
+    # `classification_diagnostics`, отдельно от реестра: опечатка в одном issue
+    # ничего не говорит о самом epics.toml, а попав в `registry_diagnostics`, она
+    # уронила бы `registry_ok` и отправила оператора чинить не тот файл.
+    codes = {
+        d["code"]
+        for d in (*view.registry_diagnostics, *view.classification_diagnostics)
+    }
     assert "EP-UNKNOWN" in codes, "неизвестный эпик обязан быть НАЗВАН"
+    assert view.registry_ok is True, "реестр здесь ни при чём"
 
     assert "eco.dark-factroy" not in {r.id for r in view.rows}
     bucket = next(r for r in view.rows if r.type == "classification_bucket")
     assert {p.plane: p.count for p in bucket.planes}["issues"] == 1
 
     issues_total = next(p for p in view.planes if p.plane == "issues").count
-    by_rows = sum(
-        {p.plane: p.count for p in r.planes}["issues"] for r in view.rows
-    )
+    by_rows = sum({p.plane: p.count for p in r.planes}["issues"] for r in view.rows)
     assert by_rows == issues_total, "сумма по строкам обязана сходиться с итогом"
 
 
@@ -235,6 +243,7 @@ def test_one_artifact_seen_by_two_producers_is_counted_once(tmp_path: Path) -> N
     view = build_view(
         config,
         [_parse(v2_payload(host="h1")), _parse(v2_payload(host="h2"))],
+        now=_NOW,
     )
     assert next(p for p in view.planes if p.plane == "issues").count == 1
     row = next(r for r in view.rows if r.id == "eco.dark-factory")
@@ -249,8 +258,10 @@ def test_a_stale_producer_visibly_degrades_completeness(tmp_path: Path) -> None:
     реальной. Устаревший продюсер обязан ухудшать состояние ЯВНО.
     """
     config = _workspace(tmp_path, {"demo": "- [ ] work @id:a @epic:eco.dark-factory\n"})
-    old = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    view = build_view(config, [_parse(v2_payload(host="h-stale", generated_at=old))])
+    old = (_NOW - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    view = build_view(
+        config, [_parse(v2_payload(host="h-stale", generated_at=old))], now=_NOW
+    )
     issues = next(p for p in view.planes if p.plane == "issues")
     assert issues.state != "read"
     assert "h-stale" in (issues.detail or "")
@@ -259,5 +270,5 @@ def test_a_stale_producer_visibly_degrades_completeness(tmp_path: Path) -> None:
 def test_the_unclassified_bucket_survives_all_of_it(tmp_path: Path) -> None:
     """Сквозной инвариант: бакет остаётся на месте при любом из сценариев выше."""
     config = _workspace(tmp_path, {"demo": "- [ ] bare @id:a\n"})
-    view = build_view(config, [_parse(v2_payload())])
+    view = build_view(config, [_parse(v2_payload())], now=_NOW)
     assert any(r.id == UNCLASSIFIED for r in view.rows)

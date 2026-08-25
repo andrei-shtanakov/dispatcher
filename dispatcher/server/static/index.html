@@ -638,9 +638,15 @@ document.getElementById("run-status-check").addEventListener("click", async () =
 let epicsKind = "";
 
 function planeCell(plane) {
-  if (!plane || plane.state !== "read") {
+  if (!plane || plane.state === "unavailable") {
     const why = plane && plane.detail ? plane.detail : "not read";
     return `<td class="warn" title="${esc(why)}">—</td>`;
+  }
+  if (plane.state === "partial") {
+    // "≥" rather than the bare number: the count is real but it is a LOWER
+    // BOUND — some producer is on v1 or has gone stale. Rendering it as a
+    // plain number would let a half-observed fleet read as a measured one.
+    return `<td class="warn" title="${esc(plane.detail || "partial")}">≥${plane.count}</td>`;
   }
   return `<td>${plane.count}</td>`;
 }
@@ -649,15 +655,22 @@ function renderEpics(view) {
   const byPlane = {};
   (view.planes || []).forEach(p => { byPlane[p.plane] = p; });
   document.getElementById("epics-planes").textContent =
-    (view.planes || []).map(p =>
-      `${p.plane}: ${p.state === "read" ? p.count : "unavailable"}`).join(" · ");
+    (view.planes || []).map(p => {
+      if (p.state === "read") return `${p.plane}: ${p.count}`;
+      if (p.state === "partial") return `${p.plane}: ≥${p.count} (partial)`;
+      return `${p.plane}: unavailable`;
+    }).join(" · ");
 
   const reg = document.getElementById("epics-registry");
   const errs = (view.registry_diagnostics || []).filter(d => d.severity === "error");
   reg.className = errs.length ? "err" : "fresh";
-  reg.textContent = errs.length
+  const tags = view.classification_diagnostics || [];
+  const tagNote = tags.length
+    ? ` · tags: ${tags.length} finding(s) — ${[...new Set(tags.map(d => d.code))].join(", ")}`
+    : "";
+  reg.textContent = (errs.length
     ? `registry: ${errs.length} error(s) — ${errs.map(d => d.code).join(", ")}`
-    : `registry: ${view.registry_path || "not found"} — clean`;
+    : `registry: ${view.registry_path || "not found"} — clean`) + tagNote;
 
   document.querySelector("#epics tbody").innerHTML = (view.rows || []).map(r => {
     const plane = name => (r.planes || []).find(p => p.plane === name);

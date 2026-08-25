@@ -8,13 +8,14 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.epics import UNCLASSIFIED, build_view
-from dispatcher.core.snapshot_contract import WorkspaceSnapshotV1, parse_snapshot
+from dispatcher.core.snapshot_contract import Snapshot, parse_snapshot
 
 _REGISTRY = """\
 schema_version = "1.0.0"
@@ -48,6 +49,12 @@ title = "Pipeline failures"
 """
 
 
+# Свежесть снапшота — часть состояния плоскости, значит «сейчас» обязано быть
+# входом, а не обращением к часам: иначе тест про ось версий начинает падать
+# через час после того, как кто-то выбрал дату в фикстуре.
+_NOW = datetime(2026, 8, 25, 10, 30, tzinfo=UTC)
+
+
 def _workspace(tmp_path: Path, todos: dict[str, str]) -> DispatcherConfig:
     umbrella = tmp_path / "ai-orchestrators-workspace"
     umbrella.mkdir(parents=True)
@@ -64,27 +71,44 @@ def _workspace(tmp_path: Path, todos: dict[str, str]) -> DispatcherConfig:
     return DispatcherConfig(roots=(tmp_path,))
 
 
-def _snapshot(version: int, *, issue_epic: dict | None = None) -> WorkspaceSnapshotV1:
+def _snapshot(version: int, *, issue_epic: dict | None = None) -> Snapshot:
+    """Один снапшот с одним issue — В ФОРМЕ, которую объявляет пин своей версии.
+
+    Раньше этот помощник строил «v2», не удовлетворяющий контракту (без `author`,
+    без `subject_uri`/`carrier`/`observed_at` в классификации), и парсер это
+    принимал: ровно тот дефект, который чинит Ф3-регрессия. Помощник исправлен, а
+    не смягчена проверка — иначе тесты продолжили бы доказывать поведение, которого
+    у настоящего продюсера нет.
+    """
+    generated = "2026-08-25T10:00:00Z"
+    issue: dict[str, object] = {"number": 7, "title": "an issue"}
+    github: dict[str, object]
+    if version >= 2:
+        issue["author"] = "dev"
+        issue["epic"] = {
+            "epic": None,
+            "defect": None,
+            "classification": "missing",
+            "diagnostics": [],
+            "subject_uri": "gh://demo/issues/7",
+            "carrier": "issue",
+            "observed_at": generated,
+            **(issue_epic or {}),
+        }
+        github = {"name": "owner/demo", "issues": [issue], "pulls": []}
+    else:
+        github = {"issues": [issue], "pulls": []}
     payload = {
         "schema_version": version,
         "workspace": "/ws",
         "host": "h1",
-        "generated_at": "2026-08-25T10:00:00Z",
+        "generated_at": generated,
         "repos": [
             {
                 "dir": "demo",
                 "remote": "owner/demo",
                 "local": {"branch": "master", "dirty": False},
-                "github": {
-                    "issues": [
-                        {
-                            "number": 7,
-                            "title": "an issue",
-                            **({"epic": issue_epic} if issue_epic else {}),
-                        }
-                    ],
-                    "pulls": [],
-                },
+                "github": github,
             }
         ],
     }
@@ -130,6 +154,7 @@ def test_a_v2_producer_contributes_real_counts(tmp_path: Path) -> None:
                 },
             )
         ],
+        now=_NOW,
     )
     planes = {p.plane: p for p in view.planes}
     assert planes["issues"].state == "read" and planes["issues"].count == 1
@@ -162,6 +187,7 @@ def test_an_unretrieved_body_is_not_counted_as_unmarked(tmp_path: Path) -> None:
                 },
             )
         ],
+        now=_NOW,
     )
     planes = {p.plane: p for p in view.planes}
     assert planes["issues"].count == 0

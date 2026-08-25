@@ -26,9 +26,9 @@ from pydantic import BaseModel, Field
 
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.snapshot_contract import (
-    RepoSnapshotV1,
+    AnyRepoSnapshot,
+    Snapshot,
     SnapshotContractError,
-    WorkspaceSnapshotV1,
     parse_snapshot,
 )
 from dispatcher.core.tracking import TrackingState, load_tracking, seed_tracking
@@ -93,7 +93,7 @@ class SyncSourceError(Exception):
     """The live snapshot could not be produced (github-checker unavailable)."""
 
 
-def _repo_verdict(repo: RepoSnapshotV1, *, stale: bool) -> RepoVerdict:
+def _repo_verdict(repo: AnyRepoSnapshot, *, stale: bool) -> RepoVerdict:
     local = repo.local
     row = RepoVerdict(
         repo=repo.dir,
@@ -129,7 +129,7 @@ def _repo_verdict(repo: RepoSnapshotV1, *, stale: bool) -> RepoVerdict:
     return row
 
 
-def _panel(snapshot: WorkspaceSnapshotV1, *, source: str, now: datetime) -> HostPanel:
+def _panel(snapshot: Snapshot, *, source: str, now: datetime) -> HostPanel:
     age = snapshot.age_seconds(now)
     # A live run is by definition fresh; only published snapshots go stale.
     stale = source == "kb" and age > STALE_AFTER_SECONDS
@@ -168,9 +168,9 @@ def _fill_no_data(panels: list[HostPanel]) -> None:
 def build_report(
     *,
     current_host: str,
-    live: WorkspaceSnapshotV1 | None,
+    live: Snapshot | None,
     live_error: str | None,
-    kb_snapshots: list[WorkspaceSnapshotV1],
+    kb_snapshots: list[Snapshot],
     kb_errors: list[tuple[str, str]] | None = None,
     tracking: TrackingState | None = None,
     now: datetime | None = None,
@@ -242,7 +242,7 @@ def build_report(
 
 def run_live_snapshot(
     workspace: Path, *, command: tuple[str, ...] = ("github-checker",)
-) -> WorkspaceSnapshotV1:
+) -> Snapshot:
     """Run a git-only snapshot of *workspace*; requires github-checker on PATH."""
     argv = [
         *command,
@@ -274,9 +274,9 @@ def kb_snapshot_dirs(roots: tuple[Path, ...]) -> tuple[Path, ...]:
 
 def load_kb_snapshots(
     dirs: tuple[Path, ...],
-) -> tuple[list[WorkspaceSnapshotV1], list[tuple[str, str]]]:
+) -> tuple[list[Snapshot], list[tuple[str, str]]]:
     """Read every published `<host>.json`; contract failures become errors, not crashes."""
-    snapshots: list[WorkspaceSnapshotV1] = []
+    snapshots: list[Snapshot] = []
     errors: list[tuple[str, str]] = []
     for directory in dirs:
         if not directory.is_dir():
@@ -304,7 +304,7 @@ def load_kb_snapshots(
 
 def collect_sync(config: DispatcherConfig, now: datetime | None = None) -> SyncReport:
     """IO shell: live snapshot of the first existing root + KB panels."""
-    live: WorkspaceSnapshotV1 | None = None
+    live: Snapshot | None = None
     live_error: str | None = None
     workspace = next((root for root in config.roots if root.is_dir()), None)
     if workspace is None:
