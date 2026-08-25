@@ -13,8 +13,10 @@ neither, because ARCH-C3 forbids dispatcher computing verdicts at all
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass
@@ -82,6 +84,85 @@ class LaunchReceipt(BaseModel):
     run_id: str | None = None
     accepted: bool | None = None
     reason: str | None = None
+
+
+def _key_from_record(record: "LaunchRecord") -> RepoKey:
+    """Rebuild the `RepoKey` a record's text form names.
+
+    One copy on purpose: `_candidates` and `_logs_dir` both need it, and a
+    second inline `split("/")` would be a second place to get the `_local`
+    shape wrong.
+    """
+    parts = record.repo_key.split("/")
+    if parts[0] == "_local":
+        return RepoKey(host="", owner="", repo=parts[1], local=True)
+    return RepoKey(host=parts[0], owner=parts[1], repo=parts[2])
+
+
+def _parse_event(line: str) -> "RunLogEvent":
+    """One `events.jsonl` line, degrading to `raw` rather than vanishing.
+
+    A half-written last line is ordinary while a run is live. Dropping it
+    would make the console disagree with the file it claims to show, so an
+    unparseable line is carried through as text.
+    """
+    raw = line.rstrip("\n")
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return RunLogEvent(raw=raw)
+    if not isinstance(data, dict):
+        return RunLogEvent(raw=raw)
+    return RunLogEvent(
+        ts=str(data.get("timestamp", "")),
+        event=str(data.get("event", "")),
+        task_id=data.get("task_id"),
+        message=data.get("message"),
+        raw=raw,
+    )
+
+
+class RunLogEvent(BaseModel):
+    """One line of maestro's own `events.jsonl`, kept as maestro wrote it.
+
+    `raw` survives a line that does not parse: a truncated tail is normal
+    while a run is live, and dropping such a line would make the console
+    quietly disagree with the file on disk.
+    """
+
+    ts: str = ""
+    event: str = ""
+    task_id: str | None = None
+    message: str | None = None
+    raw: str = ""
+
+
+class RunLogs(BaseModel):
+    """The run's event timeline plus the names of its per-task logs.
+
+    Task logs are NAMED here but not inlined: they carry the agent's whole
+    output and are fetched one at a time. `warnings` exists for the same
+    reason `RunView` has it — an unreadable log directory must not render
+    as an empty one (NFR-02).
+    """
+
+    run_id: str
+    events: list[RunLogEvent] = Field(default_factory=list)
+    #: Set when the timeline was longer than the cap: the OLDEST lines were
+    #: dropped, never the newest, and the console says so rather than
+    #: presenting a truncated file as the whole of it.
+    truncated: bool = False
+    task_logs: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class TaskLog(BaseModel):
+    """The tail of one task's log."""
+
+    run_id: str
+    task_id: str
+    text: str = ""
+    truncated: bool = False
 
 
 class RunView(BaseModel):
@@ -765,6 +846,125 @@ class RunController:
                 f"cannot use request_id {request_id!r}: {err}"
             ) from err
 
+    #: A task id names a FILE inside the run's log directory, so it is the
+    #: one part of these paths that arrives off the wire. Two independent
+    #: guards, not one: this pattern, and a containment check after
+    #: resolution — the pattern is the fence, the check is what still holds
+    #: if the fence is ever loosened.
+    _TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+    #: Newest-last tails. Generous enough to hold a whole ordinary run, small
+    #: enough that one request cannot pull megabytes into a browser.
+    _MAX_EVENTS = 500
+    _MAX_TASK_LOG_BYTES = 256 * 1024
+
+    def _logs_dir(self, record: LaunchRecord) -> Path:
+        """`<run dir>/logs` for an adopted run.
+
+        The run id comes from the durable record, never from the URL: the
+        caller names a `request_id`, and which run that is, is dispatcher's
+        own recorded answer. That is the same reasoning as `_verb_cwd` —
+        a read must not be re-pointed at another run by its own request.
+        """
+        if record.run_id is None:
+            raise RunRejectedError(
+                f"{record.request_id} has no run to read logs from "
+                f"(state: {record.state})"
+            )
+        _, _, home = self._require_on()
+        key = _key_from_record(record)
+        return home.joinpath(
+            "projects", *safe_path_parts(key), "runs", record.run_id, "logs"
+        )
+
+    def logs(self, request_id: str) -> RunLogs:
+        """maestro's own event timeline for this run, plus its task-log names.
+
+        Read-only and on demand: deliberately NOT folded into `view()`, which
+        the console polls every five seconds. A growing file re-read on every
+        tick is waste, and the poll already rebuilds the whole view — the one
+        thing #176's successor had to teach it not to trample.
+        """
+        record = self._record_for(request_id)
+        logs_dir = self._logs_dir(record)
+        run_id = record.run_id or ""
+        warnings: list[str] = []
+
+        events: list[RunLogEvent] = []
+        truncated = False
+        events_path = logs_dir / "events.jsonl"
+        try:
+            lines = events_path.read_text(errors="replace").splitlines()
+        except FileNotFoundError:
+            # Normal before maestro writes its first event; not a warning.
+            lines = []
+        except OSError as err:
+            # Unreadable is NOT empty — the distinction this codebase keeps
+            # insisting on, because the two look identical in a UI.
+            warnings.append(f"cannot read {events_path.name}: {err}")
+            lines = []
+        if len(lines) > self._MAX_EVENTS:
+            truncated = True
+            lines = lines[-self._MAX_EVENTS :]
+        for line in lines:
+            events.append(_parse_event(line))
+
+        task_logs: list[str] = []
+        try:
+            task_logs = sorted(p.stem for p in logs_dir.glob("*.log") if p.is_file())
+        except OSError as err:
+            warnings.append(f"cannot list task logs: {err}")
+
+        return RunLogs(
+            run_id=run_id,
+            events=events,
+            truncated=truncated,
+            task_logs=task_logs,
+            warnings=warnings,
+        )
+
+    def task_log(self, request_id: str, task_id: str) -> TaskLog:
+        """The tail of one task's log."""
+        if not self._TASK_ID_RE.match(task_id):
+            raise RunRejectedError(f"unsafe task id: {task_id!r}")
+        record = self._record_for(request_id)
+        logs_dir = self._logs_dir(record)
+        path = (logs_dir / f"{task_id}.log").resolve()
+        # The second guard. `_TASK_ID_RE` already forbids a separator, so
+        # this cannot fire today — which is the point: it is what still
+        # holds if someone widens the pattern later.
+        if not path.is_relative_to(logs_dir.resolve()):
+            raise RunRejectedError(f"task log escapes the run directory: {task_id!r}")
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError:
+            raise RunRejectedError(
+                f"no log for task {task_id!r} in run {record.run_id}"
+            ) from None
+        except OSError as err:
+            raise RunRejectedError(f"cannot read log for {task_id!r}: {err}") from err
+        truncated = len(data) > self._MAX_TASK_LOG_BYTES
+        if truncated:
+            data = data[-self._MAX_TASK_LOG_BYTES :]
+        return TaskLog(
+            run_id=record.run_id or "",
+            task_id=task_id,
+            text=data.decode(errors="replace"),
+            truncated=truncated,
+        )
+
+    def _record_for(self, request_id: str) -> LaunchRecord:
+        """The durable record, or a refusal — shared by the read paths."""
+        try:
+            record = self._store().get(request_id)
+        except RunStoreError as err:
+            raise RunRejectedError(
+                f"cannot use request_id {request_id!r}: {err}"
+            ) from err
+        if record is None:
+            raise RunRejectedError(f"no launch record for {request_id}")
+        return record
+
     def view(self, request_id: str) -> RunView:
         """The request plus maestro's classification of its run (spec §3.2).
 
@@ -944,12 +1144,7 @@ class RunController:
                 f"{request_id} is not launch_unknown (state={record.state!r}); "
                 "nothing to resolve"
             )
-        parts = record.repo_key.split("/")
-        key = (
-            RepoKey(host="", owner="", repo=parts[1], local=True)
-            if parts[0] == "_local"
-            else RepoKey(host=parts[0], owner=parts[1], repo=parts[2])
-        )
+        key = _key_from_record(record)
         before = set(record.known_runs)
         runs = self.runs_dir(key)
         try:

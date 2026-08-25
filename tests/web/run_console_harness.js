@@ -1651,3 +1651,86 @@ testCase('Copilot #1: a stale non-ok response, unstuck AFTER its own '
   console.error('\nHARNESS CRASHED:', (err && err.stack) || err);
   process.exitCode = 1;
 });
+
+
+// --- Run logs pane (spec §10) ---------------------------------------------
+
+testCase('logs: the timeline is NOT fetched by the 5s poll — only on demand',
+  async () => {
+  await withPage(async page => {
+    await openMaterialized(page);
+    await tick(page, 5000);
+    await tick(page, 5000);
+    check(!page.calls.some(c => c.url.includes("/logs")),
+      `polling fetched logs unasked: ${JSON.stringify(page.calls.map(c => c.url))}`);
+  });
+});
+
+testCase('logs: a poll landing while a log is open does not blank it',
+  async () => {
+  await withPage(async page => {
+    await openMaterialized(page);
+    page.routes.push([u => u.endsWith("/logs"), () => ok({
+      run_id: "01AAA", events: [{ts: "T1", event: "task_ready", raw: "{}"}],
+      truncated: false, task_logs: ["red"], warnings: [],
+    })]);
+    await click(page, '#rc-logs-load');
+    check(/task_ready/.test(el(page, '#rc-logs').innerHTML), 'log rendered (sanity)');
+    await tick(page, 5000);
+    check(/task_ready/.test(el(page, '#rc-logs').innerHTML),
+      'the poll blanked the open log — the operator would blame the log');
+  });
+});
+
+testCase('logs: the load button still works AFTER a poll re-render',
+  async () => {
+  // The handler is delegated for exactly this reason: bound per render, it
+  // would vanish with the node and the button would go dead after 5s.
+  await withPage(async page => {
+    await openMaterialized(page);
+    await tick(page, 5000);
+    page.routes.push([u => u.endsWith("/logs"), () => ok({
+      run_id: "01AAA", events: [{ts: "T9", event: "task_started", raw: "{}"}],
+      truncated: false, task_logs: [], warnings: [],
+    })]);
+    await click(page, '#rc-logs-load');
+    check(/task_started/.test(el(page, '#rc-logs').innerHTML),
+      'the button died after a re-render');
+  });
+});
+
+testCase('logs: an unreadable timeline shows the warning, never "no events"',
+  async () => {
+  await withPage(async page => {
+    await openMaterialized(page);
+    page.routes.push([u => u.endsWith("/logs"), () => ok({
+      run_id: "01AAA", events: [], truncated: false, task_logs: [],
+      warnings: ["cannot read events.jsonl: Permission denied"],
+    })]);
+    await click(page, '#rc-logs-load');
+    const html = el(page, '#rc-logs').innerHTML;
+    check(/Permission denied/.test(html), `warning shown (got: ${html})`);
+    check(!/no events yet/.test(html),
+      'unreadable rendered as empty — the two must not read the same');
+  });
+});
+
+testCase('logs: an unparsed line is shown raw, not dropped', async () => {
+  await withPage(async page => {
+    await openMaterialized(page);
+    page.routes.push([u => u.endsWith("/logs"), () => ok({
+      run_id: "01AAA", truncated: false, task_logs: [], warnings: [],
+      events: [{ts: "", event: "", task_id: null, message: null, raw: '{"timesta'},
+      ],
+    })]);
+    await click(page, '#rc-logs-load');
+    // `timesta` rather than the literal `{"timesta`: esc() turns the quote
+    // into `&quot;`, and asserting the unescaped form would fail against
+    // correct code — the escaping is a feature, not the thing under test.
+    const html = el(page, '#rc-logs').innerHTML;
+    check(html.includes('timesta'),
+      `a half-written line vanished — the pane would disagree with the file (got: ${html})`);
+    check(!/no events yet/.test(html),
+      'an unparsed line left the pane claiming there were no events');
+  });
+});

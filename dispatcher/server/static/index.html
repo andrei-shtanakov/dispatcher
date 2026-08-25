@@ -1225,7 +1225,15 @@ function renderRunView(view) {
     ? renderUnknownActions()
     : renderVerbControls(rec);
   return recordLine + runLine + warningsBlock
-    + `<div id="rc-view-actions">${actions}</div>`;
+    + `<div id="rc-view-actions">${actions}</div>`
+    // Spec §10's last reason to open a terminal. Deliberately EMPTY on
+    // render and filled only when the operator asks: the poll below rebuilds
+    // this whole node every five seconds, and re-fetching a growing log on
+    // every tick would be waste nobody asked for. Its content is preserved
+    // across re-renders the same way the verb result is.
+    + `<p><button id="rc-logs-load" type="button">logs</button>
+        <span class="rc-hint">maestro's own timeline for this run</span></p>
+       <div id="rc-logs"></div>`;
 }
 
 let rcViewTimer = null;
@@ -1291,6 +1299,9 @@ async function rcPollView() {
   // moved to/from launch_unknown (renderUnknownActions has no such ids).
   const prevTaskId = document.getElementById("rc-verb-task-id")?.value;
   const prevVerbResult = document.getElementById("rc-verb-result")?.innerHTML;
+  // Same reason as the two above: a poll landing while the operator reads a
+  // log would otherwise blank it, and the operator would blame the log.
+  const prevLogs = document.getElementById("rc-logs")?.innerHTML;
   box.innerHTML = renderRunView(view);
   if (prevTaskId !== undefined) {
     const taskIdEl = document.getElementById("rc-verb-task-id");
@@ -1299,6 +1310,10 @@ async function rcPollView() {
   if (prevVerbResult !== undefined) {
     const resultEl = document.getElementById("rc-verb-result");
     if (resultEl) resultEl.innerHTML = prevVerbResult;
+  }
+  if (prevLogs !== undefined) {
+    const logsEl = document.getElementById("rc-logs");
+    if (logsEl) logsEl.innerHTML = prevLogs;
   }
   // B2: while THIS view stands unresolved (launch_unknown), a second
   // submit is the one action the recovery design forbids — the launch may
@@ -1320,6 +1335,81 @@ async function rcPollView() {
     rcViewTimer = setInterval(rcPollView, 5000);
   }
 }
+
+// Renders maestro's timeline. An event whose line did not parse arrives with
+// an empty `event` and its text in `raw` — shown as-is rather than skipped,
+// because a half-written last line is ordinary while a run is live and
+// hiding it would make this pane disagree with the file it claims to show.
+function renderRunLogs(logs) {
+  const rows = logs.events.map(e => e.event
+    ? `<tr><td><code>${esc(e.ts)}</code></td><td>${esc(e.event)}</td>
+        <td>${esc(e.task_id ?? "")}</td><td>${esc(e.message ?? "")}</td></tr>`
+    : `<tr><td colspan="4"><code class="dim">${esc(e.raw)}</code></td></tr>`
+  ).join("");
+  const warn = (logs.warnings || []).length
+    ? `<ul class="warn">${logs.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul>`
+    : "";
+  // An empty timeline and an unreadable one must not read the same: the
+  // warnings above say which, and this line never claims "no events" when
+  // the reason is that we could not look.
+  const body = logs.events.length
+    ? `${logs.truncated
+         ? `<p class="rc-hint">oldest lines dropped — showing the newest</p>` : ""}
+       <table><tr><th>ts</th><th>event</th><th>task</th><th>message</th></tr>
+       ${rows}</table>`
+    : (warn ? "" : `<p class="dim">no events yet</p>`);
+  const tasks = (logs.task_logs || []).length
+    ? `<p>task logs: ${logs.task_logs.map(id =>
+        `<button type="button" class="rc-task-log" data-task="${esc(id)}"
+          >${esc(id)}</button>`).join(" ")}</p>`
+    : "";
+  return warn + body + tasks + `<div id="rc-task-log"></div>`;
+}
+
+function renderTaskLog(log) {
+  return `<p><b>${esc(log.task_id)}</b>${
+    log.truncated ? ` <span class="rc-hint">tail only — start dropped</span>` : ""
+  }</p><pre>${esc(log.text)}</pre>`;
+}
+
+// Delegated on the panel, not bound per render: `renderRunView` replaces
+// these nodes on every poll, so a handler bound to a button would be lost
+// with it — and the button would stop working after five seconds, in a way
+// nobody would connect to polling.
+document.getElementById("rc-run-view").addEventListener("click", async ev => {
+  const box = document.getElementById("rc-logs");
+  if (ev.target.id === "rc-logs-load") {
+    const id = document.getElementById("rc-request-id").value.trim();
+    if (!id) return;
+    box.innerHTML = `<p class="dim">reading…</p>`;
+    try {
+      const resp = await fetch(`/api/runs/${encodeURIComponent(id)}/logs`);
+      const data = await resp.json();
+      box.innerHTML = resp.ok
+        ? renderRunLogs(data)
+        : `<div class="warn">${esc(data.detail ?? `HTTP ${resp.status}`)}</div>`;
+    } catch (err) {
+      box.innerHTML = `<div class="warn">${esc(String(err))}</div>`;
+    }
+    return;
+  }
+  if (ev.target.classList?.contains("rc-task-log")) {
+    const id = document.getElementById("rc-request-id").value.trim();
+    const task = ev.target.dataset.task;
+    const out = document.getElementById("rc-task-log");
+    out.innerHTML = `<p class="dim">reading ${esc(task)}…</p>`;
+    try {
+      const resp = await fetch(
+        `/api/runs/${encodeURIComponent(id)}/logs/${encodeURIComponent(task)}`);
+      const data = await resp.json();
+      out.innerHTML = resp.ok
+        ? renderTaskLog(data)
+        : `<div class="warn">${esc(data.detail ?? `HTTP ${resp.status}`)}</div>`;
+    } catch (err) {
+      out.innerHTML = `<div class="warn">${esc(String(err))}</div>`;
+    }
+  }
+});
 
 document.getElementById("rc-open").addEventListener("click", async () => {
   const requestId = document.getElementById("rc-request-id").value.trim();

@@ -577,10 +577,15 @@ Steps that are still manual in pass 1, named so the result is not oversold:
 
 ## 10. Known gaps, deliberately left open
 
-- **Logs are read outside dispatcher.** The acceptance criterion claims "visible in
-  dispatcher" while permitting the one detailed channel to sit outside it. This is a
-  temporary gap, not a design position; it is cheap to close because maestro already
-  writes logs to a known per-run directory, so surfacing them is a read.
+- ~~**Logs are read outside dispatcher.**~~ **Closed 2026-08-25 (PR #191).** The run's
+  event timeline and its per-task logs are read through
+  `GET /api/runs/{request_id}/logs[/{task_id}]` and shown in the console. The gap's own
+  prediction held — maestro writes them to a known per-run directory, so this was a
+  read — with two qualifications worth keeping. The logs are fetched **on demand, never
+  by the five-second poll**: re-reading a growing file on every tick is waste, and the
+  poll rebuilds the view it would land in. And an unreadable log directory surfaces a
+  warning rather than an empty timeline, because "nothing happened" and "we could not
+  look" are the pair this document refuses to let render alike (NFR-02).
 - **The one-launch invariant is a working agreement, not a mechanism** (§5.4.1). The
   durable lock binds `RunController` only; nothing prevents a terminal, a second
   controller instance, or a service tick from launching against the same `RepoKey`.

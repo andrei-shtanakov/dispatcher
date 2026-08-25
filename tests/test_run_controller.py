@@ -1202,3 +1202,119 @@ def test_a_verb_gets_the_configured_catalog_when_there_is_one(
 
     assert outcome.ok
     assert f"ATP_CATALOG={tmp_path / 'agents-catalog.toml'}" in outcome.stdout
+
+
+# --- Run logs (spec §10: the last reason to open a terminal) --------------
+
+
+def _with_logs(tmp_path: Path, **files: str) -> RunController:
+    """A materialized run whose log directory holds `files`."""
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    logs = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    for name, body in files.items():
+        (logs / name.replace("__", ".")).write_text(body)
+    return controller
+
+
+def test_timeline_is_read_from_maestros_own_events_file(tmp_path: Path) -> None:
+    controller = _with_logs(
+        tmp_path,
+        events__jsonl=(
+            '{"timestamp": "T1", "event": "task_ready", "task_id": "red"}\n'
+            '{"timestamp": "T2", "event": "task_failed", "task_id": "red",'
+            ' "message": "exit 1"}\n'
+        ),
+        red__log="agent output",
+    )
+    logs = controller.logs(_REQ)
+    assert [e.event for e in logs.events] == ["task_ready", "task_failed"]
+    assert logs.events[-1].message == "exit 1"
+    assert logs.task_logs == ["red"]
+    assert logs.truncated is False
+
+
+def test_a_half_written_line_survives_as_raw(tmp_path: Path) -> None:
+    """A truncated tail is ordinary while a run is live.
+
+    Dropping the line would make the console disagree with the file it
+    claims to be showing — the reader would see a timeline that is missing
+    its most recent, and most interesting, entry.
+    """
+    controller = _with_logs(
+        tmp_path,
+        events__jsonl='{"timestamp": "T1", "event": "task_ready"}\n{"timesta',
+    )
+    logs = controller.logs(_REQ)
+    assert len(logs.events) == 2
+    assert logs.events[-1].event == ""
+    assert logs.events[-1].raw == '{"timesta'
+
+
+def test_an_unreadable_timeline_warns_rather_than_reading_empty(
+    tmp_path: Path,
+) -> None:
+    """Unreadable and empty must not look the same (NFR-02)."""
+    controller = _with_logs(tmp_path, events__jsonl="{}\n")
+    events = (
+        tmp_path
+        / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs/events.jsonl"
+    )
+    events.chmod(0o000)
+    try:
+        logs = controller.logs(_REQ)
+    finally:
+        events.chmod(0o644)
+    assert logs.events == []
+    assert logs.warnings, "an unreadable timeline rendered as an empty one"
+
+
+def test_an_absent_timeline_is_not_a_warning(tmp_path: Path) -> None:
+    """Before maestro's first event there is simply nothing yet."""
+    controller = _with_logs(tmp_path)
+    logs = controller.logs(_REQ)
+    assert logs.events == []
+    assert logs.warnings == []
+
+
+def test_the_timeline_tail_keeps_the_newest_and_says_it_dropped(
+    tmp_path: Path,
+) -> None:
+    """Oldest lines go, never newest — and the reader is told."""
+    body = "".join(f'{{"timestamp": "T{i}", "event": "e{i}"}}\n' for i in range(600))
+    controller = _with_logs(tmp_path, events__jsonl=body)
+    logs = controller.logs(_REQ)
+    assert len(logs.events) == RunController._MAX_EVENTS
+    assert logs.events[-1].event == "e599", "the newest line was dropped"
+    assert logs.truncated is True
+
+
+def test_a_task_log_is_tailed_and_flagged(tmp_path: Path) -> None:
+    big = "x" * (RunController._MAX_TASK_LOG_BYTES + 100) + "TAIL"
+    controller = _with_logs(tmp_path, red__log=big)
+    log = controller.task_log(_REQ, "red")
+    assert log.text.endswith("TAIL")
+    assert len(log.text) <= RunController._MAX_TASK_LOG_BYTES
+    assert log.truncated is True
+
+
+@pytest.mark.parametrize(
+    "task_id",
+    ["../../../etc/passwd", "..", "red/../../x", "red\\..\\x", ""],
+)
+def test_an_unsafe_task_id_is_refused(tmp_path: Path, task_id: str) -> None:
+    """The one part of these paths that arrives off the wire."""
+    controller = _with_logs(tmp_path, red__log="x")
+    with pytest.raises(RunRejectedError, match="unsafe task id"):
+        controller.task_log(_REQ, task_id)
+
+
+def test_logs_refuse_a_request_with_no_run(tmp_path: Path) -> None:
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run=None)
+    controller = RunController(
+        _config(tmp_path, cli), poll_interval=0.05, materialize_timeout=0.3
+    )
+    controller.submit(_request(head))
+    with pytest.raises(RunRejectedError, match="no run to read logs from"):
+        controller.logs(_REQ)
