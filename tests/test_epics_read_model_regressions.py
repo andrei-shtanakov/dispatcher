@@ -132,8 +132,17 @@ def v1_payload(host: str = "h-old") -> dict:
             {
                 "dir": "legacy",
                 "remote": "owner/legacy",
-                "local": {"branch": "master", "dirty": False},
-                "github": {"issues": [{"number": 1, "title": "old"}], "pulls": []},
+                "local": {
+                    "branch": "master",
+                    "ahead": 0,
+                    "behind": 0,
+                    "dirty": False,
+                },
+                "github": {
+                    "name": "owner/legacy",
+                    "issues": [{"number": 1, "title": "old", "author": "dev"}],
+                    "pulls": [],
+                },
             }
         ],
     }

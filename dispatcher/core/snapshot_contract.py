@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -48,15 +48,99 @@ class SnapshotContractError(Exception):
 
 
 class LocalStatusV1(BaseModel):
-    """State of one local clone relative to its upstream."""
+    """State of one local clone relative to its upstream.
+
+    `branch`/`ahead`/`behind` are nullable but REQUIRED, and the difference is the
+    point: `null` means the producer looked and there is no upstream to compare
+    against, while an absent key means it never looked. Giving them defaults
+    collapsed the two, and a consumer cannot then tell "no upstream" from "not
+    measured" — `error` is the only genuinely optional field here (both pins).
+    """
 
     model_config = ConfigDict(extra="allow")
 
-    branch: str | None = None
-    ahead: int | None = None
-    behind: int | None = None
-    dirty: bool = False
+    branch: str | None
+    ahead: int | None
+    behind: int | None
+    dirty: bool
     error: str | None = None
+
+
+# ------------------------------------------------------- shapes shared by v1/v2
+# Identical in both pins; kept in one place so a re-vendoring cannot leave two
+# copies of the same shape drifting apart.
+
+
+class CopilotReviewV2(BaseModel):
+    """Summary of GitHub Copilot's review on a pull request."""
+
+    model_config = _V2_CONFIG
+
+    state: str
+    comment_count: int
+
+
+class BranchV2(BaseModel):
+    model_config = _V2_CONFIG
+
+    name: str
+
+
+class RulesetInfoV2(BaseModel):
+    model_config = _V2_CONFIG
+
+    id: int
+    name: str
+    enforcement: str
+    target: str
+
+
+# --------------------------------------------------------------------- v1 github
+
+
+class IssueV1(BaseModel):
+    """An open issue as contract v1 publishes it — no epic axis."""
+
+    model_config = ConfigDict(extra="allow")
+
+    number: int
+    title: str
+    author: str
+    labels: list[str] = []
+
+
+class PullRequestV1(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    number: int
+    title: str
+    author: str
+    head_branch: str
+    is_dependabot: bool
+    copilot_review: CopilotReviewV2 | None = None
+
+
+class RepoStateV1(BaseModel):
+    """The GitHub half of one repository under contract v1.
+
+    Typed for the same reason v2 is: an untyped `dict[str, Any]` here meant the whole
+    GitHub side of the version this fleet ACTUALLY publishes today went unchecked. The
+    nullability of `issues` is load-bearing and survives into the read-model — `null`
+    is "the list was not retrieved", `[]` is "retrieved, nothing open".
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    name: str
+    pulls: list[PullRequestV1] = []
+    issues: list[IssueV1] | None = None
+    branches: list[BranchV2] = []
+    alerts: int | None = None
+    rulesets: list[RulesetInfoV2] | None = None
+    error: str | None = None
+    updated_at: str | None = None
+    path: str | None = None
+    local: LocalStatusV1 | None = None
 
 
 class RepoSnapshotV1(BaseModel):
@@ -65,9 +149,9 @@ class RepoSnapshotV1(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     dir: str
-    remote: str | None = None
+    remote: str | None
     local: LocalStatusV1
-    github: dict[str, Any] | None = None
+    github: RepoStateV1 | None = None
 
 
 # --------------------------------------------------------------------- v2 axis
@@ -103,30 +187,6 @@ class EpicClassificationV2(BaseModel):
     subject_uri: str | None
     carrier: Literal["pull_request", "issue"]
     observed_at: str | None
-
-
-class CopilotReviewV2(BaseModel):
-    """Summary of GitHub Copilot's review on a pull request."""
-
-    model_config = _V2_CONFIG
-
-    state: str
-    comment_count: int
-
-
-class BranchV2(BaseModel):
-    model_config = _V2_CONFIG
-
-    name: str
-
-
-class RulesetInfoV2(BaseModel):
-    model_config = _V2_CONFIG
-
-    id: int
-    name: str
-    enforcement: str
-    target: str
 
 
 class IssueV2(BaseModel):
@@ -206,7 +266,7 @@ class RepoSnapshotV2(BaseModel):
     model_config = _V2_CONFIG
 
     dir: str
-    remote: str | None = None
+    remote: str | None
     local: LocalStatusV1
     github: RepoStateV2 | None = None
 
@@ -226,7 +286,9 @@ class _SnapshotEnvelope(BaseModel):
     workspace: str
     host: str
     generated_at: datetime
-    gh_error: str | None = None
+    # required-but-nullable, same reasoning as LocalStatus: `null` is the producer
+    # saying GitHub was queried fine, an absent key is it saying nothing at all
+    gh_error: str | None
 
     def age_seconds(self, now: datetime | None = None) -> float:
         """Age of this snapshot; staleness is data, not an error."""
@@ -242,13 +304,13 @@ class _SnapshotEnvelope(BaseModel):
 class WorkspaceSnapshotV1(_SnapshotEnvelope):
     """Full fleet state of one host, as frozen by snapshot contract v1."""
 
-    repos: list[RepoSnapshotV1] = []
+    repos: list[RepoSnapshotV1]
 
 
 class WorkspaceSnapshotV2(_SnapshotEnvelope):
     """Full fleet state of one host under contract v2 — carries the epic axis."""
 
-    repos: list[RepoSnapshotV2] = []
+    repos: list[RepoSnapshotV2]
 
 
 Snapshot = WorkspaceSnapshotV1 | WorkspaceSnapshotV2
