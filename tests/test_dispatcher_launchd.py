@@ -93,3 +93,61 @@ def test_reinstall_without_checker_removes_the_old_snapshot_agent(
     assert "SKIPPED dev.atp.dispatcher.snapshot" in result.stderr
     assert "bootout gui/" in calls.read_text(encoding="utf-8")
     assert "/dev.atp.dispatcher.snapshot" in calls.read_text(encoding="utf-8")
+
+
+def test_rotate_covers_every_log_in_the_directory(tmp_path: Path) -> None:
+    """codex on #196: the snapshot agent added a third log and the rotator
+    still named only out/err — the slow-full-disk failure rotation exists
+    to stop, reintroduced by the PR that added a new writer. The glob must
+    rotate any *.log, including ones no one has invented yet."""
+    checkout, env, config, _ = _fixture(tmp_path)
+    log_dir = Path(env["HOME"]) / "Library/Logs/dispatcher"
+    log_dir.mkdir(parents=True)
+    big = b"x" * (10 * 1024 * 1024 + 1)
+    for name in ("out.log", "snapshot.log", "future-agent.log"):
+        (log_dir / name).write_bytes(big)
+    (log_dir / "small.log").write_bytes(b"tiny")
+
+    subprocess.run(
+        ["bash", "scripts/dispatcher_launchd.sh", "rotate"],
+        cwd=checkout, env=env, text=True, capture_output=True, check=True,
+    )
+
+    for name in ("out.log", "snapshot.log", "future-agent.log"):
+        assert (log_dir / f"{name}.1").exists(), f"{name} was not rotated"
+        assert (log_dir / name).stat().st_size == 0
+    assert not (log_dir / "small.log.1").exists(), "under-threshold rotated"
+
+
+def test_reinstall_retries_the_snapshot_bootstrap_transient(tmp_path: Path) -> None:
+    """codex on #196: the main service got the bootstrap retry, the
+    snapshot agent reused bootout/bootstrap without it — under set -e one
+    transient "error 5" aborted install with the publisher unloaded. Every
+    agent's bootstrap must survive one transient failure."""
+    checkout, env, config, calls = _fixture(tmp_path)
+    checker_bin = Path(env["HOME"]) / ".local/share/dispatcher-pinned-checker/bin"
+    checker_bin.mkdir(parents=True)
+    (checker_bin / "github-checker").write_text("#!/bin/sh" + chr(10) + "exit 0" + chr(10))
+    (checker_bin / "github-checker").chmod(0o755)
+
+    # launchctl: bootstrap of the SNAPSHOT label fails once, then works —
+    # the transient the retry exists for; everything else succeeds.
+    fake = Path(env["PATH"].split(":")[0]) / "launchctl"
+    marker = tmp_path / "failed-once"
+    script = "\n".join([
+        "#!/bin/sh",
+        'printf "%s\\n" "$*" >> "$LAUNCHCTL_CALLS"',
+        'case "$*" in',
+        '  bootstrap*snapshot*)',
+        f'    if [ ! -f "{marker}" ]; then touch "{marker}"; exit 5; fi ;;',
+        "esac",
+        "exit 0",
+        "",
+    ])
+    fake.write_text(script, encoding="utf-8")
+
+    result = _install(checkout, env, config)   # check=True: must not abort
+    assert "installed dev.atp.dispatcher.snapshot" in result.stderr
+    boots = [c for c in Path(env["LAUNCHCTL_CALLS"]).read_text().splitlines()
+             if c.startswith("bootstrap") and "snapshot" in c]
+    assert len(boots) == 2, f"expected retry after the transient, got {boots}"

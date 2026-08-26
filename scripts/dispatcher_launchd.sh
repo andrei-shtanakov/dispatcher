@@ -130,7 +130,12 @@ PLIST
 # file to a rename that silently detaches it.
 rotate_logs() {
     local f archived=0
-    for f in "$LOG_DIR/out.log" "$LOG_DIR/err.log"; do
+    # EVERY log this directory grows, not a hand-kept pair (codex on #196):
+    # the snapshot agent's log was added and the rotator still named only
+    # out/err — the exact slow-full-disk failure rotation exists to stop,
+    # reintroduced by the very PR that added a new writer. The glob keeps
+    # the next new agent covered without anyone remembering this loop.
+    for f in "$LOG_DIR"/*.log; do
         [ -f "$f" ] || continue
         local size
         size="$(stat -f%z "$f")"
@@ -210,6 +215,24 @@ generate_snapshot_plist() {
 PLIST
 }
 
+# bootout is asynchronous: an immediate bootstrap of the same label can hit
+# "Bootstrap failed: 5: Input/output error" while launchd tears the old
+# instance down. ONE retry helper for every agent (codex on #196): the main
+# service had the retry, the snapshot agent reused bootout/bootstrap without
+# it, and under set -e one transient aborted the whole install with the
+# publisher left unloaded — the same lesson, unlearned one call site over.
+bootstrap_with_retry() {
+    local label="$1" plist="$2" consequence="$3"
+    local attempt
+    for attempt in 1 2 3 4 5; do
+        if launchctl bootstrap "gui/$UID" "$plist" 2>/dev/null; then
+            return 0
+        fi
+        [ "$attempt" = 5 ] && die "bootstrap of $label kept failing — $consequence; try: launchctl bootstrap gui/$UID $plist"
+        sleep 1
+    done
+}
+
 install_agent() {
     local cfg port holder
     cfg="$(resolve_config "${1:-}")"
@@ -245,24 +268,18 @@ install_agent() {
     # hit "Bootstrap failed: 5: Input/output error" while launchd is still
     # tearing the old instance down — which left the service DOWN after an
     # upgrade, the exact opposite of what install is for. Found live.
-    for attempt in 1 2 3 4 5; do
-        if launchctl bootstrap "gui/$UID" "$PLIST" 2>/dev/null; then
-            break
-        fi
-        [ "$attempt" = 5 ] && die "bootstrap of $LABEL kept failing — service is NOT running; try: launchctl bootstrap gui/$UID $PLIST"
-        sleep 1
-    done
+    bootstrap_with_retry "$LABEL" "$PLIST" "service is NOT running"
 
     # Installed together on purpose: a service whose logs grow without bound
     # is a slow failure, and one installed separately is one forgotten.
     generate_rotate_plist > "$ROTATE_PLIST"
     launchctl bootout "gui/$UID/$ROTATE_LABEL" 2>/dev/null || true
-    launchctl bootstrap "gui/$UID" "$ROTATE_PLIST"
+    bootstrap_with_retry "$ROTATE_LABEL" "$ROTATE_PLIST" "log rotation is NOT running"
 
     if [ -x "$CHECKER_BIN/github-checker" ]; then
         generate_snapshot_plist "$cfg" > "$SNAPSHOT_PLIST"
         launchctl bootout "gui/$UID/$SNAPSHOT_LABEL" 2>/dev/null || true
-        launchctl bootstrap "gui/$UID" "$SNAPSHOT_PLIST"
+        bootstrap_with_retry "$SNAPSHOT_LABEL" "$SNAPSHOT_PLIST" "the snapshot publisher is NOT running"
         echo "installed $SNAPSHOT_LABEL -> every 30 min" >&2
     else
         # Absent is a stated fact, not a silent skip: without the publisher
