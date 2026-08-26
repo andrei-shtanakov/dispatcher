@@ -216,13 +216,39 @@ install_agent() {
     # race restarts forever, and the operator sees a service that is "loaded"
     # and unreachable — worse than a refusal that says what to stop.
     if holder="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null)" && [ -n "$holder" ]; then
-        die "port $port is already served by PID $holder — stop it first, or set a different \`port\` in $cfg"
+        # OUR OWN service does not count as a conflict: `install` is also
+        # the upgrade path, and the bootstrap below replaces the running
+        # process anyway. Refusing here made re-install impossible without
+        # a downtime `uninstall` first — discovered by hitting it while
+        # upgrading a live service. Anything else on the port still dies.
+        # launchd's pid is the `uv run` WRAPPER; the port is held by its
+        # python CHILD — so equality alone never matches (found by running
+        # it, not by reading it). Walk a few parents up from the holder.
+        own="$(launchctl print "gui/$UID/$LABEL" 2>/dev/null | awk '/^\tpid = /{print $3}')"
+        probe="$holder"
+        for _ in 1 2 3; do
+            [ -n "$probe" ] && [ "$probe" = "$own" ] && break
+            probe="$(ps -o ppid= -p "$probe" 2>/dev/null | tr -d ' ')"
+        done
+        if [ "$probe" != "$own" ]; then
+            die "port $port is already served by PID $holder — stop it first, or set a different \`port\` in $cfg"
+        fi
     fi
 
     mkdir -p "$LOG_DIR" "$(dirname "$PLIST")"
     generate "$cfg" > "$PLIST"
     launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
-    launchctl bootstrap "gui/$UID" "$PLIST"
+    # bootout is asynchronous: an immediate bootstrap of the same label can
+    # hit "Bootstrap failed: 5: Input/output error" while launchd is still
+    # tearing the old instance down — which left the service DOWN after an
+    # upgrade, the exact opposite of what install is for. Found live.
+    for attempt in 1 2 3 4 5; do
+        if launchctl bootstrap "gui/$UID" "$PLIST" 2>/dev/null; then
+            break
+        fi
+        [ "$attempt" = 5 ] && die "bootstrap of $LABEL kept failing — service is NOT running; try: launchctl bootstrap gui/$UID $PLIST"
+        sleep 1
+    done
 
     # Installed together on purpose: a service whose logs grow without bound
     # is a slow failure, and one installed separately is one forgotten.
