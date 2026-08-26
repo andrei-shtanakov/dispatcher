@@ -591,13 +591,37 @@ class RunController:
             )
         # Enumeration-level failures (an unlistable `runs/` or `projects/`
         # dir, `dispatcher/core/collectors/maestro.py:239`) are not tied to
-        # any single run_id and never produced a `RunFact` above.
+        # any single run_id and never produced a `RunFact` above. Filtered
+        # to THIS RepoKey: fail-closed is per-repo, so only a failure that
+        # could have hidden this repo's runs blocks it — its own subtree,
+        # or an ancestor on the path to it (projects/, host, owner). A
+        # neighbour repo's broken subtree is that repo's blocker, not a
+        # fleet-wide outage. A warning whose path cannot be matched at all
+        # stays blocking (unknown scope = fail-closed).
+        runs_root = self.runs_dir(key)
+        project_dir = runs_root.parent
+        projects_root = home / "projects"
+        lineage = [project_dir]
+        for parent in project_dir.parents:
+            lineage.append(parent)
+            if parent == projects_root:
+                break
+        relevant_markers = [f"cannot list {p}:" for p in lineage]
+        relevant_markers.append(f"cannot list {project_dir}/")
+
+        def _concerns_this_repo(warning: str) -> bool:
+            if "cannot list " not in warning:
+                return True  # unrecognized shape — keep, fail-closed
+            if any(marker in warning for marker in relevant_markers):
+                return True
+            return projects_root.as_posix() not in warning
+
         unreadable.extend(
-            w for w in scratch.warnings if w.startswith("runs enumeration:")
+            w
+            for w in scratch.warnings
+            if w.startswith("runs enumeration:") and _concerns_this_repo(w)
         )
         unreadable.extend(list_unreadable)
-
-        runs_root = self.runs_dir(key)
         for record in records:
             if (
                 record.repo_key != key.as_text()

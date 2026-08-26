@@ -457,7 +457,7 @@
       escape/reconciliation для crash-окна terminal-перехода (здоровый лок,
       которым владеет терминальная запись, — см. TODO в докстринге
       `mark_admission_rejected`); message-split capture-phase отказов submit.
-- [ ] Флейк `test_run_end_through_the_resolution_path_also_binds_to_the_checkout` (fake-maestro subprocess timing; 3 срабатывания за план B1, симптомы разные, standalone стабильно зелёный) @owner:github:andrei-shtanakov @id:flake-run-end-checkout
+- [ ] Флейк `test_run_end_through_the_resolution_path_also_binds_to_the_checkout` (fake-maestro subprocess timing; выстреливал в плане B1 и падает и standalone ~25-50% — замер 2026-08-26 на fbaed1c и HEAD, симптом: поздняя строка `run` от исходного launch-процесса перекрывает `run-end` в cwd-логе) @owner:github:andrei-shtanakov @id:flake-run-end-checkout
 - [ ] Флейк `test_revendor_script.py::test_a_signal_mid_run_leaves_the_working_copy_alone[SIGINT]` (периодически в полном прогоне, standalone зелёный) @owner:github:andrei-shtanakov @id:flake-revendor-sigint
 
 ## Хвосты качества

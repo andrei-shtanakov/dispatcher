@@ -2163,3 +2163,35 @@ def test_a_repeat_with_a_different_attempt_conflicts_for_any_prior_state(
     replay = controller.submit(first)
     assert replay.accepted is True
     assert replay.run_id == "01AAA"
+
+
+def test_a_neighbours_broken_runs_dir_does_not_block_this_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail-closed is per-RepoKey: an unlistable runs/ dir under ANOTHER
+    repo's project subtree is that repo's blocker, not a global outage —
+    only a failure that could have hidden THIS repo's runs (its own
+    subtree, or an ancestor on the way to it) may block this submit."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    controller = RunController(_config(tmp_path, cli), materialize_timeout=10.0)
+    home = tmp_path / "mhome"
+    # a NEIGHBOUR repo whose runs/ dir exists but cannot be listed
+    make_maestro_run(
+        home,
+        ("github.com", "owner", "neighbour"),
+        "01NNN",
+        started_at="2026-08-26T00:00:00Z",
+    )
+    broken = home / "projects/github.com/owner/neighbour/runs"
+
+    real_iterdir = Path.iterdir
+
+    def _deny_neighbour(self: Path):  # noqa: ANN202
+        if self == broken:
+            raise PermissionError(13, "injected: cannot list", str(self))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _deny_neighbour)
+    receipt = controller.submit(_request(head))
+    assert receipt.accepted is True, receipt.reason
