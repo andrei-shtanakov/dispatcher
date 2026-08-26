@@ -1930,3 +1930,34 @@ testCase('logs: reopening the SAME id invalidates an in-flight answer',
       `the first open's answer landed in the reopened view (got: ${html})`);
   });
 });
+
+testCase('logs: an unrelated click in the panel does NOT cancel a log fetch',
+  async () => {
+  // codex round 7 (found after merge). The delegated handler ran for every
+  // click in #rc-run-view and bumped the generation before checking the
+  // target — so clicking `status` while /logs was in flight made the answer
+  // fail the guard, and the pane sat on "reading…" although the server had
+  // replied. Only a newer LOG request may supersede an older one.
+  await withPage(async page => {
+    await openMaterialized(page);
+    let release;
+    const stalled = new Promise(r => { release = r; });
+    page.routes.push([u => u.endsWith("/logs"), async () => {
+      await stalled;
+      return ok({run_id: "01AAA", truncated: false, task_logs: [], warnings: [],
+        events: [{ts: "T1", event: "SURVIVED_THE_CLICK", raw: "{}"}]});
+    }]);
+    page.routes.push([u => u.endsWith("/verb"), () => ok(
+      {verb: "status", run_id: "01AAA", ok: true, stdout: "fine", stderr: ""})]);
+
+    const pending = click(page, '#rc-logs-load');   // fetch stalls
+    await click(page, '#rc-verb-status');           // unrelated control
+    release();
+    await pending;
+    await drain();
+
+    const html = el(page, '#rc-logs').innerHTML;
+    check(/SURVIVED_THE_CLICK/.test(html),
+      `an unrelated click cancelled the log fetch (got: ${html})`);
+  });
+});

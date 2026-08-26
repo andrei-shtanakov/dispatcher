@@ -1253,6 +1253,11 @@ def test_a_half_written_line_survives_as_raw(tmp_path: Path) -> None:
     assert logs.events[-1].raw == '{"timesta'
 
 
+@pytest.mark.skipif(
+    os.geteuid() == 0,
+    reason="chmod 000 does not stop root: under uid 0 the file reads fine "
+    "and the warning this test is about never fires (codex round 7, minor)",
+)
 def test_an_unreadable_timeline_warns_rather_than_reading_empty(
     tmp_path: Path,
 ) -> None:
