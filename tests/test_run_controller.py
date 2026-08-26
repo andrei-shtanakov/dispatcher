@@ -3,6 +3,7 @@
 import dataclasses
 import json
 import os
+import shutil
 import subprocess
 import textwrap
 import tracemalloc
@@ -1433,3 +1434,74 @@ def test_one_giant_jsonl_line_is_byte_capped_not_line_counted(
     assert len(logs.events) == 1, "a giant line must not vanish entirely"
     assert logs.events[0].event == "", "its tail cannot parse — raw, not typed"
     assert len(logs.events[0].raw) <= RunController._MAX_EVENT_BYTES
+
+
+# --- Identity provenance (codex round 5): a symlink must never let one ----
+# --- run's files answer under another run's id ----------------------------
+
+
+def _second_run_logs(tmp_path: Path) -> Path:
+    """A real OTHER run whose logs an attacker-shaped symlink points at."""
+    other = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01BBB/logs"
+    other.mkdir(parents=True)
+    (other / "events.jsonl").write_text('{"event": "FROM_01BBB"}\n')
+    (other / "stolen.log").write_text("BODY-OF-01BBB\n")
+    return other
+
+
+def test_a_symlinked_logs_dir_is_refused_not_served(tmp_path: Path) -> None:
+    """The observed case: 01AAA/logs -> 01BBB/logs.
+
+    Every earlier check passed it — containment resolved the link first and
+    then confirmed the file sat "inside" — while the response still carried
+    run_id="01AAA". Refusal, not empty: bytes with an unknown owner are
+    worse than none.
+    """
+    controller = _with_logs(tmp_path)
+    logs_a = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs"
+    other = _second_run_logs(tmp_path)
+    shutil.rmtree(logs_a)
+    logs_a.symlink_to(other, target_is_directory=True)
+
+    with pytest.raises(RunRejectedError, match="redirected by a symlink"):
+        controller.logs(_REQ)
+    with pytest.raises(RunRejectedError, match="redirected by a symlink"):
+        controller.task_log(_REQ, "stolen")
+
+
+def test_a_symlinked_events_file_is_not_followed(tmp_path: Path) -> None:
+    """One level down: the dir is real, events.jsonl points elsewhere.
+
+    A warning rather than a refusal — the task-log listing is still this
+    run's own — but the foreign timeline must not appear.
+    """
+    controller = _with_logs(tmp_path, red__log="ours")
+    logs_a = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs"
+    other = _second_run_logs(tmp_path)
+    (logs_a / "events.jsonl").symlink_to(other / "events.jsonl")
+
+    logs = controller.logs(_REQ)
+
+    assert logs.events == [], "the foreign timeline was served"
+    assert any("symlink" in w for w in logs.warnings), logs.warnings
+    assert logs.task_logs == ["red"], "the run's own listing should survive"
+
+
+def test_a_symlinked_task_log_is_refused_and_not_advertised(
+    tmp_path: Path,
+) -> None:
+    """The leaf: red.log real, stolen.log a symlink into another run."""
+    controller = _with_logs(tmp_path, red__log="ours")
+    logs_a = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs"
+    other = _second_run_logs(tmp_path)
+    (logs_a / "stolen.log").symlink_to(other / "stolen.log")
+
+    logs = controller.logs(_REQ)
+    assert logs.task_logs == ["red"], "the symlink was advertised"
+    assert any("symlink" in w for w in logs.warnings), logs.warnings
+
+    with pytest.raises(RunRejectedError, match="symlink"):
+        controller.task_log(_REQ, "stolen")
+    # And the honest file still reads — provenance must not break the
+    # ordinary path.
+    assert controller.task_log(_REQ, "red").text == "ours"

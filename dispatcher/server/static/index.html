@@ -1486,6 +1486,13 @@ document.getElementById("rc-open").addEventListener("click", async () => {
     return;
   }
   if (rcViewTimer !== null) { clearInterval(rcViewTimer); rcViewTimer = null; }
+  // A DISPLAY generation, not just a click generation (codex round 5,
+  // minor). `rcViewRequestId` alone cannot invalidate an in-flight log
+  // fetch when the operator goes A -> B -> A again: by the time A's old
+  // answer lands, the "current request" reads A once more and the textual
+  // check waves it through — into a freshly opened view it does not
+  // describe. Every explicit Open is a new display, even of the same id.
+  rcLogsGen++;
   rcViewRequestId = requestId;
   await rcPollView();
 });

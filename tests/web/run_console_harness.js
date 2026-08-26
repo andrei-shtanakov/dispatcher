@@ -1884,3 +1884,39 @@ testCase('logs: no button while there is no run — the 404 is not offered',
       'the button is missing on a materialized run');
   });
 });
+
+testCase('logs: reopening the SAME id invalidates an in-flight answer',
+  async () => {
+  // codex round 5, minor. rcLogsGen was a click generation, not a display
+  // generation: A (logs pending) -> open B -> open A again made the old
+  // answer textually valid — rcViewRequestId reads A once more — and it
+  // landed in a freshly opened view it does not describe.
+  await withPage(async page => {
+    await openMaterialized(page);
+    let release;
+    const stalled = new Promise(r => { release = r; });
+    page.routes.push([u => u.endsWith("/logs"), async () => {
+      await stalled;
+      return ok({run_id: "01AAA", truncated: false, task_logs: [], warnings: [],
+        events: [{ts: "T1", event: "STALE_FROM_FIRST_OPEN", raw: "{}"}]});
+    }]);
+    const pending = click(page, '#rc-logs-load');   // A: fetch stalls
+
+    page.routes.push([u => u.endsWith("/api/runs/req-b"), () => ok({
+      record: {state: 'materialized', run_id: '01BBB'},
+      run: {status: 'running'}, warnings: [],
+    })]);
+    el(page, '#rc-request-id').value = 'req-b';
+    await click(page, '#rc-open');                  // B
+    el(page, '#rc-request-id').value = 'req-materialized';
+    await click(page, '#rc-open');                  // A again — new display
+
+    release();
+    await pending;
+    await drain();
+
+    const html = el(page, '#rc-logs').innerHTML;
+    check(!/STALE_FROM_FIRST_OPEN/.test(html),
+      `the first open's answer landed in the reopened view (got: ${html})`);
+  });
+});

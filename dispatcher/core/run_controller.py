@@ -717,7 +717,12 @@ class RunController:
         shared fix for all of them). Raises OSError/FileNotFoundError to the
         caller: what an unreadable file MEANS differs per surface.
         """
-        with path.open("rb") as handle:
+        # O_NOFOLLOW: the reader itself refuses a symlinked LEAF, atomically —
+        # callers' `is_symlink()` checks give the clear message, this gives
+        # the guarantee that survives the check-to-open window. The same
+        # two-guard shape as _TASK_ID_RE plus containment.
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "rb") as handle:
             size = handle.seek(0, os.SEEK_END)
             truncated = size > max_bytes
             if truncated:
@@ -900,9 +905,27 @@ class RunController:
             )
         _, _, home = self._require_on()
         key = _key_from_record(record)
-        return home.joinpath(
+        # The path must also BE where the record says it is (codex round 5).
+        # `01AAA/logs` as a symlink to `01BBB/logs` passed every check the
+        # callers made — task_log's containment resolved the link FIRST and
+        # then confirmed the file sat "inside" it — while the response still
+        # said `run_id="01AAA"`: one run's logs under another run's identity,
+        # the feature's central guarantee inverted. With `home` resolved as
+        # the trusted base, a fully-resolved path that still equals itself
+        # contains no symlink at ANY component — run dir, `logs/`, or a
+        # parent — so the whole class closes at once, not the one observed
+        # example. Refusal, not a warning: serving bytes whose owner is
+        # unknown is worse than serving nothing.
+        logs_dir = home.resolve().joinpath(
             "projects", *safe_path_parts(key), "runs", record.run_id, "logs"
         )
+        if logs_dir.resolve() != logs_dir:
+            raise RunRejectedError(
+                f"log path for run {record.run_id} is redirected by a symlink "
+                f"— refusing to serve another run's files under this run's "
+                f"identity"
+            )
+        return logs_dir
 
     def logs(self, request_id: str) -> RunLogs:
         """maestro's own event timeline for this run, plus its task-log names.
@@ -920,17 +943,30 @@ class RunController:
         events: list[RunLogEvent] = []
         truncated = False
         events_path = logs_dir / "events.jsonl"
-        try:
-            data, truncated = self._read_tail_bytes(events_path, self._MAX_EVENT_BYTES)
-            lines = data.decode(errors="replace").splitlines()
-        except FileNotFoundError:
-            # Normal before maestro writes its first event; not a warning.
+        if events_path.is_symlink():
+            # Not followed: a symlink here re-points this run's TIMELINE at
+            # another run's. Unlike the directory case this is a warning,
+            # not a refusal — the task-log listing below is still this run's
+            # own and still worth serving.
+            warnings.append(
+                "events.jsonl is a symlink — not followed: it could present "
+                "another run's timeline as this run's"
+            )
             lines = []
-        except OSError as err:
-            # Unreadable is NOT empty — the distinction this codebase keeps
-            # insisting on, because the two look identical in a UI.
-            warnings.append(f"cannot read {events_path.name}: {err}")
-            lines = []
+        else:
+            try:
+                data, truncated = self._read_tail_bytes(
+                    events_path, self._MAX_EVENT_BYTES
+                )
+                lines = data.decode(errors="replace").splitlines()
+            except FileNotFoundError:
+                # Normal before maestro writes its first event; not a warning.
+                lines = []
+            except OSError as err:
+                # Unreadable is NOT empty — the distinction this codebase
+                # keeps insisting on: the two look identical in a UI.
+                warnings.append(f"cannot read {events_path.name}: {err}")
+                lines = []
         if truncated and len(lines) > 1:
             # A byte-bounded tail almost always starts mid-line. Dropping
             # that fragment is honest — `truncated` already says older
@@ -952,6 +988,12 @@ class RunController:
         task_logs: list[str] = []
         try:
             for candidate in sorted(logs_dir.glob("*.log")):
+                if candidate.is_symlink():
+                    # Advertised, it would be served under THIS run's id.
+                    warnings.append(
+                        f"log file not offered — it is a symlink: {candidate.name}"
+                    )
+                    continue
                 if not candidate.is_file():
                     continue
                 if self._TASK_ID_RE.match(candidate.stem):
@@ -982,7 +1024,20 @@ class RunController:
         # The second guard. `_TASK_ID_RE` already forbids a separator, so
         # this cannot fire today — which is the point: it is what still
         # holds if someone widens the pattern later.
-        if not path.is_relative_to(logs_dir.resolve()):
+        # Symlink first, containment second: with a provenance-checked
+        # logs_dir the containment check on the RESOLVED path also trips on
+        # a symlinked leaf — but with "escapes the run directory", which
+        # names the wrong crime. The precise refusal must come before the
+        # generic one, or the operator debugs a traversal that never was.
+        if (logs_dir / f"{task_id}.log").is_symlink():
+            # The clear message; the reader's O_NOFOLLOW is the guarantee
+            # behind it (codex round 5: a leaf symlink is the same identity
+            # substitution as the directory one, one level down).
+            raise RunRejectedError(
+                f"log for task {task_id!r} is a symlink — refusing to serve "
+                f"another run's file under this run's identity"
+            )
+        if not path.is_relative_to(logs_dir):
             raise RunRejectedError(f"task log escapes the run directory: {task_id!r}")
         # Seek to the tail; never read the whole file (codex round 3, major).
         # `read_bytes()` then slicing enforced the cap only AFTER the entire
