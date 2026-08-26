@@ -356,3 +356,21 @@ def test_a_legacy_record_without_new_fields_still_loads(tmp_path: Path) -> None:
     )
     rec = store.get("rc-legacy00-00000000")
     assert rec is not None and rec.fingerprint == "" and rec.response_class is None
+
+
+def test_list_returns_every_record_and_names_the_unreadable(tmp_path: Path) -> None:
+    """An unreadable record must not silently vanish from a listing —
+    the gate treats it fail-closed, so the listing must surface it."""
+    store = RunStore(tmp_path)
+    store.reserve(
+        "rc-aaaaaaaa-11111111",
+        _KEY,
+        known_runs=[],
+        window_start="T0",
+        work_id="w1",
+        revision="a" * 40,
+    )
+    (tmp_path / "requests" / "rc-broken00-00000000.json").write_text("{not json")
+    records, unreadable = store.list()
+    assert [r.request_id for r in records] == ["rc-aaaaaaaa-11111111"]
+    assert unreadable == ["rc-broken00-00000000.json"]

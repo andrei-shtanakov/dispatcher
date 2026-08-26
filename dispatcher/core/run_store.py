@@ -516,3 +516,26 @@ class RunStore:
             return self._lock_holder(self._lock_path(key))
         except _UnreadableLock:
             return None
+
+    def list(self) -> tuple[list[LaunchRecord], list[str]]:
+        """Every record, plus the FILENAMES that failed to parse.
+
+        The second return exists because the single-live-run gate is
+        fail-closed: a corrupt record must block as unknown, and a
+        listing that silently dropped it would let the gate read
+        "nothing non-terminal here" off exactly the broken input. Ordered
+        by filename (== `request_id`) for determinism — callers sort by
+        their own keys.
+        """
+        records: list[LaunchRecord] = []
+        unreadable: list[str] = []
+        try:
+            paths = sorted(self._requests.glob("*.json"))
+        except OSError:
+            return [], []
+        for path in paths:
+            try:
+                records.append(LaunchRecord.model_validate_json(path.read_text()))
+            except Exception:
+                unreadable.append(path.name)
+        return records, unreadable
