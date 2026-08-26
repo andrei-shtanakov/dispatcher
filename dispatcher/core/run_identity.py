@@ -99,13 +99,14 @@ def parse_remote_url(url: str) -> RepoKey:
 def safe_path_parts(key: RepoKey) -> tuple[str, ...]:
     """`key.as_path_parts()`, refused if any segment could escape a join.
 
-    The mirror above is deliberately faithful, and the producer's rule has a
-    hole: `_UNSAFE` permits dots and only `repo` is checked against
-    `{'.', '..'}`, so `git@host:owner/../etc.git` yields `('host', '..',
-    'etc')` — verified against maestro cb91759. dispatcher joins these
-    segments into a filesystem path, so it refuses the traversal on its own
-    side rather than diverging from the rule it mirrors. The producer-side
-    gap is filed as maestro inbox issue (slug:
+    The mirror above is deliberately faithful, and the producer's rule had a
+    hole before maestro#211: `_UNSAFE` permits dots and only `repo` was
+    checked against `{'.', '..'}`, so `git@host:owner/../etc.git` yielded
+    `('host', '..', 'etc')` — verified against maestro cb91759.
+    `_segment_is_safe` has checked all three segments since. dispatcher joins
+    these segments into a filesystem path, so it refuses the traversal on
+    its own side rather than diverging from the rule it mirrors. The
+    producer-side gap is filed as maestro inbox issue (slug:
     `repo-identity-owner-traversal`).
     """
     parts = key.as_path_parts()

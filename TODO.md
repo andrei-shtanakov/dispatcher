@@ -447,16 +447,22 @@
 
 ## Launchpad (спека docs/superpowers/specs/2026-08-26-launchpad-design.md)
 
-- [ ] PR-B1: store + admission + single-live-run гейт + оба escape — ветка `feat/launchpad-b1` готова (8 задач SDD, финальное ревью + fix-волна чисты); закрыть номером PR при мерже @owner:github:andrei-shtanakov @id:launchpad-b1
-- [ ] PR-B2: ре-вендор plan-fields с `@dag` + inventory reader @owner:github:andrei-shtanakov @id:launchpad-b2 @trigger:"@dag-контракт принят в каноне plan-fields (vault)"
+- [x] PR-B1: store + admission + single-live-run гейт + оба escape — ветка `feat/launchpad-b1` смержена (8 задач SDD, финальное ревью + fix-волна чисты) (PR #200) @owner:github:andrei-shtanakov @id:launchpad-b1
+- [ ] PR-B2: ре-вендор plan-fields с `@dag` + inventory reader — план `docs/superpowers/plans/2026-08-26-launchpad-b2-inventory.md` @owner:github:andrei-shtanakov @id:launchpad-b2
 - [ ] PR-C: `/api/launchpad` + структурные 409 + UI @owner:github:andrei-shtanakov @id:launchpad-c
       Наследует записанные хвосты B1: персистентность отказов lock-семьи
       (launch_busy/lock_malformed/lock_io_unreadable сейчас эфемерны by design);
-      одно предложение в спеку §7 про linked-unreadable=in-flight; perf —
-      `_capture_run_facts` сканирует весь request store на каждый submit;
+      perf — `_capture_run_facts` сканирует весь request store на каждый submit;
       escape/reconciliation для crash-окна terminal-перехода (здоровый лок,
       которым владеет терминальная запись, — см. TODO в докстринге
       `mark_admission_rejected`); message-split capture-phase отказов submit.
+      Хвосты B2: спека §5.1 «on both items» → «on both open items» (ruling
+      задачи 4); §6.1 `repo_url` — НЕ Mode-2 маркер, shipped/test-pinned
+      семантика submit принимает его как remote-URL именование репо,
+      дискриминатор — только `workstreams` (ревью PR #202, code-over-spec);
+      §7 нужен проход под НОВОЙ семантикой — linked-unreadable теперь
+      `run_state_unreadable` (owner override на ревью B1), а не
+      предполагавшееся in-flight.
 - [ ] Флейк `test_run_end_through_the_resolution_path_also_binds_to_the_checkout` (fake-maestro subprocess timing; выстреливал в плане B1 и падает и standalone ~25-50% — замер 2026-08-26 на fbaed1c и HEAD, симптом: поздняя строка `run` от исходного launch-процесса перекрывает `run-end` в cwd-логе) @owner:github:andrei-shtanakov @id:flake-run-end-checkout
 - [ ] Флейк `test_revendor_script.py::test_a_signal_mid_run_leaves_the_working_copy_alone[SIGINT]` (периодически в полном прогоне, standalone зелёный) @owner:github:andrei-shtanakov @id:flake-revendor-sigint
 
