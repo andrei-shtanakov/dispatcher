@@ -1,0 +1,7 @@
+# Fleet-derived fixture: minimal Mode-1 ProjectConfig shape, modeled on the
+# slice-0 pilot runs (spec §6.1). CI reads THIS file, never a sibling repo.
+# `repo:` is a CHECKOUT PATH — submit's shipped semantics (_reconcile_repo).
+repo: /home/user/labs/demo
+tasks:
+  - id: t1
+    prompt: do the thing

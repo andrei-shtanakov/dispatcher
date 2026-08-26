@@ -1,0 +1,6 @@
+# Fleet-derived fixture: Mode-1 shape naming its repo by remote URL —
+# accepted by submit (run_request.py, test_run_request.py pins it).
+repo_url: git@github.com:andrei-shtanakov/demo.git
+tasks:
+  - id: t1
+    prompt: do the thing
