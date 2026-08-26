@@ -506,6 +506,14 @@ def test_a_transition_release_takes_the_guard(tmp_path: Path) -> None:
             store.mark_materialized(_REQ, "01AAA")
         # the unguarded unlink never ran: the lock is still this request's
         assert store.holds_lock(_KEY) == _REQ
+        # and the transition did not half-happen: a record persisted as
+        # materialized/terminal BEFORE the failed release would strand a
+        # healthy lock forever (replay returns the terminal receipt, the
+        # malformed-lock escape refuses a lock that parses) — guard
+        # contention must fail the WHOLE transition, not just its tail
+        rec = store.get(_REQ)
+        assert rec is not None and rec.state == "reserved"
+        assert rec.run_id is None
     finally:
         holder.terminate()
         holder.join()

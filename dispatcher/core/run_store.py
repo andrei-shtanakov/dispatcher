@@ -563,21 +563,44 @@ class RunStore:
 
     def mark_materialized(self, request_id: str, run_id: str) -> LaunchRecord:
         """The launch is no longer in flight, so the lock is released here
-        — under the guard (via `_release_for`); a contended guard surfaces
-        as `GuardBusyError` into the caller's existing failure handling."""
-        record = self._transition(request_id, state="materialized", run_id=run_id)
-        self._release_for(record)
-        return record
+        — transition AND release inside one guarded section: a contended
+        guard fails the WHOLE transition (`GuardBusyError`, no partial
+        state) instead of persisting the new state and then abandoning a
+        healthy lock that no escape can release (the malformed-lock escape
+        correctly refuses a lock that parses)."""
+        return self._transition_and_release(
+            request_id, state="materialized", run_id=run_id
+        )
 
     def mark_unknown(self, request_id: str, reason: str) -> LaunchRecord:
         """The lock is deliberately NOT released (spec §5.2.1)."""
         return self._transition(request_id, state="launch_unknown", reason=reason)
 
     def mark_terminal(self, request_id: str, outcome: str) -> LaunchRecord:
-        """The run finished; like `mark_materialized`, this releases the lock."""
-        record = self._transition(request_id, state="terminal", outcome=outcome)
-        self._release_for(record)
-        return record
+        """The run finished; like `mark_materialized`, this releases the
+        lock — same one-guarded-section rule, same reason."""
+        return self._transition_and_release(
+            request_id, state="terminal", outcome=outcome
+        )
+
+    def _transition_and_release(
+        self, request_id: str, **fields: object
+    ) -> LaunchRecord:
+        """One guarded section for the transitions that free the lock.
+
+        The record is read first only to derive the RepoKey; the
+        transition itself re-reads under the guard, so the persisted
+        state and the release are atomic w.r.t. every other lock-path
+        mutation. The remaining window — a crash between the write and
+        the unlink — is the documented one in `mark_admission_rejected`'s
+        docstring (PR-C reconciliation)."""
+        record = self.get(request_id)
+        if record is None:
+            raise RunStoreError(f"no launch record for {request_id}")
+        with self.guard(self._key_of(record)):
+            updated = self._transition(request_id, **fields)
+            self._release_for_locked(updated)
+        return updated
 
     def mark_admission_rejected(
         self, request_id: str, *, code: str, detail: str, current: dict
@@ -633,14 +656,8 @@ class RunStore:
         self._release_for_locked(record)
         return record
 
-    def _release_for(self, record: LaunchRecord) -> None:
-        """Release `record`'s lock, taking the guard (spec §8.1) — for the
-        transitions whose callers do NOT already hold it
-        (`mark_materialized`, `mark_terminal`)."""
-        self.release_lock(self._key_of(record), record.request_id)
-
     def _release_for_locked(self, record: LaunchRecord) -> None:
-        """`_release_for` for a caller already INSIDE `guard(key)` —
+        """Release `record`'s lock for a caller already INSIDE `guard(key)` —
         `guard` is not reentrant, so re-taking it here would self-block
         for `GUARD_TIMEOUT_SECONDS` and die `GuardBusy` on every
         admission rejection and tombstone."""
