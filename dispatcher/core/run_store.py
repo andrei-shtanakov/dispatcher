@@ -21,6 +21,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -54,6 +55,16 @@ class LockBusyError(RunStoreError):
 
 class GuardBusyError(RunStoreError):
     """The recovery critical section stayed held past its bound (spec §8.1)."""
+
+
+class FingerprintMismatch(RunStoreError):
+    """A reused `request_id` named a different attempt (spec §8.2).
+
+    Idempotent replay is only safe for the SAME attempt: a fingerprint
+    mismatch means the caller reused an id across two different
+    `(repo_key, work_id, revision)` triples, and returning the stale
+    record would silently adopt another attempt's receipt.
+    """
 
 
 class _UnreadableLock(Exception):
@@ -136,6 +147,15 @@ class LaunchRecord(BaseModel):
     #: callers must refuse rather than fall back to the process cwd, which
     #: is precisely the bug.
     checkout: str = ""
+    #: This attempt's identity (spec §8.2) — persisted so a
+    #: fingerprint-matching repeat replays the original 409 semantically,
+    #: with zero re-classification.
+    fingerprint: str = ""
+    response_class: str | None = None
+    admission_code: str | None = None
+    admission_detail: str | None = None
+    admission_current: dict | None = None
+    rejected_at: str | None = None
 
 
 class RunStore:
@@ -322,9 +342,14 @@ class RunStore:
         Call this directly, instead of `reserve`, only from a caller that
         already holds the guard for `key` — `guard` is not reentrant.
         """
+        fp = fingerprint_of(key.as_text(), work_id, revision)
         existing = self.get(request_id)
         if existing is not None:
-            return existing
+            if existing.fingerprint == fp:
+                return existing
+            raise FingerprintMismatch(
+                f"{request_id} was already used for a different attempt"
+            )
         self._ensure()
         lock = self._lock_path(key)
         try:
@@ -343,7 +368,7 @@ class RunStore:
         with os.fdopen(fd, "w") as handle:
             payload = {
                 "request_id": request_id,
-                "fingerprint": fingerprint_of(key.as_text(), work_id, revision),
+                "fingerprint": fp,
                 "created_at": window_start,
                 "pid": os.getpid(),
             }
@@ -364,6 +389,7 @@ class RunStore:
             plan_ref_path=plan_ref_path,
             plan_commit=plan_commit,
             checkout=checkout,
+            fingerprint=fp,
         )
         try:
             self._write(record)
@@ -450,6 +476,23 @@ class RunStore:
     def mark_terminal(self, request_id: str, outcome: str) -> LaunchRecord:
         """The run finished; like `mark_materialized`, this releases the lock."""
         record = self._transition(request_id, state="terminal", outcome=outcome)
+        self._release_for(record)
+        return record
+
+    def mark_admission_rejected(
+        self, request_id: str, *, code: str, detail: str, current: dict
+    ) -> LaunchRecord:
+        """Terminalize a refused attempt; the lock never outlives the fact."""
+        record = self._transition(
+            request_id,
+            state="terminal",
+            outcome="admission-rejected",
+            response_class="admission_rejected",
+            admission_code=code,
+            admission_detail=detail,
+            admission_current=current,
+            rejected_at=datetime.now(UTC).isoformat(),
+        )
         self._release_for(record)
         return record
 

@@ -1,5 +1,6 @@
 """Durable launch records and the per-RepoKey lock (spec §5.2, §5.4)."""
 
+import json
 import multiprocessing
 import time
 from pathlib import Path
@@ -9,6 +10,7 @@ import pytest
 from dispatcher.core.run_identity import RepoKey
 from dispatcher.core.run_store import (
     GUARD_TIMEOUT_SECONDS,
+    FingerprintMismatch,
     GuardBusyError,
     LockBusyError,
     Malformed,
@@ -273,3 +275,84 @@ def test_an_empty_lock_reads_as_malformed_not_as_absent(tmp_path: Path) -> None:
     state = store.read_lock(_KEY)
     assert isinstance(state, Malformed)
     assert store.read_lock(RepoKey(host="github.com", owner="o", repo="other")) is None
+
+
+def test_reserve_replays_only_a_matching_fingerprint(tmp_path: Path) -> None:
+    """Same request_id + same attempt → prior record; different attempt →
+    FingerprintMismatch. A reused id must not adopt another attempt's
+    receipt (spec §8.2)."""
+    store = RunStore(tmp_path)
+    first = store.reserve(
+        "rc-aaaaaaaa-11111111",
+        _KEY,
+        known_runs=[],
+        window_start="T0",
+        work_id="w1",
+        revision="a" * 40,
+    )
+    again = store.reserve(
+        "rc-aaaaaaaa-11111111",
+        _KEY,
+        known_runs=[],
+        window_start="T9",
+        work_id="w1",
+        revision="a" * 40,
+    )
+    assert again == first
+    with pytest.raises(FingerprintMismatch):
+        store.reserve(
+            "rc-aaaaaaaa-11111111",
+            _KEY,
+            known_runs=[],
+            window_start="T9",
+            work_id="OTHER",
+            revision="a" * 40,
+        )
+
+
+def test_admission_rejection_is_terminal_and_reproducible(tmp_path: Path) -> None:
+    """The rejection persists an immutable payload (spec §8.2): a repeat
+    must replay the original decision after the workspace moved on —
+    re-classification could even PASS where the original failed."""
+    store = RunStore(tmp_path)
+    store.reserve(
+        "rc-aaaaaaaa-11111111",
+        _KEY,
+        known_runs=[],
+        window_start="T0",
+        work_id="w1",
+        revision="a" * 40,
+    )
+    rec = store.mark_admission_rejected(
+        "rc-aaaaaaaa-11111111",
+        code="run_in_flight",
+        detail="run 01X has no terminal outcome",
+        current={"run_id": "01X", "run_status": "interrupted"},
+    )
+    assert rec.state == "terminal"
+    assert rec.outcome == "admission-rejected"
+    assert rec.response_class == "admission_rejected"
+    assert rec.admission_code == "run_in_flight"
+    assert rec.admission_current == {"run_id": "01X", "run_status": "interrupted"}
+    assert rec.rejected_at
+    # and the lock is free again for the next attempt
+    assert store.read_lock(_KEY) is None
+
+
+def test_a_legacy_record_without_new_fields_still_loads(tmp_path: Path) -> None:
+    """Migration is defaults, not a rewrite: pre-B1 records must read."""
+    store = RunStore(tmp_path)
+    path = tmp_path / "requests" / "rc-legacy00-00000000.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "request_id": "rc-legacy00-00000000",
+                "repo_key": "github.com/owner/deployer",
+                "state": "materialized",
+                "run_id": "01OLD",
+            }
+        )
+    )
+    rec = store.get("rc-legacy00-00000000")
+    assert rec is not None and rec.fingerprint == "" and rec.response_class is None
