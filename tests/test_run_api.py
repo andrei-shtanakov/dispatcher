@@ -1,5 +1,7 @@
 """HTTP surface of the control plane (spec §5.3, §6)."""
 
+import os
+import subprocess
 from pathlib import Path
 
 import httpx
@@ -322,3 +324,345 @@ def test_view_surfaces_warnings_for_an_unreadable_run_source(tmp_path: Path) -> 
         assert view.warnings, "an unreadable runs/ must not read the same as absent"
     finally:
         runs_dir.chmod(0o755)
+
+
+async def test_acknowledge_vanished_happy_path_returns_the_tombstone(
+    tmp_path: Path,
+) -> None:
+    """POST .../acknowledge-vanished on a genuinely absent run directory
+    returns 200 with the tombstone fields set (spec §8.3)."""
+    from dispatcher.core.run_identity import RepoKey
+    from dispatcher.core.run_store import RunStore
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    home = tmp_path / "mhome"  # no run directory is ever created under it
+    key = RepoKey(host="github.com", owner="owner", repo="deployer")
+    store = RunStore(tmp_path / "state")
+    store.reserve("req-1", key, known_runs=[], window_start="t")
+    store.mark_materialized("req-1", "01AAA")
+
+    config = DispatcherConfig(
+        roots=(ws,),
+        maestro_home=home,
+        run_state_dir=tmp_path / "state",
+        maestro_cli=tmp_path / "unused-maestro",
+    )
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/runs/req-1/acknowledge-vanished",
+            json={
+                "confirm_run_id": "01AAA",
+                "reason": "host wiped",
+                "display_name": None,
+            },
+            headers={"X-Action-Token": token},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["outcome"] == "vanished-acknowledged"
+    assert body["ack_actor"] == "local-unauthenticated"
+    assert body["ack_reason"] == "host wiped"
+    assert body["prior_run_id"] == "01AAA"
+
+
+def _checkout(root: Path, name: str, remote: str) -> Path:
+    """A minimal git checkout with an origin remote — all
+    `identity_from_checkout` reads (no commit needed)."""
+    repo = root / name
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "remote", "add", "origin", remote], check=True
+    )
+    return repo
+
+
+async def test_release_malformed_lock_happy_path_returns_the_audit(
+    tmp_path: Path,
+) -> None:
+    """POST .../release-malformed quarantines a malformed lock and
+    returns 200 with the audit record, including its sha256 (spec §8.3)."""
+    import hashlib
+
+    from dispatcher.core.run_identity import RepoKey
+    from dispatcher.core.run_store import RunStore
+
+    ws = tmp_path / "ws"
+    _checkout(ws, "deployer", "git@github.com:owner/deployer.git")
+    key = RepoKey(host="github.com", owner="owner", repo="deployer")
+    store = RunStore(tmp_path / "state")
+    lock = store._lock_path(key)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(b"half-writ")
+
+    config = DispatcherConfig(
+        roots=(ws,),
+        run_state_dir=tmp_path / "state",
+        maestro_cli=tmp_path / "unused-maestro",
+    )
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/locks/release-malformed",
+            json={
+                "repo_key": "github.com/owner/deployer",
+                "confirm_repo_key": "github.com/owner/deployer",
+                "reason": "crash residue",
+                "display_name": None,
+            },
+            headers={"X-Action-Token": token},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["repo_key"] == "github.com/owner/deployer"
+    assert body["actor"] == "local-unauthenticated"
+    assert body["reason"] == "crash residue"
+    assert body["sha256"] == hashlib.sha256(b"half-writ").hexdigest()
+    assert body["size"] == 9
+    assert not lock.exists()
+
+
+async def test_release_malformed_lock_confirm_mismatch_is_409(tmp_path: Path) -> None:
+    """A wrong confirm_repo_key is refused before anything is touched —
+    spec §8.3's retype safeguard, same as acknowledge-vanished's."""
+    ws = tmp_path / "ws"
+    _checkout(ws, "deployer", "git@github.com:owner/deployer.git")
+    config = DispatcherConfig(
+        roots=(ws,),
+        run_state_dir=tmp_path / "state",
+        maestro_cli=tmp_path / "unused-maestro",
+    )
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/locks/release-malformed",
+            json={
+                "repo_key": "github.com/owner/deployer",
+                "confirm_repo_key": "github.com/owner/WRONG",
+                "reason": "r",
+                "display_name": None,
+            },
+            headers={"X-Action-Token": token},
+        )
+    assert resp.status_code == 409
+    assert "retype" in resp.json()["detail"]
+
+
+async def test_release_malformed_guard_busy_is_coded_409(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I-3: `GuardBusyError` is a `RunStoreError` SUBCLASS — unless it is
+    caught first, the 409 loses the `guard_busy:` code prefix PR-C's
+    structured taxonomy keys off."""
+    from dispatcher.core.run_identity import RepoKey
+    from dispatcher.core.run_store import GuardBusyError, RunStore
+
+    ws = tmp_path / "ws"
+    _checkout(ws, "deployer", "git@github.com:owner/deployer.git")
+    config = DispatcherConfig(
+        roots=(ws,),
+        run_state_dir=tmp_path / "state",
+        maestro_cli=tmp_path / "unused-maestro",
+    )
+
+    def _busy(
+        self: RunStore, key: RepoKey, *, actor: str, reason: str
+    ) -> dict[str, object]:
+        raise GuardBusyError("the lock-recovery section has been held past 2.0s")
+
+    monkeypatch.setattr(RunStore, "release_malformed_lock", _busy)
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/locks/release-malformed",
+            json={
+                "repo_key": "github.com/owner/deployer",
+                "confirm_repo_key": "github.com/owner/deployer",
+                "reason": "r",
+                "display_name": None,
+            },
+            headers={"X-Action-Token": token},
+        )
+    assert resp.status_code == 409
+    assert resp.json()["detail"].startswith("guard_busy: ")
+
+
+async def test_acknowledge_with_an_unsafe_request_id_is_409_not_500(
+    tmp_path: Path,
+) -> None:
+    """I-4 pin: `store.get` raises a bare `RunStoreError` for a request_id
+    outside its safe charset, and the id here is client URL input. The
+    route's `except RunStoreError → 409` translation is load-bearing —
+    without it this is an unhandled 500 on the security surface."""
+    async with _client(tmp_path, control_plane=True) as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/runs/foo!bar/acknowledge-vanished",
+            json={"confirm_run_id": "01AAA", "reason": "r", "display_name": None},
+            headers={"X-Action-Token": token},
+        )
+    assert resp.status_code == 409
+
+
+async def test_acknowledge_lock_busy_is_409_not_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M-4: `LockBusyError` (a foreign or malformed lock surfacing from the
+    release inside `mark_vanished_acknowledged`) must map to 409, not fall
+    through the route as an unhandled 500."""
+    from dispatcher.core.run_identity import RepoKey
+    from dispatcher.core.run_store import LockBusyError, RunStore
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    key = RepoKey(host="github.com", owner="owner", repo="deployer")
+    store = RunStore(tmp_path / "state")
+    store.reserve("req-1", key, known_runs=[], window_start="t")
+    store.mark_materialized("req-1", "01AAA")
+
+    def _busy(
+        self: RunStore, request_id: str, *, actor: str, reason: str, prior_run_id: str
+    ):
+        raise LockBusyError("lock is held by someone-else, not req-1")
+
+    monkeypatch.setattr(RunStore, "mark_vanished_acknowledged", _busy)
+    config = DispatcherConfig(
+        roots=(ws,),
+        maestro_home=tmp_path / "mhome",
+        run_state_dir=tmp_path / "state",
+        maestro_cli=tmp_path / "unused-maestro",
+    )
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/runs/req-1/acknowledge-vanished",
+            json={"confirm_run_id": "01AAA", "reason": "r", "display_name": None},
+            headers={"X-Action-Token": token},
+        )
+    assert resp.status_code == 409
+
+
+async def test_release_malformed_resolves_a_root_that_is_itself_a_checkout(
+    tmp_path: Path,
+) -> None:
+    """`config.roots` may point AT a checkout, not only at a directory of
+    checkouts (discovery walks `[root, *children]`) — the escape's resolver
+    must consider the root itself. The sharpest shape: a git WORKTREE
+    checkout, whose `.git` is a FILE — child-only iteration then has no
+    directory to resolve upward from, and the one repo shape that needs
+    the escape has no working HTTP escape at all."""
+    from dispatcher.core.run_identity import RepoKey
+    from dispatcher.core.run_store import RunStore
+
+    ws = tmp_path / "ws"
+    main = _checkout(ws, "deployer-main", "git@github.com:owner/deployer.git")
+    subprocess.run(
+        ["git", "-C", str(main), "commit", "--allow-empty", "-m", "seed", "-q"],
+        check=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        },
+    )
+    repo = ws / "deployer"
+    subprocess.run(
+        ["git", "-C", str(main), "worktree", "add", "--detach", str(repo)],
+        check=True,
+        capture_output=True,
+    )
+    assert (repo / ".git").is_file(), "worktree shape: .git must be a file"
+    key = RepoKey(host="github.com", owner="owner", repo="deployer")
+    store = RunStore(tmp_path / "state")
+    lock = store._lock_path(key)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(b"half-writ")
+
+    config = DispatcherConfig(
+        roots=(repo,),  # the checkout ITSELF is the configured root
+        run_state_dir=tmp_path / "state",
+        maestro_cli=tmp_path / "unused-maestro",
+    )
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/locks/release-malformed",
+            json={
+                "repo_key": "github.com/owner/deployer",
+                "confirm_repo_key": "github.com/owner/deployer",
+                "reason": "crash residue",
+                "display_name": None,
+            },
+            headers={"X-Action-Token": token},
+        )
+    assert resp.status_code == 200
+    assert not lock.exists()
+
+
+async def test_release_malformed_survives_an_unlistable_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unlistable configured root must not turn the administrative
+    escape into an unhandled 500 — the resolver skips what it cannot list
+    (the root itself is still tried) and the search continues over the
+    remaining roots."""
+    from dispatcher.core.run_identity import RepoKey
+    from dispatcher.core.run_store import RunStore
+
+    broken_root = tmp_path / "broken"
+    broken_root.mkdir()
+    ws = tmp_path / "ws"
+    _checkout(ws, "deployer", "git@github.com:owner/deployer.git")
+    key = RepoKey(host="github.com", owner="owner", repo="deployer")
+    store = RunStore(tmp_path / "state")
+    lock = store._lock_path(key)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(b"half-writ")
+
+    real_iterdir = Path.iterdir
+
+    def _deny_broken(self: Path):  # noqa: ANN202
+        if self == broken_root:
+            raise PermissionError(13, "injected: cannot list", str(self))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _deny_broken)
+    config = DispatcherConfig(
+        roots=(broken_root, ws),
+        run_state_dir=tmp_path / "state",
+        maestro_cli=tmp_path / "unused-maestro",
+    )
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/locks/release-malformed",
+            json={
+                "repo_key": "github.com/owner/deployer",
+                "confirm_repo_key": "github.com/owner/deployer",
+                "reason": "crash residue",
+                "display_name": None,
+            },
+            headers={"X-Action-Token": token},
+        )
+    assert resp.status_code == 200
+    assert not lock.exists()

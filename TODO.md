@@ -445,6 +445,21 @@
       сутки утверждала обратное про продюсера, и перепин случился потому, что человек
       заметил мерж, а не потому, что прибор доложил. Один раз — совпадение.
 
+## Launchpad (спека docs/superpowers/specs/2026-08-26-launchpad-design.md)
+
+- [ ] PR-B1: store + admission + single-live-run гейт + оба escape — ветка `feat/launchpad-b1` готова (8 задач SDD, финальное ревью + fix-волна чисты); закрыть номером PR при мерже @owner:github:andrei-shtanakov @id:launchpad-b1
+- [ ] PR-B2: ре-вендор plan-fields с `@dag` + inventory reader @owner:github:andrei-shtanakov @id:launchpad-b2 @trigger:"@dag-контракт принят в каноне plan-fields (vault)"
+- [ ] PR-C: `/api/launchpad` + структурные 409 + UI @owner:github:andrei-shtanakov @id:launchpad-c
+      Наследует записанные хвосты B1: персистентность отказов lock-семьи
+      (launch_busy/lock_malformed/lock_io_unreadable сейчас эфемерны by design);
+      одно предложение в спеку §7 про linked-unreadable=in-flight; perf —
+      `_capture_run_facts` сканирует весь request store на каждый submit;
+      escape/reconciliation для crash-окна terminal-перехода (здоровый лок,
+      которым владеет терминальная запись, — см. TODO в докстринге
+      `mark_admission_rejected`); message-split capture-phase отказов submit.
+- [ ] Флейк `test_run_end_through_the_resolution_path_also_binds_to_the_checkout` (fake-maestro subprocess timing; выстреливал в плане B1 и падает и standalone ~25-50% — замер 2026-08-26 на fbaed1c и HEAD, симптом: поздняя строка `run` от исходного launch-процесса перекрывает `run-end` в cwd-логе) @owner:github:andrei-shtanakov @id:flake-run-end-checkout
+- [ ] Флейк `test_revendor_script.py::test_a_signal_mid_run_leaves_the_working_copy_alone[SIGINT]` (периодически в полном прогоне, standalone зелёный) @owner:github:andrei-shtanakov @id:flake-revendor-sigint
+
 ## Хвосты качества
 
 - [x] Проход 1 слайса 0 ПРИНЯТ — deployer#40 @owner:github:andrei-shtanakov @id:df-slice0-pass1-acceptance

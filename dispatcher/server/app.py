@@ -60,7 +60,13 @@ from dispatcher.core.run_controller import (
     UnknownResolution,
     VerbOutcome,
 )
+from dispatcher.core.run_identity import IdentityError, RepoKey, identity_from_checkout
 from dispatcher.core.run_request import RunRejectedError, RunRequest
+from dispatcher.core.run_store import (
+    GuardBusyError,
+    LaunchRecord,
+    RunStoreError,
+)
 from dispatcher.core.service import SnapshotService, recent_errors
 from dispatcher.core.spec_runner_config import (
     ProjectSpecRunnerConfig,
@@ -154,6 +160,29 @@ class ResolveRequest(BaseModel):
 
     run_id: str | None = None
     outcome: str | None = None
+
+
+class AcknowledgeVanishedRequest(BaseModel):
+    """POST /api/runs/{id}/acknowledge-vanished — the audited escape
+    (spec §8.3). `display_name` is self-reported and never the actor of
+    record — the base actor string is server-assigned."""
+
+    confirm_run_id: str
+    reason: str
+    display_name: str | None = None
+
+
+class ReleaseMalformedLockRequest(BaseModel):
+    """POST /api/locks/release-malformed — the audited escape (spec §8.3).
+    The lock PATH is computed server-side from a `repo_key` verified
+    against a real checkout under a configured root — a client never
+    names a file. `display_name` is self-reported, same rule as
+    `AcknowledgeVanishedRequest`."""
+
+    repo_key: str
+    confirm_repo_key: str
+    reason: str
+    display_name: str | None = None
 
 
 class VerbRequest(BaseModel):
@@ -659,6 +688,39 @@ def create_app(
         if token != action_token:
             raise HTTPException(status_code=403, detail="bad or missing action token")
 
+    def _resolve_known_repo_key(repo_key: str) -> RepoKey | None:
+        """The `RepoKey` a real checkout under a configured root actually
+        reports, matching `repo_key` — never a `RepoKey` built directly
+        from the client's string, which would let an arbitrary value
+        reach `safe_path_parts` for a repo dispatcher never checked out
+        (spec §8.3: the lock path is computed server-side, from identity
+        dispatcher can verify, not named by the caller).
+        """
+        for root in config.roots:
+            if not root.is_dir():
+                continue
+            # The root ITSELF is a candidate: `config.roots` may point AT
+            # a checkout, not only at a directory of checkouts (discovery
+            # walks `[root, *children]`). Child-only iteration would leave
+            # a worktree-shaped root (`.git` is a FILE there) with no
+            # directory to resolve from at all. An unlistable root is not
+            # an unhandled 500 for the whole escape: the root itself is
+            # still tried, and the search continues over the other roots
+            # (worst case the key resolves nowhere → the controlled 409).
+            try:
+                children = [c for c in root.iterdir() if c.is_dir()]
+            except OSError:
+                children = []
+            candidates = (root, *children)
+            for candidate in candidates:
+                try:
+                    found = identity_from_checkout(candidate)
+                except IdentityError:
+                    continue
+                if found.as_text() == repo_key:
+                    return found
+        return None
+
     @app.post("/api/runs/submit", response_model=LaunchReceipt)
     def submit_run(
         request: RunRequest,
@@ -749,6 +811,85 @@ def create_app(
             return runs.resolve_unknown(request_id)
         except RunRejectedError as err:
             raise HTTPException(status_code=422, detail=str(err)) from err
+        except ControlPlaneOff as err:
+            raise HTTPException(status_code=409, detail=str(err)) from err
+
+    @app.post(
+        "/api/runs/{request_id}/acknowledge-vanished", response_model=LaunchRecord
+    )
+    def acknowledge_vanished_run(
+        request_id: str,
+        request: AcknowledgeVanishedRequest,
+        x_action_token: str | None = Header(default=None),
+    ) -> LaunchRecord:
+        """Audited administrative release of a fail-closed `run_vanished`
+        block (spec §8.3): the record keeps who attested the run was gone,
+        not just that someone did."""
+        _require_token(x_action_token)
+        try:
+            return runs.acknowledge_vanished(
+                request_id,
+                request.confirm_run_id,
+                request.reason,
+                request.display_name,
+            )
+        except RunRejectedError as err:
+            # 409, not 422 (unlike `/resolve` above): every refusal here
+            # is "the current state doesn't allow this" — still exists,
+            # wrong confirm_run_id, terminal already, unreadable — a
+            # conflict with what the caller asserted, not a malformed
+            # request body (PR-C restructures `/resolve` to match).
+            raise HTTPException(status_code=409, detail=str(err)) from err
+        except GuardBusyError as err:
+            raise HTTPException(status_code=409, detail=f"guard_busy: {err}") from err
+        except RunStoreError as err:
+            # M-4: a foreign or malformed lock surfacing as `LockBusyError`
+            # from the release inside `mark_vanished_acknowledged` — the
+            # record may already be terminal by then; still a 409 conflict,
+            # never an unhandled 500. Ordered AFTER `GuardBusyError`, its
+            # subclass, so the `guard_busy:` code prefix survives.
+            raise HTTPException(status_code=409, detail=str(err)) from err
+        except ControlPlaneOff as err:
+            raise HTTPException(status_code=409, detail=str(err)) from err
+
+    @app.post("/api/locks/release-malformed")
+    def release_malformed_lock_route(
+        request: ReleaseMalformedLockRequest,
+        x_action_token: str | None = Header(default=None),
+    ) -> dict[str, object]:
+        """Audited administrative quarantine of a MALFORMED lock file
+        (spec §8.3) — never a healthy one; `RunStore.release_malformed_lock`
+        proves that itself, under the guard, before anything is moved."""
+        _require_token(x_action_token)
+        if request.confirm_repo_key != request.repo_key:
+            raise HTTPException(
+                status_code=409,
+                detail="confirm_repo_key does not match repo_key — retype it",
+            )
+        key = _resolve_known_repo_key(request.repo_key)
+        if key is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"unknown repo_key: {request.repo_key!r} — not a checkout "
+                    "under any configured root"
+                ),
+            )
+        try:
+            # The controller's own wrapper: actor and reason normalization
+            # live beside `acknowledge_vanished`'s — the two audited
+            # escapes are meant to agree — and this route stops reaching
+            # private members (final review M-8).
+            return runs.release_malformed_lock(
+                key, reason=request.reason, display_name=request.display_name
+            )
+        except GuardBusyError as err:
+            # Subclass FIRST (I-3): `GuardBusyError` IS a `RunStoreError`,
+            # and PR-C's taxonomy keys off the `guard_busy:` code prefix —
+            # the reverse order made this branch unreachable.
+            raise HTTPException(status_code=409, detail=f"guard_busy: {err}") from err
+        except (RunStoreError, RunRejectedError) as err:
+            raise HTTPException(status_code=409, detail=str(err)) from err
         except ControlPlaneOff as err:
             raise HTTPException(status_code=409, detail=str(err)) from err
 

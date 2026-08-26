@@ -2,22 +2,40 @@
 
 import dataclasses
 import json
+import multiprocessing
 import os
 import shutil
 import subprocess
 import textwrap
+import time
 import tracemalloc
 from pathlib import Path
 
 import pytest
+from conftest import make_maestro_run
 from pydantic import ValidationError
 
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.run_controller import RunController
+from dispatcher.core.run_identity import RepoKey
 from dispatcher.core.run_request import RunRejectedError, RunRequest
-from dispatcher.core.run_store import LockBusyError, RunStore
+from dispatcher.core.run_store import GUARD_TIMEOUT_SECONDS, LockBusyError, RunStore
 
 _REQ = "11111111-1111-4111-8111-111111111111"
+_DEPLOYER_KEY = RepoKey(host="github.com", owner="owner", repo="deployer")
+
+
+def _hold_store_guard(state_dir: str, acquired) -> None:
+    """Multiprocessing target for `test_guard_busy_refuses_with_zero_lock_mutations`.
+
+    A module-level, spawn-safe function per `tests/test_run_store.py`'s own
+    `_hold_guard` pattern — a lambda/nested closure fails to pickle under
+    macOS's "spawn" start method.
+    """
+    store = RunStore(Path(state_dir))
+    with store.guard(_DEPLOYER_KEY):
+        acquired.set()
+        time.sleep(GUARD_TIMEOUT_SECONDS + 2)
 
 
 def _repo(root: Path) -> str:
@@ -270,7 +288,19 @@ def test_resubmission_against_a_launching_record_carries_a_reason(
     assert config.run_state_dir is not None
     store = RunStore(config.run_state_dir)
     key = RepoKey(host="github.com", owner="owner", repo="deployer")
-    store.reserve(_REQ, key, known_runs=[], window_start="t")
+    # The record must carry the SAME attempt identity the resubmission will
+    # send (production reserve always persists the request's own fields) —
+    # a bare reserve would fingerprint an empty attempt, and the repeat
+    # would correctly, but irrelevantly, conflict instead of replaying.
+    store.reserve(
+        _REQ,
+        key,
+        known_runs=[],
+        window_start="t",
+        work_id="todo://deployer/entrypoint-token-boundary-match",
+        revision=head,
+        repository="deployer",
+    )
     store.mark_launching(_REQ)
 
     controller = RunController(config)
@@ -301,7 +331,11 @@ def test_busy_repository_is_accepted_false(tmp_path: Path) -> None:
     )
     receipt = controller.submit(second)
     assert receipt.accepted is False
-    assert "in flight" in (receipt.reason or "")
+    # Task 6 fix round 1 (I1): a held lock now surfaces the specific
+    # admission code from `classify_repo` (`launch_busy:`) instead of the
+    # old generic "already in flight" text — same refusal, a more precise
+    # reason.
+    assert (receipt.reason or "").startswith("launch_busy:")
 
 
 def test_child_is_launched_with_an_explicit_maestro_home(tmp_path: Path) -> None:
@@ -431,7 +465,9 @@ def test_mark_materialized_failure_never_claims_the_run_did_not_happen(
     )
     second_receipt = RunController(_config(tmp_path, cli)).submit(second)
     assert second_receipt.accepted is False
-    assert "in flight" in (second_receipt.reason or "")
+    # Task 6 fix round 1 (I1): see the same note in
+    # test_busy_repository_is_accepted_false.
+    assert (second_receipt.reason or "").startswith("launch_busy:")
 
 
 # -- task 5: leaving launch_unknown — adoption and operator resolution ------
@@ -483,14 +519,20 @@ def test_two_candidates_are_never_guessed_between(tmp_path: Path) -> None:
 
 
 def test_adoption_releases_the_lock(tmp_path: Path) -> None:
+    """Checked directly against the lock, not via a full `submit` — Task 6
+    fix round 2's fail-closed fix means a submit ALSO checks the
+    single-live-run gate now, and "01LATE" here (a bare `mkdir`, no
+    `state.db` — a test stand-in, not a real published run) is ITSELF a
+    non-terminal adopted run for this repo, which the gate correctly keeps
+    blocking via `run_in_flight:` regardless of the lock. This test's job
+    is narrower and unaffected by that: prove adoption releases the LOCK
+    specifically."""
     controller, runs = _unknown(tmp_path)
     (runs / "01LATE").mkdir()
     controller.resolve_unknown(_REQ)
-    head = _repo_head(tmp_path / "ws")
-    second = _request(head).model_copy(
-        update={"request_id": "33333333-3333-4333-8333-333333333333"}
-    )
-    assert controller.submit(second).accepted is not False
+    assert controller._config.run_state_dir is not None
+    store = RunStore(controller._config.run_state_dir)
+    assert store.holds_lock(_DEPLOYER_KEY) is None
 
 
 def test_end_orphan_refuses_a_run_outside_the_candidate_set(tmp_path: Path) -> None:
@@ -1608,3 +1650,734 @@ def test_a_boundary_aligned_tail_keeps_its_first_complete_event(
     assert logs.events[0].event == "e00100", (
         "the first complete event of the tail is the one the inference lost"
     )
+
+
+def test_submit_refuses_while_a_nonterminal_run_exists(tmp_path: Path) -> None:
+    """Spec §7: at most one run without proven terminal outcome per
+    RepoKey — checked against ALL runs, not the latest."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    controller = RunController(_config(tmp_path, cli), materialize_timeout=10.0)
+    assert controller.submit(_request(head)).accepted is True  # run 01AAA, non-terminal
+
+    second = _request(head).model_copy(
+        update={"request_id": "22222222-2222-4222-8222-222222222222"}
+    )
+    receipt = controller.submit(second)
+    assert receipt.accepted is False
+    assert receipt.reason is not None
+    assert receipt.reason.startswith("run_state_unreadable:")
+    assert "01AAA" in receipt.reason
+    # the refusal is terminal, reproducible, and freed the lock
+    rec = RunStore(tmp_path / "state").get(second.request_id)
+    assert rec is not None
+    assert rec.outcome == "admission-rejected"
+    assert rec.admission_code == "run_state_unreadable"
+
+
+def test_the_refusal_replays_without_reclassification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Semantic equality of the replay, and provably zero classifier calls
+    (spec §8.2 / §10) — re-classification could pass where the original
+    failed."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    controller = RunController(_config(tmp_path, cli), materialize_timeout=10.0)
+    assert controller.submit(_request(head)).accepted is True
+
+    second = _request(head).model_copy(
+        update={"request_id": "22222222-2222-4222-8222-222222222222"}
+    )
+    first_refusal = controller.submit(second)
+    assert first_refusal.accepted is False
+
+    import dispatcher.core.run_controller as rc
+
+    calls = []
+    monkeypatch.setattr(
+        rc,
+        "classify_repo",
+        lambda *a, **k: (
+            calls.append(1) or (_ for _ in ()).throw(AssertionError("re-classified"))
+        ),
+    )
+    replay = controller.submit(second)
+    assert replay.accepted is False
+    assert replay.reason is not None
+    assert replay.reason.startswith("run_state_unreadable:")
+    assert calls == []
+
+
+def test_unreadable_run_state_blocks_fail_closed(tmp_path: Path) -> None:
+    """A corrupt state.db must read as unknown, never as finished.
+
+    Arranged directly against the maestro home tree (not through
+    `controller.submit`, and with no matching `LaunchRecord`) so the
+    corrupted run is UNLINKED to any request_id — the one case
+    `RunController._capture_run_facts` escalates to its own
+    `RUN_STATE_UNREADABLE` blocker rather than folding into the ordinary
+    non-terminal `RUN_IN_FLIGHT` handling a linked run gets.
+    """
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run=None)
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    assert config.maestro_home is not None
+
+    db = make_maestro_run(
+        config.maestro_home,
+        ("github.com", "owner", "deployer"),
+        "01ZZZ",
+        started_at="2026-08-01T00:00:00",
+        outcome="completed",
+        ended_at="2026-08-01T01:00:00",
+    )
+    db.write_bytes(b"garbage")  # corrupt: no longer even a readable sqlite db
+
+    receipt = controller.submit(_request(head))
+    assert receipt.accepted is False
+    assert receipt.reason is not None
+    assert receipt.reason.startswith("run_state_unreadable:")
+
+
+def test_guard_busy_refuses_with_zero_lock_mutations(tmp_path: Path) -> None:
+    """A held guard (separate process, as in test_run_store) makes submit
+    refuse guard_busy:, and the locks/ dir content is byte-identical
+    before and after."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    assert config.run_state_dir is not None
+    state_dir = config.run_state_dir
+
+    acquired = multiprocessing.Event()
+    holder = multiprocessing.Process(
+        target=_hold_store_guard, args=(str(state_dir), acquired)
+    )
+    holder.start()
+    try:
+        assert acquired.wait(timeout=10), "holder never acquired"
+        locks_dir = state_dir / "locks"
+        before = (
+            {p.name: p.read_bytes() for p in sorted(locks_dir.glob("*"))}
+            if locks_dir.exists()
+            else {}
+        )
+
+        receipt = controller.submit(_request(head))
+        assert receipt.accepted is False
+        assert receipt.reason is not None
+        assert receipt.reason.startswith("guard_busy:")
+
+        after = (
+            {p.name: p.read_bytes() for p in sorted(locks_dir.glob("*"))}
+            if locks_dir.exists()
+            else {}
+        )
+        assert before == after
+    finally:
+        holder.terminate()
+        holder.join()
+
+
+def test_submit_refuses_when_a_run_directory_has_vanished(tmp_path: Path) -> None:
+    """spec §7: a non-terminal LaunchRecord whose run directory is gone is
+    VANISHED, not silently "nothing to see". `classified_runs` only
+    enumerates directories that currently exist, so this predicate has to
+    be checked the OTHER way — from the LaunchRecord outward — which is
+    exactly what `_capture_run_facts` skipped before this fix."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    assert controller.submit(_request(head)).accepted is True
+
+    assert config.maestro_home is not None
+    run_dir = config.maestro_home / "projects/github.com/owner/deployer/runs/01AAA"
+    shutil.rmtree(run_dir)
+
+    second = _request(head).model_copy(
+        update={"request_id": "22222222-2222-4222-8222-222222222222"}
+    )
+    receipt = controller.submit(second)
+    assert receipt.accepted is False
+    assert receipt.reason is not None
+    assert receipt.reason.startswith("run_vanished:")
+    assert "01AAA" in receipt.reason
+
+
+def test_a_malformed_lock_blocks_with_its_own_code(tmp_path: Path) -> None:
+    """The operator MUST see lock_malformed:, not the generic in-flight
+    message, so the release-malformed escape (spec §8.3) applies.
+    Deliberately ephemeral (I1): a genuinely contended lock file means
+    there is nothing to persist against, so a replay of this refusal is
+    NOT expected to be identical — a second submit just re-classifies."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    assert config.run_state_dir is not None
+
+    store = RunStore(config.run_state_dir)
+    lock_path = store._lock_path(_DEPLOYER_KEY)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text("not valid json")
+
+    receipt = controller.submit(_request(head))
+    assert receipt.accepted is False
+    assert receipt.reason is not None
+    assert receipt.reason.startswith("lock_malformed:")
+
+
+def test_submit_refuses_when_a_run_directory_has_no_state_db_yet(
+    tmp_path: Path,
+) -> None:
+    """spec's Global Constraint: fail-closed, everything non-terminal
+    blocks. A run directory that EXISTS but has no `state.db` yet (died,
+    or is simply lagging, between mkdir and the db write) must not be
+    confused with a vanished run — the directory is right there — but it
+    also must not be silently unrepresented: dispatcher's own record
+    still says this run is non-terminal, so a second submit must still
+    refuse, via the ordinary RUN_IN_FLIGHT path, not RUN_VANISHED."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    assert controller.submit(_request(head)).accepted is True
+
+    assert config.maestro_home is not None
+    run_dir = config.maestro_home / "projects/github.com/owner/deployer/runs/01AAA"
+    (run_dir / "state.db").unlink()  # directory stays; only the db is gone
+
+    # A DIFFERENT cli/run_id for the second attempt: if a fail-open gate
+    # let this through, the SAME cli/run_id would collide on `mkdir` at
+    # launch time and mask the hole behind an unrelated subprocess error.
+    # A distinct binary makes the buggy symptom unambiguous instead — a
+    # second run for the SAME repo fully materializing, exactly what the
+    # single-live-run guarantee exists to prevent.
+    cli2 = _fake_maestro(tmp_path / "fake-maestro-2", creates_run="01BBB")
+    second_controller = RunController(_config(tmp_path, cli2), materialize_timeout=10.0)
+    second = _request(head).model_copy(
+        update={"request_id": "22222222-2222-4222-8222-222222222222"}
+    )
+    receipt = second_controller.submit(second)
+    assert receipt.accepted is False
+    assert receipt.reason is not None
+    assert receipt.reason.startswith("run_in_flight:")
+    assert "01AAA" in receipt.reason
+
+
+def test_acknowledge_requires_the_precise_predicate(tmp_path: Path) -> None:
+    """Non-terminal record + run_id + directory absent — and nothing less.
+    A present directory refuses; a terminal record refuses."""
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    with pytest.raises(RunRejectedError, match="still exists"):
+        controller.acknowledge_vanished(_REQ, "01AAA", "cleanup", None)
+    shutil.rmtree(tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA")
+    rec = controller.acknowledge_vanished(_REQ, "01AAA", "host wiped", None)
+    assert rec.outcome == "vanished-acknowledged"
+    assert rec.ack_actor == "local-unauthenticated"
+    assert rec.prior_run_id == "01AAA"
+
+
+def test_confirm_run_id_must_match_retyped(tmp_path: Path) -> None:
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    shutil.rmtree(tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA")
+    with pytest.raises(RunRejectedError, match="confirm_run_id"):
+        controller.acknowledge_vanished(_REQ, "01WRONG", "r", None)
+
+
+def test_reason_is_capped_and_newline_normalized(tmp_path: Path) -> None:
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    shutil.rmtree(tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA")
+    rec = controller.acknowledge_vanished(_REQ, "01AAA", "a\nb" + "x" * 5000, None)
+    assert rec.ack_reason is not None
+    assert "\n" not in rec.ack_reason and len(rec.ack_reason) <= 1024
+
+
+def test_io_error_refuses_rather_than_acknowledges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spec §7: a broken stat is unreadable, not vanished — injected
+    error, never chmod (unstable across users/CI).
+
+    Injected at `os.stat`, the REAL failure surface: `Path.is_dir()`
+    swallows stat errors into False, so an injection at `is_dir` would
+    test an error path the actual API never takes — while the actual
+    EACCES would read as "provably vanished" and tombstone a live run.
+    Scoped to the ONE path `acknowledge_vanished` checks.
+    """
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    run_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA"
+    real_stat = os.stat
+
+    def _boom(path, *args, **kwargs):  # noqa: ANN001,ANN002,ANN003,ANN202
+        if str(path) == str(run_dir):
+            raise PermissionError(13, "denied", str(path))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", _boom)
+    with pytest.raises(RunRejectedError, match="unreadable"):
+        controller.acknowledge_vanished(_REQ, "01AAA", "r", None)
+    monkeypatch.undo()
+    rec = controller._store().get(_REQ)
+    assert rec is not None and rec.outcome != "vanished-acknowledged"
+
+
+def test_a_broken_stat_on_the_vanished_check_blocks_as_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same rule at the gate: the second-pass existence check for a
+    non-terminal record's run root must treat a stat failure as
+    run_state_unreadable — never as run_dir_exists=False, which the
+    RUN_VANISHED arm would read as proven absence."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    controller = RunController(_config(tmp_path, cli), materialize_timeout=10.0)
+    assert controller.submit(_request(head)).accepted is True
+    run_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA"
+    shutil.rmtree(run_dir)  # absent on disk, so only the stat outcome decides
+    real_stat = os.stat
+
+    def _boom(path, *args, **kwargs):  # noqa: ANN001,ANN002,ANN003,ANN202
+        if str(path) == str(run_dir):
+            raise PermissionError(13, "denied", str(path))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", _boom)
+    second = _request(head).model_copy(
+        update={"request_id": "22222222-2222-4222-8222-222222222222"}
+    )
+    receipt = controller.submit(second)
+    assert receipt.accepted is False
+    assert (receipt.reason or "").startswith("run_state_unreadable:")
+
+
+# -- final fix wave: guard re-check (deferred 2), lenient lock decode -------
+# -- (deferred 11), fail-closed list (I-2), the doors actually open (M-6) ---
+
+
+def test_acknowledge_rechecks_terminal_under_the_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deferred 2: the static predicate checks ran on a record read BEFORE
+    the guard, and a concurrent run-end can terminalize between that read
+    and the guard. The fresh in-guard copy must be re-checked —
+    acknowledging over it would overwrite a settled outcome with a
+    tombstone."""
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    shutil.rmtree(tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA")
+
+    real_get = RunStore.get
+    calls = {"n": 0}
+
+    def _racing_get(self: RunStore, request_id: str):
+        record = real_get(self, request_id)
+        calls["n"] += 1
+        if calls["n"] >= 2 and record is not None:
+            # what a concurrent run-end would have persisted by now
+            return record.model_copy(
+                update={"state": "terminal", "outcome": "cancelled"}
+            )
+        return record
+
+    monkeypatch.setattr(RunStore, "get", _racing_get)
+    with pytest.raises(RunRejectedError, match="already terminal"):
+        controller.acknowledge_vanished(_REQ, "01AAA", "r", None)
+    monkeypatch.undo()
+    record = controller.record(_REQ)
+    assert record is not None
+    assert record.outcome != "vanished-acknowledged", "no tombstone may be written"
+
+
+def test_display_name_is_whitespace_normalized_in_the_actor(tmp_path: Path) -> None:
+    """The `reason` field is collapsed and capped; `display_name` reaches
+    the same audit record and must get the same treatment — a newline in
+    the actor string would forge extra audit lines."""
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    shutil.rmtree(tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA")
+    record = controller.acknowledge_vanished(_REQ, "01AAA", "r", "two\nline\tname")
+    assert record.ack_actor == "local-unauthenticated (self_reported: two line name)"
+
+
+def test_an_invalid_utf8_lock_refuses_lock_malformed_not_a_crash(
+    tmp_path: Path,
+) -> None:
+    """Deferred 11 at the gate: invalid UTF-8 lock bytes must classify
+    Malformed and refuse with the `lock_malformed:` code the
+    release-malformed escape keys off — not escape as an unhandled
+    UnicodeDecodeError (a ValueError, invisible to submit's
+    `except (RunStoreError, OSError)`)."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    assert config.run_state_dir is not None
+
+    store = RunStore(config.run_state_dir)
+    lock_path = store._lock_path(_DEPLOYER_KEY)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_bytes(b"\xff\xfe\x00bad")
+
+    receipt = controller.submit(_request(head))
+    assert receipt.accepted is False
+    assert (receipt.reason or "").startswith("lock_malformed:")
+
+
+def test_submit_blocks_when_the_request_store_is_unlistable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I-2 at the gate: an unlistable `requests/` directory silently
+    dropped every record-derived blocker (vanished, missing-state,
+    corrupt-record, the run→request join) — the gate read "nothing
+    non-terminal here" off exactly the broken input. It must block as
+    run_state_unreadable."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    assert config.run_state_dir is not None
+    requests_dir = config.run_state_dir / "requests"
+    real_scandir = os.scandir
+
+    # Injected at os.scandir, the REAL surface: Path.glob suppresses
+    # OSError raised while scanning (3.13+ explicitly), so an injection
+    # at glob tested an error path the actual API never takes.
+    def _boom(path, *args, **kwargs):  # noqa: ANN001,ANN002,ANN003,ANN202
+        if str(path) == str(requests_dir):
+            raise PermissionError(13, "denied", str(path))
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", _boom)
+    receipt = controller.submit(_request(head))
+    assert receipt.accepted is False
+    assert (receipt.reason or "").startswith("run_state_unreadable:")
+
+
+def test_the_vanished_door_actually_unblocks_a_new_submit(tmp_path: Path) -> None:
+    """M-6 / spec §8.3: "fail-closed never lacks a door" — and the door
+    must actually open. The operator's real sequence end-to-end: refusal →
+    acknowledge-vanished → a NEW request_id for the same repo is
+    admitted."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    assert controller.submit(_request(head)).accepted is True
+    assert config.maestro_home is not None
+    shutil.rmtree(config.maestro_home / "projects/github.com/owner/deployer/runs/01AAA")
+
+    second = _request(head).model_copy(
+        update={"request_id": "22222222-2222-4222-8222-222222222222"}
+    )
+    refusal = controller.submit(second)
+    assert refusal.accepted is False
+    assert (refusal.reason or "").startswith("run_vanished:")
+
+    controller.acknowledge_vanished(_REQ, "01AAA", "host wiped", None)
+
+    cli2 = _fake_maestro(tmp_path / "fake-maestro-2", creates_run="01BBB")
+    third_controller = RunController(_config(tmp_path, cli2), materialize_timeout=10.0)
+    third = _request(head).model_copy(
+        update={"request_id": "33333333-3333-4333-8333-333333333333"}
+    )
+    assert third_controller.submit(third).accepted is True
+
+
+def test_the_malformed_lock_door_actually_unblocks_a_new_submit(
+    tmp_path: Path,
+) -> None:
+    """The second door of M-6: refusal → release-malformed-lock (via the
+    controller's own wrapper, sharing the escape actor semantics) → a new
+    submit is admitted."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    assert config.run_state_dir is not None
+    store = RunStore(config.run_state_dir)
+    lock_path = store._lock_path(_DEPLOYER_KEY)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text("not valid json")
+
+    refusal = controller.submit(_request(head))
+    assert refusal.accepted is False
+    assert (refusal.reason or "").startswith("lock_malformed:")
+
+    audit = controller.release_malformed_lock(
+        _DEPLOYER_KEY, reason="crash residue", display_name=None
+    )
+    assert audit["actor"] == "local-unauthenticated"
+
+    second = _request(head).model_copy(
+        update={"request_id": "22222222-2222-4222-8222-222222222222"}
+    )
+    assert controller.submit(second).accepted is True
+
+
+def test_a_changed_repository_conflicts_instead_of_replaying(
+    tmp_path: Path,
+) -> None:
+    """The replay branch must not silently ignore the repository dimension
+    of the attempt's identity: same request_id + different repository is a
+    request_id_conflict, not a replay of the old refusal. Raw-string
+    comparison — the conflict must be detectable without re-resolving the
+    checkout (replay stays reproducible when inventory changed)."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    controller = RunController(_config(tmp_path, cli), materialize_timeout=10.0)
+    assert controller.submit(_request(head)).accepted is True
+
+    second = _request(head).model_copy(
+        update={"request_id": "22222222-2222-4222-8222-222222222222"}
+    )
+    assert controller.submit(second).accepted is False
+
+    moved = second.model_copy(update={"repository": str(tmp_path / "elsewhere")})
+    receipt = controller.submit(moved)
+    assert receipt.accepted is False
+    assert receipt.reason is not None
+    assert receipt.reason.startswith("request_id_conflict:")
+
+
+def test_a_foreign_lock_refuses_acknowledge_before_the_tombstone(
+    tmp_path: Path,
+) -> None:
+    """The tombstone's lock release can refuse (a healthy lock owned by a
+    DIFFERENT request_id stands for the RepoKey). That refusal must come
+    BEFORE the irreversible terminal write — otherwise the API reports 409
+    while the administrative mutation silently applied."""
+    import json as _json
+
+    from dispatcher.core.run_store import LockBusyError
+
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    shutil.rmtree(tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA")
+    store = controller._store()
+    lock = store._lock_path(_DEPLOYER_KEY)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(
+        _json.dumps(
+            {
+                "request_id": "rc-ffffffff-99999999",
+                "fingerprint": "f",
+                "created_at": "t",
+            }
+        )
+    )
+    with pytest.raises(LockBusyError, match="held by"):
+        controller.acknowledge_vanished(_REQ, "01AAA", "r", None)
+    rec = store.get(_REQ)
+    assert rec is not None and rec.state != "terminal"
+    assert rec.outcome != "vanished-acknowledged"
+
+
+def test_a_repeat_with_a_different_attempt_conflicts_for_any_prior_state(
+    tmp_path: Path,
+) -> None:
+    """Spec §8.2 binds EVERY replay, not only admission_rejected ones: a
+    repeated request_id whose work_id/revision differ from the recorded
+    attempt must get request_id_conflict — never the previous launch's
+    accepted=True receipt with someone else's run_id."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    controller = RunController(_config(tmp_path, cli), materialize_timeout=10.0)
+    first = _request(head)
+    assert controller.submit(first).accepted is True
+
+    other_attempt = first.model_copy(update={"revision": "b" * 40})
+    receipt = controller.submit(other_attempt)
+    assert receipt.accepted is False
+    assert receipt.reason is not None
+    assert receipt.reason.startswith("request_id_conflict:")
+    assert receipt.run_id is None
+
+    # the SAME attempt still replays idempotently
+    replay = controller.submit(first)
+    assert replay.accepted is True
+    assert replay.run_id == "01AAA"
+
+
+def test_a_neighbours_broken_runs_dir_does_not_block_this_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail-closed is per-RepoKey: an unlistable runs/ dir under ANOTHER
+    repo's project subtree is that repo's blocker, not a global outage —
+    only a failure that could have hidden THIS repo's runs (its own
+    subtree, or an ancestor on the way to it) may block this submit."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    controller = RunController(_config(tmp_path, cli), materialize_timeout=10.0)
+    home = tmp_path / "mhome"
+    # a NEIGHBOUR repo whose runs/ dir exists but cannot be listed
+    make_maestro_run(
+        home,
+        ("github.com", "owner", "neighbour"),
+        "01NNN",
+        started_at="2026-08-26T00:00:00Z",
+    )
+    broken = home / "projects/github.com/owner/neighbour/runs"
+
+    real_iterdir = Path.iterdir
+
+    def _deny_neighbour(self: Path):  # noqa: ANN202
+        if self == broken:
+            raise PermissionError(13, "injected: cannot list", str(self))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _deny_neighbour)
+    receipt = controller.submit(_request(head))
+    assert receipt.accepted is True, receipt.reason
+
+
+def test_a_symlink_loop_at_the_run_root_is_unreadable_not_vanished(
+    tmp_path: Path,
+) -> None:
+    """`Path.is_dir()` swallows ELOOP (with ENOTDIR/EBADF/EINVAL) into
+    False — a symlink loop where the run directory stood would read as
+    PROVEN absence and let the escape tombstone over standing damage.
+    Real filesystem, no injection: stat must separate ENOENT (absent)
+    from every other failure (unreadable)."""
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    run_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA"
+    shutil.rmtree(run_dir)
+    run_dir.symlink_to(run_dir)  # ELOOP on any stat that follows it
+    with pytest.raises(RunRejectedError, match="unreadable"):
+        controller.acknowledge_vanished(_REQ, "01AAA", "r", None)
+    rec = controller._store().get(_REQ)
+    assert rec is not None and rec.outcome != "vanished-acknowledged"
+
+
+def test_an_unlinked_run_directory_with_no_state_db_still_blocks(
+    tmp_path: Path,
+) -> None:
+    """A run directory dispatcher never launched (no LaunchRecord) and
+    maestro never got a state.db into is invisible to both the classifier
+    pass (skips no-db dirs) and the record pass (walks records only) —
+    the gate must enumerate the repo's runs/ directly: an unexplained
+    entry there is a fail-closed blocker, not an empty repo."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    controller = RunController(_config(tmp_path, cli), materialize_timeout=10.0)
+    foreign = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01ZZZ"
+    foreign.mkdir(parents=True)  # no state.db, no record — died mid-birth
+    receipt = controller.submit(_request(head))
+    assert receipt.accepted is False
+    assert receipt.reason is not None
+    assert receipt.reason.startswith("run_in_flight:")
+    assert "01ZZZ" in receipt.reason
+
+
+def test_an_empty_reason_refuses_both_escapes(tmp_path: Path) -> None:
+    """An audited administrative release without a recorded justification
+    contradicts the audit's own contract — whitespace-only reason refuses
+    BEFORE any mutation, for both escapes."""
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    shutil.rmtree(tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA")
+    with pytest.raises(RunRejectedError, match="reason"):
+        controller.acknowledge_vanished(_REQ, "01AAA", "  \n\t ", None)
+    rec = controller._store().get(_REQ)
+    assert rec is not None and rec.outcome != "vanished-acknowledged"
+
+    store = controller._store()
+    lock = store._lock_path(_DEPLOYER_KEY)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(b"half-writ")
+    with pytest.raises(RunRejectedError, match="reason"):
+        controller.release_malformed_lock(
+            _DEPLOYER_KEY, reason="   ", display_name=None
+        )
+    assert lock.exists()
+
+
+def test_a_lock_family_refusal_persists_and_replays_after_the_lock_frees(
+    tmp_path: Path,
+) -> None:
+    """review on #200: a launch_busy refusal was ephemeral — nothing was
+    recorded for the refused request_id, so once the blocking launch
+    finished, a retry with the SAME id re-classified and LAUNCHED instead
+    of replaying the original refusal. Immutable admission replay (§8.2)
+    binds the lock family too: the record is written WITHOUT taking the
+    repo lock (the blocker IS the lock) and replays verbatim forever."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    assert config.run_state_dir is not None
+    store = RunStore(config.run_state_dir)
+    # request A holds the launch lock (in-flight window)
+    store.reserve(
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        _DEPLOYER_KEY,
+        known_runs=[],
+        window_start="t",
+        work_id="other-work",
+        revision="c" * 40,
+        repository="deployer",
+    )
+    refused = controller.submit(_request(head))
+    assert refused.accepted is False
+    assert refused.reason is not None and refused.reason.startswith("launch_busy:")
+    rec = store.get(_REQ)
+    assert rec is not None, "the refusal must persist a record"
+    assert rec.response_class == "admission_rejected"
+    assert rec.state == "terminal"
+    # A finishes and frees the lock — the replay must NOT re-classify
+    store.release_lock(_DEPLOYER_KEY, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    replay = controller.submit(_request(head))
+    assert replay.accepted is False
+    assert replay.reason is not None and replay.reason.startswith("launch_busy:")
+
+
+def test_a_malformed_lock_refusal_persists_and_replays_after_the_escape(
+    tmp_path: Path,
+) -> None:
+    """Same rule for lock_malformed: the refusal outlives the escape that
+    heals the lock — the original decision replays for the same
+    request_id; a fresh attempt needs a fresh id."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    assert config.run_state_dir is not None
+    store = RunStore(config.run_state_dir)
+    lock = store._lock_path(_DEPLOYER_KEY)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(b"half-writ")
+    refused = controller.submit(_request(head))
+    assert refused.accepted is False
+    assert refused.reason is not None
+    assert refused.reason.startswith("lock_malformed:")
+    rec = store.get(_REQ)
+    assert rec is not None and rec.response_class == "admission_rejected"
+    controller.release_malformed_lock(_DEPLOYER_KEY, reason="heal", display_name=None)
+    replay = controller.submit(_request(head))
+    assert replay.accepted is False
+    assert replay.reason is not None
+    assert replay.reason.startswith("lock_malformed:")
+
+
+def test_a_linked_unreadable_run_blocks_as_run_state_unreadable(
+    tmp_path: Path,
+) -> None:
+    """review on #200: linkage to a request_id does not make a broken
+    state.db readable — run_in_flight promises a KNOWN non-terminal
+    state, run_state_unreadable says the reading itself must be fixed.
+    The request linkage travels as metadata in the detail, the code
+    stays run_state_unreadable."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    controller = RunController(_config(tmp_path, cli), materialize_timeout=10.0)
+    assert controller.submit(_request(head)).accepted is True
+    db = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/state.db"
+    db.write_bytes(b"garbage")
+    second = _request(head).model_copy(
+        update={"request_id": "22222222-2222-4222-8222-222222222222"}
+    )
+    receipt = controller.submit(second)
+    assert receipt.accepted is False
+    assert receipt.reason is not None
+    assert receipt.reason.startswith("run_state_unreadable:")
+    assert "01AAA" in receipt.reason and _REQ in receipt.reason
