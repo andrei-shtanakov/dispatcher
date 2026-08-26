@@ -564,11 +564,6 @@ class RunStore:
                     f"{key.as_text()}: lock identity changed since it was "
                     "read — refusing to quarantine"
                 )
-            # A crash between this rename and the audit write below leaves
-            # a quarantined file with no audit record — the hash was
-            # computed but never persisted. Accepted for B1: the bytes
-            # themselves survive, and the audit is re-computable from them.
-            os.rename(path, target)
             audit = {
                 "repo_key": key.as_text(),
                 "actor": actor,
@@ -579,7 +574,22 @@ class RunStore:
                 "size": stat.st_size,
                 "quarantined_as": name,
             }
-            target.with_suffix(".audit.json").write_text(json.dumps(audit))
+            # The audit is MANDATORY for an administrative escape, so it is
+            # persisted BEFORE the move: if it cannot be written, nothing
+            # has changed and the caller gets a clean refusal — never a
+            # released block whose actor/reason/time were lost to ENOSPC.
+            # The inverse window — a crash between the audit write and the
+            # rename — leaves an audit describing a quarantine that never
+            # completed; honest and recoverable (the lock is still there,
+            # a retry gets a fresh name).
+            try:
+                target.with_suffix(".audit.json").write_text(json.dumps(audit))
+            except OSError as err:
+                raise RunStoreError(
+                    f"{key.as_text()}: cannot persist the quarantine audit "
+                    f"({err}) — refusing to release without it"
+                ) from err
+            os.rename(path, target)
             return audit
 
     def _transition(self, request_id: str, **fields: object) -> LaunchRecord:

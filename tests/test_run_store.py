@@ -675,3 +675,33 @@ def test_quarantine_refuses_if_the_lock_was_replaced_after_reading(
     assert not (lock.parent / "released").exists() or not any(
         (lock.parent / "released").iterdir()
     )
+
+
+def test_a_failed_audit_write_leaves_the_lock_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The audit is MANDATORY for an administrative escape: if it cannot be
+    persisted (ENOSPC, EIO), the quarantine must not happen at all — a
+    released block with no recorded actor/reason/time is exactly what the
+    audit requirement forbids, and the caller must see a store error, not
+    an unhandled OSError."""
+    store = RunStore(tmp_path)
+    lock = store._lock_path(_KEY)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(b"half-writ")
+
+    real_write_text = Path.write_text
+
+    def _fail_audit_writes(self: Path, *args, **kwargs) -> int:  # noqa: ANN002,ANN003
+        if self.name.endswith(".audit.json"):
+            raise OSError(28, "No space left on device")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", _fail_audit_writes)
+    with pytest.raises(RunStoreError, match="audit"):
+        store.release_malformed_lock(_KEY, actor="x", reason="r")
+    assert lock.exists() and lock.read_bytes() == b"half-writ"
+    released = lock.parent / "released"
+    assert not released.exists() or not any(
+        f for f in released.iterdir() if f.name.endswith(".released")
+    )
