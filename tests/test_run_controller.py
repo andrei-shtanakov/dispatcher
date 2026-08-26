@@ -1903,24 +1903,56 @@ def test_io_error_refuses_rather_than_acknowledges(
     """Spec §7: a broken stat is unreadable, not vanished — injected
     error, never chmod (unstable across users/CI).
 
-    Scoped to the ONE path `acknowledge_vanished` checks, not a blanket
-    `Path.is_dir` failure: `store.guard()` itself calls `is_dir()`
-    internally (via `Path.mkdir(exist_ok=True)`'s own stdlib
-    implementation), so a global monkeypatch breaks the guard before the
-    predicate under test is ever reached.
+    Injected at `os.stat`, the REAL failure surface: `Path.is_dir()`
+    swallows stat errors into False, so an injection at `is_dir` would
+    test an error path the actual API never takes — while the actual
+    EACCES would read as "provably vanished" and tombstone a live run.
+    Scoped to the ONE path `acknowledge_vanished` checks.
     """
     controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
     run_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA"
-    original_is_dir = Path.is_dir
+    real_stat = os.stat
 
-    def _boom(self: Path) -> bool:
-        if self == run_dir:
-            raise PermissionError("denied")
-        return original_is_dir(self)
+    def _boom(path, *args, **kwargs):  # noqa: ANN001,ANN002,ANN003,ANN202
+        if str(path) == str(run_dir):
+            raise PermissionError(13, "denied", str(path))
+        return real_stat(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "is_dir", _boom)
+    monkeypatch.setattr(os, "stat", _boom)
     with pytest.raises(RunRejectedError, match="unreadable"):
         controller.acknowledge_vanished(_REQ, "01AAA", "r", None)
+    monkeypatch.undo()
+    rec = controller._store().get(_REQ)
+    assert rec is not None and rec.outcome != "vanished-acknowledged"
+
+
+def test_a_broken_stat_on_the_vanished_check_blocks_as_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same rule at the gate: the second-pass existence check for a
+    non-terminal record's run root must treat a stat failure as
+    run_state_unreadable — never as run_dir_exists=False, which the
+    RUN_VANISHED arm would read as proven absence."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    controller = RunController(_config(tmp_path, cli), materialize_timeout=10.0)
+    assert controller.submit(_request(head)).accepted is True
+    run_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA"
+    shutil.rmtree(run_dir)  # absent on disk, so only the stat outcome decides
+    real_stat = os.stat
+
+    def _boom(path, *args, **kwargs):  # noqa: ANN001,ANN002,ANN003,ANN202
+        if str(path) == str(run_dir):
+            raise PermissionError(13, "denied", str(path))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", _boom)
+    second = _request(head).model_copy(
+        update={"request_id": "22222222-2222-4222-8222-222222222222"}
+    )
+    receipt = controller.submit(second)
+    assert receipt.accepted is False
+    assert (receipt.reason or "").startswith("run_state_unreadable:")
 
 
 # -- final fix wave: guard re-check (deferred 2), lenient lock decode -------
@@ -2195,3 +2227,21 @@ def test_a_neighbours_broken_runs_dir_does_not_block_this_repo(
     monkeypatch.setattr(Path, "iterdir", _deny_neighbour)
     receipt = controller.submit(_request(head))
     assert receipt.accepted is True, receipt.reason
+
+
+def test_a_symlink_loop_at_the_run_root_is_unreadable_not_vanished(
+    tmp_path: Path,
+) -> None:
+    """`Path.is_dir()` swallows ELOOP (with ENOTDIR/EBADF/EINVAL) into
+    False — a symlink loop where the run directory stood would read as
+    PROVEN absence and let the escape tombstone over standing damage.
+    Real filesystem, no injection: stat must separate ENOENT (absent)
+    from every other failure (unreadable)."""
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    run_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA"
+    shutil.rmtree(run_dir)
+    run_dir.symlink_to(run_dir)  # ELOOP on any stat that follows it
+    with pytest.raises(RunRejectedError, match="unreadable"):
+        controller.acknowledge_vanished(_REQ, "01AAA", "r", None)
+    rec = controller._store().get(_REQ)
+    assert rec is not None and rec.outcome != "vanished-acknowledged"

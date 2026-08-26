@@ -631,7 +631,7 @@ class RunController:
             ):
                 continue
             try:
-                run_dir_exists = (runs_root / record.run_id).is_dir()
+                run_dir_exists = _present_at(runs_root / record.run_id)
             except OSError:
                 unreadable.append(f"run {record.run_id}: cannot stat run directory")
                 continue
@@ -1723,7 +1723,7 @@ class RunController:
             )
             run_dir = self.runs_dir(key) / run_id
             try:
-                present = run_dir.is_dir()
+                present = _present_at(run_dir)
             except OSError as err:
                 raise RunRejectedError(f"run state unreadable: {err}") from err
             if present:
@@ -1807,6 +1807,20 @@ def _accepted_for(record: LaunchRecord) -> bool | None:
     if record.state == "launch_unknown":
         return None
     return None
+
+
+def _present_at(path: Path) -> bool:
+    """True if anything exists at `path`; False ONLY on proven absence
+    (ENOENT). Any other stat failure raises OSError. `Path.is_dir()` is
+    unusable for a vanished-predicate: it swallows ELOOP/ENOTDIR/EBADF/
+    EINVAL into False, turning standing damage (a symlink loop where the
+    run directory stood) into "provably absent" (spec §7: a broken stat
+    is unreadable, never vanished)."""
+    try:
+        os.stat(path)
+    except FileNotFoundError:
+        return False
+    return True
 
 
 def _blocker_detail(blocker: Blocker) -> str:
