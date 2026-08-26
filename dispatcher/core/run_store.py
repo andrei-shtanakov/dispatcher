@@ -690,6 +690,67 @@ class RunStore:
             self._release_for_locked(updated)
         return updated
 
+    def record_admission_rejection(
+        self,
+        request_id: str,
+        key: RepoKey,
+        *,
+        work_id: str = "",
+        revision: str = "",
+        tasks: str = "",
+        repository: str = "",
+        checkout: str = "",
+        code: str,
+        detail: str,
+        current: dict,
+    ) -> LaunchRecord:
+        """A terminal admission-rejected record written WITHOUT the repo
+        lock — for the lock-family blockers, where the blocker IS an
+        existing lock file and the preflight `O_EXCL` cannot take it
+        (review on #200). An admission-rejected record is terminal from
+        birth and never launches, so it owns no launch window and needs
+        no lock; what it MUST do is persist, or the same request_id
+        would re-classify — and launch — once the blocking lock frees,
+        breaking immutable replay (spec §8.2).
+
+        Caller holds `guard(key)`. The write itself is atomic per
+        request_id (`_write` → `os.replace`). A repeated call replays
+        the existing record under the same fingerprint semantics as
+        `_reserve_locked`.
+        """
+        fp = fingerprint_of(key.as_text(), work_id, revision)
+        existing = self.get(request_id)
+        if existing is not None:
+            stored = existing.fingerprint or fingerprint_of(
+                existing.repo_key, existing.work_id, existing.revision
+            )
+            if stored == fp:
+                return existing
+            raise FingerprintMismatch(
+                f"{request_id} was already used for a different attempt"
+            )
+        self._ensure()
+        record = LaunchRecord(
+            request_id=request_id,
+            repo_key=key.as_text(),
+            state="terminal",
+            outcome="admission-rejected",
+            window_start=datetime.now(UTC).isoformat(),
+            work_id=work_id,
+            revision=revision,
+            tasks=tasks,
+            checkout=checkout,
+            repository=repository,
+            fingerprint=fp,
+            response_class="admission_rejected",
+            admission_code=code,
+            admission_detail=detail,
+            admission_current=current,
+            rejected_at=datetime.now(UTC).isoformat(),
+        )
+        self._write(record)
+        return record
+
     def mark_admission_rejected(
         self, request_id: str, *, code: str, detail: str, current: dict
     ) -> LaunchRecord:

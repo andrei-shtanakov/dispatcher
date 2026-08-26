@@ -1666,13 +1666,13 @@ def test_submit_refuses_while_a_nonterminal_run_exists(tmp_path: Path) -> None:
     receipt = controller.submit(second)
     assert receipt.accepted is False
     assert receipt.reason is not None
-    assert receipt.reason.startswith("run_in_flight:")
+    assert receipt.reason.startswith("run_state_unreadable:")
     assert "01AAA" in receipt.reason
     # the refusal is terminal, reproducible, and freed the lock
     rec = RunStore(tmp_path / "state").get(second.request_id)
     assert rec is not None
     assert rec.outcome == "admission-rejected"
-    assert rec.admission_code == "run_in_flight"
+    assert rec.admission_code == "run_state_unreadable"
 
 
 def test_the_refusal_replays_without_reclassification(
@@ -1705,7 +1705,7 @@ def test_the_refusal_replays_without_reclassification(
     replay = controller.submit(second)
     assert replay.accepted is False
     assert replay.reason is not None
-    assert replay.reason.startswith("run_in_flight:")
+    assert replay.reason.startswith("run_state_unreadable:")
     assert calls == []
 
 
@@ -2290,3 +2290,94 @@ def test_an_empty_reason_refuses_both_escapes(tmp_path: Path) -> None:
             _DEPLOYER_KEY, reason="   ", display_name=None
         )
     assert lock.exists()
+
+
+def test_a_lock_family_refusal_persists_and_replays_after_the_lock_frees(
+    tmp_path: Path,
+) -> None:
+    """review on #200: a launch_busy refusal was ephemeral — nothing was
+    recorded for the refused request_id, so once the blocking launch
+    finished, a retry with the SAME id re-classified and LAUNCHED instead
+    of replaying the original refusal. Immutable admission replay (§8.2)
+    binds the lock family too: the record is written WITHOUT taking the
+    repo lock (the blocker IS the lock) and replays verbatim forever."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    assert config.run_state_dir is not None
+    store = RunStore(config.run_state_dir)
+    # request A holds the launch lock (in-flight window)
+    store.reserve(
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        _DEPLOYER_KEY,
+        known_runs=[],
+        window_start="t",
+        work_id="other-work",
+        revision="c" * 40,
+        repository="deployer",
+    )
+    refused = controller.submit(_request(head))
+    assert refused.accepted is False
+    assert refused.reason is not None and refused.reason.startswith("launch_busy:")
+    rec = store.get(_REQ)
+    assert rec is not None, "the refusal must persist a record"
+    assert rec.response_class == "admission_rejected"
+    assert rec.state == "terminal"
+    # A finishes and frees the lock — the replay must NOT re-classify
+    store.release_lock(_DEPLOYER_KEY, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    replay = controller.submit(_request(head))
+    assert replay.accepted is False
+    assert replay.reason is not None and replay.reason.startswith("launch_busy:")
+
+
+def test_a_malformed_lock_refusal_persists_and_replays_after_the_escape(
+    tmp_path: Path,
+) -> None:
+    """Same rule for lock_malformed: the refusal outlives the escape that
+    heals the lock — the original decision replays for the same
+    request_id; a fresh attempt needs a fresh id."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    assert config.run_state_dir is not None
+    store = RunStore(config.run_state_dir)
+    lock = store._lock_path(_DEPLOYER_KEY)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(b"half-writ")
+    refused = controller.submit(_request(head))
+    assert refused.accepted is False
+    assert refused.reason is not None
+    assert refused.reason.startswith("lock_malformed:")
+    rec = store.get(_REQ)
+    assert rec is not None and rec.response_class == "admission_rejected"
+    controller.release_malformed_lock(_DEPLOYER_KEY, reason="heal", display_name=None)
+    replay = controller.submit(_request(head))
+    assert replay.accepted is False
+    assert replay.reason is not None
+    assert replay.reason.startswith("lock_malformed:")
+
+
+def test_a_linked_unreadable_run_blocks_as_run_state_unreadable(
+    tmp_path: Path,
+) -> None:
+    """review on #200: linkage to a request_id does not make a broken
+    state.db readable — run_in_flight promises a KNOWN non-terminal
+    state, run_state_unreadable says the reading itself must be fixed.
+    The request linkage travels as metadata in the detail, the code
+    stays run_state_unreadable."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    controller = RunController(_config(tmp_path, cli), materialize_timeout=10.0)
+    assert controller.submit(_request(head)).accepted is True
+    db = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/state.db"
+    db.write_bytes(b"garbage")
+    second = _request(head).model_copy(
+        update={"request_id": "22222222-2222-4222-8222-222222222222"}
+    )
+    receipt = controller.submit(second)
+    assert receipt.accepted is False
+    assert receipt.reason is not None
+    assert receipt.reason.startswith("run_state_unreadable:")
+    assert "01AAA" in receipt.reason and _REQ in receipt.reason

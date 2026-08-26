@@ -460,20 +460,28 @@ class RunController:
                         # terminalized.
                         _reserve()
                     except LockBusyError:
-                        # I1: `classify_repo` orders a lock-derived
-                        # blocker first when one applies (LAUNCH_BUSY,
-                        # LOCK_MALFORMED, LOCK_IO_UNREADABLE all share
-                        # this) — the blocker IS an existing lock file, so
-                        # the preflight `O_EXCL` create above collides
-                        # with it and there is nothing to persist against.
-                        # The refusal stays EPHEMERAL for this blocker
-                        # family (persistence through a contended lock is
-                        # a scoped-out gap, spec §8.2/§8.3 — PR-B2/C's
-                        # concern), but the operator must still see the
-                        # SPECIFIC code here: `lock_malformed:` in
-                        # particular is what spec §8.3's release-malformed
-                        # escape keys off, and a bare re-raise would lose
-                        # it behind the generic "already in flight" text.
+                        # The lock family (LAUNCH_BUSY, LOCK_MALFORMED,
+                        # LOCK_IO_UNREADABLE): the blocker IS an existing
+                        # lock file, so the preflight `O_EXCL` above
+                        # collides with it. The refusal must still
+                        # PERSIST (review on #200: an ephemeral refusal
+                        # let the same request_id re-classify — and
+                        # launch — once the blocking lock freed, breaking
+                        # immutable replay §8.2). Recorded WITHOUT the
+                        # repo lock: an admission-rejected record is
+                        # terminal from birth and never launches.
+                        store.record_admission_rejection(
+                            request.request_id,
+                            validated.key,
+                            work_id=request.work_id,
+                            revision=request.revision,
+                            tasks=request.tasks,
+                            repository=request.repository,
+                            checkout=str(validated.checkout),
+                            code=blocker.code,
+                            detail=detail,
+                            current={"blockers": [asdict(b) for b in verdict.blockers]},
+                        )
                         return self._refuse(
                             request.request_id, f"{blocker.code}: {detail}"
                         )
@@ -578,8 +586,14 @@ class RunController:
                 continue
             seen_run_ids.add(info.run_id)
             request_id = by_run_id.get(info.run_id)
-            if info.status == "unreadable" and request_id is None:
-                unreadable.append(f"run {info.run_id}: state unreadable")
+            if info.status == "unreadable":
+                # Linkage to a request_id does not make a broken state.db
+                # readable (review on #200): run_in_flight promises a
+                # KNOWN non-terminal state; here the reading itself must
+                # be fixed. The linkage travels as metadata in the
+                # detail — the code stays run_state_unreadable.
+                suffix = f" (request {request_id})" if request_id else ""
+                unreadable.append(f"run {info.run_id}{suffix}: state unreadable")
                 continue
             runs.append(
                 RunFact(
