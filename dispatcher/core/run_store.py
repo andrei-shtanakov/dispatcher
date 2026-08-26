@@ -542,28 +542,6 @@ class RunStore:
             stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
             name = f"{path.stem}.{stamp}.{secrets.token_hex(4)}.released"
             target = released / name
-            # Spec §8.3: re-check, under the guard, that the pathname still
-            # names the file that was read — an adversary outside the
-            # advisory guard could have replaced it with a fresh HEALTHY
-            # lock, and moving that would strip a live launch's protection
-            # while the audit swears it moved the old corrupt bytes.
-            try:
-                now = path.stat()
-            except OSError as err:
-                raise RunStoreError(
-                    f"{key.as_text()}: lock identity changed since it was "
-                    f"read ({err}) — refusing to quarantine"
-                ) from err
-            if (now.st_dev, now.st_ino, now.st_size, now.st_mtime_ns) != (
-                stat.st_dev,
-                stat.st_ino,
-                stat.st_size,
-                stat.st_mtime_ns,
-            ):
-                raise RunStoreError(
-                    f"{key.as_text()}: lock identity changed since it was "
-                    "read — refusing to quarantine"
-                )
             audit = {
                 "repo_key": key.as_text(),
                 "actor": actor,
@@ -589,8 +567,62 @@ class RunStore:
                     f"{key.as_text()}: cannot persist the quarantine audit "
                     f"({err}) — refusing to release without it"
                 ) from err
+            # Spec §8.3: re-check, under the guard and with NO filesystem
+            # work between this check and the rename, that the pathname
+            # still names the file that was read — an adversary outside
+            # the advisory guard could have replaced it with a fresh
+            # HEALTHY lock, and moving that would strip a live launch's
+            # protection while the audit swears it moved old corrupt
+            # bytes. (Cooperating writers are excluded by the guard; this
+            # is defence against a non-cooperating one.)
+            self._refuse_if_identity_changed(key, path, stat, target)
             os.rename(path, target)
+            # Belt to the braces above: rename-by-pathname cannot be
+            # atomically bound to the stat, so verify what actually moved.
+            # A mismatch restores the file and refuses — the one shape
+            # this cannot distinguish is an adversary writing byte-for-
+            # byte identical damage, which is the same quarantine either
+            # way.
+            try:
+                moved = target.read_bytes()
+            except OSError:
+                moved = None
+            if moved != data:
+                if not path.exists():
+                    os.rename(target, path)
+                    target.with_suffix(".audit.json").unlink(missing_ok=True)
+                raise RunStoreError(
+                    f"{key.as_text()}: lock identity changed during "
+                    "quarantine — the moved file was restored, nothing "
+                    "was released"
+                )
             return audit
+
+    @staticmethod
+    def _refuse_if_identity_changed(
+        key: RepoKey, path: Path, observed: os.stat_result, target: Path
+    ) -> None:
+        """Refuse (and drop the pre-written audit) unless `path` still
+        names the exact file `observed` described."""
+        try:
+            now = path.stat()
+        except OSError as err:
+            target.with_suffix(".audit.json").unlink(missing_ok=True)
+            raise RunStoreError(
+                f"{key.as_text()}: lock identity changed since it was "
+                f"read ({err}) — refusing to quarantine"
+            ) from err
+        if (now.st_dev, now.st_ino, now.st_size, now.st_mtime_ns) != (
+            observed.st_dev,
+            observed.st_ino,
+            observed.st_size,
+            observed.st_mtime_ns,
+        ):
+            target.with_suffix(".audit.json").unlink(missing_ok=True)
+            raise RunStoreError(
+                f"{key.as_text()}: lock identity changed since it was "
+                "read — refusing to quarantine"
+            )
 
     def _transition(self, request_id: str, **fields: object) -> LaunchRecord:
         record = self.get(request_id)

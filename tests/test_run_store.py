@@ -705,3 +705,37 @@ def test_a_failed_audit_write_leaves_the_lock_in_place(
     assert not released.exists() or not any(
         f for f in released.iterdir() if f.name.endswith(".released")
     )
+
+
+def test_a_swap_during_the_audit_write_is_caught_and_restored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The window the guard cannot close for a non-cooperating writer:
+    after the malformed bytes are proven but before the move. A healthy
+    lock swapped in during the audit write must NOT end up quarantined —
+    the operation refuses and the healthy lock stays (or is restored to)
+    its path."""
+    store = RunStore(tmp_path)
+    lock = store._lock_path(_KEY)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(b"half-writ")
+    healthy = json.dumps(
+        {"request_id": "rc-bbbbbbbb-22222222", "fingerprint": "f", "created_at": "t"}
+    ).encode()
+
+    real_write_text = Path.write_text
+
+    def _swap_during_audit(self: Path, *args, **kwargs):  # noqa: ANN002,ANN003,ANN202
+        result = real_write_text(self, *args, **kwargs)
+        if self.name.endswith(".audit.json"):
+            lock.write_bytes(healthy)  # the adversary's window
+        return result
+
+    monkeypatch.setattr(Path, "write_text", _swap_during_audit)
+    with pytest.raises(RunStoreError, match="identity"):
+        store.release_malformed_lock(_KEY, actor="x", reason="r")
+    assert lock.read_bytes() == healthy
+    released = lock.parent / "released"
+    assert not released.exists() or not any(
+        f for f in released.iterdir() if f.name.endswith(".released")
+    )
