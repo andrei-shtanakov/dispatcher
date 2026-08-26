@@ -1,5 +1,6 @@
 """Durable launch records and the per-RepoKey lock (spec §5.2, §5.4)."""
 
+import hashlib
 import json
 import multiprocessing
 import time
@@ -13,6 +14,7 @@ from dispatcher.core.run_store import (
     FingerprintMismatch,
     GuardBusyError,
     LockBusyError,
+    LockInfo,
     Malformed,
     RunStore,
     RunStoreError,
@@ -375,3 +377,105 @@ def test_list_returns_every_record_and_names_the_unreadable(tmp_path: Path) -> N
     records, unreadable = store.list()
     assert [r.request_id for r in records] == ["rc-aaaaaaaa-11111111"]
     assert unreadable == ["rc-broken00-00000000.json"]
+
+
+def test_release_malformed_quarantines_with_hash_and_identity(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    lock = store._lock_path(_KEY)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(b"half-writ")
+    audit = store.release_malformed_lock(
+        _KEY, actor="local-unauthenticated", reason="crash residue"
+    )
+    assert not lock.exists()
+    quarantined = lock.parent / "released" / audit["quarantined_as"]
+    assert quarantined.read_bytes() == b"half-writ"
+    assert audit["sha256"] == hashlib.sha256(b"half-writ").hexdigest()
+    assert audit["inode"] and audit["size"] == 9
+
+
+def test_release_malformed_refuses_a_healthy_lock(tmp_path: Path) -> None:
+    """A healthy lock is released only by its owning transitions."""
+    store = RunStore(tmp_path)
+    store.reserve(
+        "rc-aaaaaaaa-11111111",
+        _KEY,
+        known_runs=[],
+        window_start="T0",
+        work_id="w",
+        revision="a" * 40,
+    )
+    with pytest.raises(RunStoreError, match="parses"):
+        store.release_malformed_lock(_KEY, actor="x", reason="r")
+
+
+def test_release_malformed_refuses_on_io_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Quarantine on the word of a broken read could destroy a healthy
+    lock — IO failure is lock_io_unreadable, never malformed.
+
+    The error is INJECTED, scoped to the exact lock path under test, not
+    a global `Path.read_bytes` failure (which would also break `guard()`'s
+    own internal reads elsewhere) and never a real `chmod` (unstable
+    across users/CI, per this test's own brief docstring).
+    """
+    store = RunStore(tmp_path)
+    lock = store._lock_path(_KEY)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(b"whatever")
+    original_read_bytes = Path.read_bytes
+
+    def _boom(self: Path) -> bytes:
+        if self == lock:
+            raise PermissionError("denied")
+        return original_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", _boom)
+    with pytest.raises(RunStoreError, match="unreadable"):
+        store.release_malformed_lock(_KEY, actor="x", reason="r")
+
+
+def _hold_guard_and_reserve(state_dir: str, hold_seconds: float, acquired) -> None:
+    """Multiprocessing target: holds the guard AND writes a genuinely
+    fresh, healthy lock inside it (via `_reserve_locked`, never `reserve`
+    — mirrors the same reentrancy rule `submit` follows). The guard is
+    what stops `release_malformed_lock`, running concurrently from
+    another process, from ever reading this lock mid-write.
+    """
+    store = RunStore(Path(state_dir))
+    with store.guard(_KEY):
+        store._reserve_locked(
+            "rc-holder0-00000000", _KEY, known_runs=[], window_start="T0"
+        )
+        acquired.set()
+        time.sleep(hold_seconds)
+
+
+def test_the_guarded_race_cannot_quarantine_a_fresh_healthy_lock(
+    tmp_path: Path,
+) -> None:
+    """The review scenario as RED against an unguarded implementation:
+    hold the guard from another process (as in the guard tests), attempt
+    release_malformed_lock → GuardBusyError, and the fresh lock written
+    by the holder is untouched."""
+    store = RunStore(tmp_path)
+    lock = store._lock_path(_KEY)
+
+    acquired = multiprocessing.Event()
+    holder = multiprocessing.Process(
+        target=_hold_guard_and_reserve,
+        args=(str(tmp_path), GUARD_TIMEOUT_SECONDS + 2, acquired),
+    )
+    holder.start()
+    try:
+        assert acquired.wait(timeout=10), "holder never acquired"
+        with pytest.raises(GuardBusyError):
+            store.release_malformed_lock(_KEY, actor="x", reason="r")
+        assert lock.exists()
+        healthy = store.read_lock(_KEY)
+        assert isinstance(healthy, LockInfo)
+        assert healthy.request_id == "rc-holder0-00000000"
+    finally:
+        holder.terminate()
+        holder.join()

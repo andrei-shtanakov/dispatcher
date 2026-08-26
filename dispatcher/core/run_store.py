@@ -14,6 +14,7 @@ between slice 0 and two agent-driven runs mutating one checkout.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import tempfile
@@ -458,6 +459,53 @@ class RunStore:
                 f"{key.as_text()}: lock is held by {state.request_id}, not {request_id}"
             )
         self._lock_path(key).unlink(missing_ok=True)
+
+    def release_malformed_lock(self, key: RepoKey, *, actor: str, reason: str) -> dict:
+        """Spec §8.3: quarantine is offered only where damage is PROVEN —
+        the observed bytes are the damage. Runs inside the guard; identity
+        (inode) is re-checked under it so the file moved is provably the
+        file observed — a competing `_reserve_locked` write can never
+        interleave, since both run under the same `guard(key)`.
+        """
+        with self.guard(key):
+            path = self._lock_path(key)
+            try:
+                stat = path.stat()
+                data = path.read_bytes()
+            except FileNotFoundError:
+                raise RunStoreError(f"{key.as_text()}: no lock to release") from None
+            except OSError as err:
+                raise RunStoreError(
+                    f"{key.as_text()}: lock unreadable ({err}) — fix the "
+                    "filesystem first; quarantining on a broken read could "
+                    "destroy a healthy lock"
+                ) from err
+            try:
+                LockInfo.model_validate_json(data.decode(errors="replace"))
+            except Exception:
+                pass
+            else:
+                raise RunStoreError(
+                    f"{key.as_text()}: the lock parses — a healthy lock is "
+                    "released only by its owning transitions"
+                )
+            released = path.parent / "released"
+            released.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
+            name = f"{path.stem}.{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}.released"
+            target = released / name
+            os.rename(path, target)
+            audit = {
+                "repo_key": key.as_text(),
+                "actor": actor,
+                "reason": reason,
+                "at": datetime.now(UTC).isoformat(),
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "inode": stat.st_ino,
+                "size": stat.st_size,
+                "quarantined_as": name,
+            }
+            target.with_suffix(".audit.json").write_text(json.dumps(audit))
+            return audit
 
     def _transition(self, request_id: str, **fields: object) -> LaunchRecord:
         record = self.get(request_id)

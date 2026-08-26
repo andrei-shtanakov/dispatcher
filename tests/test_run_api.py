@@ -1,5 +1,6 @@
 """HTTP surface of the control plane (spec §5.3, §6)."""
 
+import subprocess
 from pathlib import Path
 
 import httpx
@@ -366,3 +367,91 @@ async def test_acknowledge_vanished_happy_path_returns_the_tombstone(
     assert body["ack_actor"] == "local-unauthenticated"
     assert body["ack_reason"] == "host wiped"
     assert body["prior_run_id"] == "01AAA"
+
+
+def _checkout(root: Path, name: str, remote: str) -> Path:
+    """A minimal git checkout with an origin remote — all
+    `identity_from_checkout` reads (no commit needed)."""
+    repo = root / name
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "remote", "add", "origin", remote], check=True
+    )
+    return repo
+
+
+async def test_release_malformed_lock_happy_path_returns_the_audit(
+    tmp_path: Path,
+) -> None:
+    """POST .../release-malformed quarantines a malformed lock and
+    returns 200 with the audit record, including its sha256 (spec §8.3)."""
+    import hashlib
+
+    from dispatcher.core.run_identity import RepoKey
+    from dispatcher.core.run_store import RunStore
+
+    ws = tmp_path / "ws"
+    _checkout(ws, "deployer", "git@github.com:owner/deployer.git")
+    key = RepoKey(host="github.com", owner="owner", repo="deployer")
+    store = RunStore(tmp_path / "state")
+    lock = store._lock_path(key)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(b"half-writ")
+
+    config = DispatcherConfig(
+        roots=(ws,),
+        run_state_dir=tmp_path / "state",
+        maestro_cli=tmp_path / "unused-maestro",
+    )
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/locks/release-malformed",
+            json={
+                "repo_key": "github.com/owner/deployer",
+                "confirm_repo_key": "github.com/owner/deployer",
+                "reason": "crash residue",
+                "display_name": None,
+            },
+            headers={"X-Action-Token": token},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["repo_key"] == "github.com/owner/deployer"
+    assert body["actor"] == "local-unauthenticated"
+    assert body["reason"] == "crash residue"
+    assert body["sha256"] == hashlib.sha256(b"half-writ").hexdigest()
+    assert body["size"] == 9
+    assert not lock.exists()
+
+
+async def test_release_malformed_lock_confirm_mismatch_is_409(tmp_path: Path) -> None:
+    """A wrong confirm_repo_key is refused before anything is touched —
+    spec §8.3's retype safeguard, same as acknowledge-vanished's."""
+    ws = tmp_path / "ws"
+    _checkout(ws, "deployer", "git@github.com:owner/deployer.git")
+    config = DispatcherConfig(
+        roots=(ws,),
+        run_state_dir=tmp_path / "state",
+        maestro_cli=tmp_path / "unused-maestro",
+    )
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/locks/release-malformed",
+            json={
+                "repo_key": "github.com/owner/deployer",
+                "confirm_repo_key": "github.com/owner/WRONG",
+                "reason": "r",
+                "display_name": None,
+            },
+            headers={"X-Action-Token": token},
+        )
+    assert resp.status_code == 409
+    assert "retype" in resp.json()["detail"]
