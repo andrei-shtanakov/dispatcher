@@ -19,12 +19,13 @@ import os
 import re
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from dispatcher.core.admission import Blocker, RunFact, classify_repo
 from dispatcher.core.collectors.maestro import classified_runs
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.models import OrchestrationRunInfo, ProjectSnapshot
@@ -40,10 +41,15 @@ from dispatcher.core.run_request import (
     validate_request,
 )
 from dispatcher.core.run_store import (
+    FingerprintMismatch,
+    GuardBusyError,
     LaunchRecord,
     LockBusyError,
+    LockInfo,
+    LockState,
     RunStore,
     RunStoreError,
+    fingerprint_of,
 )
 
 _audit = logging.getLogger("dispatcher.runs")
@@ -333,6 +339,29 @@ class RunController:
             return self._refuse(request.request_id, f"cannot use request_id: {err}")
 
         if existing is not None and existing.state != "reserved":
+            if existing.response_class == "admission_rejected":
+                # This branch returns BEFORE `validate_request`/`reserve`
+                # run, so it is the one place that must check the
+                # fingerprint itself (spec §8.2): `reserve`'s own check
+                # never sees a repeated request whose prior attempt was
+                # already terminalized here.
+                fp = fingerprint_of(
+                    existing.repo_key, request.work_id, request.revision
+                )
+                if fp == existing.fingerprint:
+                    # Reproducible, zero re-classification: the ORIGINAL
+                    # decision replays verbatim even if the repo's live
+                    # state has since changed enough that a fresh
+                    # classification could pass (spec §8.2, §10).
+                    return self._refuse(
+                        request.request_id,
+                        f"{existing.admission_code}: {existing.admission_detail}",
+                    )
+                return self._refuse(
+                    request.request_id,
+                    f"request_id_conflict: {request.request_id} was "
+                    "already used for a different attempt",
+                )
             # Idempotency: a repeated request_id continues or returns the
             # existing record and never starts a second process (spec §5.2).
             reason = existing.reason
@@ -366,8 +395,14 @@ class RunController:
             return self._refuse(request.request_id, str(err))
 
         runs = self.runs_dir(validated.key)
-        try:
-            store.reserve(
+
+        def _reserve() -> LaunchRecord:
+            # Calls `_reserve_locked` — NEVER `reserve` — because this
+            # runs from inside `store.guard(validated.key)` below and
+            # `guard` is not reentrant: a nested `reserve()` would try to
+            # take the same guard a second time, self-block for
+            # `GUARD_TIMEOUT_SECONDS`, and die `GuardBusyError`.
+            return store._reserve_locked(  # noqa: SLF001 — the guarded caller
                 request.request_id,
                 validated.key,
                 known_runs=self._listing(runs),
@@ -386,18 +421,126 @@ class RunController:
                 # than from the server process's cwd (see `_verb_cwd`).
                 checkout=str(validated.checkout),
             )
+
+        try:
+            with store.guard(validated.key):
+                lock_state, lock_err = self._read_lock_state(
+                    store, validated.key, request.request_id
+                )
+                run_facts, runs_unreadable = self._capture_run_facts(
+                    store, validated.key
+                )
+                verdict = classify_repo(
+                    lock_state, lock_err, run_facts, runs_unreadable
+                )
+                if verdict.admission == "blocked":
+                    blocker = verdict.blockers[0]
+                    detail = _blocker_detail(blocker)
+                    # Preflight fact first: `mark_admission_rejected`
+                    # transitions an EXISTING record, so one must exist
+                    # for this request_id before it can be terminalized.
+                    _reserve()
+                    store.mark_admission_rejected(
+                        request.request_id,
+                        code=blocker.code,
+                        detail=detail,
+                        current={"blockers": [asdict(b) for b in verdict.blockers]},
+                    )
+                    return self._refuse(request.request_id, f"{blocker.code}: {detail}")
+                _reserve()
+        except GuardBusyError as err:
+            return self._refuse(request.request_id, f"guard_busy: {err}")
+        except FingerprintMismatch as err:
+            return self._refuse(request.request_id, f"request_id_conflict: {err}")
         except LockBusyError as err:
             return self._refuse(request.request_id, str(err))
         except (RunStoreError, OSError) as err:
-            # I5: `_write` (inside `reserve`) raises plain `OSError` on a
-            # filesystem failure — the branch's own convention elsewhere is
-            # `(RunStoreError, OSError)`, and this call was one of four that
-            # had fallen behind it.
+            # I5: `_write` (inside `_reserve_locked`) raises plain `OSError`
+            # on a filesystem failure — the branch's own convention
+            # elsewhere is `(RunStoreError, OSError)`, and this call was
+            # one of four that had fallen behind it.
             return self._refuse(request.request_id, f"cannot use request_id: {err}")
 
         return self._launch(
             store, request, validated.checkout, validated.key, runs, catalog
         )
+
+    @staticmethod
+    def _read_lock_state(
+        store: RunStore, key: RepoKey, request_id: str
+    ) -> tuple[LockState, str | None]:
+        """The lock's current state, or the IO error reading it — captured
+        VALUES, exactly what `classify_repo`'s pure contract takes as its
+        first two arguments (spec §5, §7); it never touches the filesystem
+        itself.
+
+        A lock already held by THIS SAME `request_id` is this attempt's
+        own prior partial write — e.g. a crash between `_reserve_locked`
+        and `mark_launching` left a `reserved` record whose lock is still
+        standing — not a competing attempt. Reported as free (`None`) so a
+        legitimate retry of a still-`reserved` record is not blocked by
+        its own lock (spec §5.2's idempotent-retry contract, unchanged by
+        this gate).
+        """
+        try:
+            state = store.read_lock(key)
+        except RunStoreError as err:
+            return None, str(err)
+        if isinstance(state, LockInfo) and state.request_id == request_id:
+            return None, None
+        return state, None
+
+    def _capture_run_facts(
+        self, store: RunStore, key: RepoKey
+    ) -> tuple[tuple[RunFact, ...], tuple[str, ...]]:
+        """Every run maestro currently classifies for `key`, joined to its
+        `request_id` via `RunStore.list()` — the same classifier `view()`
+        uses (spec §3.2), so a request's status and the dashboard's can
+        never disagree.
+
+        A run whose `state.db` failed to read (`OrchestrationRunInfo`
+        status `"unreadable"`) stays an ordinary non-terminal `RunFact`
+        when THIS store has a `request_id` on file for it: that is a
+        freshly materialized run of dispatcher's OWN launch whose db
+        content can transiently lag its directory's appearance, not
+        external corruption, so it stays inside the same fail-closed
+        RUN_IN_FLIGHT/RUN_VANISHED handling as any other non-terminal
+        status. An unreadable run this store cannot attribute to any
+        request is escalated instead, into `runs_unreadable`:
+        `classify_repo` cannot even name who is responsible for it, so it
+        surfaces as its own `RUN_STATE_UNREADABLE` blocker rather than
+        folding silently into "some run is busy" (spec §7's unreadable
+        split, mirrored from `RunStore.read_lock`).
+        """
+        _, _, home = self._require_on()
+        scratch = ProjectSnapshot(name="maestro", path="")
+        records, list_unreadable = store.list()
+        by_run_id = {r.run_id: r.request_id for r in records if r.run_id is not None}
+        runs: list[RunFact] = []
+        unreadable: list[str] = []
+        for info, _ in classified_runs(home, scratch):
+            if info.repo_key != key.as_text() or info.run_id is None:
+                continue
+            request_id = by_run_id.get(info.run_id)
+            if info.status == "unreadable" and request_id is None:
+                unreadable.append(f"run {info.run_id}: state unreadable")
+                continue
+            runs.append(
+                RunFact(
+                    run_id=info.run_id,
+                    status=info.status,
+                    request_id=request_id,
+                    run_dir_exists=True,
+                )
+            )
+        # Enumeration-level failures (an unlistable `runs/` or `projects/`
+        # dir, `dispatcher/core/collectors/maestro.py:239`) are not tied to
+        # any single run_id and never produced a `RunFact` above.
+        unreadable.extend(
+            w for w in scratch.warnings if w.startswith("runs enumeration:")
+        )
+        unreadable.extend(list_unreadable)
+        return tuple(runs), tuple(unreadable)
 
     def _launch(
         self,
@@ -1435,3 +1578,18 @@ def _accepted_for(record: LaunchRecord) -> bool | None:
     if record.state == "launch_unknown":
         return None
     return None
+
+
+def _blocker_detail(blocker: Blocker) -> str:
+    """Human-readable detail for one blocker, from whichever of
+    `detail`/`run_id`/`request_id` that blocker's code actually carries
+    (`dispatcher/core/admission.py`'s `Blocker` populates only the fields
+    relevant to its own code)."""
+    if blocker.detail:
+        return blocker.detail
+    parts = []
+    if blocker.run_id is not None:
+        parts.append(f"run {blocker.run_id}")
+    if blocker.request_id is not None:
+        parts.append(f"request {blocker.request_id}")
+    return " ".join(parts) if parts else blocker.code

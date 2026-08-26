@@ -2,22 +2,40 @@
 
 import dataclasses
 import json
+import multiprocessing
 import os
 import shutil
 import subprocess
 import textwrap
+import time
 import tracemalloc
 from pathlib import Path
 
 import pytest
+from conftest import make_maestro_run
 from pydantic import ValidationError
 
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.run_controller import RunController
+from dispatcher.core.run_identity import RepoKey
 from dispatcher.core.run_request import RunRejectedError, RunRequest
-from dispatcher.core.run_store import LockBusyError, RunStore
+from dispatcher.core.run_store import GUARD_TIMEOUT_SECONDS, LockBusyError, RunStore
 
 _REQ = "11111111-1111-4111-8111-111111111111"
+_DEPLOYER_KEY = RepoKey(host="github.com", owner="owner", repo="deployer")
+
+
+def _hold_store_guard(state_dir: str, acquired) -> None:
+    """Multiprocessing target for `test_guard_busy_refuses_with_zero_lock_mutations`.
+
+    A module-level, spawn-safe function per `tests/test_run_store.py`'s own
+    `_hold_guard` pattern — a lambda/nested closure fails to pickle under
+    macOS's "spawn" start method.
+    """
+    store = RunStore(Path(state_dir))
+    with store.guard(_DEPLOYER_KEY):
+        acquired.set()
+        time.sleep(GUARD_TIMEOUT_SECONDS + 2)
 
 
 def _repo(root: Path) -> str:
@@ -1608,3 +1626,133 @@ def test_a_boundary_aligned_tail_keeps_its_first_complete_event(
     assert logs.events[0].event == "e00100", (
         "the first complete event of the tail is the one the inference lost"
     )
+
+
+def test_submit_refuses_while_a_nonterminal_run_exists(tmp_path: Path) -> None:
+    """Spec §7: at most one run without proven terminal outcome per
+    RepoKey — checked against ALL runs, not the latest."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    controller = RunController(_config(tmp_path, cli), materialize_timeout=10.0)
+    assert controller.submit(_request(head)).accepted is True  # run 01AAA, non-terminal
+
+    second = _request(head).model_copy(
+        update={"request_id": "22222222-2222-4222-8222-222222222222"}
+    )
+    receipt = controller.submit(second)
+    assert receipt.accepted is False
+    assert receipt.reason is not None
+    assert receipt.reason.startswith("run_in_flight:")
+    assert "01AAA" in receipt.reason
+    # the refusal is terminal, reproducible, and freed the lock
+    rec = RunStore(tmp_path / "state").get(second.request_id)
+    assert rec is not None
+    assert rec.outcome == "admission-rejected"
+    assert rec.admission_code == "run_in_flight"
+
+
+def test_the_refusal_replays_without_reclassification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Semantic equality of the replay, and provably zero classifier calls
+    (spec §8.2 / §10) — re-classification could pass where the original
+    failed."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    controller = RunController(_config(tmp_path, cli), materialize_timeout=10.0)
+    assert controller.submit(_request(head)).accepted is True
+
+    second = _request(head).model_copy(
+        update={"request_id": "22222222-2222-4222-8222-222222222222"}
+    )
+    first_refusal = controller.submit(second)
+    assert first_refusal.accepted is False
+
+    import dispatcher.core.run_controller as rc
+
+    calls = []
+    monkeypatch.setattr(
+        rc,
+        "classify_repo",
+        lambda *a, **k: (
+            calls.append(1) or (_ for _ in ()).throw(AssertionError("re-classified"))
+        ),
+    )
+    replay = controller.submit(second)
+    assert replay.accepted is False
+    assert replay.reason is not None
+    assert replay.reason.startswith("run_in_flight:")
+    assert calls == []
+
+
+def test_unreadable_run_state_blocks_fail_closed(tmp_path: Path) -> None:
+    """A corrupt state.db must read as unknown, never as finished.
+
+    Arranged directly against the maestro home tree (not through
+    `controller.submit`, and with no matching `LaunchRecord`) so the
+    corrupted run is UNLINKED to any request_id — the one case
+    `RunController._capture_run_facts` escalates to its own
+    `RUN_STATE_UNREADABLE` blocker rather than folding into the ordinary
+    non-terminal `RUN_IN_FLIGHT` handling a linked run gets.
+    """
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run=None)
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    assert config.maestro_home is not None
+
+    db = make_maestro_run(
+        config.maestro_home,
+        ("github.com", "owner", "deployer"),
+        "01ZZZ",
+        started_at="2026-08-01T00:00:00",
+        outcome="completed",
+        ended_at="2026-08-01T01:00:00",
+    )
+    db.write_bytes(b"garbage")  # corrupt: no longer even a readable sqlite db
+
+    receipt = controller.submit(_request(head))
+    assert receipt.accepted is False
+    assert receipt.reason is not None
+    assert receipt.reason.startswith("run_state_unreadable:")
+
+
+def test_guard_busy_refuses_with_zero_lock_mutations(tmp_path: Path) -> None:
+    """A held guard (separate process, as in test_run_store) makes submit
+    refuse guard_busy:, and the locks/ dir content is byte-identical
+    before and after."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    assert config.run_state_dir is not None
+    state_dir = config.run_state_dir
+
+    acquired = multiprocessing.Event()
+    holder = multiprocessing.Process(
+        target=_hold_store_guard, args=(str(state_dir), acquired)
+    )
+    holder.start()
+    try:
+        assert acquired.wait(timeout=10), "holder never acquired"
+        locks_dir = state_dir / "locks"
+        before = (
+            {p.name: p.read_bytes() for p in sorted(locks_dir.glob("*"))}
+            if locks_dir.exists()
+            else {}
+        )
+
+        receipt = controller.submit(_request(head))
+        assert receipt.accepted is False
+        assert receipt.reason is not None
+        assert receipt.reason.startswith("guard_busy:")
+
+        after = (
+            {p.name: p.read_bytes() for p in sorted(locks_dir.glob("*"))}
+            if locks_dir.exists()
+            else {}
+        )
+        assert before == after
+    finally:
+        holder.terminate()
+        holder.join()
