@@ -888,7 +888,7 @@ def create_app(
             # and PR-C's taxonomy keys off the `guard_busy:` code prefix —
             # the reverse order made this branch unreachable.
             raise HTTPException(status_code=409, detail=f"guard_busy: {err}") from err
-        except RunStoreError as err:
+        except (RunStoreError, RunRejectedError) as err:
             raise HTTPException(status_code=409, detail=str(err)) from err
         except ControlPlaneOff as err:
             raise HTTPException(status_code=409, detail=str(err)) from err

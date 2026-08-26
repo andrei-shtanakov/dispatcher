@@ -2265,3 +2265,25 @@ def test_an_unlinked_run_directory_with_no_state_db_still_blocks(
     assert receipt.reason is not None
     assert receipt.reason.startswith("run_in_flight:")
     assert "01ZZZ" in receipt.reason
+
+
+def test_an_empty_reason_refuses_both_escapes(tmp_path: Path) -> None:
+    """An audited administrative release without a recorded justification
+    contradicts the audit's own contract — whitespace-only reason refuses
+    BEFORE any mutation, for both escapes."""
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    shutil.rmtree(tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA")
+    with pytest.raises(RunRejectedError, match="reason"):
+        controller.acknowledge_vanished(_REQ, "01AAA", "  \n\t ", None)
+    rec = controller._store().get(_REQ)
+    assert rec is not None and rec.outcome != "vanished-acknowledged"
+
+    store = controller._store()
+    lock = store._lock_path(_DEPLOYER_KEY)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(b"half-writ")
+    with pytest.raises(RunRejectedError, match="reason"):
+        controller.release_malformed_lock(
+            _DEPLOYER_KEY, reason="   ", display_name=None
+        )
+    assert lock.exists()

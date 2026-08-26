@@ -1800,9 +1800,17 @@ class RunController:
         )
 
     def _normalized_reason(self, reason: str) -> str:
-        """Whitespace-collapsed and capped (spec §8.3) — one bad-faith or
-        mistaken caller must not grow a record file without bound."""
-        return " ".join(reason.split())[: self._REASON_CAP]
+        """Whitespace-collapsed, capped — and NON-EMPTY (spec §8.3): one
+        bad-faith or mistaken caller must not grow a record file without
+        bound, and an audited administrative release with no recorded
+        justification contradicts the audit's own contract."""
+        normalized = " ".join(reason.split())[: self._REASON_CAP]
+        if not normalized:
+            raise RunRejectedError(
+                "reason must not be empty — the audit records why the "
+                "operator released a fail-closed block"
+            )
+        return normalized
 
     @staticmethod
     def _escape_actor(display_name: str | None) -> str:
