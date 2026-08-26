@@ -39,7 +39,12 @@ from pathlib import Path
 from plan_fields.parser import DAG_RE, parse_dag
 from plan_fields.scrape import scrape_items
 
-from dispatcher.core.dag_subset import Accepted, DagSubsetVerdict, classify_dag_text
+from dispatcher.core.dag_subset import (
+    MAX_DAG_BYTES,
+    Accepted,
+    DagSubsetVerdict,
+    classify_dag_text,
+)
 from dispatcher.core.run_identity import (
     IdentityError,
     RepoKey,
@@ -257,7 +262,25 @@ def _capture_one_dag_file(
         )
 
     try:
-        is_regular = stat.S_ISREG(os.fstat(fd).st_mode)
+        st = os.fstat(fd)
+        is_regular = stat.S_ISREG(st.st_mode)
+        if is_regular and st.st_size > MAX_DAG_BYTES:
+            # Refused from st_size, BEFORE any read: the classifier's cap
+            # fires only after text exists, and capture must not materialize
+            # gigabytes to hand it something to refuse.
+            return DagFileInfo(
+                rel_path=rel_path,
+                is_regular=True,
+                text=None,
+                blob_sha=None,
+                head_blob_sha=None,
+                subset=None,
+                named_repo=None,
+                named_repo_error=None,
+                error=(
+                    f"{rel_path} exceeds {MAX_DAG_BYTES} bytes ({st.st_size}): not read"
+                ),
+            )
         data = _read_all(fd) if is_regular else b""
     except OSError as err:
         # EIO/ESTALE and friends mid-read: captured as a named fact, same

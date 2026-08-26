@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 import yaml
 
-_MAX_DAG_BYTES = 1024 * 1024  # a plan DAG is text; anything bigger is refused
+MAX_DAG_BYTES = 1024 * 1024  # a plan DAG is text; anything bigger is refused
 _MODE2_MARKER = "workstreams"  # recorded ruling: repo_url is legal Mode-1
 
 
@@ -34,8 +34,8 @@ DagSubsetVerdict = Accepted | Rejected
 
 def classify_dag_text(text: str) -> DagSubsetVerdict:
     """Classify one DAG file's text against the supported subset."""
-    if len(text.encode("utf-8", errors="replace")) > _MAX_DAG_BYTES:
-        return Rejected(f"file exceeds {_MAX_DAG_BYTES} bytes")
+    if len(text.encode("utf-8", errors="replace")) > MAX_DAG_BYTES:
+        return Rejected(f"file exceeds {MAX_DAG_BYTES} bytes")
     try:
         # phase 1: event scan — no construction, aliases NOT expanded here.
         # PyYAML's safe_load DOES expand aliases (billion-laughs fits inside

@@ -7,6 +7,7 @@ pinning (spec §5.1 cond. 7) needs actual git, not a fake.
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -460,3 +461,35 @@ def test_named_repo_unresolvable_path_sets_error(tmp_path):
 
     assert info.named_repo is None
     assert info.named_repo_error is not None
+
+
+def test_oversized_dag_file_is_refused_without_reading(tmp_path, monkeypatch):
+    """A multi-GB file must be refused from fstat's st_size, before any read.
+
+    The classifier's 1 MiB cap fires only after text exists; capture must not
+    materialize gigabytes to hand the classifier something to refuse.
+    """
+    import dispatcher.core.inventory as inv
+
+    root = make_repo(
+        tmp_path,
+        "# demo — TODO\n\n- [ ] Big @id:big @owner:github:u @dag:dags/big.yaml\n",
+        {"dags/big.yaml": "repo: /x\ntasks: []\n"},
+    )
+    real_fstat = os.fstat
+
+    def fat_fstat(fd: int) -> os.stat_result:
+        st = real_fstat(fd)
+        fake = list(st)
+        fake[stat.ST_SIZE] = 3 * 1024 * 1024 * 1024
+        return os.stat_result(fake)
+
+    def exploding_read(fd: int) -> bytes:
+        raise AssertionError("oversized file must not be read")
+
+    monkeypatch.setattr(inv.os, "fstat", fat_fstat)
+    monkeypatch.setattr(inv, "_read_all", exploding_read)
+    surface = inv.capture_inventory(root)
+    (info,) = surface.dag_files
+    assert info.error is not None and "exceeds" in info.error
+    assert info.text is None and info.blob_sha is None
