@@ -705,7 +705,7 @@ class RunController:
         return log_dir / f"{request_id}.log"
 
     @staticmethod
-    def _read_tail_bytes(path: Path, max_bytes: int) -> tuple[bytes, bool]:
+    def _read_tail_bytes(path: Path, max_bytes: int) -> tuple[bytes, bool, bool]:
         """The last `max_bytes` of a file, never reading more than that.
 
         The one tail reader for every log this controller serves. Three call
@@ -725,17 +725,25 @@ class RunController:
         with os.fdopen(fd, "rb") as handle:
             size = handle.seek(0, os.SEEK_END)
             truncated = size > max_bytes
+            mid_line = False
             if truncated:
-                handle.seek(-max_bytes, os.SEEK_END)
+                # The third return is a FACT, not an inference (codex round
+                # 6, minor): "truncated" alone does not mean the tail starts
+                # mid-line — a tail that happens to begin exactly after a
+                # newline holds only complete lines, and dropping its first
+                # one loses a real event that fit both caps. One byte before
+                # the cut answers the question exactly.
+                handle.seek(size - max_bytes - 1)
+                mid_line = handle.read(1) != b"\n"
             else:
                 handle.seek(0, os.SEEK_SET)
-            return handle.read(max_bytes), truncated
+            return handle.read(max_bytes), truncated, mid_line
 
     @staticmethod
     def _tail(path: Path, limit: int = 4000) -> str:
         """Best-effort: the last `limit` chars of a captured stderr file."""
         try:
-            data, _ = RunController._read_tail_bytes(path, 4 * limit)
+            data, _, _ = RunController._read_tail_bytes(path, 4 * limit)
         except OSError:
             return ""
         return data.decode(errors="replace").strip()[-limit:]
@@ -925,6 +933,19 @@ class RunController:
                 f"— refusing to serve another run's files under this run's "
                 f"identity"
             )
+        # A durable run_id proves the run EXISTED, not that it still does
+        # (codex round 6, major): `view()` maps a vanished run directory to
+        # `run=None`, and /logs answering 200 for the same request would
+        # have the two surfaces disagree about whether the run exists. The
+        # distinction that matters: the RUN directory gone is absence and
+        # refuses; `logs/` or `events.jsonl` not written yet is an ordinary
+        # young run and stays a 200 with an empty timeline.
+        if not logs_dir.parent.is_dir():
+            raise RunRejectedError(
+                f"run {record.run_id} is recorded for {record.request_id} "
+                f"but its directory is gone — the run is absent, which is "
+                f"not the same as a run that has not logged yet"
+            )
         return logs_dir
 
     def logs(self, request_id: str) -> RunLogs:
@@ -943,6 +964,7 @@ class RunController:
         events: list[RunLogEvent] = []
         truncated = False
         events_path = logs_dir / "events.jsonl"
+        mid_line = False
         if events_path.is_symlink():
             # Not followed: a symlink here re-points this run's TIMELINE at
             # another run's. Unlike the directory case this is a warning,
@@ -955,7 +977,7 @@ class RunController:
             lines = []
         else:
             try:
-                data, truncated = self._read_tail_bytes(
+                data, truncated, mid_line = self._read_tail_bytes(
                     events_path, self._MAX_EVENT_BYTES
                 )
                 lines = data.decode(errors="replace").splitlines()
@@ -967,9 +989,10 @@ class RunController:
                 # keeps insisting on: the two look identical in a UI.
                 warnings.append(f"cannot read {events_path.name}: {err}")
                 lines = []
-        if truncated and len(lines) > 1:
-            # A byte-bounded tail almost always starts mid-line. Dropping
-            # that fragment is honest — `truncated` already says older
+        if mid_line and len(lines) > 1:
+            # The reader SAW the byte before the cut: this branch runs only
+            # when the tail genuinely starts inside a line. Dropping the
+            # fragment is honest — `truncated` already says older
             # content was cut — but ONLY while other lines remain: a single
             # giant line is shown as its (raw, unparseable) tail rather
             # than as an empty timeline claiming nothing happened.
@@ -1046,7 +1069,7 @@ class RunController:
         # whole contract is "the last 256 KiB". The cap has to bound the
         # READ, not just the response.
         try:
-            data, truncated = self._read_tail_bytes(path, self._MAX_TASK_LOG_BYTES)
+            data, truncated, _ = self._read_tail_bytes(path, self._MAX_TASK_LOG_BYTES)
         except FileNotFoundError:
             raise RunRejectedError(
                 f"no log for task {task_id!r} in run {record.run_id}"

@@ -1878,7 +1878,17 @@ testCase('logs: no button while there is no run — the 404 is not offered',
     check(maybeEl(page, '#rc-logs-load') === null,
       'a logs button is offered for a run that does not exist');
 
-    // And it appears once the run does — the gate is run_id, not state.
+    // A recorded run whose directory vanished: run_id intact, run:null.
+    // The backend refuses that read (codex round 6), so offering the
+    // button would be the two surfaces disagreeing about existence.
+    await openView(page, 'req-vanished', {
+      record: {state: 'materialized', run_id: '01GONE'}, run: null,
+      warnings: [],
+    });
+    check(maybeEl(page, '#rc-logs-load') === null,
+      'a logs button is offered for a vanished run');
+
+    // And it appears when BOTH facts hold — recorded, and still seen.
     await openMaterialized(page);
     check(maybeEl(page, '#rc-logs-load') !== null,
       'the button is missing on a materialized run');

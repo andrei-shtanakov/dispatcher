@@ -1505,3 +1505,101 @@ def test_a_symlinked_task_log_is_refused_and_not_advertised(
     # And the honest file still reads — provenance must not break the
     # ordinary path.
     assert controller.task_log(_REQ, "red").text == "ours"
+
+
+# --- Absence vs youth (codex round 6, major): the three states ------------
+
+
+def test_a_vanished_run_directory_refuses_the_logs_read(tmp_path: Path) -> None:
+    """State 1: the run directory is GONE — refusal, for both surfaces.
+
+    `view()` maps this to `run=None`; /logs answering 200 for the same
+    request would have the two surfaces disagree about whether the run
+    exists. A durable run_id proves the run existed, not that it still does.
+    """
+    controller = _with_logs(tmp_path, red__log="x")
+    run_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA"
+    shutil.rmtree(run_dir)
+
+    with pytest.raises(RunRejectedError, match="directory is gone"):
+        controller.logs(_REQ)
+    with pytest.raises(RunRejectedError, match="directory is gone"):
+        controller.task_log(_REQ, "red")
+
+
+def test_a_run_that_has_not_logged_yet_is_empty_success(tmp_path: Path) -> None:
+    """State 2: the run directory EXISTS, `logs/` does not — 200, empty.
+
+    "The run vanished" and "the run has not written anything yet" must not
+    collapse into one answer: the second is every young run's first seconds.
+    """
+    controller = _with_logs(tmp_path)
+    logs_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs"
+    shutil.rmtree(logs_dir)  # the run dir itself stays
+
+    logs = controller.logs(_REQ)
+
+    assert logs.events == []
+    assert logs.task_logs == []
+    assert logs.warnings == []
+    # State 3 — an ordinary run with logs — is the rest of this file.
+
+
+# --- Boundary-aligned tails (codex round 6, minor) ------------------------
+
+
+def _line(i: int, size: int) -> str:
+    """One JSONL event padded to exactly `size` bytes including newline."""
+    head = f'{{"event": "e{i:05d}", "pad": "'
+    body = "x" * (size - len(head) - 3)
+    return head + body + '"}\n'
+
+
+def test_a_mid_line_tail_drops_exactly_the_fragment(tmp_path: Path) -> None:
+    """The cut lands inside a line: the fragment goes, whole lines stay."""
+    controller = _with_logs(tmp_path)
+    logs_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs"
+    cap = RunController._MAX_EVENT_BYTES
+    # One giant line longer than the cap, then three ordinary events: the
+    # tail must begin inside the giant line.
+    giant = '{"event": "huge", "pad": "' + "z" * (cap + 1000) + '"}\n'
+    normals = [_line(i, 2048) for i in range(3)]
+    (logs_dir / "events.jsonl").write_text(giant + "".join(normals))
+
+    logs = controller.logs(_REQ)
+
+    assert logs.truncated is True
+    assert [e.event for e in logs.events] == ["e00000", "e00001", "e00002"], (
+        "the fragment of the giant line should be the only casualty"
+    )
+
+
+def test_a_boundary_aligned_tail_keeps_its_first_complete_event(
+    tmp_path: Path,
+) -> None:
+    """The cut lands exactly after a newline: NOTHING may be dropped.
+
+    This is the case the old inference lost: `truncated` was read as "the
+    first line is partial", and a real event that fit both caps vanished
+    from the newest visible slice.
+    """
+    controller = _with_logs(tmp_path)
+    logs_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs"
+    cap = RunController._MAX_EVENT_BYTES
+    line_size = 2048
+    assert cap % line_size == 0, "the alignment this test is ABOUT"
+    tail_lines = cap // line_size  # exactly the byte cap, whole lines
+    assert tail_lines <= RunController._MAX_EVENTS, (
+        "the line cap would hide what the byte boundary does"
+    )
+    prefix = [_line(i, line_size) for i in range(3)]  # dropped
+    tail = [_line(100 + i, line_size) for i in range(tail_lines)]  # kept
+    (logs_dir / "events.jsonl").write_text("".join(prefix + tail))
+
+    logs = controller.logs(_REQ)
+
+    assert logs.truncated is True
+    assert len(logs.events) == tail_lines, "a complete event was dropped"
+    assert logs.events[0].event == "e00100", (
+        "the first complete event of the tail is the one the inference lost"
+    )

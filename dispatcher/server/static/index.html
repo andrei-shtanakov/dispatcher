@@ -1237,7 +1237,12 @@ function renderRunView(view) {
     // fixed for the verbs — the page contradicting a sentence it just
     // printed. The pane div stays, so the poll's restore logic is
     // identical either way.
-    + (rec.run_id
+    // BOTH facts, not one (codex round 6): `rec.run_id` proves a run was
+    // recorded, `run` proves the collector still SEES it. A record whose
+    // run directory vanished renders run=null with its run_id intact, and
+    // a button there is an offered 404 again — while the backend now
+    // refuses that read outright, so the two surfaces would disagree.
+    + (rec.run_id && run
         ? `<p><button id="rc-logs-load" type="button">logs</button>
             <span class="rc-hint">maestro's own timeline for this run</span></p>`
         : "")
