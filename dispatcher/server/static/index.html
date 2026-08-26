@@ -1225,7 +1225,28 @@ function renderRunView(view) {
     ? renderUnknownActions()
     : renderVerbControls(rec);
   return recordLine + runLine + warningsBlock
-    + `<div id="rc-view-actions">${actions}</div>`;
+    + `<div id="rc-view-actions">${actions}</div>`
+    // Spec §10's last reason to open a terminal. Deliberately EMPTY on
+    // render and filled only when the operator asks: the poll below rebuilds
+    // this whole node every five seconds, and re-fetching a growing log on
+    // every tick would be waste nobody asked for. Its content is preserved
+    // across re-renders the same way the verb result is.
+    // Offered only once a run EXISTS (codex round 4, minor): this very
+    // view already renders "no run yet" from the same fact, and a button
+    // whose every click is a guaranteed 404 is the defect class Task 5
+    // fixed for the verbs — the page contradicting a sentence it just
+    // printed. The pane div stays, so the poll's restore logic is
+    // identical either way.
+    // BOTH facts, not one (codex round 6): `rec.run_id` proves a run was
+    // recorded, `run` proves the collector still SEES it. A record whose
+    // run directory vanished renders run=null with its run_id intact, and
+    // a button there is an offered 404 again — while the backend now
+    // refuses that read outright, so the two surfaces would disagree.
+    + (rec.run_id && run
+        ? `<p><button id="rc-logs-load" type="button">logs</button>
+            <span class="rc-hint">maestro's own timeline for this run</span></p>`
+        : "")
+    + `<div id="rc-logs"></div>`;
 }
 
 let rcViewTimer = null;
@@ -1291,6 +1312,19 @@ async function rcPollView() {
   // moved to/from launch_unknown (renderUnknownActions has no such ids).
   const prevTaskId = document.getElementById("rc-verb-task-id")?.value;
   const prevVerbResult = document.getElementById("rc-verb-result")?.innerHTML;
+  // Same reason as the two above: a poll landing while the operator reads a
+  // log would otherwise blank it, and the operator would blame the log.
+  //
+  // But ONLY for the request the pane was filled for (codex review, major 1).
+  // Restoring it unconditionally carried one run's timeline into another
+  // run's view: open A, load logs, type B, press Open — and B's panel showed
+  // A's events until the operator noticed. That is one run's state wearing
+  // another run's identity, the same shape as #174, and here it would be
+  // read as fact rather than as a stale pane.
+  const logsPane = document.getElementById("rc-logs");
+  const prevLogs = logsPane?.dataset.request === requestId
+    ? logsPane.innerHTML
+    : undefined;
   box.innerHTML = renderRunView(view);
   if (prevTaskId !== undefined) {
     const taskIdEl = document.getElementById("rc-verb-task-id");
@@ -1299,6 +1333,19 @@ async function rcPollView() {
   if (prevVerbResult !== undefined) {
     const resultEl = document.getElementById("rc-verb-result");
     if (resultEl) resultEl.innerHTML = prevVerbResult;
+  }
+  if (prevLogs !== undefined) {
+    const logsEl = document.getElementById("rc-logs");
+    if (logsEl) {
+      logsEl.innerHTML = prevLogs;
+      // The BINDING travels with the content (codex round 2, major).
+      // Restoring only `innerHTML` left the fresh node unmarked, so the very
+      // next tick found no match, treated the pane as belonging to nobody,
+      // and blanked a log the operator was reading — on a live run, which
+      // polls until maestro reaches a terminal status. The first round's
+      // test ticked once and therefore agreed with the bug.
+      logsEl.dataset.request = requestId;
+    }
   }
   // B2: while THIS view stands unresolved (launch_unknown), a second
   // submit is the one action the recovery design forbids — the launch may
@@ -1321,6 +1368,121 @@ async function rcPollView() {
   }
 }
 
+// Renders maestro's timeline. An event whose line did not parse arrives with
+// an empty `event` and its text in `raw` — shown as-is rather than skipped,
+// because a half-written last line is ordinary while a run is live and
+// hiding it would make this pane disagree with the file it claims to show.
+//: Monotonic per-click generation for the logs panel — see `settle`.
+let rcLogsGen = 0;
+
+function renderRunLogs(logs) {
+  const rows = logs.events.map(e => e.event
+    ? `<tr><td><code>${esc(e.ts)}</code></td><td>${esc(e.event)}</td>
+        <td>${esc(e.task_id ?? "")}</td><td>${esc(e.message ?? "")}</td></tr>`
+    : `<tr><td colspan="4"><code class="dim">${esc(e.raw)}</code></td></tr>`
+  ).join("");
+  const warn = (logs.warnings || []).length
+    ? `<ul class="warn">${logs.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul>`
+    : "";
+  // An empty timeline and an unreadable one must not read the same: the
+  // warnings above say which, and this line never claims "no events" when
+  // the reason is that we could not look.
+  const body = logs.events.length
+    ? `${logs.truncated
+         ? `<p class="rc-hint">oldest lines dropped — showing the newest</p>` : ""}
+       <table><tr><th>ts</th><th>event</th><th>task</th><th>message</th></tr>
+       ${rows}</table>`
+    : (warn ? "" : `<p class="dim">no events yet</p>`);
+  const tasks = (logs.task_logs || []).length
+    ? `<p>task logs: ${logs.task_logs.map(id =>
+        `<button type="button" class="rc-task-log" data-task="${esc(id)}"
+          >${esc(id)}</button>`).join(" ")}</p>`
+    : "";
+  return warn + body + tasks + `<div id="rc-task-log"></div>`;
+}
+
+function renderTaskLog(log) {
+  return `<p><b>${esc(log.task_id)}</b>${
+    log.truncated ? ` <span class="rc-hint">tail only — start dropped</span>` : ""
+  }</p><pre>${esc(log.text)}</pre>`;
+}
+
+// Delegated on the panel, not bound per render: `renderRunView` replaces
+// these nodes on every poll, so a handler bound to a button would be lost
+// with it — and the button would stop working after five seconds, in a way
+// nobody would connect to polling.
+document.getElementById("rc-run-view").addEventListener("click", async ev => {
+  const box = document.getElementById("rc-logs");
+  // A node captured before `await` may be detached by the time the answer
+  // arrives: the poll replaces the whole of `#rc-run-view` every five
+  // seconds, so a `/logs` response slower than one tick used to be written
+  // into a node no longer on the page — the pane sat on "reading…" forever
+  // while the server had answered (codex review, major 2). Re-acquire after
+  // every await, and drop the answer if the operator has since opened a
+  // different request. This is the same discipline `rcPollView` already
+  // applies at its own await boundaries; the new async path had to learn it
+  // too rather than inherit it by proximity.
+  // Two guards, because there are two ways to be stale (codex round 3).
+  //
+  //   * another request was opened  -> `rcViewRequestId !== forRequest`;
+  //   * a NEWER click on this panel -> generation mismatch.
+  //
+  // The first alone let two task-log clicks on the SAME run race: click
+  // `red`, click `blue`, and a slow `red` arriving last overwrote `blue`,
+  // answering a selection the operator had already replaced — with nothing
+  // on screen to say so. One counter for the whole panel is deliberate:
+  // `#rc-task-log` lives INSIDE `#rc-logs`, so reloading the timeline
+  // legitimately supersedes a task log still in flight.
+  const gen = ++rcLogsGen;
+  const settle = (paneId, forRequest, html) => {
+    if (rcViewRequestId !== forRequest) return;   // superseded by another open
+    if (gen !== rcLogsGen) return;                // superseded by a newer click
+    const live = document.getElementById(paneId);
+    if (live) live.innerHTML = html;
+  };
+
+  // `rcViewRequestId`, not the textbox (codex round 2, minor): these controls
+  // are rendered INSIDE a run's view, and every other control there — the
+  // verbs, resolve, run-end — acts on the open run. Reading the textbox let
+  // an operator who typed a new id without pressing Open fetch B's logs into
+  // A's panel, where `settle` then correctly discarded them and left the pane
+  // on "reading…" for no reason the operator could see.
+  if (ev.target.id === "rc-logs-load") {
+    const id = rcViewRequestId;
+    if (!id) return;
+    box.innerHTML = `<p class="dim">reading…</p>`;
+    box.dataset.request = id;
+    try {
+      const resp = await fetch(`/api/runs/${encodeURIComponent(id)}/logs`);
+      const data = await resp.json();
+      settle("rc-logs", id, resp.ok
+        ? renderRunLogs(data)
+        : `<div class="warn">${esc(data.detail ?? `HTTP ${resp.status}`)}</div>`);
+      const live = document.getElementById("rc-logs");
+      if (live && rcViewRequestId === id) live.dataset.request = id;
+    } catch (err) {
+      settle("rc-logs", id, `<div class="warn">${esc(String(err))}</div>`);
+    }
+    return;
+  }
+  if (ev.target.classList?.contains("rc-task-log")) {
+    const id = rcViewRequestId;
+    const task = ev.target.dataset.task;
+    const out = document.getElementById("rc-task-log");
+    out.innerHTML = `<p class="dim">reading ${esc(task)}…</p>`;
+    try {
+      const resp = await fetch(
+        `/api/runs/${encodeURIComponent(id)}/logs/${encodeURIComponent(task)}`);
+      const data = await resp.json();
+      settle("rc-task-log", id, resp.ok
+        ? renderTaskLog(data)
+        : `<div class="warn">${esc(data.detail ?? `HTTP ${resp.status}`)}</div>`);
+    } catch (err) {
+      settle("rc-task-log", id, `<div class="warn">${esc(String(err))}</div>`);
+    }
+  }
+});
+
 document.getElementById("rc-open").addEventListener("click", async () => {
   const requestId = document.getElementById("rc-request-id").value.trim();
   if (!requestId) {
@@ -1329,6 +1491,13 @@ document.getElementById("rc-open").addEventListener("click", async () => {
     return;
   }
   if (rcViewTimer !== null) { clearInterval(rcViewTimer); rcViewTimer = null; }
+  // A DISPLAY generation, not just a click generation (codex round 5,
+  // minor). `rcViewRequestId` alone cannot invalidate an in-flight log
+  // fetch when the operator goes A -> B -> A again: by the time A's old
+  // answer lands, the "current request" reads A once more and the textual
+  // check waves it through — into a freshly opened view it does not
+  // describe. Every explicit Open is a new display, even of the same id.
+  rcLogsGen++;
   rcViewRequestId = requestId;
   await rcPollView();
 });

@@ -1651,3 +1651,282 @@ testCase('Copilot #1: a stale non-ok response, unstuck AFTER its own '
   console.error('\nHARNESS CRASHED:', (err && err.stack) || err);
   process.exitCode = 1;
 });
+
+
+// --- Run logs pane (spec §10) ---------------------------------------------
+
+testCase('logs: the timeline is NOT fetched by the 5s poll — only on demand',
+  async () => {
+  await withPage(async page => {
+    await openMaterialized(page);
+    await tick(page, 5000);
+    await tick(page, 5000);
+    check(!page.calls.some(c => c.url.includes("/logs")),
+      `polling fetched logs unasked: ${JSON.stringify(page.calls.map(c => c.url))}`);
+  });
+});
+
+testCase('logs: a poll landing while a log is open does not blank it',
+  async () => {
+  await withPage(async page => {
+    await openMaterialized(page);
+    page.routes.push([u => u.endsWith("/logs"), () => ok({
+      run_id: "01AAA", events: [{ts: "T1", event: "task_ready", raw: "{}"}],
+      truncated: false, task_logs: ["red"], warnings: [],
+    })]);
+    await click(page, '#rc-logs-load');
+    check(/task_ready/.test(el(page, '#rc-logs').innerHTML), 'log rendered (sanity)');
+    // TWO ticks, not one (codex round 2). One tick agreed with a real bug:
+    // the first poll restored the content but not the pane's binding, so the
+    // SECOND poll found an unmarked pane and blanked it. A live run polls
+    // until maestro is terminal, so the operator meets the second tick.
+    await tick(page, 5000);
+    check(/task_ready/.test(el(page, '#rc-logs').innerHTML),
+      'the first poll blanked the open log');
+    await tick(page, 5000);
+    check(/task_ready/.test(el(page, '#rc-logs').innerHTML),
+      'the SECOND poll blanked it — the binding did not survive the restore');
+  });
+});
+
+testCase('logs: the load button still works AFTER a poll re-render',
+  async () => {
+  // The handler is delegated for exactly this reason: bound per render, it
+  // would vanish with the node and the button would go dead after 5s.
+  await withPage(async page => {
+    await openMaterialized(page);
+    await tick(page, 5000);
+    page.routes.push([u => u.endsWith("/logs"), () => ok({
+      run_id: "01AAA", events: [{ts: "T9", event: "task_started", raw: "{}"}],
+      truncated: false, task_logs: [], warnings: [],
+    })]);
+    await click(page, '#rc-logs-load');
+    check(/task_started/.test(el(page, '#rc-logs').innerHTML),
+      'the button died after a re-render');
+  });
+});
+
+testCase('logs: an unreadable timeline shows the warning, never "no events"',
+  async () => {
+  await withPage(async page => {
+    await openMaterialized(page);
+    page.routes.push([u => u.endsWith("/logs"), () => ok({
+      run_id: "01AAA", events: [], truncated: false, task_logs: [],
+      warnings: ["cannot read events.jsonl: Permission denied"],
+    })]);
+    await click(page, '#rc-logs-load');
+    const html = el(page, '#rc-logs').innerHTML;
+    check(/Permission denied/.test(html), `warning shown (got: ${html})`);
+    check(!/no events yet/.test(html),
+      'unreadable rendered as empty — the two must not read the same');
+  });
+});
+
+testCase('logs: an unparsed line is shown raw, not dropped', async () => {
+  await withPage(async page => {
+    await openMaterialized(page);
+    page.routes.push([u => u.endsWith("/logs"), () => ok({
+      run_id: "01AAA", truncated: false, task_logs: [], warnings: [],
+      events: [{ts: "", event: "", task_id: null, message: null, raw: '{"timesta'},
+      ],
+    })]);
+    await click(page, '#rc-logs-load');
+    // `timesta` rather than the literal `{"timesta`: esc() turns the quote
+    // into `&quot;`, and asserting the unescaped form would fail against
+    // correct code — the escaping is a feature, not the thing under test.
+    const html = el(page, '#rc-logs').innerHTML;
+    check(html.includes('timesta'),
+      `a half-written line vanished — the pane would disagree with the file (got: ${html})`);
+    check(!/no events yet/.test(html),
+      'an unparsed line left the pane claiming there were no events');
+  });
+});
+
+
+// --- codex review on PR #191: two blocking findings, one test each --------
+
+testCase('logs: opening a DIFFERENT request does not inherit the old logs',
+  async () => {
+  // major 1. Restoring the pane unconditionally carried one run's timeline
+  // into another run's view — one run's state under another run's identity,
+  // read as fact rather than as a stale pane.
+  await withPage(async page => {
+    await openMaterialized(page);
+    page.routes.push([u => u.endsWith("/logs"), () => ok({
+      run_id: "01AAA", events: [{ts: "T1", event: "FROM_FIRST_RUN", raw: "{}"}],
+      truncated: false, task_logs: [], warnings: [],
+    })]);
+    await click(page, '#rc-logs-load');
+    check(/FROM_FIRST_RUN/.test(el(page, '#rc-logs').innerHTML), 'loaded (sanity)');
+
+    // A real second run, not a 404: the point is that its view renders and
+    // is CLEAN, which a failed open would hide.
+    page.routes.push([u => u.endsWith("/api/runs/req-second"), () => ok({
+      record: {state: 'materialized', run_id: '01BBB'},
+      run: {status: 'running'}, warnings: [],
+    })]);
+    el(page, '#rc-request-id').value = 'req-second';
+    await click(page, '#rc-open');
+    await drain();
+
+    const html = el(page, '#rc-logs').innerHTML;
+    check(!/FROM_FIRST_RUN/.test(html),
+      `the second run's panel shows the first run's timeline (got: ${html})`);
+  });
+});
+
+testCase('logs: a response slower than one poll still reaches the operator',
+  async () => {
+  // major 2. The pane is captured before `await`; the 5s poll replaces the
+  // whole view, so the answer used to be written into a detached node and
+  // the panel sat on "reading…" while the server had already replied.
+  await withPage(async page => {
+    await openMaterialized(page);
+    let release;
+    const stalled = new Promise(r => { release = r; });
+    page.routes.push([u => u.endsWith("/logs"), async () => {
+      await stalled;
+      return ok({run_id: "01AAA", truncated: false, task_logs: [], warnings: [],
+        events: [{ts: "T7", event: "ARRIVED_LATE", raw: "{}"}]});
+    }]);
+
+    const pending = click(page, '#rc-logs-load');
+    await tick(page, 5000);          // the poll rebuilds #rc-run-view
+    release();
+    await pending;
+    await drain();
+
+    const html = el(page, '#rc-logs').innerHTML;
+    check(/ARRIVED_LATE/.test(html),
+      `the answer was written into a detached node (got: ${html})`);
+    check(!/reading/.test(html), 'the panel is still stuck on "reading…"');
+  });
+});
+
+testCase('logs: buttons act on the OPEN run, not on whatever is typed',
+  async () => {
+  // codex round 2, minor. Every other control in this panel — verbs,
+  // resolve, run-end — acts on the open run. Reading the textbox let a
+  // typed-but-not-opened id send the fetch somewhere `settle` would then
+  // correctly discard, leaving the pane on "reading…" for no visible reason.
+  await withPage(async page => {
+    await openMaterialized(page);
+    const asked = [];
+    page.routes.push([u => u.includes("/logs"), u => { asked.push(u); return ok({
+      run_id: "01AAA", events: [{ts: "T1", event: "task_ready", raw: "{}"}],
+      truncated: false, task_logs: [], warnings: [],
+    }); }]);
+
+    el(page, '#rc-request-id').value = 'req-typed-but-not-opened';
+    await click(page, '#rc-logs-load');
+
+    check(asked.length === 1, `one fetch expected, got ${asked.length}`);
+    check(asked[0].includes('req-materialized'),
+      `fetched the typed id instead of the open run: ${asked[0]}`);
+    check(/task_ready/.test(el(page, '#rc-logs').innerHTML),
+      'the answer was discarded and the pane left stranded');
+  });
+});
+
+testCase('logs: a slow task-log answer never overwrites a newer selection',
+  async () => {
+  // codex round 3, major. Two clicks on the SAME run both passed the only
+  // guard there was (`rcViewRequestId`), so a slow `red` arriving after
+  // `blue` answered a selection the operator had already replaced — with
+  // nothing on screen to say the pane was showing the wrong task.
+  await withPage(async page => {
+    await openMaterialized(page);
+    page.routes.push([u => u.endsWith("/logs"), () => ok({
+      run_id: "01AAA", truncated: false, warnings: [],
+      task_logs: ["red", "blue"], events: [],
+    })]);
+    await click(page, '#rc-logs-load');
+
+    let releaseRed;
+    const redStalled = new Promise(r => { releaseRed = r; });
+    page.routes.push([u => u.endsWith("/logs/red"), async () => {
+      await redStalled;
+      return ok({run_id: "01AAA", task_id: "red", text: "RED-BODY", truncated: false});
+    }]);
+    page.routes.push([u => u.endsWith("/logs/blue"), () => ok(
+      {run_id: "01AAA", task_id: "blue", text: "BLUE-BODY", truncated: false})]);
+
+    const redClick = click(page, '[data-task="red"]');   // starts, stalls
+    await click(page, '[data-task="blue"]');             // newer, answers first
+    releaseRed();
+    await redClick;
+    await drain();
+
+    const html = el(page, '#rc-task-log').innerHTML;
+    check(/BLUE-BODY/.test(html), `the newer selection is shown (got: ${html})`);
+    check(!/RED-BODY/.test(html),
+      'the slow older answer overwrote the newer one');
+  });
+});
+
+testCase('logs: no button while there is no run — the 404 is not offered',
+  async () => {
+  // codex round 4, minor. The view prints "no run yet" from record.run_id
+  // and then offered a logs button whose every click is a guaranteed 404 —
+  // the page contradicting a sentence it just printed, the class Task 5
+  // closed for the verbs.
+  await withPage(async page => {
+    await openView(page, 'req-unknown', {
+      record: {state: 'launch_unknown', run_id: null}, run: null, warnings: [],
+    });
+    check(maybeEl(page, '#rc-run-view') !== null, 'view rendered (sanity)');
+    check(maybeEl(page, '#rc-logs-load') === null,
+      'a logs button is offered for a run that does not exist');
+
+    // A recorded run whose directory vanished: run_id intact, run:null.
+    // The backend refuses that read (codex round 6), so offering the
+    // button would be the two surfaces disagreeing about existence.
+    await openView(page, 'req-vanished', {
+      record: {state: 'materialized', run_id: '01GONE'}, run: null,
+      warnings: [],
+    });
+    check(maybeEl(page, '#rc-logs-load') === null,
+      'a logs button is offered for a vanished run');
+
+    // And it appears when BOTH facts hold — recorded, and still seen.
+    await openMaterialized(page);
+    check(maybeEl(page, '#rc-logs-load') !== null,
+      'the button is missing on a materialized run');
+  });
+});
+
+testCase('logs: reopening the SAME id invalidates an in-flight answer',
+  async () => {
+  // codex round 5, minor. rcLogsGen was a click generation, not a display
+  // generation: A (logs pending) -> open B -> open A again made the old
+  // answer textually valid — rcViewRequestId reads A once more — and it
+  // landed in a freshly opened view it does not describe.
+  await withPage(async page => {
+    await openMaterialized(page);
+    let release;
+    const stalled = new Promise(r => { release = r; });
+    page.routes.push([u => u.endsWith("/logs"), async () => {
+      await stalled;
+      return ok({run_id: "01AAA", truncated: false, task_logs: [], warnings: [],
+        events: [{ts: "T1", event: "STALE_FROM_FIRST_OPEN", raw: "{}"}]});
+    }]);
+    const pending = click(page, '#rc-logs-load');   // A: fetch stalls
+
+    page.routes.push([u => u.endsWith("/api/runs/req-b"), () => ok({
+      record: {state: 'materialized', run_id: '01BBB'},
+      run: {status: 'running'}, warnings: [],
+    })]);
+    el(page, '#rc-request-id').value = 'req-b';
+    await click(page, '#rc-open');                  // B
+    el(page, '#rc-request-id').value = 'req-materialized';
+    await click(page, '#rc-open');                  // A again — new display
+
+    release();
+    await pending;
+    await drain();
+
+    const html = el(page, '#rc-logs').innerHTML;
+    check(!/STALE_FROM_FIRST_OPEN/.test(html),
+      `the first open's answer landed in the reopened view (got: ${html})`);
+  });
+});

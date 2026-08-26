@@ -3,8 +3,10 @@
 import dataclasses
 import json
 import os
+import shutil
 import subprocess
 import textwrap
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -1202,3 +1204,402 @@ def test_a_verb_gets_the_configured_catalog_when_there_is_one(
 
     assert outcome.ok
     assert f"ATP_CATALOG={tmp_path / 'agents-catalog.toml'}" in outcome.stdout
+
+
+# --- Run logs (spec §10: the last reason to open a terminal) --------------
+
+
+def _with_logs(tmp_path: Path, **files: str) -> RunController:
+    """A materialized run whose log directory holds `files`."""
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    logs = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    for name, body in files.items():
+        (logs / name.replace("__", ".")).write_text(body)
+    return controller
+
+
+def test_timeline_is_read_from_maestros_own_events_file(tmp_path: Path) -> None:
+    controller = _with_logs(
+        tmp_path,
+        events__jsonl=(
+            '{"timestamp": "T1", "event": "task_ready", "task_id": "red"}\n'
+            '{"timestamp": "T2", "event": "task_failed", "task_id": "red",'
+            ' "message": "exit 1"}\n'
+        ),
+        red__log="agent output",
+    )
+    logs = controller.logs(_REQ)
+    assert [e.event for e in logs.events] == ["task_ready", "task_failed"]
+    assert logs.events[-1].message == "exit 1"
+    assert logs.task_logs == ["red"]
+    assert logs.truncated is False
+
+
+def test_a_half_written_line_survives_as_raw(tmp_path: Path) -> None:
+    """A truncated tail is ordinary while a run is live.
+
+    Dropping the line would make the console disagree with the file it
+    claims to be showing — the reader would see a timeline that is missing
+    its most recent, and most interesting, entry.
+    """
+    controller = _with_logs(
+        tmp_path,
+        events__jsonl='{"timestamp": "T1", "event": "task_ready"}\n{"timesta',
+    )
+    logs = controller.logs(_REQ)
+    assert len(logs.events) == 2
+    assert logs.events[-1].event == ""
+    assert logs.events[-1].raw == '{"timesta'
+
+
+def test_an_unreadable_timeline_warns_rather_than_reading_empty(
+    tmp_path: Path,
+) -> None:
+    """Unreadable and empty must not look the same (NFR-02)."""
+    controller = _with_logs(tmp_path, events__jsonl="{}\n")
+    events = (
+        tmp_path
+        / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs/events.jsonl"
+    )
+    events.chmod(0o000)
+    try:
+        logs = controller.logs(_REQ)
+    finally:
+        events.chmod(0o644)
+    assert logs.events == []
+    assert logs.warnings, "an unreadable timeline rendered as an empty one"
+
+
+def test_an_absent_timeline_is_not_a_warning(tmp_path: Path) -> None:
+    """Before maestro's first event there is simply nothing yet."""
+    controller = _with_logs(tmp_path)
+    logs = controller.logs(_REQ)
+    assert logs.events == []
+    assert logs.warnings == []
+
+
+def test_the_timeline_tail_keeps_the_newest_and_says_it_dropped(
+    tmp_path: Path,
+) -> None:
+    """Oldest lines go, never newest — and the reader is told."""
+    body = "".join(f'{{"timestamp": "T{i}", "event": "e{i}"}}\n' for i in range(600))
+    controller = _with_logs(tmp_path, events__jsonl=body)
+    logs = controller.logs(_REQ)
+    assert len(logs.events) == RunController._MAX_EVENTS
+    assert logs.events[-1].event == "e599", "the newest line was dropped"
+    assert logs.truncated is True
+
+
+def test_a_task_log_is_tailed_and_flagged(tmp_path: Path) -> None:
+    big = "x" * (RunController._MAX_TASK_LOG_BYTES + 100) + "TAIL"
+    controller = _with_logs(tmp_path, red__log=big)
+    log = controller.task_log(_REQ, "red")
+    assert log.text.endswith("TAIL")
+    assert len(log.text) <= RunController._MAX_TASK_LOG_BYTES
+    assert log.truncated is True
+
+
+@pytest.mark.parametrize(
+    "task_id",
+    ["../../../etc/passwd", "..", "red/../../x", "red\\..\\x", ""],
+)
+def test_an_unsafe_task_id_is_refused(tmp_path: Path, task_id: str) -> None:
+    """The one part of these paths that arrives off the wire."""
+    controller = _with_logs(tmp_path, red__log="x")
+    with pytest.raises(RunRejectedError, match="unsafe task id"):
+        controller.task_log(_REQ, task_id)
+
+
+def test_logs_refuse_a_request_with_no_run(tmp_path: Path) -> None:
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run=None)
+    controller = RunController(
+        _config(tmp_path, cli), poll_interval=0.05, materialize_timeout=0.3
+    )
+    controller.submit(_request(head))
+    with pytest.raises(RunRejectedError, match="no run to read logs from"):
+        controller.logs(_REQ)
+
+
+def test_a_log_name_the_reader_would_reject_is_not_offered(
+    tmp_path: Path,
+) -> None:
+    """The list and the reader must agree (codex review on PR #191, minor).
+
+    Offering a name `task_log()` refuses advertises a log this API will never
+    serve, and the console draws a button for it. Not dropped in silence
+    either: a file visible on disk and absent here is its own puzzle.
+    """
+    controller = _with_logs(tmp_path, red__log="ok")
+    logs_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs"
+    (logs_dir / (("a" * 65) + ".log")).write_text("too long")
+    (logs_dir / ".hidden.log").write_text("leading dot")
+
+    logs = controller.logs(_REQ)
+
+    assert logs.task_logs == ["red"]
+    assert len(logs.warnings) == 2, logs.warnings
+    # And the reader really would have refused them — the two rules are the
+    # same rule, asserted here rather than assumed.
+    for rejected in ("a" * 65, ".hidden"):
+        with pytest.raises(RunRejectedError, match="unsafe task id"):
+            controller.task_log(_REQ, rejected)
+
+
+def test_a_huge_task_log_is_never_read_whole(tmp_path: Path) -> None:
+    """The cap must bound the READ, not just the response (codex round 3).
+
+    `read_bytes()` then slicing enforced 256 KiB only after the entire file
+    was in memory, so a log larger than the worker could hold would kill the
+    server through an endpoint whose whole contract is "the last 256 KiB".
+
+    Measured with `tracemalloc` rather than by asserting which call the code
+    makes: the property is bounded memory, and a test that pinned the API
+    would pass for any implementation that merely looked right.
+    """
+    controller = _with_logs(tmp_path)
+    logs_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs"
+    big = logs_dir / "huge.log"
+    payload = b"y" * (1024 * 1024)
+    with big.open("wb") as fh:
+        for _ in range(16):  # 16 MiB, 64x the cap
+            fh.write(payload)
+        fh.write(b"THE-TAIL")
+
+    tracemalloc.start()
+    try:
+        log = controller.task_log(_REQ, "huge")
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert log.text.endswith("THE-TAIL")
+    assert log.truncated is True
+    # Generous: the tail itself, plus its str form, plus overhead. A whole-file
+    # read would be an order of magnitude above this.
+    assert peak < 4 * RunController._MAX_TASK_LOG_BYTES, (
+        f"peak {peak} bytes for a 16 MiB log — the whole file was read"
+    )
+
+
+def test_a_huge_timeline_is_never_read_whole(tmp_path: Path) -> None:
+    """The events cap must bound the READ too (codex round 4).
+
+    The same defect `task_log()` had, one endpoint over: `read_text()` then
+    a 500-line slice enforced the cap only after the whole file was in
+    memory. Symmetric to `test_a_huge_task_log_is_never_read_whole`, and
+    measured the same way — the property is bounded memory, not which call
+    the code makes.
+    """
+    controller = _with_logs(tmp_path)
+    logs_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs"
+    with (logs_dir / "events.jsonl").open("w") as fh:
+        for i in range(200_000):  # ~16 MiB of lines
+            fh.write(f'{{"timestamp": "T{i}", "event": "e{i}"}}\n')
+
+    tracemalloc.start()
+    try:
+        logs = controller.logs(_REQ)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert logs.truncated is True
+    assert len(logs.events) == RunController._MAX_EVENTS
+    assert logs.events[-1].event == "e199999", "the newest line was dropped"
+    assert peak < 8 * RunController._MAX_EVENT_BYTES, (
+        f"peak {peak} bytes for a ~16 MiB timeline — the whole file was read"
+    )
+
+
+def test_one_giant_jsonl_line_is_byte_capped_not_line_counted(
+    tmp_path: Path,
+) -> None:
+    """Line count alone does not bound memory (owner review of round 4).
+
+    A single line bigger than the byte cap is one line — a reverse reader
+    counting to 500 would still swallow all of it. It must come back as a
+    bounded raw tail with `truncated` set, not as an empty timeline claiming
+    nothing happened, and not whole.
+    """
+    controller = _with_logs(tmp_path)
+    logs_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs"
+    giant = '{"event": "padded", "pad": "' + "z" * (2 * 1024 * 1024) + '"}'
+    (logs_dir / "events.jsonl").write_text(giant + "\n")
+
+    logs = controller.logs(_REQ)
+
+    assert logs.truncated is True
+    assert len(logs.events) == 1, "a giant line must not vanish entirely"
+    assert logs.events[0].event == "", "its tail cannot parse — raw, not typed"
+    assert len(logs.events[0].raw) <= RunController._MAX_EVENT_BYTES
+
+
+# --- Identity provenance (codex round 5): a symlink must never let one ----
+# --- run's files answer under another run's id ----------------------------
+
+
+def _second_run_logs(tmp_path: Path) -> Path:
+    """A real OTHER run whose logs an attacker-shaped symlink points at."""
+    other = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01BBB/logs"
+    other.mkdir(parents=True)
+    (other / "events.jsonl").write_text('{"event": "FROM_01BBB"}\n')
+    (other / "stolen.log").write_text("BODY-OF-01BBB\n")
+    return other
+
+
+def test_a_symlinked_logs_dir_is_refused_not_served(tmp_path: Path) -> None:
+    """The observed case: 01AAA/logs -> 01BBB/logs.
+
+    Every earlier check passed it — containment resolved the link first and
+    then confirmed the file sat "inside" — while the response still carried
+    run_id="01AAA". Refusal, not empty: bytes with an unknown owner are
+    worse than none.
+    """
+    controller = _with_logs(tmp_path)
+    logs_a = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs"
+    other = _second_run_logs(tmp_path)
+    shutil.rmtree(logs_a)
+    logs_a.symlink_to(other, target_is_directory=True)
+
+    with pytest.raises(RunRejectedError, match="redirected by a symlink"):
+        controller.logs(_REQ)
+    with pytest.raises(RunRejectedError, match="redirected by a symlink"):
+        controller.task_log(_REQ, "stolen")
+
+
+def test_a_symlinked_events_file_is_not_followed(tmp_path: Path) -> None:
+    """One level down: the dir is real, events.jsonl points elsewhere.
+
+    A warning rather than a refusal — the task-log listing is still this
+    run's own — but the foreign timeline must not appear.
+    """
+    controller = _with_logs(tmp_path, red__log="ours")
+    logs_a = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs"
+    other = _second_run_logs(tmp_path)
+    (logs_a / "events.jsonl").symlink_to(other / "events.jsonl")
+
+    logs = controller.logs(_REQ)
+
+    assert logs.events == [], "the foreign timeline was served"
+    assert any("symlink" in w for w in logs.warnings), logs.warnings
+    assert logs.task_logs == ["red"], "the run's own listing should survive"
+
+
+def test_a_symlinked_task_log_is_refused_and_not_advertised(
+    tmp_path: Path,
+) -> None:
+    """The leaf: red.log real, stolen.log a symlink into another run."""
+    controller = _with_logs(tmp_path, red__log="ours")
+    logs_a = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs"
+    other = _second_run_logs(tmp_path)
+    (logs_a / "stolen.log").symlink_to(other / "stolen.log")
+
+    logs = controller.logs(_REQ)
+    assert logs.task_logs == ["red"], "the symlink was advertised"
+    assert any("symlink" in w for w in logs.warnings), logs.warnings
+
+    with pytest.raises(RunRejectedError, match="symlink"):
+        controller.task_log(_REQ, "stolen")
+    # And the honest file still reads — provenance must not break the
+    # ordinary path.
+    assert controller.task_log(_REQ, "red").text == "ours"
+
+
+# --- Absence vs youth (codex round 6, major): the three states ------------
+
+
+def test_a_vanished_run_directory_refuses_the_logs_read(tmp_path: Path) -> None:
+    """State 1: the run directory is GONE — refusal, for both surfaces.
+
+    `view()` maps this to `run=None`; /logs answering 200 for the same
+    request would have the two surfaces disagree about whether the run
+    exists. A durable run_id proves the run existed, not that it still does.
+    """
+    controller = _with_logs(tmp_path, red__log="x")
+    run_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA"
+    shutil.rmtree(run_dir)
+
+    with pytest.raises(RunRejectedError, match="directory is gone"):
+        controller.logs(_REQ)
+    with pytest.raises(RunRejectedError, match="directory is gone"):
+        controller.task_log(_REQ, "red")
+
+
+def test_a_run_that_has_not_logged_yet_is_empty_success(tmp_path: Path) -> None:
+    """State 2: the run directory EXISTS, `logs/` does not — 200, empty.
+
+    "The run vanished" and "the run has not written anything yet" must not
+    collapse into one answer: the second is every young run's first seconds.
+    """
+    controller = _with_logs(tmp_path)
+    logs_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs"
+    shutil.rmtree(logs_dir)  # the run dir itself stays
+
+    logs = controller.logs(_REQ)
+
+    assert logs.events == []
+    assert logs.task_logs == []
+    assert logs.warnings == []
+    # State 3 — an ordinary run with logs — is the rest of this file.
+
+
+# --- Boundary-aligned tails (codex round 6, minor) ------------------------
+
+
+def _line(i: int, size: int) -> str:
+    """One JSONL event padded to exactly `size` bytes including newline."""
+    head = f'{{"event": "e{i:05d}", "pad": "'
+    body = "x" * (size - len(head) - 3)
+    return head + body + '"}\n'
+
+
+def test_a_mid_line_tail_drops_exactly_the_fragment(tmp_path: Path) -> None:
+    """The cut lands inside a line: the fragment goes, whole lines stay."""
+    controller = _with_logs(tmp_path)
+    logs_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs"
+    cap = RunController._MAX_EVENT_BYTES
+    # One giant line longer than the cap, then three ordinary events: the
+    # tail must begin inside the giant line.
+    giant = '{"event": "huge", "pad": "' + "z" * (cap + 1000) + '"}\n'
+    normals = [_line(i, 2048) for i in range(3)]
+    (logs_dir / "events.jsonl").write_text(giant + "".join(normals))
+
+    logs = controller.logs(_REQ)
+
+    assert logs.truncated is True
+    assert [e.event for e in logs.events] == ["e00000", "e00001", "e00002"], (
+        "the fragment of the giant line should be the only casualty"
+    )
+
+
+def test_a_boundary_aligned_tail_keeps_its_first_complete_event(
+    tmp_path: Path,
+) -> None:
+    """The cut lands exactly after a newline: NOTHING may be dropped.
+
+    This is the case the old inference lost: `truncated` was read as "the
+    first line is partial", and a real event that fit both caps vanished
+    from the newest visible slice.
+    """
+    controller = _with_logs(tmp_path)
+    logs_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs"
+    cap = RunController._MAX_EVENT_BYTES
+    line_size = 2048
+    assert cap % line_size == 0, "the alignment this test is ABOUT"
+    tail_lines = cap // line_size  # exactly the byte cap, whole lines
+    assert tail_lines <= RunController._MAX_EVENTS, (
+        "the line cap would hide what the byte boundary does"
+    )
+    prefix = [_line(i, line_size) for i in range(3)]  # dropped
+    tail = [_line(100 + i, line_size) for i in range(tail_lines)]  # kept
+    (logs_dir / "events.jsonl").write_text("".join(prefix + tail))
+
+    logs = controller.logs(_REQ)
+
+    assert logs.truncated is True
+    assert len(logs.events) == tail_lines, "a complete event was dropped"
+    assert logs.events[0].event == "e00100", (
+        "the first complete event of the tail is the one the inference lost"
+    )

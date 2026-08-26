@@ -54,7 +54,9 @@ from dispatcher.core.run_controller import (
     ControlPlaneOff,
     LaunchReceipt,
     RunController,
+    RunLogs,
     RunView,
+    TaskLog,
     UnknownResolution,
     VerbOutcome,
 )
@@ -682,6 +684,32 @@ def create_app(
             # Matches `/resolve` and `/verb`: "the feature is off" is not
             # the same fact as "no such request", and 404 told an operator
             # the wrong one of the two.
+            raise HTTPException(status_code=409, detail=str(err)) from err
+
+    @app.get("/api/runs/{request_id}/logs", response_model=RunLogs)
+    def run_logs(request_id: str) -> RunLogs:
+        """maestro's event timeline for this run, plus its task-log names.
+
+        A READ, so no action token: it changes nothing, exactly like
+        `GET /api/runs/{request_id}`. Separate from that view on purpose —
+        the console polls the view every five seconds, and re-reading a
+        growing log file on every tick would be waste the operator pays for.
+        """
+        try:
+            return runs.logs(request_id)
+        except RunRejectedError as err:
+            raise HTTPException(status_code=404, detail=str(err)) from err
+        except ControlPlaneOff as err:
+            raise HTTPException(status_code=409, detail=str(err)) from err
+
+    @app.get("/api/runs/{request_id}/logs/{task_id}", response_model=TaskLog)
+    def run_task_log(request_id: str, task_id: str) -> TaskLog:
+        """The tail of one task's log."""
+        try:
+            return runs.task_log(request_id, task_id)
+        except RunRejectedError as err:
+            raise HTTPException(status_code=404, detail=str(err)) from err
+        except ControlPlaneOff as err:
             raise HTTPException(status_code=409, detail=str(err)) from err
 
     @app.post("/api/runs/{request_id}/resolve", response_model=UnknownResolution)
