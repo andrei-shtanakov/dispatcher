@@ -329,9 +329,24 @@ crontab (every 30 min):
 
     */30 * * * * cd /path/to/dispatcher && uv run dispatcher publish-snapshot
 
-macOS launchd: a `LaunchAgent` with `StartInterval` 1800 running the
-same command works; staleness beyond 1 h renders the host's panel as
-`stale` on the Sync screen rather than failing anything.
+On macOS, `scripts/dispatcher_launchd.sh install` sets this up as a third
+agent (`dev.atp.dispatcher.snapshot`, every 30 min) alongside the service —
+**if** the pinned `github-checker` is installed first:
+
+    scripts/install_pinned_checker.sh "$HOME/.local/share/dispatcher-pinned-checker"
+
+Install to a permanent path, not the default under `$TMPDIR`: the agent
+outlives temp cleanups. When the binary is absent, `install` says so and
+skips the agent rather than installing one that fails every half hour;
+`status` reports whether the publisher is loaded and its last line.
+Staleness beyond 1 h renders the host's panel as `stale` on the Sync screen
+rather than failing anything.
+
+Known limit at the time of writing: prograph-vault's `master` now requires
+the `governance / gate` check, which rejects the direct push this command
+performs — the snapshot then exists as a local KB commit (this machine's own
+Sync screen is fed), but other machines cannot see it until the vault-side
+policy question is settled. Tracked in prograph-vault's inbox.
 
 ## Two contract guarantees, never one verdict
 

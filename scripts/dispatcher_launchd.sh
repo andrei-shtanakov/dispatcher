@@ -31,9 +31,14 @@ set -euo pipefail
 
 LABEL="dev.atp.dispatcher"
 ROTATE_LABEL="dev.atp.dispatcher.logrotate"
+SNAPSHOT_LABEL="dev.atp.dispatcher.snapshot"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 ROTATE_PLIST="$HOME/Library/LaunchAgents/$ROTATE_LABEL.plist"
+SNAPSHOT_PLIST="$HOME/Library/LaunchAgents/$SNAPSHOT_LABEL.plist"
+#: bin dir of the pinned github-checker (scripts/install_pinned_checker.sh);
+#: publish-snapshot needs it on PATH, and launchd inherits no shell PATH.
+CHECKER_BIN="$HOME/.local/share/dispatcher-pinned-checker/bin"
 ROTATE_MAX_BYTES="${DISPATCHER_LOG_MAX_BYTES:-10485760}"   # 10 MiB
 ROTATE_KEEP=5
 LOG_DIR="$HOME/Library/Logs/dispatcher"
@@ -170,6 +175,38 @@ generate_rotate_plist() {
 PLIST
 }
 
+# Cross-machine sync only means anything when EVERY machine publishes at
+# most an hour apart (README, "Sync snapshots") — a screen fed by one stale
+# snapshot renders "unknown" per repo and looks broken while telling the
+# truth. This agent is that publisher. The pinned github-checker's bin dir
+# goes onto PATH explicitly: launchd starts with no shell profile, so "on
+# PATH" must be arranged here, not assumed.
+generate_snapshot_plist() {
+    cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$SNAPSHOT_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$(command -v uv)</string>
+    <string>run</string>
+    <string>dispatcher</string>
+    <string>publish-snapshot</string>
+  </array>
+  <key>WorkingDirectory</key><string>$REPO_ROOT</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>$CHECKER_BIN:/usr/local/bin:/usr/bin:/bin</string></dict>
+  <key>StartInterval</key><integer>1800</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/snapshot.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/snapshot.log</string>
+</dict>
+</plist>
+PLIST
+}
+
 install_agent() {
     local cfg port holder
     cfg="$(resolve_config "${1:-}")"
@@ -192,6 +229,18 @@ install_agent() {
     generate_rotate_plist > "$ROTATE_PLIST"
     launchctl bootout "gui/$UID/$ROTATE_LABEL" 2>/dev/null || true
     launchctl bootstrap "gui/$UID" "$ROTATE_PLIST"
+
+    if [ -x "$CHECKER_BIN/github-checker" ]; then
+        generate_snapshot_plist > "$SNAPSHOT_PLIST"
+        launchctl bootout "gui/$UID/$SNAPSHOT_LABEL" 2>/dev/null || true
+        launchctl bootstrap "gui/$UID" "$SNAPSHOT_PLIST"
+        echo "installed $SNAPSHOT_LABEL -> every 30 min" >&2
+    else
+        # Absent is a stated fact, not a silent skip: without the publisher
+        # the Sync screen on OTHER machines shows this host as missing.
+        echo "SKIPPED $SNAPSHOT_LABEL: no pinned github-checker at $CHECKER_BIN" >&2
+        echo "  run scripts/install_pinned_checker.sh \"\$HOME/.local/share/dispatcher-pinned-checker\" first" >&2
+    fi
 
     echo "installed $LABEL -> port $port, logs in $LOG_DIR" >&2
     echo "installed $ROTATE_LABEL -> daily, keeps $ROTATE_KEEP x $ROTATE_MAX_BYTES bytes" >&2
@@ -216,13 +265,20 @@ print(args[args.index("--config") + 1])
     else
         echo "rotation: NOT loaded — logs will grow without bound"
     fi
+    if launchctl print "gui/$UID/$SNAPSHOT_LABEL" >/dev/null 2>&1; then
+        echo "snapshot: $SNAPSHOT_LABEL loaded (every 30 min); last:"
+        tail -1 "$LOG_DIR/snapshot.log" 2>/dev/null | sed 's/^/  /' || true
+    else
+        echo "snapshot: NOT loaded — other machines see this host as missing"
+    fi
 }
 
 uninstall() {
     launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
     launchctl bootout "gui/$UID/$ROTATE_LABEL" 2>/dev/null || true
-    rm -f "$PLIST" "$ROTATE_PLIST"
-    echo "removed $LABEL and $ROTATE_LABEL (logs in $LOG_DIR are left alone)" >&2
+    launchctl bootout "gui/$UID/$SNAPSHOT_LABEL" 2>/dev/null || true
+    rm -f "$PLIST" "$ROTATE_PLIST" "$SNAPSHOT_PLIST"
+    echo "removed $LABEL, $ROTATE_LABEL and $SNAPSHOT_LABEL (logs in $LOG_DIR are left alone)" >&2
 }
 
 cmd="${1:-}"; shift || true
