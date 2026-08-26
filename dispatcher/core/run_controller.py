@@ -1661,9 +1661,49 @@ class RunController:
         try:
             record = store.get(request_id)
         except RunStoreError as err:
+            # Load-bearing (final review I-4): `request_id` arrives from
+            # the URL path, and `RunStore.get` raises the bare base class
+            # for an id outside its safe charset — this translation is
+            # what stands between hostile input and an unhandled 500.
             raise RunRejectedError(
                 f"cannot use request_id {request_id!r}: {err}"
             ) from err
+        # Fast-path refusal on the pre-guard read; the in-guard re-check
+        # below is what actually binds.
+        record, _ = self._refuse_unacknowledgeable(request_id, record, confirm_run_id)
+        key = _key_from_record(record)
+        with store.guard(key):
+            # Re-checked against a FRESH copy: between the read above and
+            # the guard, a concurrent run-end can terminalize this record,
+            # and a tombstone written over that settled outcome would
+            # rewrite history the operator never attested to.
+            record, run_id = self._refuse_unacknowledgeable(
+                request_id, store.get(request_id), confirm_run_id
+            )
+            run_dir = self.runs_dir(key) / run_id
+            try:
+                present = run_dir.is_dir()
+            except OSError as err:
+                raise RunRejectedError(f"run state unreadable: {err}") from err
+            if present:
+                raise RunRejectedError(
+                    f"run {run_id} still exists — nothing to acknowledge"
+                )
+            return store.mark_vanished_acknowledged(
+                request_id,
+                actor=self._escape_actor(display_name),
+                reason=self._normalized_reason(reason),
+                prior_run_id=run_id,
+            )
+
+    @staticmethod
+    def _refuse_unacknowledgeable(
+        request_id: str, record: LaunchRecord | None, confirm_run_id: str
+    ) -> tuple[LaunchRecord, str]:
+        """`acknowledge_vanished`'s static predicate: known, non-terminal,
+        has a run, and the operator retyped that run's id. Shared by the
+        pre-guard fast path and the binding in-guard re-check; returns
+        the record with its `run_id` narrowed."""
         if record is None:
             raise RunRejectedError(f"unknown request_id: {request_id}")
         if record.state == "terminal":
@@ -1674,27 +1714,37 @@ class RunController:
             raise RunRejectedError(
                 "confirm_run_id does not match the recorded run — retype it"
             )
-        key = _key_from_record(record)
-        with store.guard(key):
-            run_dir = self.runs_dir(key) / record.run_id
-            try:
-                present = run_dir.is_dir()
-            except OSError as err:
-                raise RunRejectedError(f"run state unreadable: {err}") from err
-            if present:
-                raise RunRejectedError(
-                    f"run {record.run_id} still exists — nothing to acknowledge"
-                )
-            reason_norm = " ".join(reason.split())[: self._REASON_CAP]
-            actor = "local-unauthenticated"  # server-assigned; spec §8.3
-            if display_name:
-                actor += f" (self_reported: {display_name[:64]})"
-            return store.mark_vanished_acknowledged(
-                request_id,
-                actor=actor,
-                reason=reason_norm,
-                prior_run_id=record.run_id,
-            )
+        return record, record.run_id
+
+    def release_malformed_lock(
+        self, key: RepoKey, *, reason: str, display_name: str | None
+    ) -> dict:
+        """The second audited escape (spec §8.3), sharing
+        `acknowledge_vanished`'s actor and reason semantics — the two
+        escapes are meant to agree. The store proves the lock malformed
+        itself, under the guard, before anything is moved; `RunStoreError`
+        and `GuardBusyError` propagate for the API layer to translate."""
+        return self._store().release_malformed_lock(
+            key,
+            actor=self._escape_actor(display_name),
+            reason=self._normalized_reason(reason),
+        )
+
+    def _normalized_reason(self, reason: str) -> str:
+        """Whitespace-collapsed and capped (spec §8.3) — one bad-faith or
+        mistaken caller must not grow a record file without bound."""
+        return " ".join(reason.split())[: self._REASON_CAP]
+
+    @staticmethod
+    def _escape_actor(display_name: str | None) -> str:
+        """The audited-escape actor (spec §8.3): server-assigned, with the
+        caller's self-reported name confined to a suffix — collapsed like
+        `reason` (a raw newline could forge extra audit lines) and
+        capped."""
+        actor = "local-unauthenticated"
+        if display_name:
+            actor += f" (self_reported: {' '.join(display_name.split())[:64]})"
+        return actor
 
     def _refuse(self, request_id: str, reason: str) -> LaunchReceipt:
         _audit.info("submit request=%s accepted=False rejected=%s", request_id, reason)

@@ -1909,3 +1909,162 @@ def test_io_error_refuses_rather_than_acknowledges(
     monkeypatch.setattr(Path, "is_dir", _boom)
     with pytest.raises(RunRejectedError, match="unreadable"):
         controller.acknowledge_vanished(_REQ, "01AAA", "r", None)
+
+
+# -- final fix wave: guard re-check (deferred 2), lenient lock decode -------
+# -- (deferred 11), fail-closed list (I-2), the doors actually open (M-6) ---
+
+
+def test_acknowledge_rechecks_terminal_under_the_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deferred 2: the static predicate checks ran on a record read BEFORE
+    the guard, and a concurrent run-end can terminalize between that read
+    and the guard. The fresh in-guard copy must be re-checked —
+    acknowledging over it would overwrite a settled outcome with a
+    tombstone."""
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    shutil.rmtree(tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA")
+
+    real_get = RunStore.get
+    calls = {"n": 0}
+
+    def _racing_get(self: RunStore, request_id: str):
+        record = real_get(self, request_id)
+        calls["n"] += 1
+        if calls["n"] >= 2 and record is not None:
+            # what a concurrent run-end would have persisted by now
+            return record.model_copy(
+                update={"state": "terminal", "outcome": "cancelled"}
+            )
+        return record
+
+    monkeypatch.setattr(RunStore, "get", _racing_get)
+    with pytest.raises(RunRejectedError, match="already terminal"):
+        controller.acknowledge_vanished(_REQ, "01AAA", "r", None)
+    monkeypatch.undo()
+    record = controller.record(_REQ)
+    assert record is not None
+    assert record.outcome != "vanished-acknowledged", "no tombstone may be written"
+
+
+def test_display_name_is_whitespace_normalized_in_the_actor(tmp_path: Path) -> None:
+    """The `reason` field is collapsed and capped; `display_name` reaches
+    the same audit record and must get the same treatment — a newline in
+    the actor string would forge extra audit lines."""
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    shutil.rmtree(tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA")
+    record = controller.acknowledge_vanished(_REQ, "01AAA", "r", "two\nline\tname")
+    assert record.ack_actor == "local-unauthenticated (self_reported: two line name)"
+
+
+def test_an_invalid_utf8_lock_refuses_lock_malformed_not_a_crash(
+    tmp_path: Path,
+) -> None:
+    """Deferred 11 at the gate: invalid UTF-8 lock bytes must classify
+    Malformed and refuse with the `lock_malformed:` code the
+    release-malformed escape keys off — not escape as an unhandled
+    UnicodeDecodeError (a ValueError, invisible to submit's
+    `except (RunStoreError, OSError)`)."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    assert config.run_state_dir is not None
+
+    store = RunStore(config.run_state_dir)
+    lock_path = store._lock_path(_DEPLOYER_KEY)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_bytes(b"\xff\xfe\x00bad")
+
+    receipt = controller.submit(_request(head))
+    assert receipt.accepted is False
+    assert (receipt.reason or "").startswith("lock_malformed:")
+
+
+def test_submit_blocks_when_the_request_store_is_unlistable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I-2 at the gate: an unlistable `requests/` directory silently
+    dropped every record-derived blocker (vanished, missing-state,
+    corrupt-record, the run→request join) — the gate read "nothing
+    non-terminal here" off exactly the broken input. It must block as
+    run_state_unreadable."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    assert config.run_state_dir is not None
+    requests_dir = config.run_state_dir / "requests"
+    original_glob = Path.glob
+
+    def _boom(self: Path, pattern: str):
+        if self == requests_dir:
+            raise PermissionError("denied")
+        return original_glob(self, pattern)
+
+    monkeypatch.setattr(Path, "glob", _boom)
+    receipt = controller.submit(_request(head))
+    assert receipt.accepted is False
+    assert (receipt.reason or "").startswith("run_state_unreadable:")
+
+
+def test_the_vanished_door_actually_unblocks_a_new_submit(tmp_path: Path) -> None:
+    """M-6 / spec §8.3: "fail-closed never lacks a door" — and the door
+    must actually open. The operator's real sequence end-to-end: refusal →
+    acknowledge-vanished → a NEW request_id for the same repo is
+    admitted."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    assert controller.submit(_request(head)).accepted is True
+    assert config.maestro_home is not None
+    shutil.rmtree(config.maestro_home / "projects/github.com/owner/deployer/runs/01AAA")
+
+    second = _request(head).model_copy(
+        update={"request_id": "22222222-2222-4222-8222-222222222222"}
+    )
+    refusal = controller.submit(second)
+    assert refusal.accepted is False
+    assert (refusal.reason or "").startswith("run_vanished:")
+
+    controller.acknowledge_vanished(_REQ, "01AAA", "host wiped", None)
+
+    cli2 = _fake_maestro(tmp_path / "fake-maestro-2", creates_run="01BBB")
+    third_controller = RunController(_config(tmp_path, cli2), materialize_timeout=10.0)
+    third = _request(head).model_copy(
+        update={"request_id": "33333333-3333-4333-8333-333333333333"}
+    )
+    assert third_controller.submit(third).accepted is True
+
+
+def test_the_malformed_lock_door_actually_unblocks_a_new_submit(
+    tmp_path: Path,
+) -> None:
+    """The second door of M-6: refusal → release-malformed-lock (via the
+    controller's own wrapper, sharing the escape actor semantics) → a new
+    submit is admitted."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    assert config.run_state_dir is not None
+    store = RunStore(config.run_state_dir)
+    lock_path = store._lock_path(_DEPLOYER_KEY)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text("not valid json")
+
+    refusal = controller.submit(_request(head))
+    assert refusal.accepted is False
+    assert (refusal.reason or "").startswith("lock_malformed:")
+
+    audit = controller.release_malformed_lock(
+        _DEPLOYER_KEY, reason="crash residue", display_name=None
+    )
+    assert audit["actor"] == "local-unauthenticated"
+
+    second = _request(head).model_copy(
+        update={"request_id": "22222222-2222-4222-8222-222222222222"}
+    )
+    assert controller.submit(second).accepted is True
