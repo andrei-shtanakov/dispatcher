@@ -322,3 +322,47 @@ def test_view_surfaces_warnings_for_an_unreadable_run_source(tmp_path: Path) -> 
         assert view.warnings, "an unreadable runs/ must not read the same as absent"
     finally:
         runs_dir.chmod(0o755)
+
+
+async def test_acknowledge_vanished_happy_path_returns_the_tombstone(
+    tmp_path: Path,
+) -> None:
+    """POST .../acknowledge-vanished on a genuinely absent run directory
+    returns 200 with the tombstone fields set (spec §8.3)."""
+    from dispatcher.core.run_identity import RepoKey
+    from dispatcher.core.run_store import RunStore
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    home = tmp_path / "mhome"  # no run directory is ever created under it
+    key = RepoKey(host="github.com", owner="owner", repo="deployer")
+    store = RunStore(tmp_path / "state")
+    store.reserve("req-1", key, known_runs=[], window_start="t")
+    store.mark_materialized("req-1", "01AAA")
+
+    config = DispatcherConfig(
+        roots=(ws,),
+        maestro_home=home,
+        run_state_dir=tmp_path / "state",
+        maestro_cli=tmp_path / "unused-maestro",
+    )
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/runs/req-1/acknowledge-vanished",
+            json={
+                "confirm_run_id": "01AAA",
+                "reason": "host wiped",
+                "display_name": None,
+            },
+            headers={"X-Action-Token": token},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["outcome"] == "vanished-acknowledged"
+    assert body["ack_actor"] == "local-unauthenticated"
+    assert body["ack_reason"] == "host wiped"
+    assert body["prior_run_id"] == "01AAA"

@@ -356,6 +356,7 @@ def test_a_legacy_record_without_new_fields_still_loads(tmp_path: Path) -> None:
     )
     rec = store.get("rc-legacy00-00000000")
     assert rec is not None and rec.fingerprint == "" and rec.response_class is None
+    assert rec.ack_actor is None and rec.prior_run_id is None
 
 
 def test_list_returns_every_record_and_names_the_unreadable(tmp_path: Path) -> None:

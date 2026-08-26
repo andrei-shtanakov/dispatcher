@@ -1117,6 +1117,10 @@ class RunController:
     #: `truncated`.
     _MAX_EVENT_BYTES = 512 * 1024
     _MAX_TASK_LOG_BYTES = 256 * 1024
+    #: `acknowledge_vanished`'s operator-supplied reason (spec §8.3): long
+    #: enough for a real explanation, short enough that one bad-faith or
+    #: mistaken caller can't grow a record file without bound.
+    _REASON_CAP = 1024
 
     def _logs_dir(self, record: LaunchRecord) -> Path:
         """`<run dir>/logs` for an adopted run.
@@ -1634,6 +1638,63 @@ class RunController:
             candidates=candidates,
             reason=f"operator ended {run_id} as {outcome}; lock released",
         )
+
+    def acknowledge_vanished(
+        self,
+        request_id: str,
+        confirm_run_id: str,
+        reason: str,
+        display_name: str | None,
+    ) -> LaunchRecord:
+        """Spec §8.3. The limit, verbatim: отсутствие каталога не
+        доказывает отсутствие процесса — this is an administrative
+        release of a fail-closed block, with the risk recorded.
+
+        The predicate here MUST mirror `_capture_run_facts`'s own vanished
+        arm exactly (Task 6): a non-terminal record, a `run_id`, and that
+        run's directory genuinely absent — nothing looser. Anything the
+        gate would not itself classify `run_vanished` is refused here too,
+        so this escape can never acknowledge away a condition the gate
+        would still (correctly) block on.
+        """
+        store = self._store()
+        try:
+            record = store.get(request_id)
+        except RunStoreError as err:
+            raise RunRejectedError(
+                f"cannot use request_id {request_id!r}: {err}"
+            ) from err
+        if record is None:
+            raise RunRejectedError(f"unknown request_id: {request_id}")
+        if record.state == "terminal":
+            raise RunRejectedError(f"{request_id} is already terminal")
+        if record.run_id is None:
+            raise RunRejectedError(f"{request_id} has no run to acknowledge")
+        if confirm_run_id != record.run_id:
+            raise RunRejectedError(
+                "confirm_run_id does not match the recorded run — retype it"
+            )
+        key = _key_from_record(record)
+        with store.guard(key):
+            run_dir = self.runs_dir(key) / record.run_id
+            try:
+                present = run_dir.is_dir()
+            except OSError as err:
+                raise RunRejectedError(f"run state unreadable: {err}") from err
+            if present:
+                raise RunRejectedError(
+                    f"run {record.run_id} still exists — nothing to acknowledge"
+                )
+            reason_norm = " ".join(reason.split())[: self._REASON_CAP]
+            actor = "local-unauthenticated"  # server-assigned; spec §8.3
+            if display_name:
+                actor += f" (self_reported: {display_name[:64]})"
+            return store.mark_vanished_acknowledged(
+                request_id,
+                actor=actor,
+                reason=reason_norm,
+                prior_run_id=record.run_id,
+            )
 
     def _refuse(self, request_id: str, reason: str) -> LaunchReceipt:
         _audit.info("submit request=%s accepted=False rejected=%s", request_id, reason)

@@ -1855,3 +1855,57 @@ def test_submit_refuses_when_a_run_directory_has_no_state_db_yet(
     assert receipt.reason is not None
     assert receipt.reason.startswith("run_in_flight:")
     assert "01AAA" in receipt.reason
+
+
+def test_acknowledge_requires_the_precise_predicate(tmp_path: Path) -> None:
+    """Non-terminal record + run_id + directory absent — and nothing less.
+    A present directory refuses; a terminal record refuses."""
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    with pytest.raises(RunRejectedError, match="still exists"):
+        controller.acknowledge_vanished(_REQ, "01AAA", "cleanup", None)
+    shutil.rmtree(tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA")
+    rec = controller.acknowledge_vanished(_REQ, "01AAA", "host wiped", None)
+    assert rec.outcome == "vanished-acknowledged"
+    assert rec.ack_actor == "local-unauthenticated"
+    assert rec.prior_run_id == "01AAA"
+
+
+def test_confirm_run_id_must_match_retyped(tmp_path: Path) -> None:
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    shutil.rmtree(tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA")
+    with pytest.raises(RunRejectedError, match="confirm_run_id"):
+        controller.acknowledge_vanished(_REQ, "01WRONG", "r", None)
+
+
+def test_reason_is_capped_and_newline_normalized(tmp_path: Path) -> None:
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    shutil.rmtree(tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA")
+    rec = controller.acknowledge_vanished(_REQ, "01AAA", "a\nb" + "x" * 5000, None)
+    assert rec.ack_reason is not None
+    assert "\n" not in rec.ack_reason and len(rec.ack_reason) <= 1024
+
+
+def test_io_error_refuses_rather_than_acknowledges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spec §7: a broken stat is unreadable, not vanished — injected
+    error, never chmod (unstable across users/CI).
+
+    Scoped to the ONE path `acknowledge_vanished` checks, not a blanket
+    `Path.is_dir` failure: `store.guard()` itself calls `is_dir()`
+    internally (via `Path.mkdir(exist_ok=True)`'s own stdlib
+    implementation), so a global monkeypatch breaks the guard before the
+    predicate under test is ever reached.
+    """
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    run_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA"
+    original_is_dir = Path.is_dir
+
+    def _boom(self: Path) -> bool:
+        if self == run_dir:
+            raise PermissionError("denied")
+        return original_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", _boom)
+    with pytest.raises(RunRejectedError, match="unreadable"):
+        controller.acknowledge_vanished(_REQ, "01AAA", "r", None)

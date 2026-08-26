@@ -61,6 +61,7 @@ from dispatcher.core.run_controller import (
     VerbOutcome,
 )
 from dispatcher.core.run_request import RunRejectedError, RunRequest
+from dispatcher.core.run_store import GuardBusyError, LaunchRecord
 from dispatcher.core.service import SnapshotService, recent_errors
 from dispatcher.core.spec_runner_config import (
     ProjectSpecRunnerConfig,
@@ -154,6 +155,16 @@ class ResolveRequest(BaseModel):
 
     run_id: str | None = None
     outcome: str | None = None
+
+
+class AcknowledgeVanishedRequest(BaseModel):
+    """POST /api/runs/{id}/acknowledge-vanished — the audited escape
+    (spec §8.3). `display_name` is self-reported and never the actor of
+    record — the base actor string is server-assigned."""
+
+    confirm_run_id: str
+    reason: str
+    display_name: str | None = None
 
 
 class VerbRequest(BaseModel):
@@ -749,6 +760,37 @@ def create_app(
             return runs.resolve_unknown(request_id)
         except RunRejectedError as err:
             raise HTTPException(status_code=422, detail=str(err)) from err
+        except ControlPlaneOff as err:
+            raise HTTPException(status_code=409, detail=str(err)) from err
+
+    @app.post(
+        "/api/runs/{request_id}/acknowledge-vanished", response_model=LaunchRecord
+    )
+    def acknowledge_vanished_run(
+        request_id: str,
+        request: AcknowledgeVanishedRequest,
+        x_action_token: str | None = Header(default=None),
+    ) -> LaunchRecord:
+        """Audited administrative release of a fail-closed `run_vanished`
+        block (spec §8.3): the record keeps who attested the run was gone,
+        not just that someone did."""
+        _require_token(x_action_token)
+        try:
+            return runs.acknowledge_vanished(
+                request_id,
+                request.confirm_run_id,
+                request.reason,
+                request.display_name,
+            )
+        except RunRejectedError as err:
+            # 409, not 422 (unlike `/resolve` above): every refusal here
+            # is "the current state doesn't allow this" — still exists,
+            # wrong confirm_run_id, terminal already, unreadable — a
+            # conflict with what the caller asserted, not a malformed
+            # request body (PR-C restructures `/resolve` to match).
+            raise HTTPException(status_code=409, detail=str(err)) from err
+        except GuardBusyError as err:
+            raise HTTPException(status_code=409, detail=f"guard_busy: {err}") from err
         except ControlPlaneOff as err:
             raise HTTPException(status_code=409, detail=str(err)) from err
 

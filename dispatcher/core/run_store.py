@@ -156,6 +156,14 @@ class LaunchRecord(BaseModel):
     admission_detail: str | None = None
     admission_current: dict | None = None
     rejected_at: str | None = None
+    #: The audited `acknowledge-vanished` escape (spec §8.3): who attested
+    #: the run was gone, when, why, and which run_id this record HELD
+    #: before the tombstone — an administrative release of a fail-closed
+    #: block must record the risk taken, not silently absorb it.
+    ack_actor: str | None = None
+    ack_at: str | None = None
+    ack_reason: str | None = None
+    prior_run_id: str | None = None
 
 
 class RunStore:
@@ -492,6 +500,27 @@ class RunStore:
             admission_detail=detail,
             admission_current=current,
             rejected_at=datetime.now(UTC).isoformat(),
+        )
+        self._release_for(record)
+        return record
+
+    def mark_vanished_acknowledged(
+        self, request_id: str, *, actor: str, reason: str, prior_run_id: str
+    ) -> LaunchRecord:
+        """Terminalize the audited `acknowledge-vanished` escape (spec
+        §8.3). Mirrors `mark_admission_rejected`: the lock never outlives
+        the fact, and this specific fact — someone administratively
+        released a fail-closed block on a run whose absence was never
+        proven, only observed — is recorded, not silently absorbed.
+        """
+        record = self._transition(
+            request_id,
+            state="terminal",
+            outcome="vanished-acknowledged",
+            ack_actor=actor,
+            ack_at=datetime.now(UTC).isoformat(),
+            ack_reason=reason,
+            prior_run_id=prior_run_id,
         )
         self._release_for(record)
         return record
