@@ -162,3 +162,67 @@ def test_reinstall_retries_the_snapshot_bootstrap_transient(tmp_path: Path) -> N
         if c.startswith("bootstrap") and "snapshot" in c
     ]
     assert len(boots) == 2, f"expected retry after the transient, got {boots}"
+
+
+def _foreign_listener(env: dict[str, str], holder_pid: str) -> None:
+    """Make the stubbed lsof report a foreign process on the port."""
+    fake = Path(env["PATH"].split(":")[0]) / "lsof"
+    fake.write_text(f'#!/bin/sh\necho "{holder_pid}"\nexit 0\n', encoding="utf-8")
+    fake.chmod(0o755)
+
+
+def test_port_gate_refuses_when_our_job_is_not_loaded(tmp_path: Path) -> None:
+    """review on #196: with the job absent, `launchctl print` fails and —
+    under set -euo pipefail — used to abort install with NO message at all
+    instead of the promised "already served" refusal. An absent own job
+    plus any listener = a foreign listener, named refusal required."""
+    checkout, env, config, _ = _fixture(tmp_path)
+    _foreign_listener(env, "4242")
+    fake = Path(env["PATH"].split(":")[0]) / "launchctl"
+    fake.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$LAUNCHCTL_CALLS"\n'
+        'case "$1" in print) exit 113 ;; esac\n',
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+
+    proc = subprocess.run(
+        ["bash", "scripts/dispatcher_launchd.sh", "install", "--config", str(config)],
+        cwd=checkout,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    assert proc.returncode != 0
+    assert "already served by PID 4242" in proc.stderr
+
+
+def test_port_gate_refuses_when_our_job_has_no_pid(tmp_path: Path) -> None:
+    """review on #196: a loaded job with no `pid =` line yields own="";
+    when the holder's parent walk also bottoms out empty, "" == "" used to
+    read as "that's us" and install proceeded onto a port held by a
+    FOREIGN process. A match must require a literal, non-empty PID."""
+    checkout, env, config, calls = _fixture(tmp_path)
+    # holder pid 1: its parent walk ends at 0/empty fast, and it is
+    # certainly not our (absent) service
+    _foreign_listener(env, "1")
+    fake = Path(env["PATH"].split(":")[0]) / "launchctl"
+    fake.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$LAUNCHCTL_CALLS"\n'
+        'case "$1" in print) echo "state = running" ;; esac\n',
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+
+    proc = subprocess.run(
+        ["bash", "scripts/dispatcher_launchd.sh", "install", "--config", str(config)],
+        cwd=checkout,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    assert proc.returncode != 0
+    assert "already served by PID 1" in proc.stderr
+    # and the gate refused BEFORE any bootstrap was attempted
+    logged = calls.read_text(encoding="utf-8") if calls.exists() else ""
+    assert "bootstrap" not in logged

@@ -253,13 +253,25 @@ install_agent() {
         # launchd's pid is the `uv run` WRAPPER; the port is held by its
         # python CHILD — so equality alone never matches (found by running
         # it, not by reading it). Walk a few parents up from the holder.
-        own="$(launchctl print "gui/$UID/$LABEL" 2>/dev/null | awk '/^\tpid = /{print $3}')"
+        # `|| true`: with the job not loaded `launchctl print` fails, and
+        # under set -euo pipefail the bare assignment aborted install with
+        # NO message at all (review on #196) — an absent own job just means
+        # own="" and any listener is foreign.
+        own="$(launchctl print "gui/$UID/$LABEL" 2>/dev/null | awk '/^\tpid = /{print $3}' || true)"
+        # A match requires a LITERAL, non-empty PID: own="" (job loaded but
+        # currently pid-less) meeting a parent walk that bottoms out empty
+        # used to compare "" == "" and adopt a FOREIGN listener as ours.
+        matched=false
         probe="$holder"
         for _ in 1 2 3; do
-            [ -n "$probe" ] && [ "$probe" = "$own" ] && break
-            probe="$(ps -o ppid= -p "$probe" 2>/dev/null | tr -d ' ')"
+            [ -n "$probe" ] || break
+            if [ -n "$own" ] && [ "$probe" = "$own" ]; then
+                matched=true
+                break
+            fi
+            probe="$(ps -o ppid= -p "$probe" 2>/dev/null | tr -d ' ' || true)"
         done
-        if [ "$probe" != "$own" ]; then
+        if [ "$matched" != true ]; then
             die "port $port is already served by PID $holder — stop it first, or set a different \`port\` in $cfg"
         fi
     fi
