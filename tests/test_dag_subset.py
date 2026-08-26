@@ -46,12 +46,39 @@ def test_repo_url_wins_when_both_are_present():
         "tasks-not-list.yaml",
         "no-repo-naming.yaml",
         "repo-not-string.yaml",
+        "top-level-not-mapping.yaml",
     ],
 )
 def test_rejections_are_named(name: str):
     verdict = classify_dag_text(load(name))
     assert isinstance(verdict, Rejected)
     assert verdict.reason  # non-empty, human-readable
+
+
+def test_empty_repo_url_falls_back_to_repo():
+    # _reconcile_repo: empty string repo_url is treated as absent
+    verdict = classify_dag_text('repo: /home/user/labs/demo\nrepo_url: ""\ntasks: []\n')
+    assert isinstance(verdict, Accepted)
+    assert verdict.repo_path == "/home/user/labs/demo"
+    assert verdict.repo_url is None
+
+
+def test_whitespace_only_repo_url_falls_back_to_repo():
+    # _reconcile_repo: whitespace-only repo_url is treated as absent
+    verdict = classify_dag_text(
+        'repo: /home/user/labs/demo\nrepo_url: "  "\ntasks: []\n'
+    )
+    assert isinstance(verdict, Accepted)
+    assert verdict.repo_path == "/home/user/labs/demo"
+    assert verdict.repo_url is None
+
+
+def test_non_string_repo_url_falls_back_to_repo():
+    # _reconcile_repo: non-string repo_url is treated as absent
+    verdict = classify_dag_text("repo: /home/user/labs/demo\nrepo_url: 3\ntasks: []\n")
+    assert isinstance(verdict, Accepted)
+    assert verdict.repo_path == "/home/user/labs/demo"
+    assert verdict.repo_url is None
 
 
 def test_oversized_source_is_rejected_before_parsing():

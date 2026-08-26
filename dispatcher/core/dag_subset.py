@@ -51,22 +51,28 @@ def classify_dag_text(text: str) -> DagSubsetVerdict:
             f"'{_MODE2_MARKER}:' present — a Mode-2 marker, "
             "not the supported Mode-1 subset"
         )
+    # Precedence mirrors _reconcile_repo: try repo_url first (if valid string),
+    # then fall back to repo. A present-but-invalid field (non-string, empty,
+    # whitespace-only) is treated as absent, not rejected.
     repo_url = doc.get("repo_url")
     repo = doc.get("repo")
-    url_ok = isinstance(repo_url, str) and bool(repo_url.strip())
-    path_ok = isinstance(repo, str) and bool(repo.strip())
-    if repo_url is not None and not url_ok:
-        return Rejected("'repo_url:' must be a non-empty string")
-    if not url_ok and repo is not None and not path_ok:
-        return Rejected("'repo:' must be a non-empty string")
-    if not url_ok and not path_ok:
-        return Rejected(
-            "names no repository ('repo:'/'repo_url:') — "
-            "maestro would refuse this DAG for the same reason"
-        )
+
+    # Phase 1: check if repo_url is usable (string with non-whitespace content)
+    if isinstance(repo_url, str) and repo_url.strip():
+        result_url = repo_url
+        result_path = None
+    else:
+        # repo_url is absent or invalid; fall back to repo
+        result_url = None
+        if isinstance(repo, str) and repo.strip():
+            result_path = repo
+        else:
+            # Neither field yields a usable value
+            return Rejected(
+                "names no repository ('repo:'/'repo_url:') — "
+                "maestro would refuse this DAG for the same reason"
+            )
+
     if not isinstance(doc.get("tasks"), list):
         return Rejected("top-level 'tasks:' list is required")
-    return Accepted(
-        repo_path=repo if path_ok else None,
-        repo_url=repo_url if url_ok else None,
-    )
+    return Accepted(repo_path=result_path, repo_url=result_url)
