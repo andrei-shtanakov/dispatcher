@@ -31,9 +31,14 @@ set -euo pipefail
 
 LABEL="dev.atp.dispatcher"
 ROTATE_LABEL="dev.atp.dispatcher.logrotate"
+SNAPSHOT_LABEL="dev.atp.dispatcher.snapshot"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 ROTATE_PLIST="$HOME/Library/LaunchAgents/$ROTATE_LABEL.plist"
+SNAPSHOT_PLIST="$HOME/Library/LaunchAgents/$SNAPSHOT_LABEL.plist"
+#: bin dir of the pinned github-checker (scripts/install_pinned_checker.sh);
+#: publish-snapshot needs it on PATH, and launchd inherits no shell PATH.
+CHECKER_BIN="$HOME/.local/share/dispatcher-pinned-checker/bin"
 ROTATE_MAX_BYTES="${DISPATCHER_LOG_MAX_BYTES:-10485760}"   # 10 MiB
 ROTATE_KEEP=5
 LOG_DIR="$HOME/Library/Logs/dispatcher"
@@ -125,10 +130,18 @@ PLIST
 # file to a rename that silently detaches it.
 rotate_logs() {
     local f archived=0
-    for f in "$LOG_DIR/out.log" "$LOG_DIR/err.log"; do
+    # EVERY log this directory grows, not a hand-kept pair (codex on #196):
+    # the snapshot agent's log was added and the rotator still named only
+    # out/err — the exact slow-full-disk failure rotation exists to stop,
+    # reintroduced by the very PR that added a new writer. The glob keeps
+    # the next new agent covered without anyone remembering this loop.
+    for f in "$LOG_DIR"/*.log; do
         [ -f "$f" ] || continue
         local size
-        size="$(stat -f%z "$f")"
+        # BSD stat first (the launchd host is macOS), GNU stat as the
+        # fallback — CI exercises this rotator on Linux, where `-f%z`
+        # is an unknown option and `set -e` turned it into exit 1.
+        size="$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f")"
         [ "$size" -ge "$ROTATE_MAX_BYTES" ] || continue
         local i
         for (( i = ROTATE_KEEP - 1; i >= 1; i-- )); do
@@ -170,6 +183,59 @@ generate_rotate_plist() {
 PLIST
 }
 
+# Cross-machine sync only means anything when EVERY machine publishes at
+# most an hour apart (README, "Sync snapshots") — a screen fed by one stale
+# snapshot renders "unknown" per repo and looks broken while telling the
+# truth. This agent is that publisher. The pinned github-checker's bin dir
+# goes onto PATH explicitly: launchd starts with no shell profile, so "on
+# PATH" must be arranged here, not assumed.
+generate_snapshot_plist() {
+    local cfg="$1"
+    cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$SNAPSHOT_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$(command -v uv)</string>
+    <string>run</string>
+    <string>dispatcher</string>
+    <string>publish-snapshot</string>
+    <string>--config</string>
+    <string>$cfg</string>
+  </array>
+  <key>WorkingDirectory</key><string>$REPO_ROOT</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>$CHECKER_BIN:/usr/local/bin:/usr/bin:/bin</string></dict>
+  <key>StartInterval</key><integer>1800</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/snapshot.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/snapshot.log</string>
+</dict>
+</plist>
+PLIST
+}
+
+# bootout is asynchronous: an immediate bootstrap of the same label can hit
+# "Bootstrap failed: 5: Input/output error" while launchd tears the old
+# instance down. ONE retry helper for every agent (codex on #196): the main
+# service had the retry, the snapshot agent reused bootout/bootstrap without
+# it, and under set -e one transient aborted the whole install with the
+# publisher left unloaded — the same lesson, unlearned one call site over.
+bootstrap_with_retry() {
+    local label="$1" plist="$2" consequence="$3"
+    local attempt
+    for attempt in 1 2 3 4 5; do
+        if launchctl bootstrap "gui/$UID" "$plist" 2>/dev/null; then
+            return 0
+        fi
+        [ "$attempt" = 5 ] && die "bootstrap of $label kept failing — $consequence; try: launchctl bootstrap gui/$UID $plist"
+        sleep 1
+    done
+}
+
 install_agent() {
     local cfg port holder
     cfg="$(resolve_config "${1:-}")"
@@ -179,19 +245,68 @@ install_agent() {
     # race restarts forever, and the operator sees a service that is "loaded"
     # and unreachable — worse than a refusal that says what to stop.
     if holder="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null)" && [ -n "$holder" ]; then
-        die "port $port is already served by PID $holder — stop it first, or set a different \`port\` in $cfg"
+        # OUR OWN service does not count as a conflict: `install` is also
+        # the upgrade path, and the bootstrap below replaces the running
+        # process anyway. Refusing here made re-install impossible without
+        # a downtime `uninstall` first — discovered by hitting it while
+        # upgrading a live service. Anything else on the port still dies.
+        # launchd's pid is the `uv run` WRAPPER; the port is held by its
+        # python CHILD — so equality alone never matches (found by running
+        # it, not by reading it). Walk a few parents up from the holder.
+        # `|| true`: with the job not loaded `launchctl print` fails, and
+        # under set -euo pipefail the bare assignment aborted install with
+        # NO message at all (review on #196) — an absent own job just means
+        # own="" and any listener is foreign.
+        own="$(launchctl print "gui/$UID/$LABEL" 2>/dev/null | awk '/^\tpid = /{print $3}' || true)"
+        # A match requires a LITERAL, non-empty PID: own="" (job loaded but
+        # currently pid-less) meeting a parent walk that bottoms out empty
+        # used to compare "" == "" and adopt a FOREIGN listener as ours.
+        matched=false
+        probe="$holder"
+        for _ in 1 2 3; do
+            [ -n "$probe" ] || break
+            if [ -n "$own" ] && [ "$probe" = "$own" ]; then
+                matched=true
+                break
+            fi
+            probe="$(ps -o ppid= -p "$probe" 2>/dev/null | tr -d ' ' || true)"
+        done
+        if [ "$matched" != true ]; then
+            die "port $port is already served by PID $holder — stop it first, or set a different \`port\` in $cfg"
+        fi
     fi
 
     mkdir -p "$LOG_DIR" "$(dirname "$PLIST")"
     generate "$cfg" > "$PLIST"
     launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
-    launchctl bootstrap "gui/$UID" "$PLIST"
+    # bootout is asynchronous: an immediate bootstrap of the same label can
+    # hit "Bootstrap failed: 5: Input/output error" while launchd is still
+    # tearing the old instance down — which left the service DOWN after an
+    # upgrade, the exact opposite of what install is for. Found live.
+    bootstrap_with_retry "$LABEL" "$PLIST" "service is NOT running"
 
     # Installed together on purpose: a service whose logs grow without bound
     # is a slow failure, and one installed separately is one forgotten.
     generate_rotate_plist > "$ROTATE_PLIST"
     launchctl bootout "gui/$UID/$ROTATE_LABEL" 2>/dev/null || true
-    launchctl bootstrap "gui/$UID" "$ROTATE_PLIST"
+    bootstrap_with_retry "$ROTATE_LABEL" "$ROTATE_PLIST" "log rotation is NOT running"
+
+    if [ -x "$CHECKER_BIN/github-checker" ]; then
+        generate_snapshot_plist "$cfg" > "$SNAPSHOT_PLIST"
+        launchctl bootout "gui/$UID/$SNAPSHOT_LABEL" 2>/dev/null || true
+        bootstrap_with_retry "$SNAPSHOT_LABEL" "$SNAPSHOT_PLIST" "the snapshot publisher is NOT running"
+        echo "installed $SNAPSHOT_LABEL -> every 30 min" >&2
+    else
+        # Absent is a stated fact, not a silent skip: without the publisher
+        # the Sync screen on OTHER machines shows this host as missing. It is
+        # also the FINAL installed state: an older loaded agent must not keep
+        # firing after its checker disappeared while `install` claims it was
+        # skipped (codex review on PR #196).
+        launchctl bootout "gui/$UID/$SNAPSHOT_LABEL" 2>/dev/null || true
+        rm -f "$SNAPSHOT_PLIST"
+        echo "SKIPPED $SNAPSHOT_LABEL: no pinned github-checker at $CHECKER_BIN" >&2
+        echo "  run scripts/install_pinned_checker.sh \"\$HOME/.local/share/dispatcher-pinned-checker\" first" >&2
+    fi
 
     echo "installed $LABEL -> port $port, logs in $LOG_DIR" >&2
     echo "installed $ROTATE_LABEL -> daily, keeps $ROTATE_KEEP x $ROTATE_MAX_BYTES bytes" >&2
@@ -216,13 +331,20 @@ print(args[args.index("--config") + 1])
     else
         echo "rotation: NOT loaded — logs will grow without bound"
     fi
+    if launchctl print "gui/$UID/$SNAPSHOT_LABEL" >/dev/null 2>&1; then
+        echo "snapshot: $SNAPSHOT_LABEL loaded (every 30 min); last:"
+        tail -1 "$LOG_DIR/snapshot.log" 2>/dev/null | sed 's/^/  /' || true
+    else
+        echo "snapshot: NOT loaded — other machines see this host as missing"
+    fi
 }
 
 uninstall() {
     launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
     launchctl bootout "gui/$UID/$ROTATE_LABEL" 2>/dev/null || true
-    rm -f "$PLIST" "$ROTATE_PLIST"
-    echo "removed $LABEL and $ROTATE_LABEL (logs in $LOG_DIR are left alone)" >&2
+    launchctl bootout "gui/$UID/$SNAPSHOT_LABEL" 2>/dev/null || true
+    rm -f "$PLIST" "$ROTATE_PLIST" "$SNAPSHOT_PLIST"
+    echo "removed $LABEL, $ROTATE_LABEL and $SNAPSHOT_LABEL (logs in $LOG_DIR are left alone)" >&2
 }
 
 cmd="${1:-}"; shift || true
