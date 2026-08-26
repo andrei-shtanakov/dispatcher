@@ -93,6 +93,19 @@ def _display_text(rest: str) -> str:
     return " ".join(_TAG_RE.sub("", rest).split())
 
 
+def last_tag_is_quoted(raw_text: str, key: str) -> bool:
+    """Whether the LAST `@{key}:` occurrence on this line used a quoted value.
+
+    The tokenizer unquotes values into `tags`, deliberately erasing the
+    spelling; grammars that reject quoting (r2's @dag) re-ask the SAME
+    tokenizer here. Last occurrence, because `tags` is last-wins."""
+    quoted = None
+    for m in _TAG_RE.finditer(raw_text):
+        if m.group(1) == key:
+            quoted = m.group(2) is not None  # group 2 = the quoted alternative
+    return bool(quoted)
+
+
 def scrape_items(text: str) -> list[ScrapedItem]:
     """Every checklist item in `text`, open and closed, in document order.
 

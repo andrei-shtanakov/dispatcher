@@ -1,0 +1,73 @@
+{
+  "contract_version": 3,
+  "diagnostics": [
+    {
+      "code": "EP-MISSING",
+      "message": "item todo://demo/quoted carries no @epic",
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "warning",
+      "subject_uri": "todo://demo/quoted"
+    },
+    {
+      "code": "PF-DAG-GRAMMAR",
+      "message": "@dag on item todo://demo/quoted uses a quoted value — the grammar takes a bare dags/<name>.yaml token",
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "warning",
+      "subject_uri": "todo://demo/quoted"
+    }
+  ],
+  "edges": [],
+  "generated_at": "2026-07-28T00:00:00Z",
+  "nodes": [
+    {
+      "declared_status": "open",
+      "defect": null,
+      "epic": null,
+      "epic_classification": "missing",
+      "freshness": null,
+      "id": "quoted",
+      "kind": "operational_item",
+      "node_id": "todo://demo/quoted",
+      "owner_ref": {
+        "id": "andrei-shtanakov",
+        "kind": "github_user",
+        "raw": "github:andrei-shtanakov"
+      },
+      "owner_role": null,
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "raw": {
+        "dag": "dags/quoted.yaml",
+        "id": "quoted",
+        "owner": "github:andrei-shtanakov"
+      },
+      "repo": "demo",
+      "title": "Quoted value is not part of the grammar",
+      "tombstone": false,
+      "trigger": null
+    }
+  ],
+  "references": [],
+  "schema_version": 3
+}

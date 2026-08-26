@@ -1,7 +1,5 @@
 source: prograph-vault authored/contracts/plan-fields/v3
-commit: 0e30ada3ffbc9b55f8ff0ba7b83de217b56e4cae
-vendored: 2026-08-25
+commit: dc12b0e3eaa6abd626e48f3ee6cf145ae70a0beb
+vendored: 2026-08-26
 note: pinned copy (repo-boundaries vendoring). Do not edit here; re-vendor from
-  the pin. manifest.json travels with this copy for offline drift verification.
-  depends.json pins the epics/v1 surface this copy delegates epic grammar to —
-  the sibling vendored copy in ../contract_epics must fingerprint to that tree.
+canon and update this header. Revision: v3 r2 (adds optional @dag).

@@ -20,7 +20,12 @@ from plan_fields.epic import (
     parse_defect,
     parse_epic,
 )
-from plan_fields.scrape import _canonical_title, scrape_items
+from plan_fields.scrape import (
+    ScrapedItem,
+    _canonical_title,
+    last_tag_is_quoted,
+    scrape_items,
+)
 
 CONTRACT_VERSION = 3
 SCHEMA_VERSION = 3
@@ -31,6 +36,8 @@ ROLE_RE = re.compile(r"^[a-z][a-z0-9-]{1,31}$")
 GITHUB_RE = re.compile(r"^github:([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)$")
 TEAM_RE = re.compile(r"^github-team:([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)$")
 REPO_OWNER_RE = re.compile(r"^repo:([a-z0-9][a-z0-9-]*)$")
+# r2 @dag: bare token, relative, normalized; traversal dies in the grammar.
+DAG_RE = re.compile(r"^dags/[a-z0-9][a-z0-9._-]*\.yaml$")
 
 FRESHNESS = {
     "source-ref": "source_ref",
@@ -81,6 +88,37 @@ def parse_owner(
     return None, None, "PF-OWNER-GRAMMAR"
 
 
+def parse_dag(
+    item: ScrapedItem, item_id: str | None
+) -> tuple[str | None, tuple[tuple[str, str], ...]]:
+    """Parse the r2 @dag launch-registration tag for one item.
+
+    Returns ``(dag, diagnostics)``: ``dag`` is the value only when it passed
+    the grammar AND equals ``dags/<id>.yaml``; diagnostics are
+    ``(code, message)`` pairs whose texts are pinned by the canon fixtures,
+    with an unformatted ``{repo}`` placeholder the caller fills in (it knows
+    the repo; this function sees only one item). With no ``@id`` the item
+    yields no node, so the caller never gets here — the signature keeps
+    ``item_id`` optional for operational reporters."""
+    value = item.tags.get("dag")
+    if value is None or item_id is None:
+        return None, ()
+    node_uri = f"todo://{{repo}}/{item_id}"
+    if last_tag_is_quoted(item.raw_text, "dag"):
+        message = (
+            f"@dag on item {node_uri} uses a quoted value — the grammar "
+            "takes a bare dags/<name>.yaml token"
+        )
+        return None, (("PF-DAG-GRAMMAR", message),)
+    if not DAG_RE.fullmatch(value):
+        message = f"@dag value {value} on item {node_uri} fails the grammar"
+        return None, (("PF-DAG-GRAMMAR", message),)
+    if value != f"dags/{item_id}.yaml":
+        message = f"@dag {value} on item {node_uri} does not equal dags/{item_id}.yaml"
+        return None, (("PF-DAG-MISMATCH", message),)
+    return value, ()
+
+
 def parse_todo(
     text: str,
     repo: str,
@@ -124,6 +162,7 @@ def parse_todo(
         epic, epic_class, epic_diag = parse_epic(epic_values)
         defect_values = item.values("defect")
         defect, defect_diag = parse_defect(defect_values)
+        dag, dag_diags = parse_dag(item, item_id)
         node = {
             "node_id": node_id,
             "kind": "operational_item",
@@ -142,6 +181,8 @@ def parse_todo(
             "raw": dict(raw),
             "provenance": prov,
         }
+        if dag is not None:
+            node["dag"] = dag
         nodes.append(node)
         # EP-MISSING is deferred debt, not a defect in the record: it is emitted for
         # OPEN items only, because a closed item carries no obligation (ADR-ECO-010
@@ -158,6 +199,20 @@ def parse_todo(
             )
             diagnostics.append(
                 _diag(code, EPIC_SEVERITY[code], node_id, None, None, message, prov)
+            )
+        # PF-DAG-* are structural too — fire regardless of open/closed, the same
+        # precedent as the epic block above.
+        for code, message in dag_diags:
+            diagnostics.append(
+                _diag(
+                    code,
+                    "warning",
+                    node_id,
+                    None,
+                    None,
+                    message.format(repo=repo),
+                    prov,
+                )
             )
         # every @blocked_by on the item, in source order — a key can repeat, and
         # each blocker gets its own reference below (never collapsed to one)

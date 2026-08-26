@@ -3,7 +3,7 @@ title: "plan-fields v3 — conformance fixtures"
 type: contract
 status: proposed
 owner: Andrei
-updated: 2026-08-25
+updated: 2026-08-26
 ---
 
 # plan-fields v3 — fixtures
@@ -36,6 +36,13 @@ validator that runs them is a **PF-3** deliverable (not in the KB — see the co
 | `valid/epic-tagged` | pair | the stream axis in normal form: `@epic` on both items, `@defect` on the fix; `epic_classification: tagged` |
 | `invalid/epic-grammar` | pair | `@epic:eco` (no dot) → `EP-GRAMMAR`, `epic_classification: invalid` |
 | `invalid/epic-multiple` | pair | two identical `@epic` tags → `EP-MULTIPLE`; a duplicate is a defect, not a consensus |
+| `valid/dag-registered` | pair | `@dag:dags/<id>.yaml` in normal form → node carries `dag` (r2) |
+| `valid/dag-id-stem-agreement` | pair | 64-char boundary `@id` with full charset; the `@id` grammar and the dag filename stem agree |
+| `valid/dag-continuation-invisible` | pair | `@dag` on a continuation line is invisible — no `dag` field, no diagnostic |
+| `invalid/dag-without-id` | pair | `@dag` on a line with no `@id` → no node, `PF-ID-MISSING` only (the `@epic` precedent: no identity to attach a dag diagnostic to) |
+| `invalid/dag-name-mismatch` | pair | well-formed value ≠ `dags/<id>.yaml` → `PF-DAG-MISMATCH`; `raw` keeps the spelling |
+| `invalid/dag-traversal` | pair | `dags/../../…` → `PF-DAG-GRAMMAR`; traversal dies in the grammar, before any filesystem |
+| `invalid/dag-quoted` | pair | quoted value → `PF-DAG-GRAMMAR`; the grammar takes a bare token |
 
 Expected outputs follow the canonical ordering in the contract README (nodes by `node_id`,
 etc.), so a conforming parser's output should compare equal after canonicalization.
@@ -45,6 +52,10 @@ etc.), so a conforming parser's output should compare equal after canonicalizati
 Every pre-existing case now also carries `EP-MISSING` on its open nodes: those inputs were
 written before the stream axis existed, and a conforming v3 parser must say so rather than
 stay silent. Closed and tombstoned items get no such diagnostic — they carry no obligation.
+
+No pre-r2 fixture gained a `@dag`-related diagnostic: the tag is an optional extension and
+its absence is never a finding, so every pre-existing expected output is byte-identical to
+its pre-r2 state — that is the additivity the r2 revision promises.
 
 No fixture here expects `EP-UNKNOWN` or `EP-MOVED`. Those need `epics.toml`, which a
 single-repo parser does not read; they are fleet-layer findings and are fixtured in

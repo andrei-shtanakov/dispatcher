@@ -1,5 +1,29 @@
 # Changelog — plan-fields
 
+## 0.10.0 — 2026-08-26
+
+Re-vendored the plan-fields v3 contract to r2 (canon commit `dc12b0e`) and
+implemented its optional `@dag` launch-registration tag.
+
+- `parse_dag(item, item_id) -> (dag, diagnostics)` is new public API, beside
+  `parse_owner` — operational reporters can classify an item's `@dag`
+  without copying the grammar.
+- `scrape.last_tag_is_quoted(raw_text, key) -> bool` is new public API — the
+  tokenizer unquotes values into `tags`, so the grammar re-asks the same
+  tokenizer whether the LAST occurrence of a key was quoted (last-wins).
+- Node output gains an optional `dag` key: present **only** when `@dag`
+  passed the grammar (a bare, normalized `dags/<name>.yaml` token) AND
+  equals `dags/<id>.yaml` for the item's own `@id`; absent — never null —
+  otherwise. `@dag` has no presence obligation: an item without it gets no
+  diagnostic.
+- Two new diagnostics, both `warning`, both structural (they fire on closed
+  items too, the `@epic` precedent): `PF-DAG-GRAMMAR` (malformed or quoted
+  value; quoting is rejected — the grammar takes a bare token) and
+  `PF-DAG-MISMATCH` (well-formed but names a different item's artifact).
+- The line-based parser reads no continuations: `@dag` on a continuation
+  line is invisible, same as every other tag.
+- Conformance fixtures: 11 → 18 (7 new `@dag` cases).
+
 ## 0.7.0 — 2026-07-29
 
 Manifest-declared repo identity threaded through resolution (ADR-ECO-005).
