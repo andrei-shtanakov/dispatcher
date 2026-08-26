@@ -180,7 +180,7 @@ def _capture_plan_items(checkout: Path) -> tuple[tuple[PlanItem, ...], str | Non
     shipped = _shipped_lines(text)
     items = []
     for item in scrape_items(text):
-        dag_tag, dag_diags = parse_dag(item, item.item_id)
+        dag_tag, dag_diags = parse_dag(item, item.item_id, checkout.name)
         items.append(
             PlanItem(
                 item_id=item.item_id,
@@ -259,6 +259,20 @@ def _capture_one_dag_file(
     try:
         is_regular = stat.S_ISREG(os.fstat(fd).st_mode)
         data = _read_all(fd) if is_regular else b""
+    except OSError as err:
+        # EIO/ESTALE and friends mid-read: captured as a named fact, same
+        # discipline as the open() failure above — never propagate.
+        return DagFileInfo(
+            rel_path=rel_path,
+            is_regular=False,
+            text=None,
+            blob_sha=None,
+            head_blob_sha=None,
+            subset=None,
+            named_repo=None,
+            named_repo_error=None,
+            error=f"cannot read {rel_path}: {err}",
+        )
     finally:
         os.close(fd)
 

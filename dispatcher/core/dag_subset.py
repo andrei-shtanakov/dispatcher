@@ -2,8 +2,10 @@
 
 dispatcher does not vendor maestro's schema. Accepted means "shaped like a
 Mode-1 ProjectConfig as far as launchpad needs"; authoritative validation
-stays with maestro at launch. `workstreams:`/`repo_url:` are Mode-2 markers
-(OrchestratorConfig requires them, ProjectConfig lacks them).
+stays with maestro at launch. `workstreams:` is the sole Mode-2 marker
+(OrchestratorConfig requires it, ProjectConfig lacks it); `repo_url:` is
+legal Mode-1 remote-URL naming, not a Mode-2 marker — it mirrors the
+`repo`/`repo_url` precedence submit already uses (PR#202 review ruling).
 """
 
 from __future__ import annotations

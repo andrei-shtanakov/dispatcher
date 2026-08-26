@@ -146,6 +146,30 @@ def test_fifo_dag_file_does_not_hang_and_is_not_read(tmp_path):
     assert info.text is None
 
 
+def test_dag_file_read_error_is_captured_as_fact(tmp_path, monkeypatch):
+    # I2: an OSError mid-read (EIO/ESTALE) must be captured as a named fact,
+    # not propagate out of capture_inventory — same discipline as the
+    # sibling open()/scandir() catches in this module.
+    root = make_repo(
+        tmp_path,
+        "- [ ] x @id:x @dag:dags/x.yaml\n",
+        {"dags/x.yaml": "repo: /x\ntasks: []\n"},
+    )
+
+    def raise_read_error(fd):
+        raise OSError("simulated EIO")
+
+    monkeypatch.setattr(inventory, "_read_all", raise_read_error)
+
+    surface = capture_inventory(root)
+    info = find_dag(surface, "dags/x.yaml")
+
+    assert info.is_regular is False
+    assert info.text is None
+    assert info.error is not None
+    assert "dags/x.yaml" in info.error
+
+
 def test_symlinked_dags_root_is_refused_at_the_root(tmp_path):
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()

@@ -5,9 +5,11 @@
 Re-vendored the plan-fields v3 contract to r2 (canon commit `dc12b0e`) and
 implemented its optional `@dag` launch-registration tag.
 
-- `parse_dag(item, item_id) -> (dag, diagnostics)` is new public API, beside
-  `parse_owner` — operational reporters can classify an item's `@dag`
-  without copying the grammar.
+- `parse_dag(item, item_id, repo) -> (dag, diagnostics)` is new public API,
+  beside `parse_owner` — operational reporters can classify an item's `@dag`
+  without copying the grammar. `repo` is the caller's own identity, used
+  only to compose the `todo://` URI in diagnostic text; diagnostics are
+  finished message strings, not templates for the caller to `.format()`.
 - `scrape.last_tag_is_quoted(raw_text, key) -> bool` is new public API — the
   tokenizer unquotes values into `tags`, so the grammar re-asks the same
   tokenizer whether the LAST occurrence of a key was quoted (last-wins).

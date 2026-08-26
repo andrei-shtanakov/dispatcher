@@ -89,21 +89,26 @@ def parse_owner(
 
 
 def parse_dag(
-    item: ScrapedItem, item_id: str | None
+    item: ScrapedItem, item_id: str | None, repo: str
 ) -> tuple[str | None, tuple[tuple[str, str], ...]]:
     """Parse the r2 @dag launch-registration tag for one item.
 
     Returns ``(dag, diagnostics)``: ``dag`` is the value only when it passed
-    the grammar AND equals ``dags/<id>.yaml``; diagnostics are
-    ``(code, message)`` pairs whose texts are pinned by the canon fixtures,
-    with an unformatted ``{repo}`` placeholder the caller fills in (it knows
-    the repo; this function sees only one item). With no ``@id`` the item
-    yields no node, so the caller never gets here — the signature keeps
-    ``item_id`` optional for operational reporters."""
+    the grammar AND equals ``dags/<id>.yaml``; diagnostics are ``(code,
+    message)`` pairs whose texts are pinned by the canon fixtures and are
+    already FINISHED — the caller must not run ``.format`` (or any other
+    template substitution) on them. ``@dag``'s value is untrusted input and
+    is reported verbatim in these messages, so it may itself contain ``{``
+    / ``}``; a later ``.format()`` pass over the finished text would try to
+    resolve those as placeholders and crash (KeyError / unmatched '{'). With
+    no ``@id`` the item yields no node, so the caller never gets here — the
+    signature keeps ``item_id`` optional for operational reporters. ``repo``
+    is the caller's own identity, used only to compose the ``todo://`` URI
+    named in the message text."""
     value = item.tags.get("dag")
     if value is None or item_id is None:
         return None, ()
-    node_uri = f"todo://{{repo}}/{item_id}"
+    node_uri = f"todo://{repo}/{item_id}"
     if last_tag_is_quoted(item.raw_text, "dag"):
         message = (
             f"@dag on item {node_uri} uses a quoted value — the grammar "
@@ -162,7 +167,7 @@ def parse_todo(
         epic, epic_class, epic_diag = parse_epic(epic_values)
         defect_values = item.values("defect")
         defect, defect_diag = parse_defect(defect_values)
-        dag, dag_diags = parse_dag(item, item_id)
+        dag, dag_diags = parse_dag(item, item_id, repo)
         node = {
             "node_id": node_id,
             "kind": "operational_item",
@@ -201,7 +206,8 @@ def parse_todo(
                 _diag(code, EPIC_SEVERITY[code], node_id, None, None, message, prov)
             )
         # PF-DAG-* are structural too — fire regardless of open/closed, the same
-        # precedent as the epic block above.
+        # precedent as the epic block above. Messages from parse_dag are
+        # already finished text — no .format() here (see parse_dag docstring).
         for code, message in dag_diags:
             diagnostics.append(
                 _diag(
@@ -210,7 +216,7 @@ def parse_todo(
                     node_id,
                     None,
                     None,
-                    message.format(repo=repo),
+                    message,
                     prov,
                 )
             )
