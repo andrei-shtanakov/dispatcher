@@ -30,6 +30,9 @@ from plan_fields.scrape import (
 CONTRACT_VERSION = 3
 SCHEMA_VERSION = 3
 
+# The canonical ItemId grammar (schema.json $defs.ItemId) — exported so
+# operational consumers validate identity without restating the regex.
+ITEM_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 TODO_URI_RE = re.compile(r"^todo://([a-z0-9][a-z0-9-]*)/([a-z0-9][a-z0-9._-]{0,63})$")
 LEGACY_RE = re.compile(r"^([a-z0-9][a-z0-9-]*)#(\S+)$")
 ROLE_RE = re.compile(r"^[a-z][a-z0-9-]{1,31}$")

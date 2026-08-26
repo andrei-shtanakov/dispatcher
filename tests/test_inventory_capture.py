@@ -524,3 +524,22 @@ def test_dag_file_growing_past_the_cap_mid_read_is_refused(tmp_path, monkeypatch
     (info,) = surface.dag_files
     assert info.error is not None and "exceeds" in info.error
     assert info.text is None and info.blob_sha is None
+
+
+def test_item_id_outside_the_canonical_grammar_yields_no_identity(tmp_path):
+    """A 65-char @id has no canonical identity — captured as id-less.
+
+    No todo:// node can exist for it (ItemId caps at 64), so the item can
+    never be Ready; a @dag beside it is as invisible as one with no @id.
+    """
+    long_id = "a" * 65
+    root = make_repo(
+        tmp_path,
+        f"# demo — TODO\n\n- [ ] Long @id:{long_id} "
+        f"@owner:github:u @dag:dags/{long_id}.yaml\n",
+        {f"dags/{long_id}.yaml": "repo: /x\ntasks: []\n"},
+    )
+    surface = capture_inventory(root)
+    (item,) = surface.plan_items
+    assert item.item_id is None
+    assert item.dag_tag is None

@@ -36,7 +36,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from plan_fields.parser import DAG_RE, parse_dag
+from plan_fields.parser import DAG_RE, ITEM_ID_RE, parse_dag
 from plan_fields.scrape import scrape_items
 
 from dispatcher.core.dag_subset import (
@@ -185,10 +185,19 @@ def _capture_plan_items(checkout: Path) -> tuple[tuple[PlanItem, ...], str | Non
     shipped = _shipped_lines(text)
     items = []
     for item in scrape_items(text):
-        dag_tag, dag_diags = parse_dag(item, item.item_id, checkout.name)
+        # An @id outside the canonical ItemId grammar has no identity: no
+        # todo:// node can exist for it, so the item is captured id-less
+        # and can never be Ready (spec §5.1 cond. 2); a @dag beside it is
+        # as invisible as one with no @id at all.
+        item_id = (
+            item.item_id
+            if item.item_id is not None and ITEM_ID_RE.fullmatch(item.item_id)
+            else None
+        )
+        dag_tag, dag_diags = parse_dag(item, item_id, checkout.name)
         items.append(
             PlanItem(
-                item_id=item.item_id,
+                item_id=item_id,
                 line=item.line,
                 open=not item.checked,
                 shipped=item.line in shipped,
