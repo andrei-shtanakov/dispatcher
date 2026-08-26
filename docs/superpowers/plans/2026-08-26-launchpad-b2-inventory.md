@@ -293,8 +293,18 @@ git commit -m "feat(plan-fields): re-vendor contract v3 r2 and implement @dag (0
 
 **Interfaces:**
 - Produces: `classify_dag_text(text: str) -> DagSubsetVerdict` where
-  `DagSubsetVerdict = Accepted(repo: str) | Rejected(reason: str)` —
-  frozen dataclasses. Pure: consumes the file's TEXT, never a path.
+  `DagSubsetVerdict = Accepted(repo_path: str | None, repo_url: str | None)
+  | Rejected(reason: str)` — frozen dataclasses. Pure: consumes the file's
+  TEXT, never a path.
+  **Repo-naming semantics MIRROR the shipped submit path**
+  (`run_request.py::_reconcile_repo`, pinned by `tests/test_run_request.py`):
+  `repo_url:` is the remote-URL way to name the repository and `repo:` is a
+  CHECKOUT PATH; `repo_url` wins when both are non-empty, and a DAG naming
+  neither is rejected. **Recorded ruling:** spec §6.1 lists `repo_url` as a
+  Mode-2 marker — that contradicts submit's shipped, test-pinned behaviour;
+  inventory follows the code (one classifier must not disagree with the
+  launcher), and the §6.1 correction joins the PR-C spec-rewording tail.
+  `workstreams` is the sole Mode-2 marker.
 - Consumed by: Task 3's capture (reads the file, hands text in) and Task 4's
   classifier (maps `Rejected` → `dag_invalid`).
 
@@ -307,30 +317,43 @@ from a sibling checkout):
 ```yaml
 # Fleet-derived fixture: minimal Mode-1 ProjectConfig shape, modeled on the
 # slice-0 pilot runs (spec §6.1). CI reads THIS file, never a sibling repo.
-repo: git@github.com:andrei-shtanakov/demo.git
+# `repo:` is a CHECKOUT PATH — submit's shipped semantics (_reconcile_repo).
+repo: /home/user/labs/demo
+tasks:
+  - id: t1
+    prompt: do the thing
+```
+
+`mode1-repo-url.yaml` (the remote-URL alternative submit equally accepts):
+
+```yaml
+# Fleet-derived fixture: Mode-1 shape naming its repo by remote URL —
+# accepted by submit (run_request.py, test_run_request.py pins it).
+repo_url: git@github.com:andrei-shtanakov/demo.git
 tasks:
   - id: t1
     prompt: do the thing
 ```
 
 `mode2-orchestrator.yaml` (provenance: modeled on `proctor-a-*.yaml`
-OrchestratorConfig — the two Mode-2 markers present):
+OrchestratorConfig — `workstreams` is the discriminator):
 
 ```yaml
 # Fleet-derived fixture: Mode-2 OrchestratorConfig shape modeled on
-# proctor-a-*.yaml (spec §6.1). workstreams/repo_url are the discriminator.
+# proctor-a-*.yaml (spec §6.1, corrected by the recorded ruling above:
+# workstreams is the marker; repo_url alone is legal Mode-1).
 repo_url: git@github.com:andrei-shtanakov/demo.git
 workstreams:
   - name: ws1
 tasks: []
-repo: demo
 ```
 
-Plus: `not-yaml.yaml` (binary junk), `no-tasks.yaml` (repo present, `tasks`
-absent), `tasks-not-list.yaml` (`tasks: 3`), `repo-not-string.yaml`
-(`repo: [a]`), `only-workstreams.yaml` (one Mode-2 marker alone — still
-rejected: the predicate is "either marker present ⇒ not the supported
-subset").
+Plus: `not-yaml.yaml` (UTF-8 text that is not YAML, e.g. `{ [ :::` —
+undecodable BYTES never reach this pure classifier: capture yields
+`text=None` for them and Task 4 rule 8 makes that `dag_invalid`),
+`no-tasks.yaml` (repo present, `tasks` absent), `tasks-not-list.yaml`
+(`tasks: 3`), `no-repo-naming.yaml` (neither `repo:` nor `repo_url:` — the
+same refusal submit gives), `repo-not-string.yaml` (`repo: [a]`).
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -351,7 +374,26 @@ def load(name: str) -> str:
 def test_minimal_mode1_is_accepted():
     verdict = classify_dag_text(load("mode1-minimal.yaml"))
     assert isinstance(verdict, Accepted)
-    assert verdict.repo == "git@github.com:andrei-shtanakov/demo.git"
+    assert verdict.repo_path == "/home/user/labs/demo"
+    assert verdict.repo_url is None
+
+
+def test_repo_url_names_a_mode1_repo_too():
+    # submit's shipped semantics (test_run_request.py pins the same)
+    verdict = classify_dag_text(load("mode1-repo-url.yaml"))
+    assert isinstance(verdict, Accepted)
+    assert verdict.repo_url == "git@github.com:andrei-shtanakov/demo.git"
+
+
+def test_repo_url_wins_when_both_are_present():
+    # _reconcile_repo precedence, mirrored
+    verdict = classify_dag_text(
+        "repo: /home/user/labs/demo\n"
+        "repo_url: git@github.com:andrei-shtanakov/demo.git\n"
+        "tasks: []\n"
+    )
+    assert isinstance(verdict, Accepted)
+    assert verdict.repo_url == "git@github.com:andrei-shtanakov/demo.git"
 
 
 @pytest.mark.parametrize(
@@ -362,6 +404,7 @@ def test_minimal_mode1_is_accepted():
         "not-yaml.yaml",
         "no-tasks.yaml",
         "tasks-not-list.yaml",
+        "no-repo-naming.yaml",
         "repo-not-string.yaml",
     ],
 )
@@ -409,12 +452,13 @@ from dataclasses import dataclass
 import yaml
 
 _MAX_DAG_BYTES = 1024 * 1024  # a plan DAG is text; anything bigger is refused
-_MODE2_MARKERS = ("workstreams", "repo_url")
+_MODE2_MARKER = "workstreams"  # recorded ruling: repo_url is legal Mode-1
 
 
 @dataclass(frozen=True)
 class Accepted:
-    repo: str
+    repo_path: str | None  # `repo:` — a checkout path (submit semantics)
+    repo_url: str | None   # `repo_url:` — wins when both are present
 
 
 @dataclass(frozen=True)
@@ -441,16 +485,26 @@ def classify_dag_text(text: str) -> DagSubsetVerdict:
         return Rejected(f"not parseable as YAML: {exc}")
     if not isinstance(doc, dict):
         return Rejected("top level is not a mapping")
-    for marker in _MODE2_MARKERS:
-        if marker in doc:
-            return Rejected(f"'{marker}:' present — a Mode-2 marker, "
-                            "not the supported Mode-1 subset")
+    if _MODE2_MARKER in doc:
+        return Rejected(f"'{_MODE2_MARKER}:' present — a Mode-2 marker, "
+                        "not the supported Mode-1 subset")
+    repo_url = doc.get("repo_url")
     repo = doc.get("repo")
-    if not isinstance(repo, str) or not repo:
-        return Rejected("top-level 'repo:' string is required")
+    url_ok = isinstance(repo_url, str) and bool(repo_url.strip())
+    path_ok = isinstance(repo, str) and bool(repo.strip())
+    if repo_url is not None and not url_ok:
+        return Rejected("'repo_url:' must be a non-empty string")
+    if not url_ok and repo is not None and not path_ok:
+        return Rejected("'repo:' must be a non-empty string")
+    if not url_ok and not path_ok:
+        return Rejected("names no repository ('repo:'/'repo_url:') — "
+                        "maestro would refuse this DAG for the same reason")
     if not isinstance(doc.get("tasks"), list):
         return Rejected("top-level 'tasks:' list is required")
-    return Accepted(repo=repo)
+    return Accepted(
+        repo_path=repo if path_ok else None,
+        repo_url=repo_url if url_ok else None,
+    )
 ```
 
 - [ ] **Step 4: Run to GREEN, format, typecheck, commit**
@@ -472,7 +526,9 @@ git commit -m "feat(core): supported DAG subset discriminator (spec §6.1)"
 
 **Interfaces:**
 - Consumes: `plan_fields.scrape.scrape_items`, `plan_fields.parser.parse_dag`
-  (Task 1), `identity_from_checkout` (`run_identity.py`).
+  (Task 1), `classify_dag_text` (Task 2 — a pure call made AT CAPTURE, so
+  identity resolution can happen where IO is allowed),
+  `identity_from_checkout` / `parse_remote_url` (`run_identity.py`).
 - Produces (frozen dataclasses, consumed by Task 4's classifier):
 
 ```python
@@ -494,6 +550,15 @@ class DagFileInfo:
     blob_sha: str | None  # git hash-object --stdin over the SAME bytes
     head_blob_sha: str | None  # blob at <head_revision>:<rel>; None = ABSENT
                                # from that tree (a fact, not a failure)
+    subset: DagSubsetVerdict | None  # classify_dag_text(text) — computed at
+                                     # capture on the one-generation text
+                                     # (a pure call); None when text is None
+    named_repo: RepoKey | None  # the repo the DAG names, resolved at capture
+                                # EXACTLY as submit does (_reconcile_repo):
+                                # repo_url via parse_remote_url, else repo
+                                # path via identity_from_checkout; None when
+                                # unresolvable or subset is not Accepted
+    named_repo_error: str | None  # why resolution failed, when it did
     error: str | None     # named IO/git FAILURE for THIS file (timeout,
                           # plumbing error, undecodable) — distinct from
                           # head_blob_sha=None, which is a clean absence
@@ -594,6 +659,12 @@ Cases (each a test):
 10. `git init` without a commit (unborn HEAD) → `capture_error` names it,
     `head_revision=None`; NEVER a silent empty inventory.
 11. No `origin` remote → `repo_key=None`, `capture_error` names identity.
+12. DAG naming its repo by `repo:` path pointing at this same checkout →
+    `named_repo == repo_key`. Naming it by `repo_url` of the same remote →
+    `named_repo == repo_key` too (submit parity). `repo:` path pointing at
+    a DIFFERENT git checkout (build one in the test) → `named_repo` is that
+    other repo's key. Unresolvable path / unparseable URL →
+    `named_repo=None` + `named_repo_error`.
 
 - [ ] **Step 2: Implement**
 
@@ -617,6 +688,13 @@ Implementation notes (the tests above are the contract):
   errors) wrapped in try/except OSError → `dag_dir_error`;
   `FileNotFoundError` on the dir itself → no error, empty tuple. Candidate
   names: `<name>.yaml` where `dags/<name>.yaml` matches the r2 grammar.
+- Per accepted-subset file: resolve `named_repo` exactly as
+  `run_request.py::_reconcile_repo` does — `repo_url` via
+  `parse_remote_url` when non-empty, else `repo` path via
+  `identity_from_checkout(Path(repo_path).expanduser())`;
+  `IdentityError` → `named_repo_error`. This is deliberately the SAME
+  precedence and the same two resolvers, so inventory and submit cannot
+  disagree about which repository a DAG names.
 - Plan scrape: `scrape_items` over the TODO text. Per item: `open` from
   `checked`; `shipped` from a local `##`-heading tracker over the same
   text (test 4 pins the nested case); `dag_raw = item.tags.get("dag")`;
@@ -642,9 +720,10 @@ git commit -m "feat(core): inventory capture — one-generation ledger and dags/
 - Create: `tests/test_classify_inventory.py`
 
 **Interfaces:**
-- Consumes: `InventorySurface` (Task 3), `classify_dag_text` (Task 2 — pure,
-  so the classifier may call it on captured text), `parse_remote_url`
-  (`run_identity.py` — pure string parsing), existing `classify_repo`.
+- Consumes: `InventorySurface` (Task 3 — including the captured
+  `subset` / `named_repo` facts), existing `classify_repo`. The classifier
+  does NOT resolve identities itself: `identity_from_checkout` is IO, so
+  resolution happened at capture and arrives here as data.
 - Produces:
 
 ```python
@@ -726,13 +805,14 @@ per §5.1 condition, in the spec's numbering:
 7. `is_regular=False` → `blocked`, `dag_invalid`.
 8. `DagFileInfo.error` set, or `text is None` → `blocked`, `dag_invalid`
    (unreadable facts NEVER reach Ready — fail-closed).
-9. Subset-rejected text (Task 2's `Rejected`) → `blocked`, `dag_invalid`
-   with the `Rejected.reason`.
-10. DAG `repo:` parsing to a DIFFERENT `RepoKey` than
-    `inventory.repo_key` (via `parse_remote_url`) → `blocked`,
+9. `subset` is `Rejected` → `blocked`, `dag_invalid` with the
+   `Rejected.reason`.
+10. `named_repo` differing from `inventory.repo_key` → `blocked`,
     `dag_invalid` naming both keys — resolved identity, never a
-    directory-name string compare (spec §5.1 cond. 6). Unparseable
-    `repo:` → likewise `dag_invalid`.
+    directory-name string compare (spec §5.1 cond. 6); resolution
+    happened at capture with submit's own two resolvers and precedence.
+    `named_repo=None` with `named_repo_error` set → likewise
+    `dag_invalid`.
 11. `blob_sha != head_blob_sha` → `blocked`, `dag_dirty`.
     `head_blob_sha is None` with `error is None` (clean absence — file
     untracked at the captured revision) → `dag_dirty` too: content that
@@ -785,11 +865,12 @@ def classify_inventory(captured: CapturedInputs) -> InventoryDecision:
 
 then per OPEN item WITH an id, in this order (first match wins):
 `dag_raw is None` → unregistered · `dag_diag` → `dag_invalid` · file
-absent/irregular/errored/unreadable → `dag_invalid` · subset-rejected →
-`dag_invalid` · foreign or unparseable `repo:` → `dag_invalid` · claimed
-by another item (any status) → `dag_duplicate` · `blob_sha !=
-head_blob_sha` or `head_blob_sha is None` → `dag_dirty` · repo blocked →
-blocked with the repo's first blocker code · else → ready. Orphans:
+absent/irregular/errored/unreadable → `dag_invalid` · `subset` rejected →
+`dag_invalid` · `named_repo` foreign or unresolved → `dag_invalid` ·
+claimed by another item (any status) → `dag_duplicate` · `blob_sha !=
+head_blob_sha` or (`head_blob_sha is None` and `error is None`) →
+`dag_dirty` · repo blocked → blocked with the repo's first blocker code ·
+else → ready. Orphans:
 grammar-valid files minus paths claimed by OPEN items.
 
 The docstring carries spec §5's discipline sentence verbatim: "consumes
@@ -848,9 +929,12 @@ In the Launchpad section:
   merge — batch it here, this is the next docs touch);
 - reword `@id:launchpad-b2` to name this plan file and drop the `@trigger`
   (it fired: vault#103 merged 2026-08-26, canon at `dc12b0e`);
-- in `@id:launchpad-c`'s inherited-tails prose: ADD the spec touch-up
-  "§5.1 'on both items' → 'on both open items'" (Task 4's recorded
-  ruling), and CORRECT the stale sentence "одно предложение в спеку §7 про
+- in `@id:launchpad-c`'s inherited-tails prose: ADD the spec touch-ups
+  "§5.1 'on both items' → 'on both open items'" (Task 4's recorded ruling)
+  and "§6.1: `repo_url` is NOT a Mode-2 marker — submit's shipped,
+  test-pinned semantics accept it as the remote-URL repo naming; the
+  discriminator is `workstreams` alone" (PR #202 review's finding, ruled
+  code-over-spec), and CORRECT the stale sentence "одно предложение в спеку §7 про
   linked-unreadable=in-flight" — that proposal was overridden by the owner
   at the B1 review (linked-unreadable is `run_state_unreadable` now); what
   PR-C owes the spec is a §7 pass under the NEW semantics.
