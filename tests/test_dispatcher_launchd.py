@@ -110,7 +110,11 @@ def test_rotate_covers_every_log_in_the_directory(tmp_path: Path) -> None:
 
     subprocess.run(
         ["bash", "scripts/dispatcher_launchd.sh", "rotate"],
-        cwd=checkout, env=env, text=True, capture_output=True, check=True,
+        cwd=checkout,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
     )
 
     for name in ("out.log", "snapshot.log", "future-agent.log"):
@@ -127,27 +131,34 @@ def test_reinstall_retries_the_snapshot_bootstrap_transient(tmp_path: Path) -> N
     checkout, env, config, calls = _fixture(tmp_path)
     checker_bin = Path(env["HOME"]) / ".local/share/dispatcher-pinned-checker/bin"
     checker_bin.mkdir(parents=True)
-    (checker_bin / "github-checker").write_text("#!/bin/sh" + chr(10) + "exit 0" + chr(10))
+    (checker_bin / "github-checker").write_text(
+        "#!/bin/sh" + chr(10) + "exit 0" + chr(10)
+    )
     (checker_bin / "github-checker").chmod(0o755)
 
     # launchctl: bootstrap of the SNAPSHOT label fails once, then works —
     # the transient the retry exists for; everything else succeeds.
     fake = Path(env["PATH"].split(":")[0]) / "launchctl"
     marker = tmp_path / "failed-once"
-    script = "\n".join([
-        "#!/bin/sh",
-        'printf "%s\\n" "$*" >> "$LAUNCHCTL_CALLS"',
-        'case "$*" in',
-        '  bootstrap*snapshot*)',
-        f'    if [ ! -f "{marker}" ]; then touch "{marker}"; exit 5; fi ;;',
-        "esac",
-        "exit 0",
-        "",
-    ])
+    script = "\n".join(
+        [
+            "#!/bin/sh",
+            'printf "%s\\n" "$*" >> "$LAUNCHCTL_CALLS"',
+            'case "$*" in',
+            "  bootstrap*snapshot*)",
+            f'    if [ ! -f "{marker}" ]; then touch "{marker}"; exit 5; fi ;;',
+            "esac",
+            "exit 0",
+            "",
+        ]
+    )
     fake.write_text(script, encoding="utf-8")
 
-    result = _install(checkout, env, config)   # check=True: must not abort
+    result = _install(checkout, env, config)  # check=True: must not abort
     assert "installed dev.atp.dispatcher.snapshot" in result.stderr
-    boots = [c for c in Path(env["LAUNCHCTL_CALLS"]).read_text().splitlines()
-             if c.startswith("bootstrap") and "snapshot" in c]
+    boots = [
+        c
+        for c in Path(env["LAUNCHCTL_CALLS"]).read_text().splitlines()
+        if c.startswith("bootstrap") and "snapshot" in c
+    ]
     assert len(boots) == 2, f"expected retry after the transient, got {boots}"

@@ -138,7 +138,10 @@ rotate_logs() {
     for f in "$LOG_DIR"/*.log; do
         [ -f "$f" ] || continue
         local size
-        size="$(stat -f%z "$f")"
+        # BSD stat first (the launchd host is macOS), GNU stat as the
+        # fallback — CI exercises this rotator on Linux, where `-f%z`
+        # is an unknown option and `set -e` turned it into exit 1.
+        size="$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f")"
         [ "$size" -ge "$ROTATE_MAX_BYTES" ] || continue
         local i
         for (( i = ROTATE_KEEP - 1; i >= 1; i-- )); do
