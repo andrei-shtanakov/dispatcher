@@ -11,8 +11,10 @@ from dispatcher.core.run_store import (
     GUARD_TIMEOUT_SECONDS,
     GuardBusyError,
     LockBusyError,
+    Malformed,
     RunStore,
     RunStoreError,
+    fingerprint_of,
 )
 
 _KEY = RepoKey(host="github.com", owner="owner", repo="deployer")
@@ -231,3 +233,43 @@ def test_guard_releases_on_exit_and_after_crash(tmp_path: Path) -> None:
     holder.join()
     with store.guard(_KEY):  # the OS released the advisory lock
         pass
+
+
+def test_lock_file_is_a_preflight_record(tmp_path: Path) -> None:
+    """The lock itself carries {request_id, fingerprint, created_at}.
+
+    Spec §8.1: "a lock with no owning fact" must not be a representable
+    steady state — the fact travels IN the lock, written to the same fd
+    right after O_EXCL.
+    """
+    store = RunStore(tmp_path)
+    store.reserve(
+        "rc-aaaaaaaa-11111111",
+        _KEY,
+        known_runs=[],
+        window_start="T0",
+        work_id="todo://deployer/x",
+        revision="a" * 40,
+    )
+    info = store.read_lock(_KEY)
+    assert info is not None and not isinstance(info, Malformed)
+    assert info.request_id == "rc-aaaaaaaa-11111111"
+    assert info.fingerprint == fingerprint_of(
+        _KEY.as_text(), "todo://deployer/x", "a" * 40
+    )
+    assert info.created_at
+
+
+def test_an_empty_lock_reads_as_malformed_not_as_absent(tmp_path: Path) -> None:
+    """The §8.1 crash residue: O_EXCL succeeded, the write never happened.
+
+    Malformed and absent MUST be distinguishable — absent means free,
+    malformed means fail-closed blocked with an audited escape.
+    """
+    store = RunStore(tmp_path)
+    lock = store._lock_path(_KEY)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text("")
+    state = store.read_lock(_KEY)
+    assert isinstance(state, Malformed)
+    assert store.read_lock(RepoKey(host="github.com", owner="o", repo="other")) is None

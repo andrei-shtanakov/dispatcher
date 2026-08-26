@@ -20,6 +20,7 @@ import tempfile
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -61,6 +62,40 @@ class _UnreadableLock(Exception):
     Kept internal: every caller must decide fail-closed what to do about it,
     never inherit a silent "nobody holds it" default.
     """
+
+
+@dataclass(frozen=True)
+class Malformed:
+    """The lock file was READ and is empty/invalid — damage is proven.
+
+    Distinct from an IO error by design (spec §7): quarantine may be
+    offered only where the observed bytes themselves are the damage.
+    """
+
+    detail: str
+
+
+def fingerprint_of(repo_key: str, work_id: str, revision: str) -> str:
+    """One attempt's identity (spec §8.2) — order fixed, joined verbatim."""
+    return "|".join((repo_key, work_id, revision))
+
+
+class LockInfo(BaseModel):
+    """The lock file's own payload — a preflight record, not just a marker.
+
+    Written to the same fd right after `O_EXCL` succeeds (spec §8.1): "a
+    lock with no owning fact" must not be a representable steady state.
+    """
+
+    request_id: str
+    fingerprint: str = ""
+    created_at: str = ""
+
+
+#: `read_lock`'s result: a healthy lock, a proven-damaged one, or none at
+#: all. `None` and `Malformed` must stay distinguishable — `None` means
+#: free, `Malformed` means fail-closed blocked pending an audited escape.
+LockState = LockInfo | Malformed | None
 
 
 class LaunchRecord(BaseModel):
@@ -129,6 +164,28 @@ class RunStore:
 
     def _guard_path(self, key: RepoKey) -> Path:
         return self._root / "guards" / ("__".join(safe_path_parts(key)) + ".guard")
+
+    def read_lock(self, key: RepoKey) -> LockState:
+        """The lock's `{request_id, fingerprint, created_at}`, or its state.
+
+        `None` means free — no lock file exists. `Malformed` means the
+        file was READ and its bytes are empty/invalid: an `O_EXCL` create
+        raced with a crash before the write landed. The two must stay
+        distinguishable (spec §8.1).
+        """
+        path = self._lock_path(key)
+        try:
+            text = path.read_text()
+        except FileNotFoundError:
+            return None
+        except OSError as err:
+            # An IO failure is NOT Malformed: the bytes were never seen,
+            # so damage is not proven (spec §7's unreadable split).
+            raise RunStoreError(f"cannot read lock for {key.as_text()}: {err}") from err
+        try:
+            return LockInfo.model_validate_json(text)
+        except Exception:
+            return Malformed(detail=f"unparseable lock ({len(text)} bytes)")
 
     @contextmanager
     def guard(self, key: RepoKey) -> Iterator[None]:
@@ -217,6 +274,53 @@ class RunStore:
         spec §3.1 says lives here (I3); they default to empty/`None` so a
         caller with nothing to add (most of this module's own tests) still
         works unchanged.
+
+        Runs entirely inside `guard(key)` (spec §8.1): checking the lock
+        path and then acting on it is not compare-and-swap, so every
+        lock-path mutation belongs in the same critical section another
+        actor's recovery uses. The section itself lives in
+        `_reserve_locked` — kept separate so a caller that already holds
+        the guard (`submit`, which reserves as part of its own guarded
+        admission) can call `_reserve_locked` directly instead of
+        re-entering `guard`, which is not reentrant and would self-block
+        for `GUARD_TIMEOUT_SECONDS` before dying `GuardBusy`.
+        """
+        with self.guard(key):
+            return self._reserve_locked(
+                request_id,
+                key,
+                known_runs=known_runs,
+                window_start=window_start,
+                work_id=work_id,
+                revision=revision,
+                tasks=tasks,
+                checkout=checkout,
+                spec_ref_path=spec_ref_path,
+                spec_commit=spec_commit,
+                plan_ref_path=plan_ref_path,
+                plan_commit=plan_commit,
+            )
+
+    def _reserve_locked(
+        self,
+        request_id: str,
+        key: RepoKey,
+        *,
+        known_runs: list[str],
+        window_start: str,
+        work_id: str = "",
+        revision: str = "",
+        tasks: str = "",
+        checkout: str = "",
+        spec_ref_path: str | None = None,
+        spec_commit: str | None = None,
+        plan_ref_path: str | None = None,
+        plan_commit: str | None = None,
+    ) -> LaunchRecord:
+        """The critical section `reserve` runs inside `guard(key)`.
+
+        Call this directly, instead of `reserve`, only from a caller that
+        already holds the guard for `key` — `guard` is not reentrant.
         """
         existing = self.get(request_id)
         if existing is not None:
@@ -237,7 +341,15 @@ class RunStore:
                 "window instead of closing it"
             ) from None
         with os.fdopen(fd, "w") as handle:
-            json.dump({"request_id": request_id, "pid": os.getpid()}, handle)
+            payload = {
+                "request_id": request_id,
+                "fingerprint": fingerprint_of(key.as_text(), work_id, revision),
+                "created_at": window_start,
+                "pid": os.getpid(),
+            }
+            handle.write(json.dumps(payload))
+            handle.flush()
+            os.fsync(handle.fileno())
         record = LaunchRecord(
             request_id=request_id,
             repo_key=key.as_text(),
@@ -299,21 +411,19 @@ class RunStore:
         the one instrument standing between two agent-driven runs and one
         checkout failing open in exactly the state it exists to cover.
         """
-        lock = self._lock_path(key)
-        try:
-            holder = self._lock_holder(lock)
-        except _UnreadableLock:
+        state = self.read_lock(key)
+        if state is None:
+            return  # nothing to release
+        if isinstance(state, Malformed):
             raise LockBusyError(
                 f"{key.as_text()}: lock file is unreadable; refusing to "
                 f"release without confirming it is held by {request_id}"
-            ) from None
-        if holder is None:
-            return  # nothing to release
-        if holder != request_id:
-            raise LockBusyError(
-                f"{key.as_text()}: lock is held by {holder}, not {request_id}"
             )
-        lock.unlink(missing_ok=True)
+        if state.request_id != request_id:
+            raise LockBusyError(
+                f"{key.as_text()}: lock is held by {state.request_id}, not {request_id}"
+            )
+        self._lock_path(key).unlink(missing_ok=True)
 
     def _transition(self, request_id: str, **fields: object) -> LaunchRecord:
         record = self.get(request_id)
