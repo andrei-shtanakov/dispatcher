@@ -339,41 +339,44 @@ class RunController:
             return self._refuse(request.request_id, f"cannot use request_id: {err}")
 
         if existing is not None and existing.state != "reserved":
-            if existing.response_class == "admission_rejected":
-                # This branch returns BEFORE `validate_request`/`reserve`
-                # run, so it is the one place that must check the
-                # fingerprint itself (spec §8.2): `reserve`'s own check
-                # never sees a repeated request whose prior attempt was
-                # already terminalized here.
-                fp = fingerprint_of(
-                    existing.repo_key, request.work_id, request.revision
+            # Spec §8.2 binds EVERY replay, not only admission_rejected
+            # ones: only the SAME attempt may get its receipt back. This
+            # branch returns BEFORE `validate_request`/`reserve` run, so
+            # it must check identity itself — `reserve`'s own check never
+            # sees a repeat whose prior attempt already left "reserved".
+            # Raw repository first: the fingerprint's repo dimension is
+            # the CANONICAL key taken from the stored record (no
+            # resolution has run), so a changed `repository` would slip
+            # through it. Empty stored values = a record from before the
+            # fields existed: replayed as before (indeterminate identity).
+            if existing.repository and request.repository != existing.repository:
+                return self._refuse(
+                    request.request_id,
+                    "request_id_conflict: the repeat names a different "
+                    f"repository than the recorded attempt "
+                    f"({existing.repository!r})",
                 )
-                # The fingerprint's repo dimension is the CANONICAL key and
-                # is taken from the stored record (this branch runs before
-                # any resolution), so a changed `repository` in the repeat
-                # request would slip through it — compare the raw string
-                # the record persisted. Empty stored value = a record from
-                # before the field existed: fingerprint-only, as before.
-                if existing.repository and request.repository != existing.repository:
-                    return self._refuse(
-                        request.request_id,
-                        "request_id_conflict: the repeat names a different "
-                        f"repository than the recorded attempt "
-                        f"({existing.repository!r})",
-                    )
-                if fp == existing.fingerprint:
-                    # Reproducible, zero re-classification: the ORIGINAL
-                    # decision replays verbatim even if the repo's live
-                    # state has since changed enough that a fresh
-                    # classification could pass (spec §8.2, §10).
-                    return self._refuse(
-                        request.request_id,
-                        f"{existing.admission_code}: {existing.admission_detail}",
-                    )
+            stored_fp = existing.fingerprint or (
+                fingerprint_of(existing.repo_key, existing.work_id, existing.revision)
+                if (existing.work_id or existing.revision)
+                else ""
+            )
+            if stored_fp and stored_fp != fingerprint_of(
+                existing.repo_key, request.work_id, request.revision
+            ):
                 return self._refuse(
                     request.request_id,
                     f"request_id_conflict: {request.request_id} was "
                     "already used for a different attempt",
+                )
+            if existing.response_class == "admission_rejected":
+                # Reproducible, zero re-classification: the ORIGINAL
+                # decision replays verbatim even if the repo's live
+                # state has since changed enough that a fresh
+                # classification could pass (spec §8.2, §10).
+                return self._refuse(
+                    request.request_id,
+                    f"{existing.admission_code}: {existing.admission_detail}",
                 )
             # Idempotency: a repeated request_id continues or returns the
             # existing record and never starts a second process (spec §5.2).

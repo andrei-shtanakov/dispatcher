@@ -288,7 +288,19 @@ def test_resubmission_against_a_launching_record_carries_a_reason(
     assert config.run_state_dir is not None
     store = RunStore(config.run_state_dir)
     key = RepoKey(host="github.com", owner="owner", repo="deployer")
-    store.reserve(_REQ, key, known_runs=[], window_start="t")
+    # The record must carry the SAME attempt identity the resubmission will
+    # send (production reserve always persists the request's own fields) —
+    # a bare reserve would fingerprint an empty attempt, and the repeat
+    # would correctly, but irrelevantly, conflict instead of replaying.
+    store.reserve(
+        _REQ,
+        key,
+        known_runs=[],
+        window_start="t",
+        work_id="todo://deployer/entrypoint-token-boundary-match",
+        revision=head,
+        repository="deployer",
+    )
     store.mark_launching(_REQ)
 
     controller = RunController(config)
@@ -2125,3 +2137,29 @@ def test_a_foreign_lock_refuses_acknowledge_before_the_tombstone(
     rec = store.get(_REQ)
     assert rec is not None and rec.state != "terminal"
     assert rec.outcome != "vanished-acknowledged"
+
+
+def test_a_repeat_with_a_different_attempt_conflicts_for_any_prior_state(
+    tmp_path: Path,
+) -> None:
+    """Spec §8.2 binds EVERY replay, not only admission_rejected ones: a
+    repeated request_id whose work_id/revision differ from the recorded
+    attempt must get request_id_conflict — never the previous launch's
+    accepted=True receipt with someone else's run_id."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    controller = RunController(_config(tmp_path, cli), materialize_timeout=10.0)
+    first = _request(head)
+    assert controller.submit(first).accepted is True
+
+    other_attempt = first.model_copy(update={"revision": "b" * 40})
+    receipt = controller.submit(other_attempt)
+    assert receipt.accepted is False
+    assert receipt.reason is not None
+    assert receipt.reason.startswith("request_id_conflict:")
+    assert receipt.run_id is None
+
+    # the SAME attempt still replays idempotently
+    replay = controller.submit(first)
+    assert replay.accepted is True
+    assert replay.run_id == "01AAA"
