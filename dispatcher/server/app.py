@@ -65,7 +65,6 @@ from dispatcher.core.run_request import RunRejectedError, RunRequest
 from dispatcher.core.run_store import (
     GuardBusyError,
     LaunchRecord,
-    RunStore,
     RunStoreError,
 )
 from dispatcher.core.service import SnapshotService, recent_errors
@@ -832,6 +831,13 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(err)) from err
         except GuardBusyError as err:
             raise HTTPException(status_code=409, detail=f"guard_busy: {err}") from err
+        except RunStoreError as err:
+            # M-4: a foreign or malformed lock surfacing as `LockBusyError`
+            # from the release inside `mark_vanished_acknowledged` — the
+            # record may already be terminal by then; still a 409 conflict,
+            # never an unhandled 500. Ordered AFTER `GuardBusyError`, its
+            # subclass, so the `guard_busy:` code prefix survives.
+            raise HTTPException(status_code=409, detail=str(err)) from err
         except ControlPlaneOff as err:
             raise HTTPException(status_code=409, detail=str(err)) from err
 
@@ -859,22 +865,22 @@ def create_app(
                 ),
             )
         try:
-            state_dir, _, _ = runs._require_on()
-        except ControlPlaneOff as err:
-            raise HTTPException(status_code=409, detail=str(err)) from err
-        store = RunStore(state_dir)
-        # Same normalization as `acknowledge_vanished` (Task 7) — the brief
-        # omits it here, but the two audited escapes are meant to agree.
-        reason_norm = " ".join(request.reason.split())[: RunController._REASON_CAP]
-        actor = "local-unauthenticated"  # server-assigned; spec §8.3
-        if request.display_name:
-            actor += f" (self_reported: {request.display_name[:64]})"
-        try:
-            return store.release_malformed_lock(key, actor=actor, reason=reason_norm)
+            # The controller's own wrapper: actor and reason normalization
+            # live beside `acknowledge_vanished`'s — the two audited
+            # escapes are meant to agree — and this route stops reaching
+            # private members (final review M-8).
+            return runs.release_malformed_lock(
+                key, reason=request.reason, display_name=request.display_name
+            )
+        except GuardBusyError as err:
+            # Subclass FIRST (I-3): `GuardBusyError` IS a `RunStoreError`,
+            # and PR-C's taxonomy keys off the `guard_busy:` code prefix —
+            # the reverse order made this branch unreachable.
+            raise HTTPException(status_code=409, detail=f"guard_busy: {err}") from err
         except RunStoreError as err:
             raise HTTPException(status_code=409, detail=str(err)) from err
-        except GuardBusyError as err:
-            raise HTTPException(status_code=409, detail=f"guard_busy: {err}") from err
+        except ControlPlaneOff as err:
+            raise HTTPException(status_code=409, detail=str(err)) from err
 
     @app.post("/api/runs/{request_id}/verb", response_model=VerbOutcome)
     def run_verb(

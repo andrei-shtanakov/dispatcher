@@ -455,3 +455,101 @@ async def test_release_malformed_lock_confirm_mismatch_is_409(tmp_path: Path) ->
         )
     assert resp.status_code == 409
     assert "retype" in resp.json()["detail"]
+
+
+async def test_release_malformed_guard_busy_is_coded_409(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I-3: `GuardBusyError` is a `RunStoreError` SUBCLASS — unless it is
+    caught first, the 409 loses the `guard_busy:` code prefix PR-C's
+    structured taxonomy keys off."""
+    from dispatcher.core.run_identity import RepoKey
+    from dispatcher.core.run_store import GuardBusyError, RunStore
+
+    ws = tmp_path / "ws"
+    _checkout(ws, "deployer", "git@github.com:owner/deployer.git")
+    config = DispatcherConfig(
+        roots=(ws,),
+        run_state_dir=tmp_path / "state",
+        maestro_cli=tmp_path / "unused-maestro",
+    )
+
+    def _busy(
+        self: RunStore, key: RepoKey, *, actor: str, reason: str
+    ) -> dict[str, object]:
+        raise GuardBusyError("the lock-recovery section has been held past 2.0s")
+
+    monkeypatch.setattr(RunStore, "release_malformed_lock", _busy)
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/locks/release-malformed",
+            json={
+                "repo_key": "github.com/owner/deployer",
+                "confirm_repo_key": "github.com/owner/deployer",
+                "reason": "r",
+                "display_name": None,
+            },
+            headers={"X-Action-Token": token},
+        )
+    assert resp.status_code == 409
+    assert resp.json()["detail"].startswith("guard_busy: ")
+
+
+async def test_acknowledge_with_an_unsafe_request_id_is_409_not_500(
+    tmp_path: Path,
+) -> None:
+    """I-4 pin: `store.get` raises a bare `RunStoreError` for a request_id
+    outside its safe charset, and the id here is client URL input. The
+    route's `except RunStoreError → 409` translation is load-bearing —
+    without it this is an unhandled 500 on the security surface."""
+    async with _client(tmp_path, control_plane=True) as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/runs/foo!bar/acknowledge-vanished",
+            json={"confirm_run_id": "01AAA", "reason": "r", "display_name": None},
+            headers={"X-Action-Token": token},
+        )
+    assert resp.status_code == 409
+
+
+async def test_acknowledge_lock_busy_is_409_not_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M-4: `LockBusyError` (a foreign or malformed lock surfacing from the
+    release inside `mark_vanished_acknowledged`) must map to 409, not fall
+    through the route as an unhandled 500."""
+    from dispatcher.core.run_identity import RepoKey
+    from dispatcher.core.run_store import LockBusyError, RunStore
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    key = RepoKey(host="github.com", owner="owner", repo="deployer")
+    store = RunStore(tmp_path / "state")
+    store.reserve("req-1", key, known_runs=[], window_start="t")
+    store.mark_materialized("req-1", "01AAA")
+
+    def _busy(
+        self: RunStore, request_id: str, *, actor: str, reason: str, prior_run_id: str
+    ):
+        raise LockBusyError("lock is held by someone-else, not req-1")
+
+    monkeypatch.setattr(RunStore, "mark_vanished_acknowledged", _busy)
+    config = DispatcherConfig(
+        roots=(ws,),
+        maestro_home=tmp_path / "mhome",
+        run_state_dir=tmp_path / "state",
+        maestro_cli=tmp_path / "unused-maestro",
+    )
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/runs/req-1/acknowledge-vanished",
+            json={"confirm_run_id": "01AAA", "reason": "r", "display_name": None},
+            headers={"X-Action-Token": token},
+        )
+    assert resp.status_code == 409
