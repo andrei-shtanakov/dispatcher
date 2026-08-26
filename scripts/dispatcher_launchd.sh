@@ -182,6 +182,7 @@ PLIST
 # goes onto PATH explicitly: launchd starts with no shell profile, so "on
 # PATH" must be arranged here, not assumed.
 generate_snapshot_plist() {
+    local cfg="$1"
     cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -195,6 +196,8 @@ generate_snapshot_plist() {
     <string>run</string>
     <string>dispatcher</string>
     <string>publish-snapshot</string>
+    <string>--config</string>
+    <string>$cfg</string>
   </array>
   <key>WorkingDirectory</key><string>$REPO_ROOT</string>
   <key>EnvironmentVariables</key>
@@ -257,13 +260,18 @@ install_agent() {
     launchctl bootstrap "gui/$UID" "$ROTATE_PLIST"
 
     if [ -x "$CHECKER_BIN/github-checker" ]; then
-        generate_snapshot_plist > "$SNAPSHOT_PLIST"
+        generate_snapshot_plist "$cfg" > "$SNAPSHOT_PLIST"
         launchctl bootout "gui/$UID/$SNAPSHOT_LABEL" 2>/dev/null || true
         launchctl bootstrap "gui/$UID" "$SNAPSHOT_PLIST"
         echo "installed $SNAPSHOT_LABEL -> every 30 min" >&2
     else
         # Absent is a stated fact, not a silent skip: without the publisher
-        # the Sync screen on OTHER machines shows this host as missing.
+        # the Sync screen on OTHER machines shows this host as missing. It is
+        # also the FINAL installed state: an older loaded agent must not keep
+        # firing after its checker disappeared while `install` claims it was
+        # skipped (codex review on PR #196).
+        launchctl bootout "gui/$UID/$SNAPSHOT_LABEL" 2>/dev/null || true
+        rm -f "$SNAPSHOT_PLIST"
         echo "SKIPPED $SNAPSHOT_LABEL: no pinned github-checker at $CHECKER_BIN" >&2
         echo "  run scripts/install_pinned_checker.sh \"\$HOME/.local/share/dispatcher-pinned-checker\" first" >&2
     fi
