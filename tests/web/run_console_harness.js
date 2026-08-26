@@ -1827,3 +1827,39 @@ testCase('logs: buttons act on the OPEN run, not on whatever is typed',
       'the answer was discarded and the pane left stranded');
   });
 });
+
+testCase('logs: a slow task-log answer never overwrites a newer selection',
+  async () => {
+  // codex round 3, major. Two clicks on the SAME run both passed the only
+  // guard there was (`rcViewRequestId`), so a slow `red` arriving after
+  // `blue` answered a selection the operator had already replaced — with
+  // nothing on screen to say the pane was showing the wrong task.
+  await withPage(async page => {
+    await openMaterialized(page);
+    page.routes.push([u => u.endsWith("/logs"), () => ok({
+      run_id: "01AAA", truncated: false, warnings: [],
+      task_logs: ["red", "blue"], events: [],
+    })]);
+    await click(page, '#rc-logs-load');
+
+    let releaseRed;
+    const redStalled = new Promise(r => { releaseRed = r; });
+    page.routes.push([u => u.endsWith("/logs/red"), async () => {
+      await redStalled;
+      return ok({run_id: "01AAA", task_id: "red", text: "RED-BODY", truncated: false});
+    }]);
+    page.routes.push([u => u.endsWith("/logs/blue"), () => ok(
+      {run_id: "01AAA", task_id: "blue", text: "BLUE-BODY", truncated: false})]);
+
+    const redClick = click(page, '[data-task="red"]');   // starts, stalls
+    await click(page, '[data-task="blue"]');             // newer, answers first
+    releaseRed();
+    await redClick;
+    await drain();
+
+    const html = el(page, '#rc-task-log').innerHTML;
+    check(/BLUE-BODY/.test(html), `the newer selection is shown (got: ${html})`);
+    check(!/RED-BODY/.test(html),
+      'the slow older answer overwrote the newer one');
+  });
+});

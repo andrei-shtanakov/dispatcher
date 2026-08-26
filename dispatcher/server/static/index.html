@@ -1359,6 +1359,9 @@ async function rcPollView() {
 // an empty `event` and its text in `raw` — shown as-is rather than skipped,
 // because a half-written last line is ordinary while a run is live and
 // hiding it would make this pane disagree with the file it claims to show.
+//: Monotonic per-click generation for the logs panel — see `settle`.
+let rcLogsGen = 0;
+
 function renderRunLogs(logs) {
   const rows = logs.events.map(e => e.event
     ? `<tr><td><code>${esc(e.ts)}</code></td><td>${esc(e.event)}</td>
@@ -1406,8 +1409,21 @@ document.getElementById("rc-run-view").addEventListener("click", async ev => {
   // different request. This is the same discipline `rcPollView` already
   // applies at its own await boundaries; the new async path had to learn it
   // too rather than inherit it by proximity.
+  // Two guards, because there are two ways to be stale (codex round 3).
+  //
+  //   * another request was opened  -> `rcViewRequestId !== forRequest`;
+  //   * a NEWER click on this panel -> generation mismatch.
+  //
+  // The first alone let two task-log clicks on the SAME run race: click
+  // `red`, click `blue`, and a slow `red` arriving last overwrote `blue`,
+  // answering a selection the operator had already replaced — with nothing
+  // on screen to say so. One counter for the whole panel is deliberate:
+  // `#rc-task-log` lives INSIDE `#rc-logs`, so reloading the timeline
+  // legitimately supersedes a task log still in flight.
+  const gen = ++rcLogsGen;
   const settle = (paneId, forRequest, html) => {
     if (rcViewRequestId !== forRequest) return;   // superseded by another open
+    if (gen !== rcLogsGen) return;                // superseded by a newer click
     const live = document.getElementById(paneId);
     if (live) live.innerHTML = html;
   };

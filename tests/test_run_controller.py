@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import textwrap
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -1343,3 +1344,39 @@ def test_a_log_name_the_reader_would_reject_is_not_offered(
     for rejected in ("a" * 65, ".hidden"):
         with pytest.raises(RunRejectedError, match="unsafe task id"):
             controller.task_log(_REQ, rejected)
+
+
+def test_a_huge_task_log_is_never_read_whole(tmp_path: Path) -> None:
+    """The cap must bound the READ, not just the response (codex round 3).
+
+    `read_bytes()` then slicing enforced 256 KiB only after the entire file
+    was in memory, so a log larger than the worker could hold would kill the
+    server through an endpoint whose whole contract is "the last 256 KiB".
+
+    Measured with `tracemalloc` rather than by asserting which call the code
+    makes: the property is bounded memory, and a test that pinned the API
+    would pass for any implementation that merely looked right.
+    """
+    controller = _with_logs(tmp_path)
+    logs_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs"
+    big = logs_dir / "huge.log"
+    payload = b"y" * (1024 * 1024)
+    with big.open("wb") as fh:
+        for _ in range(16):  # 16 MiB, 64x the cap
+            fh.write(payload)
+        fh.write(b"THE-TAIL")
+
+    tracemalloc.start()
+    try:
+        log = controller.task_log(_REQ, "huge")
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert log.text.endswith("THE-TAIL")
+    assert log.truncated is True
+    # Generous: the tail itself, plus its str form, plus overhead. A whole-file
+    # read would be an order of magnitude above this.
+    assert peak < 4 * RunController._MAX_TASK_LOG_BYTES, (
+        f"peak {peak} bytes for a 16 MiB log — the whole file was read"
+    )

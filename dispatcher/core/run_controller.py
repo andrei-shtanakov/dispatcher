@@ -949,17 +949,27 @@ class RunController:
         # holds if someone widens the pattern later.
         if not path.is_relative_to(logs_dir.resolve()):
             raise RunRejectedError(f"task log escapes the run directory: {task_id!r}")
+        # Seek to the tail; never read the whole file (codex round 3, major).
+        # `read_bytes()` then slicing enforced the cap only AFTER the entire
+        # log was in memory — so a task that produced a log larger than the
+        # worker's memory could kill the server through an endpoint whose
+        # whole contract is "the last 256 KiB". The cap has to bound the
+        # READ, not just the response.
         try:
-            data = path.read_bytes()
+            with path.open("rb") as handle:
+                size = handle.seek(0, os.SEEK_END)
+                truncated = size > self._MAX_TASK_LOG_BYTES
+                handle.seek(
+                    -self._MAX_TASK_LOG_BYTES if truncated else 0,
+                    os.SEEK_END if truncated else os.SEEK_SET,
+                )
+                data = handle.read(self._MAX_TASK_LOG_BYTES)
         except FileNotFoundError:
             raise RunRejectedError(
                 f"no log for task {task_id!r} in run {record.run_id}"
             ) from None
         except OSError as err:
             raise RunRejectedError(f"cannot read log for {task_id!r}: {err}") from err
-        truncated = len(data) > self._MAX_TASK_LOG_BYTES
-        if truncated:
-            data = data[-self._MAX_TASK_LOG_BYTES :]
         return TaskLog(
             run_id=record.run_id or "",
             task_id=task_id,
