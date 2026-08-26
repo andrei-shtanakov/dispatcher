@@ -1676,9 +1676,16 @@ testCase('logs: a poll landing while a log is open does not blank it',
     })]);
     await click(page, '#rc-logs-load');
     check(/task_ready/.test(el(page, '#rc-logs').innerHTML), 'log rendered (sanity)');
+    // TWO ticks, not one (codex round 2). One tick agreed with a real bug:
+    // the first poll restored the content but not the pane's binding, so the
+    // SECOND poll found an unmarked pane and blanked it. A live run polls
+    // until maestro is terminal, so the operator meets the second tick.
     await tick(page, 5000);
     check(/task_ready/.test(el(page, '#rc-logs').innerHTML),
-      'the poll blanked the open log — the operator would blame the log');
+      'the first poll blanked the open log');
+    await tick(page, 5000);
+    check(/task_ready/.test(el(page, '#rc-logs').innerHTML),
+      'the SECOND poll blanked it — the binding did not survive the restore');
   });
 });
 
@@ -1793,5 +1800,30 @@ testCase('logs: a response slower than one poll still reaches the operator',
     check(/ARRIVED_LATE/.test(html),
       `the answer was written into a detached node (got: ${html})`);
     check(!/reading/.test(html), 'the panel is still stuck on "reading…"');
+  });
+});
+
+testCase('logs: buttons act on the OPEN run, not on whatever is typed',
+  async () => {
+  // codex round 2, minor. Every other control in this panel — verbs,
+  // resolve, run-end — acts on the open run. Reading the textbox let a
+  // typed-but-not-opened id send the fetch somewhere `settle` would then
+  // correctly discard, leaving the pane on "reading…" for no visible reason.
+  await withPage(async page => {
+    await openMaterialized(page);
+    const asked = [];
+    page.routes.push([u => u.includes("/logs"), u => { asked.push(u); return ok({
+      run_id: "01AAA", events: [{ts: "T1", event: "task_ready", raw: "{}"}],
+      truncated: false, task_logs: [], warnings: [],
+    }); }]);
+
+    el(page, '#rc-request-id').value = 'req-typed-but-not-opened';
+    await click(page, '#rc-logs-load');
+
+    check(asked.length === 1, `one fetch expected, got ${asked.length}`);
+    check(asked[0].includes('req-materialized'),
+      `fetched the typed id instead of the open run: ${asked[0]}`);
+    check(/task_ready/.test(el(page, '#rc-logs').innerHTML),
+      'the answer was discarded and the pane left stranded');
   });
 });

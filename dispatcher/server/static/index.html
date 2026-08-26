@@ -1323,7 +1323,16 @@ async function rcPollView() {
   }
   if (prevLogs !== undefined) {
     const logsEl = document.getElementById("rc-logs");
-    if (logsEl) logsEl.innerHTML = prevLogs;
+    if (logsEl) {
+      logsEl.innerHTML = prevLogs;
+      // The BINDING travels with the content (codex round 2, major).
+      // Restoring only `innerHTML` left the fresh node unmarked, so the very
+      // next tick found no match, treated the pane as belonging to nobody,
+      // and blanked a log the operator was reading — on a live run, which
+      // polls until maestro reaches a terminal status. The first round's
+      // test ticked once and therefore agreed with the bug.
+      logsEl.dataset.request = requestId;
+    }
   }
   // B2: while THIS view stands unresolved (launch_unknown), a second
   // submit is the one action the recovery design forbids — the launch may
@@ -1403,8 +1412,14 @@ document.getElementById("rc-run-view").addEventListener("click", async ev => {
     if (live) live.innerHTML = html;
   };
 
+  // `rcViewRequestId`, not the textbox (codex round 2, minor): these controls
+  // are rendered INSIDE a run's view, and every other control there — the
+  // verbs, resolve, run-end — acts on the open run. Reading the textbox let
+  // an operator who typed a new id without pressing Open fetch B's logs into
+  // A's panel, where `settle` then correctly discarded them and left the pane
+  // on "reading…" for no reason the operator could see.
   if (ev.target.id === "rc-logs-load") {
-    const id = document.getElementById("rc-request-id").value.trim();
+    const id = rcViewRequestId;
     if (!id) return;
     box.innerHTML = `<p class="dim">reading…</p>`;
     box.dataset.request = id;
@@ -1422,7 +1437,7 @@ document.getElementById("rc-run-view").addEventListener("click", async ev => {
     return;
   }
   if (ev.target.classList?.contains("rc-task-log")) {
-    const id = document.getElementById("rc-request-id").value.trim();
+    const id = rcViewRequestId;
     const task = ev.target.dataset.task;
     const out = document.getElementById("rc-task-log");
     out.innerHTML = `<p class="dim">reading ${esc(task)}…</p>`;
