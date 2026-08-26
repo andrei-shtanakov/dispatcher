@@ -909,9 +909,23 @@ class RunController:
         for line in lines:
             events.append(_parse_event(line))
 
+        # Filtered by the SAME rule the reader enforces (codex review, minor):
+        # listing a name `task_log()` will reject advertises a log this API
+        # will never serve, and the console draws a button for it. Not dropped
+        # silently either — a file the operator can see on disk but not here
+        # is its own confusion, so it becomes a warning.
         task_logs: list[str] = []
         try:
-            task_logs = sorted(p.stem for p in logs_dir.glob("*.log") if p.is_file())
+            for candidate in sorted(logs_dir.glob("*.log")):
+                if not candidate.is_file():
+                    continue
+                if self._TASK_ID_RE.match(candidate.stem):
+                    task_logs.append(candidate.stem)
+                else:
+                    warnings.append(
+                        "log file not offered — its name is not a usable "
+                        f"task id: {candidate.name}"
+                    )
         except OSError as err:
             warnings.append(f"cannot list task logs: {err}")
 

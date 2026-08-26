@@ -1318,3 +1318,28 @@ def test_logs_refuse_a_request_with_no_run(tmp_path: Path) -> None:
     controller.submit(_request(head))
     with pytest.raises(RunRejectedError, match="no run to read logs from"):
         controller.logs(_REQ)
+
+
+def test_a_log_name_the_reader_would_reject_is_not_offered(
+    tmp_path: Path,
+) -> None:
+    """The list and the reader must agree (codex review on PR #191, minor).
+
+    Offering a name `task_log()` refuses advertises a log this API will never
+    serve, and the console draws a button for it. Not dropped in silence
+    either: a file visible on disk and absent here is its own puzzle.
+    """
+    controller = _with_logs(tmp_path, red__log="ok")
+    logs_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs"
+    (logs_dir / (("a" * 65) + ".log")).write_text("too long")
+    (logs_dir / ".hidden.log").write_text("leading dot")
+
+    logs = controller.logs(_REQ)
+
+    assert logs.task_logs == ["red"]
+    assert len(logs.warnings) == 2, logs.warnings
+    # And the reader really would have refused them — the two rules are the
+    # same rule, asserted here rather than assumed.
+    for rejected in ("a" * 65, ".hidden"):
+        with pytest.raises(RunRejectedError, match="unsafe task id"):
+            controller.task_log(_REQ, rejected)

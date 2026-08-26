@@ -1734,3 +1734,64 @@ testCase('logs: an unparsed line is shown raw, not dropped', async () => {
       'an unparsed line left the pane claiming there were no events');
   });
 });
+
+
+// --- codex review on PR #191: two blocking findings, one test each --------
+
+testCase('logs: opening a DIFFERENT request does not inherit the old logs',
+  async () => {
+  // major 1. Restoring the pane unconditionally carried one run's timeline
+  // into another run's view — one run's state under another run's identity,
+  // read as fact rather than as a stale pane.
+  await withPage(async page => {
+    await openMaterialized(page);
+    page.routes.push([u => u.endsWith("/logs"), () => ok({
+      run_id: "01AAA", events: [{ts: "T1", event: "FROM_FIRST_RUN", raw: "{}"}],
+      truncated: false, task_logs: [], warnings: [],
+    })]);
+    await click(page, '#rc-logs-load');
+    check(/FROM_FIRST_RUN/.test(el(page, '#rc-logs').innerHTML), 'loaded (sanity)');
+
+    // A real second run, not a 404: the point is that its view renders and
+    // is CLEAN, which a failed open would hide.
+    page.routes.push([u => u.endsWith("/api/runs/req-second"), () => ok({
+      record: {state: 'materialized', run_id: '01BBB'},
+      run: {status: 'running'}, warnings: [],
+    })]);
+    el(page, '#rc-request-id').value = 'req-second';
+    await click(page, '#rc-open');
+    await drain();
+
+    const html = el(page, '#rc-logs').innerHTML;
+    check(!/FROM_FIRST_RUN/.test(html),
+      `the second run's panel shows the first run's timeline (got: ${html})`);
+  });
+});
+
+testCase('logs: a response slower than one poll still reaches the operator',
+  async () => {
+  // major 2. The pane is captured before `await`; the 5s poll replaces the
+  // whole view, so the answer used to be written into a detached node and
+  // the panel sat on "reading…" while the server had already replied.
+  await withPage(async page => {
+    await openMaterialized(page);
+    let release;
+    const stalled = new Promise(r => { release = r; });
+    page.routes.push([u => u.endsWith("/logs"), async () => {
+      await stalled;
+      return ok({run_id: "01AAA", truncated: false, task_logs: [], warnings: [],
+        events: [{ts: "T7", event: "ARRIVED_LATE", raw: "{}"}]});
+    }]);
+
+    const pending = click(page, '#rc-logs-load');
+    await tick(page, 5000);          // the poll rebuilds #rc-run-view
+    release();
+    await pending;
+    await drain();
+
+    const html = el(page, '#rc-logs').innerHTML;
+    check(/ARRIVED_LATE/.test(html),
+      `the answer was written into a detached node (got: ${html})`);
+    check(!/reading/.test(html), 'the panel is still stuck on "reading…"');
+  });
+});

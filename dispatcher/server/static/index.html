@@ -1301,7 +1301,17 @@ async function rcPollView() {
   const prevVerbResult = document.getElementById("rc-verb-result")?.innerHTML;
   // Same reason as the two above: a poll landing while the operator reads a
   // log would otherwise blank it, and the operator would blame the log.
-  const prevLogs = document.getElementById("rc-logs")?.innerHTML;
+  //
+  // But ONLY for the request the pane was filled for (codex review, major 1).
+  // Restoring it unconditionally carried one run's timeline into another
+  // run's view: open A, load logs, type B, press Open — and B's panel showed
+  // A's events until the operator noticed. That is one run's state wearing
+  // another run's identity, the same shape as #174, and here it would be
+  // read as fact rather than as a stale pane.
+  const logsPane = document.getElementById("rc-logs");
+  const prevLogs = logsPane?.dataset.request === requestId
+    ? logsPane.innerHTML
+    : undefined;
   box.innerHTML = renderRunView(view);
   if (prevTaskId !== undefined) {
     const taskIdEl = document.getElementById("rc-verb-task-id");
@@ -1378,18 +1388,36 @@ function renderTaskLog(log) {
 // nobody would connect to polling.
 document.getElementById("rc-run-view").addEventListener("click", async ev => {
   const box = document.getElementById("rc-logs");
+  // A node captured before `await` may be detached by the time the answer
+  // arrives: the poll replaces the whole of `#rc-run-view` every five
+  // seconds, so a `/logs` response slower than one tick used to be written
+  // into a node no longer on the page — the pane sat on "reading…" forever
+  // while the server had answered (codex review, major 2). Re-acquire after
+  // every await, and drop the answer if the operator has since opened a
+  // different request. This is the same discipline `rcPollView` already
+  // applies at its own await boundaries; the new async path had to learn it
+  // too rather than inherit it by proximity.
+  const settle = (paneId, forRequest, html) => {
+    if (rcViewRequestId !== forRequest) return;   // superseded by another open
+    const live = document.getElementById(paneId);
+    if (live) live.innerHTML = html;
+  };
+
   if (ev.target.id === "rc-logs-load") {
     const id = document.getElementById("rc-request-id").value.trim();
     if (!id) return;
     box.innerHTML = `<p class="dim">reading…</p>`;
+    box.dataset.request = id;
     try {
       const resp = await fetch(`/api/runs/${encodeURIComponent(id)}/logs`);
       const data = await resp.json();
-      box.innerHTML = resp.ok
+      settle("rc-logs", id, resp.ok
         ? renderRunLogs(data)
-        : `<div class="warn">${esc(data.detail ?? `HTTP ${resp.status}`)}</div>`;
+        : `<div class="warn">${esc(data.detail ?? `HTTP ${resp.status}`)}</div>`);
+      const live = document.getElementById("rc-logs");
+      if (live && rcViewRequestId === id) live.dataset.request = id;
     } catch (err) {
-      box.innerHTML = `<div class="warn">${esc(String(err))}</div>`;
+      settle("rc-logs", id, `<div class="warn">${esc(String(err))}</div>`);
     }
     return;
   }
@@ -1402,11 +1430,11 @@ document.getElementById("rc-run-view").addEventListener("click", async ev => {
       const resp = await fetch(
         `/api/runs/${encodeURIComponent(id)}/logs/${encodeURIComponent(task)}`);
       const data = await resp.json();
-      out.innerHTML = resp.ok
+      settle("rc-task-log", id, resp.ok
         ? renderTaskLog(data)
-        : `<div class="warn">${esc(data.detail ?? `HTTP ${resp.status}`)}</div>`;
+        : `<div class="warn">${esc(data.detail ?? `HTTP ${resp.status}`)}</div>`);
     } catch (err) {
-      out.innerHTML = `<div class="warn">${esc(String(err))}</div>`;
+      settle("rc-task-log", id, `<div class="warn">${esc(String(err))}</div>`);
     }
   }
 });
