@@ -703,8 +703,15 @@ def create_app(
             # a checkout, not only at a directory of checkouts (discovery
             # walks `[root, *children]`). Child-only iteration would leave
             # a worktree-shaped root (`.git` is a FILE there) with no
-            # directory to resolve from at all.
-            candidates = (root, *(c for c in root.iterdir() if c.is_dir()))
+            # directory to resolve from at all. An unlistable root is not
+            # an unhandled 500 for the whole escape: the root itself is
+            # still tried, and the search continues over the other roots
+            # (worst case the key resolves nowhere → the controlled 409).
+            try:
+                children = [c for c in root.iterdir() if c.is_dir()]
+            except OSError:
+                children = []
+            candidates = (root, *children)
             for candidate in candidates:
                 try:
                     found = identity_from_checkout(candidate)

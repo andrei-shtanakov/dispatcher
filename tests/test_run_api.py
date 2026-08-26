@@ -615,3 +615,54 @@ async def test_release_malformed_resolves_a_root_that_is_itself_a_checkout(
         )
     assert resp.status_code == 200
     assert not lock.exists()
+
+
+async def test_release_malformed_survives_an_unlistable_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unlistable configured root must not turn the administrative
+    escape into an unhandled 500 — the resolver skips what it cannot list
+    (the root itself is still tried) and the search continues over the
+    remaining roots."""
+    from dispatcher.core.run_identity import RepoKey
+    from dispatcher.core.run_store import RunStore
+
+    broken_root = tmp_path / "broken"
+    broken_root.mkdir()
+    ws = tmp_path / "ws"
+    _checkout(ws, "deployer", "git@github.com:owner/deployer.git")
+    key = RepoKey(host="github.com", owner="owner", repo="deployer")
+    store = RunStore(tmp_path / "state")
+    lock = store._lock_path(key)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(b"half-writ")
+
+    real_iterdir = Path.iterdir
+
+    def _deny_broken(self: Path):  # noqa: ANN202
+        if self == broken_root:
+            raise PermissionError(13, "injected: cannot list", str(self))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _deny_broken)
+    config = DispatcherConfig(
+        roots=(broken_root, ws),
+        run_state_dir=tmp_path / "state",
+        maestro_cli=tmp_path / "unused-maestro",
+    )
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/locks/release-malformed",
+            json={
+                "repo_key": "github.com/owner/deployer",
+                "confirm_repo_key": "github.com/owner/deployer",
+                "reason": "crash residue",
+                "display_name": None,
+            },
+            headers={"X-Action-Token": token},
+        )
+    assert resp.status_code == 200
+    assert not lock.exists()

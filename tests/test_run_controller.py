@@ -2245,3 +2245,23 @@ def test_a_symlink_loop_at_the_run_root_is_unreadable_not_vanished(
         controller.acknowledge_vanished(_REQ, "01AAA", "r", None)
     rec = controller._store().get(_REQ)
     assert rec is not None and rec.outcome != "vanished-acknowledged"
+
+
+def test_an_unlinked_run_directory_with_no_state_db_still_blocks(
+    tmp_path: Path,
+) -> None:
+    """A run directory dispatcher never launched (no LaunchRecord) and
+    maestro never got a state.db into is invisible to both the classifier
+    pass (skips no-db dirs) and the record pass (walks records only) —
+    the gate must enumerate the repo's runs/ directly: an unexplained
+    entry there is a fail-closed blocker, not an empty repo."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    controller = RunController(_config(tmp_path, cli), materialize_timeout=10.0)
+    foreign = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01ZZZ"
+    foreign.mkdir(parents=True)  # no state.db, no record — died mid-birth
+    receipt = controller.submit(_request(head))
+    assert receipt.accepted is False
+    assert receipt.reason is not None
+    assert receipt.reason.startswith("run_in_flight:")
+    assert "01ZZZ" in receipt.reason

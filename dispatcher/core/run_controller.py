@@ -658,6 +658,34 @@ class RunController:
                     run_dir_exists=False,
                 )
             )
+        # Third source: the repo's runs/ directory itself. A run dir that
+        # never got a state.db AND has no LaunchRecord (a foreign maestro
+        # process, or a launch that died between mkdir and any bookkeeping)
+        # is invisible to both passes above — the classifier skips no-db
+        # dirs, the record pass walks records. An unexplained entry is a
+        # fail-closed blocker, not an empty repo; entry type is deliberately
+        # ignored (a stray file or symlink where a run dir belongs is
+        # unexplained state, same rule).
+        represented = seen_run_ids | {fact.run_id for fact in runs}
+        try:
+            with os.scandir(runs_root) as entries:
+                stray = sorted(e.name for e in entries)
+        except FileNotFoundError:
+            stray = []
+        except OSError as err:
+            unreadable.append(f"runs directory unlistable: {err}")
+            stray = []
+        for name in stray:
+            if name in represented:
+                continue
+            runs.append(
+                RunFact(
+                    run_id=name,
+                    status="missing-state",
+                    request_id=by_run_id.get(name),
+                    run_dir_exists=True,
+                )
+            )
         return tuple(runs), tuple(unreadable)
 
     def _launch(
