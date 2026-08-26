@@ -136,8 +136,10 @@ submit-time revalidation exists for.
         {"code": "launch_busy",      "request_id": "rc-…"},
         {"code": "run_in_flight",    "request_id": "rc-…"},  // linked
         {"code": "run_in_flight",    "run_id": "01…"},       // unlinked
-        {"code": "run_vanished",     "request_id": "rc-…"},
-        {"code": "state_unreadable", "detail": "…"}
+        {"code": "run_vanished",        "request_id": "rc-…"},
+        {"code": "lock_malformed",      "detail": "…"},   // read, but empty/invalid — §8.3 escape offered
+        {"code": "lock_io_unreadable",  "detail": "…"},   // bytes unreadable — fix the filesystem first
+        {"code": "run_state_unreadable","detail": "…"}    // maestro state unreadable — no admin escape
       ]
   }],
   "ready":              [{ "repo_key": "…", "work_id": "…", "dag_path": "…", "seen_revision": "…" }],
@@ -182,16 +184,24 @@ new form; the API's only consumers are this console and the tests.
 
 **Response classes, disjoint:**
 
-| Class | Meaning |
-|---|---|
-| 400/422 | schema-invalid body — a client defect |
-| operational error (structured) | deployment drift, not a client bug and not admission. **409** `repo_unresolved` — the checkout is missing/moved (transient workspace drift, retry after fixing the workspace); **422** `identity_mismatch` — the checkout at the expected path resolves to a different `RepoKey` (unresolvable from a well-formed request). Both `{code, detail}` |
-| 409 admission | a well-formed request that lost re-validation: `{code, detail, current}` |
-| `LaunchReceipt` | an admitted launch; its `true/false/null` speak about the launch phase, exactly as in slice 0 |
+Every non-receipt response carries a structured body with a `code`; **the
+client classifies by `code`, never by bare status** — statuses group, codes
+distinguish:
 
-409 codes: `revision_moved`, `lock_busy`, `run_in_flight`,
-`state_unreadable`, `item_closed`, `item_unregistered`, `dag_invalid`,
-`dag_duplicate`, `dag_dirty`, `request_id_conflict`.
+| Status | Codes | Meaning |
+|---|---|---|
+| 400 | `legacy_body` | the pre-v2 body shape; points at the new form |
+| 422 | `invalid_request` | schema-invalid v2 body — a client defect |
+| 422 | `identity_mismatch` | the checkout at the expected path resolves to a different `RepoKey` — unresolvable from a well-formed request; an operator fixes the workspace |
+| 409 | `repo_unresolved` | the checkout is missing/moved — transient workspace drift, retry after fixing |
+| 409 | `guard_busy` | the recovery critical section (§8.1) was held past its acquisition timeout |
+| 409 | admission codes | a well-formed request that lost re-validation: `{code, detail, current}` |
+| 200 | `LaunchReceipt` | an admitted launch; its `true/false/null` speak about the launch phase, exactly as in slice 0 |
+
+Admission codes: `revision_moved`, `lock_busy`, `run_in_flight`,
+`run_state_unreadable`, `lock_malformed`, `lock_io_unreadable`,
+`item_closed`, `item_unregistered`, `dag_invalid`, `dag_duplicate`,
+`dag_dirty`, `request_id_conflict`.
 
 `current` in a 409 is **for the operator's message only**. The UI must not
 splice it into the displayed snapshot — that would recreate
@@ -285,16 +295,27 @@ Fail-closed classification:
 - proven terminal → does not block;
 - `running`, `suspended`, `interrupted` → blocks (`run_in_flight`);
 - run state absent or unreadable → blocks as **unknown**
-  (`state_unreadable`), never treated as finished;
+  (`run_state_unreadable`), never treated as finished;
 - `launch_unknown` keeps blocking through the existing durable lock
   (`launch_busy`), unchanged from slice 0.
 
-`run_vanished` vs `state_unreadable` are distinct on purpose: the precise
-predicate for vanished is — a launch record is non-terminal, carries a
-`run_id`, the expected run root is computed from the record's **stored**
-`RepoKey`, and that directory is absent. A stat error, permission denial,
-or corrupt record is only ever `state_unreadable`: the escape hatch (§8)
-must not be offered where fact-gathering is broken.
+`run_vanished` is distinct from every unreadable class on purpose: the
+precise predicate for vanished is — a launch record is non-terminal,
+carries a `run_id`, the expected run root is computed from the record's
+**stored** `RepoKey`, and that directory is absent. A stat error or
+permission denial is only ever an `*_unreadable` code.
+
+The unreadable family itself splits by escape policy, because "the fact of
+damage is proven" and "fact-gathering is broken" must not share a code:
+
+- `lock_malformed` — the lock file **was read** and is empty/invalid: the
+  damage is the observed bytes themselves, so the §8.3 quarantine is
+  offered and the audit hash is computable;
+- `lock_io_unreadable` — the bytes **cannot be read**: no administrative
+  escape; the filesystem is fixed first (offering quarantine here would
+  destroy a possibly healthy lock on the word of a broken read);
+- `run_state_unreadable` — maestro's state is unreadable: likewise no
+  administrative escape.
 
 The UI folds both sources into the repository's `blockers[]`; one
 `launch_unknown` visually freezes the whole repository, and that is
@@ -314,8 +335,9 @@ owning fact" is not a representable steady state.
 
 **Honest residue:** POSIX cannot create-with-content atomically; a crash
 between `O_EXCL` and the write leaves an empty lock file. That reads as
-`state_unreadable` (blocking, named), and the audited escape for it is
-§8.3 — fail-closed never lacks a door.
+`lock_malformed` (blocking, named — the file was read and is provably
+empty), and the audited escape for it is §8.3 — fail-closed never lacks a
+door.
 
 **The recovery critical section.** Checking a lock file and later acting
 on its *pathname* is not compare-and-swap: between "A saw it unreadable"
@@ -324,10 +346,13 @@ created a healthy lock at the same path — A would then quarantine the
 healthy one. Every mutation of a `RepoKey`'s lock path therefore runs
 inside a per-`RepoKey` **guard file** held with an OS advisory lock
 (`fcntl`/`flock`): `reserve`'s acquire-or-refuse, admission release,
-transition releases, and `release-unreadable` all take the guard first.
-A crash releases an advisory lock automatically, so the guard adds no new
-orphan-state of its own. Under the guard, `release-unreadable` re-checks
-the lock's content *and identity* (inode/stat) before quarantining.
+transition releases, and `release-malformed-lock` all take the guard
+first. A crash releases an advisory lock automatically, so the guard adds
+no new orphan-state of its own — but a *live hung* handler would not, so
+acquisition is **bounded: a 2-second timeout**, after which the caller
+returns 409 `guard_busy` without touching any lock file. Under the guard,
+`release-malformed-lock` re-checks the lock's content *and identity*
+(inode/stat) before quarantining.
 
 ### 8.2 Idempotency fingerprint
 
@@ -378,19 +403,23 @@ admitted attempt replays its `LaunchReceipt`, as slice 0 already does.
 процесса. Это административное снятие fail-closed блокировки с
 зафиксированным риском.*
 
-An analogous minimal operation covers the unreadable/empty **lock file**
-(§8.1 residue): `POST /api/locks/release-unreadable` with
+An analogous minimal operation covers the **malformed lock file** (§8.1
+residue): `POST /api/locks/release-malformed` with
 `{repo_key, confirm_repo_key, reason, display_name?}`. The lock *path* is
 computed by the server from the verified `repo_key` — a client-supplied
 filename would hand an administrative endpoint a client-controlled file
 identifier. `confirm_repo_key` must equal `repo_key`, retyped (the same
 blind-click guard as `confirm_run_id`). The operation runs inside §8.1's
-guard section, re-verifies unreadability and file identity (inode/stat)
-under it, refuses if the lock parses (a healthy lock is released only by
-its owning transitions), else atomically moves the file into
-`locks/released/`. The audit record stores the original bytes' hash, the
-inode/stat metadata, and the final quarantined filename — enough to
-reconstruct what was removed and prove it was the observed file. Without it the fail-closed gate could freeze
+guard section, re-verifies under it that the file **reads** and is
+malformed and that its identity (inode/stat) is unchanged, refuses if the
+lock parses (a healthy lock is released only by its owning transitions),
+refuses likewise on an IO error (that is `lock_io_unreadable` — quarantine
+on the word of a broken read could destroy a healthy lock), else
+atomically moves the file into `locks/released/`. The audit record stores
+the original bytes' hash — computable by definition here, since malformed
+means *read* — the inode/stat metadata, and the final quarantined
+filename: enough to reconstruct what was removed and prove it was the
+observed file. Without it the fail-closed gate could freeze
 a repository with no doorway.
 
 ## 9. UI
@@ -402,7 +431,10 @@ as drill-down.** Verbs, resolution and logs are untouched.
   are **typed**: `launch_busy`/`run_in_flight` with `request_id` → run
   view; unlinked `run_in_flight` with `run_id` → identifier and status
   only (no logs link — §2); `run_vanished` → the acknowledge form;
-  `state_unreadable` → diagnostic text, no action.
+  `lock_malformed` → the release-malformed form (§8.3);
+  `lock_io_unreadable` / `run_state_unreadable` → diagnostic text, no
+  action — the escape is offered only where damage is proven, never where
+  fact-gathering is broken.
 - **Launch is two steps in the row:** click expands
   "Launch `<work_id>` @ `<sha7>`? [Confirm]"; Confirm sends submit v2.
 - **Transport uncertainty is a first-class state** (the B2 lesson, now
@@ -456,14 +488,17 @@ All fixes RED-verified individually, as this codebase practices.
   (empty lock → `state_unreadable`, escape works); fingerprint match →
   prior receipt, mismatch → `request_id_conflict`; `admission-rejected`
   terminalization; tombstone atomic replace; legacy-record migration;
-  **replayed 409 is byte-stable** — repeat after the workspace changed
-  returns the persisted payload, provably without re-classification
-  (instrumented classifier asserts zero calls); **the guard section
-  closes the quarantine race** — with the guard held by a stalled
-  release-unreadable, a concurrent reserve waits/refuses rather than
-  interleaving, and the healthy-lock-quarantined interleaving of the
-  review scenario is reproduced against the UNGUARDED implementation as
-  its RED.
+  **replayed 409 is semantically equal** — repeat after the workspace
+  changed returns the persisted values (field-wise equality, not JSON
+  byte-stability: serialization order is not the contract), provably
+  without re-classification (instrumented classifier asserts zero calls);
+  **the guard section closes the quarantine race** — with the guard held
+  by a stalled release-malformed-lock, a concurrent reserve waits up to
+  the 2-second bound and then returns `guard_busy` with no lock-file
+  mutation (the test pins exactly this chosen behavior), and the
+  healthy-lock-quarantined interleaving of the review scenario is
+  reproduced against the UNGUARDED implementation as its RED;
+  `lock_io_unreadable` (injected IO error) offers no quarantine.
 - **Submit integration:** each 409 code with `current`; the two-process
   race (second `acquire` → `lock_busy`); `dag_dirty`; fail-closed on an
   unreadable `state.db`.
@@ -503,7 +538,9 @@ canon-first rule of §3.1 holds at every stage.
    read (§6.2) — narrowed by `dag_dirty`, not closed.
 3. `actor` is `local-unauthenticated` until authentication exists.
 4. Unlinked runs render without log links.
-5. The empty-lock crash residue of §8.1, with its audited escape.
+5. The empty-lock crash residue of §8.1 (`lock_malformed`), with its
+   audited escape; a hung-handler guard hold surfaces as bounded
+   `guard_busy`, never an indefinite wait.
 6. The visibility-driven refresh is not covered by the current Node
    harness; it is testable in principle (injected `visibilityState` plus a
    clock adapter) and is a harness gap, not a technical limit.
