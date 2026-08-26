@@ -504,12 +504,13 @@ class RunStore:
 
     def release_malformed_lock(self, key: RepoKey, *, actor: str, reason: str) -> dict:
         """Spec §8.3: quarantine is offered only where damage is PROVEN —
-        the observed bytes are the damage. Runs inside the guard: the
-        bytes are read and proven malformed UNDER it, so the file moved
-        is provably the file observed — a competing `_reserve_locked`
-        write can never interleave, since both run under the same
-        `guard(key)`. The observed identity (inode, size, sha256) is
-        recorded in the audit alongside the quarantined bytes.
+        the observed bytes are the damage. Runs inside the guard, and the
+        file's identity is RE-CHECKED under it right before the move: the
+        guard is advisory flock and excludes only cooperating writers, so
+        proving the file the rename would move is still the file whose
+        bytes were read cannot rest on the guard alone. The observed
+        identity (inode, size, sha256) is recorded in the audit alongside
+        the quarantined bytes.
         """
         with self.guard(key):
             path = self._lock_path(key)
@@ -541,6 +542,28 @@ class RunStore:
             stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
             name = f"{path.stem}.{stamp}.{secrets.token_hex(4)}.released"
             target = released / name
+            # Spec §8.3: re-check, under the guard, that the pathname still
+            # names the file that was read — an adversary outside the
+            # advisory guard could have replaced it with a fresh HEALTHY
+            # lock, and moving that would strip a live launch's protection
+            # while the audit swears it moved the old corrupt bytes.
+            try:
+                now = path.stat()
+            except OSError as err:
+                raise RunStoreError(
+                    f"{key.as_text()}: lock identity changed since it was "
+                    f"read ({err}) — refusing to quarantine"
+                ) from err
+            if (now.st_dev, now.st_ino, now.st_size, now.st_mtime_ns) != (
+                stat.st_dev,
+                stat.st_ino,
+                stat.st_size,
+                stat.st_mtime_ns,
+            ):
+                raise RunStoreError(
+                    f"{key.as_text()}: lock identity changed since it was "
+                    "read — refusing to quarantine"
+                )
             # A crash between this rename and the audit write below leaves
             # a quarantined file with no audit record — the hash was
             # computed but never persisted. Accepted for B1: the bytes

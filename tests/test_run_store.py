@@ -641,3 +641,37 @@ def test_a_legacy_reserved_record_retries_instead_of_conflicting(
             work_id="w",
             revision="b" * 40,
         )
+
+
+def test_quarantine_refuses_if_the_lock_was_replaced_after_reading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spec §8.3: the identity is re-checked under the guard — the guard is
+    advisory flock and excludes only cooperating writers, so the file the
+    rename would move must be proven to still be the file whose bytes were
+    read. Here an adversary swaps in a HEALTHY lock between the read and
+    the move: quarantining it would leave the repo unprotected mid-launch
+    while the audit swears it moved the old corrupt bytes."""
+    store = RunStore(tmp_path)
+    lock = store._lock_path(_KEY)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(b"half-writ")
+
+    healthy = json.dumps(
+        {"request_id": "rc-bbbbbbbb-22222222", "fingerprint": "f", "created_at": "t"}
+    ).encode()
+    real_validate = LockInfo.model_validate_json
+
+    def _swap_then_validate(data: str) -> LockInfo:
+        # runs after the read, before the rename — the adversary's window
+        lock.write_bytes(healthy)
+        return real_validate(data)
+
+    monkeypatch.setattr(LockInfo, "model_validate_json", _swap_then_validate)
+    with pytest.raises(RunStoreError, match="identity"):
+        store.release_malformed_lock(_KEY, actor="x", reason="r")
+    # the healthy lock survived, nothing was quarantined
+    assert lock.read_bytes() == healthy
+    assert not (lock.parent / "released").exists() or not any(
+        (lock.parent / "released").iterdir()
+    )
