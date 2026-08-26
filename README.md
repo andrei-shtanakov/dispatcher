@@ -285,6 +285,35 @@ keeps the descriptor valid. The trade is a window between copy and truncate in
 which a write can be lost, which beats losing the whole file to a rotation that
 silently detached it.
 
+### Updating the code under a running service
+
+The service runs `uv run dispatcher serve` from this repo's **main
+checkout** — there is no deploy step, the checkout *is* the deployment. What
+that means when code changes:
+
+| What changed | Restart needed? |
+|---|---|
+| Python code (`dispatcher/`, controller, API) | **yes** — imported once at start |
+| `dispatcher.toml` | **yes** — read once at start |
+| `dispatcher/server/static/index.html` (the whole console) | **no** — served from disk per request |
+
+Restarting is one command — `KeepAlive` turns a kill into a restart:
+
+    launchctl kickstart -k gui/$UID/dev.atp.dispatcher
+
+(`kill <pid>` works identically; launchd brings up a fresh process. That is
+the exact recovery the service's acceptance proved.) The new process re-reads
+code and config, and `uv run` syncs dependencies on start, so a `git pull`
+that added a package needs no separate install step.
+
+One property to stay aware of: the service starts from whatever the main
+checkout holds **at that moment**. A live process does not care what branch
+the checkout moves to — but a restart while the checkout sits on a feature
+branch (sessions do park it there) comes up running that branch, and the
+restart may be involuntary: a crash, or the machine rebooting. This is not a
+defect to fix but a consequence of checkout-as-deployment; the standing rule
+"the main checkout returns to `master`" is what keeps it harmless.
+
 ## Sync snapshots (per-machine cron)
 
     uv run dispatcher publish-snapshot               # snapshot → KB → commit+push
