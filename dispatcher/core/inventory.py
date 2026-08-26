@@ -281,7 +281,22 @@ def _capture_one_dag_file(
                     f"{rel_path} exceeds {MAX_DAG_BYTES} bytes ({st.st_size}): not read"
                 ),
             )
-        data = _read_all(fd) if is_regular else b""
+        data = _read_capped(fd, MAX_DAG_BYTES) if is_regular else b""
+    except _TooBig:
+        return DagFileInfo(
+            rel_path=rel_path,
+            is_regular=True,
+            text=None,
+            blob_sha=None,
+            head_blob_sha=None,
+            subset=None,
+            named_repo=None,
+            named_repo_error=None,
+            error=(
+                f"{rel_path} exceeds {MAX_DAG_BYTES} bytes "
+                "(grew past the cap mid-read): not captured"
+            ),
+        )
     except OSError as err:
         # EIO/ESTALE and friends mid-read: captured as a named fact, same
         # discipline as the open() failure above — never propagate.
@@ -341,12 +356,26 @@ def _capture_one_dag_file(
     )
 
 
-def _read_all(fd: int) -> bytes:
+class _TooBig(Exception):
+    """The fd yielded more than the cap — raised by `_read_capped`."""
+
+
+def _read_capped(fd: int, cap: int) -> bytes:
+    """Read to EOF or refuse: the CAP lives in the loop, not in fstat.
+
+    st_size is checked before this as a fast path, but a file can grow
+    between fstat and EOF — the loop itself stops at cap+1 and raises,
+    so a growing file can neither hang the capture nor exhaust memory.
+    """
     chunks: list[bytes] = []
+    total = 0
     while True:
         chunk = os.read(fd, _READ_CHUNK)
         if not chunk:
             break
+        total += len(chunk)
+        if total > cap:
+            raise _TooBig(total)
         chunks.append(chunk)
     return b"".join(chunks)
 

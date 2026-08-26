@@ -157,10 +157,10 @@ def test_dag_file_read_error_is_captured_as_fact(tmp_path, monkeypatch):
         {"dags/x.yaml": "repo: /x\ntasks: []\n"},
     )
 
-    def raise_read_error(fd):
+    def raise_read_error(fd, cap):
         raise OSError("simulated EIO")
 
-    monkeypatch.setattr(inventory, "_read_all", raise_read_error)
+    monkeypatch.setattr(inventory, "_read_capped", raise_read_error)
 
     surface = capture_inventory(root)
     info = find_dag(surface, "dags/x.yaml")
@@ -484,11 +484,42 @@ def test_oversized_dag_file_is_refused_without_reading(tmp_path, monkeypatch):
         fake[stat.ST_SIZE] = 3 * 1024 * 1024 * 1024
         return os.stat_result(fake)
 
-    def exploding_read(fd: int) -> bytes:
+    def exploding_read(fd: int, cap: int) -> bytes:
         raise AssertionError("oversized file must not be read")
 
     monkeypatch.setattr(inv.os, "fstat", fat_fstat)
-    monkeypatch.setattr(inv, "_read_all", exploding_read)
+    monkeypatch.setattr(inv, "_read_capped", exploding_read)
+    surface = inv.capture_inventory(root)
+    (info,) = surface.dag_files
+    assert info.error is not None and "exceeds" in info.error
+    assert info.text is None and info.blob_sha is None
+
+
+def test_dag_file_growing_past_the_cap_mid_read_is_refused(tmp_path, monkeypatch):
+    """A file that grows after fstat must still hit the cap inside the read.
+
+    The st_size guard is a fast path, not the guarantee: the read loop itself
+    stops at MAX_DAG_BYTES + 1 and refuses, no matter what fstat said.
+    """
+    import dispatcher.core.inventory as inv
+    from dispatcher.core.dag_subset import MAX_DAG_BYTES
+
+    root = make_repo(
+        tmp_path,
+        "# demo — TODO\n\n- [ ] Grow @id:grow @owner:github:u @dag:dags/grow.yaml\n",
+        {"dags/grow.yaml": "repo: /x\ntasks: []\n"},
+    )
+    chunk = b"x" * inv._READ_CHUNK
+    served = 0
+
+    def endless_read(fd: int, n: int) -> bytes:
+        nonlocal served
+        if served > 2 * MAX_DAG_BYTES:
+            raise AssertionError("read loop must stop at the cap, not at EOF")
+        served += len(chunk)
+        return chunk
+
+    monkeypatch.setattr(inv.os, "read", endless_read)
     surface = inv.capture_inventory(root)
     (info,) = surface.dag_files
     assert info.error is not None and "exceeds" in info.error
