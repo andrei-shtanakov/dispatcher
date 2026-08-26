@@ -2040,14 +2040,17 @@ def test_submit_blocks_when_the_request_store_is_unlistable(
     controller = RunController(config, materialize_timeout=10.0)
     assert config.run_state_dir is not None
     requests_dir = config.run_state_dir / "requests"
-    original_glob = Path.glob
+    real_scandir = os.scandir
 
-    def _boom(self: Path, pattern: str):
-        if self == requests_dir:
-            raise PermissionError("denied")
-        return original_glob(self, pattern)
+    # Injected at os.scandir, the REAL surface: Path.glob suppresses
+    # OSError raised while scanning (3.13+ explicitly), so an injection
+    # at glob tested an error path the actual API never takes.
+    def _boom(path, *args, **kwargs):  # noqa: ANN001,ANN002,ANN003,ANN202
+        if str(path) == str(requests_dir):
+            raise PermissionError(13, "denied", str(path))
+        return real_scandir(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "glob", _boom)
+    monkeypatch.setattr(os, "scandir", _boom)
     receipt = controller.submit(_request(head))
     assert receipt.accepted is False
     assert (receipt.reason or "").startswith("run_state_unreadable:")

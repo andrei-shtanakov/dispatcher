@@ -795,7 +795,18 @@ class RunStore:
         records: list[LaunchRecord] = []
         unreadable: list[str] = []
         try:
-            paths = sorted(self._requests.glob("*.json"))
+            # os.scandir, not Path.glob: glob SUPPRESSES OSError raised
+            # while scanning (explicitly on 3.13+, and pathlib's matcher
+            # historically swallowed iteration errors too) — the except
+            # below would be dead code and an unlistable directory would
+            # read as an empty store, the exact fail-open this method's
+            # contract forbids.
+            with os.scandir(self._requests) as entries:
+                paths = sorted(
+                    self._requests / e.name for e in entries if e.name.endswith(".json")
+                )
+        except FileNotFoundError:
+            return [], []
         except OSError as err:
             return [], [f"requests directory unlistable: {err}"]
         for path in paths:

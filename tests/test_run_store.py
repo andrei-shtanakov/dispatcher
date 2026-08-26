@@ -3,6 +3,7 @@
 import hashlib
 import json
 import multiprocessing
+import os
 import time
 from pathlib import Path
 
@@ -546,14 +547,17 @@ def test_an_unlistable_requests_dir_is_an_unreadable_entry_not_empty(
     store = RunStore(tmp_path)
     store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
     requests_dir = tmp_path / "requests"
-    original_glob = Path.glob
+    real_scandir = os.scandir
 
-    def _boom(self: Path, pattern: str):
-        if self == requests_dir:
-            raise PermissionError("denied")
-        return original_glob(self, pattern)
+    # Injected at os.scandir, the REAL surface: Path.glob suppresses
+    # OSError raised while scanning (3.13+ explicitly), so an injection
+    # at glob tested an error path the actual API never takes.
+    def _boom(path, *args, **kwargs):  # noqa: ANN001,ANN002,ANN003,ANN202
+        if str(path) == str(requests_dir):
+            raise PermissionError(13, "denied", str(path))
+        return real_scandir(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "glob", _boom)
+    monkeypatch.setattr(os, "scandir", _boom)
     records, unreadable = store.list()
     assert records == []
     assert unreadable and "requests directory" in unreadable[0]
