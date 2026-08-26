@@ -1,5 +1,6 @@
 """HTTP surface of the control plane (spec §5.3, §6)."""
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -553,3 +554,64 @@ async def test_acknowledge_lock_busy_is_409_not_500(
             headers={"X-Action-Token": token},
         )
     assert resp.status_code == 409
+
+
+async def test_release_malformed_resolves_a_root_that_is_itself_a_checkout(
+    tmp_path: Path,
+) -> None:
+    """`config.roots` may point AT a checkout, not only at a directory of
+    checkouts (discovery walks `[root, *children]`) — the escape's resolver
+    must consider the root itself. The sharpest shape: a git WORKTREE
+    checkout, whose `.git` is a FILE — child-only iteration then has no
+    directory to resolve upward from, and the one repo shape that needs
+    the escape has no working HTTP escape at all."""
+    from dispatcher.core.run_identity import RepoKey
+    from dispatcher.core.run_store import RunStore
+
+    ws = tmp_path / "ws"
+    main = _checkout(ws, "deployer-main", "git@github.com:owner/deployer.git")
+    subprocess.run(
+        ["git", "-C", str(main), "commit", "--allow-empty", "-m", "seed", "-q"],
+        check=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        },
+    )
+    repo = ws / "deployer"
+    subprocess.run(
+        ["git", "-C", str(main), "worktree", "add", "--detach", str(repo)],
+        check=True,
+        capture_output=True,
+    )
+    assert (repo / ".git").is_file(), "worktree shape: .git must be a file"
+    key = RepoKey(host="github.com", owner="owner", repo="deployer")
+    store = RunStore(tmp_path / "state")
+    lock = store._lock_path(key)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(b"half-writ")
+
+    config = DispatcherConfig(
+        roots=(repo,),  # the checkout ITSELF is the configured root
+        run_state_dir=tmp_path / "state",
+        maestro_cli=tmp_path / "unused-maestro",
+    )
+    app = create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/locks/release-malformed",
+            json={
+                "repo_key": "github.com/owner/deployer",
+                "confirm_repo_key": "github.com/owner/deployer",
+                "reason": "crash residue",
+                "display_name": None,
+            },
+            headers={"X-Action-Token": token},
+        )
+    assert resp.status_code == 200
+    assert not lock.exists()

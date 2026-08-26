@@ -699,9 +699,13 @@ def create_app(
         for root in config.roots:
             if not root.is_dir():
                 continue
-            for candidate in root.iterdir():
-                if not candidate.is_dir():
-                    continue
+            # The root ITSELF is a candidate: `config.roots` may point AT
+            # a checkout, not only at a directory of checkouts (discovery
+            # walks `[root, *children]`). Child-only iteration would leave
+            # a worktree-shaped root (`.git` is a FILE there) with no
+            # directory to resolve from at all.
+            candidates = (root, *(c for c in root.iterdir() if c.is_dir()))
+            for candidate in candidates:
                 try:
                     found = identity_from_checkout(candidate)
                 except IdentityError:
