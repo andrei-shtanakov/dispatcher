@@ -13,9 +13,13 @@ between slice 0 and two agent-driven runs mutating one checkout.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import tempfile
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -33,6 +37,11 @@ _LOCK_HELD_STATES = frozenset({"reserved", "launching", "launch_unknown"})
 _DIR_MODE = 0o700
 _FILE_MODE = 0o600
 
+#: Bound on how long `RunStore.guard()` will wait for the critical section
+#: (spec §8.1). A live hung handler must surface as `GuardBusyError`, never
+#: as an indefinite wait.
+GUARD_TIMEOUT_SECONDS = 2.0
+
 
 class RunStoreError(Exception):
     """The store cannot honour the call (→ 422)."""
@@ -40,6 +49,10 @@ class RunStoreError(Exception):
 
 class LockBusyError(RunStoreError):
     """The repository already has a launch in flight (→ 409)."""
+
+
+class GuardBusyError(RunStoreError):
+    """The recovery critical section stayed held past its bound (spec §8.1)."""
 
 
 class _UnreadableLock(Exception):
@@ -113,6 +126,48 @@ class RunStore:
     def _lock_path(self, key: RepoKey) -> Path:
         slug = "-".join(safe_path_parts(key)).replace("/", "-")
         return self._locks / f"{slug}.lock"
+
+    def _guard_path(self, key: RepoKey) -> Path:
+        return self._root / "guards" / ("__".join(safe_path_parts(key)) + ".guard")
+
+    @contextmanager
+    def guard(self, key: RepoKey) -> Iterator[None]:
+        """Per-RepoKey critical section for EVERY lock-path mutation.
+
+        Checking a lock file and later acting on its pathname is not
+        compare-and-swap (spec §8.1): between "saw it malformed" and
+        "renamed it", another actor may have quarantined it and a fresh
+        submit created a healthy lock at the same path. An OS advisory
+        lock is used because a crash releases it automatically — the
+        guard adds no orphan state of its own. Acquisition is BOUNDED:
+        a live hung handler must surface as guard_busy, never as an
+        indefinite wait.
+
+        Not reentrant: a caller that already holds the guard for `key`
+        must not call this again before releasing it — a second `flock`
+        on another fd of the same file blocks even within one process.
+        """
+        path = self._guard_path(key)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, _FILE_MODE)
+        try:
+            deadline = time.monotonic() + GUARD_TIMEOUT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise GuardBusyError(
+                            f"{key.as_text()}: the lock-recovery section has "
+                            f"been held past {GUARD_TIMEOUT_SECONDS}s — a "
+                            "hung handler; retry, and if this persists "
+                            "inspect the dispatcher process"
+                        ) from None
+                    time.sleep(0.05)
+            yield
+        finally:
+            os.close(fd)  # closing the fd releases the flock
 
     def get(self, request_id: str) -> LaunchRecord | None:
         """The current `LaunchRecord` for `request_id`, or `None` if unknown."""

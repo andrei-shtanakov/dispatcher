@@ -1,11 +1,19 @@
 """Durable launch records and the per-RepoKey lock (spec §5.2, §5.4)."""
 
+import multiprocessing
+import time
 from pathlib import Path
 
 import pytest
 
 from dispatcher.core.run_identity import RepoKey
-from dispatcher.core.run_store import LockBusyError, RunStore, RunStoreError
+from dispatcher.core.run_store import (
+    GUARD_TIMEOUT_SECONDS,
+    GuardBusyError,
+    LockBusyError,
+    RunStore,
+    RunStoreError,
+)
 
 _KEY = RepoKey(host="github.com", owner="owner", repo="deployer")
 _REQ = "11111111-1111-4111-8111-111111111111"
@@ -170,3 +178,56 @@ def test_release_lock_refuses_a_corrupt_lock_file_rather_than_freeing_it(
     with pytest.raises(LockBusyError):
         store.release_lock(_KEY, _REQ)
     assert lock_path.exists()
+
+
+def _hold_guard(state_dir: str, hold_seconds: float, acquired) -> None:
+    store = RunStore(Path(state_dir))
+    with store.guard(_KEY):
+        acquired.set()
+        time.sleep(hold_seconds)
+
+
+def test_guard_is_exclusive_across_processes_and_bounded(tmp_path: Path) -> None:
+    """A held guard makes a second acquirer wait, then fail GuardBusy.
+
+    A separate PROCESS on purpose: fcntl locks do not exclude within one
+    process, so a thread-based test would pass against a broken guard.
+    """
+    acquired = multiprocessing.Event()
+    holder = multiprocessing.Process(
+        target=_hold_guard, args=(str(tmp_path), GUARD_TIMEOUT_SECONDS + 2, acquired)
+    )
+    holder.start()
+    try:
+        assert acquired.wait(timeout=10), "holder never acquired"
+        store = RunStore(tmp_path)
+        started = time.monotonic()
+        with pytest.raises(GuardBusyError):
+            with store.guard(_KEY):
+                pass
+        waited = time.monotonic() - started
+        assert waited >= GUARD_TIMEOUT_SECONDS * 0.9, "gave up before the bound"
+        assert waited < GUARD_TIMEOUT_SECONDS + 1.5, "waited far past the bound"
+    finally:
+        holder.terminate()
+        holder.join()
+
+
+def test_guard_releases_on_exit_and_after_crash(tmp_path: Path) -> None:
+    """Sequential sections work; a killed holder frees the guard by itself."""
+    store = RunStore(tmp_path)
+    with store.guard(_KEY):
+        pass
+    with store.guard(_KEY):  # would deadlock if exit leaked the flock
+        pass
+
+    acquired = multiprocessing.Event()
+    holder = multiprocessing.Process(
+        target=_hold_guard, args=(str(tmp_path), 60, acquired)
+    )
+    holder.start()
+    assert acquired.wait(timeout=10)
+    holder.kill()  # crash, not clean exit
+    holder.join()
+    with store.guard(_KEY):  # the OS released the advisory lock
+        pass
