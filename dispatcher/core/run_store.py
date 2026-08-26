@@ -17,6 +17,7 @@ import fcntl
 import hashlib
 import json
 import os
+import secrets
 import tempfile
 import time
 from collections.abc import Iterator
@@ -174,9 +175,10 @@ class RunStore:
         self._root = state_dir
         self._requests = state_dir / "requests"
         self._locks = state_dir / "locks"
+        self._guards = state_dir / "guards"
 
     def _ensure(self) -> None:
-        for path in (self._root, self._requests, self._locks):
+        for path in (self._root, self._requests, self._locks, self._guards):
             path.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
 
     def _record_path(self, request_id: str) -> Path:
@@ -192,7 +194,7 @@ class RunStore:
         return self._locks / f"{slug}.lock"
 
     def _guard_path(self, key: RepoKey) -> Path:
-        return self._root / "guards" / ("__".join(safe_path_parts(key)) + ".guard")
+        return self._guards / ("__".join(safe_path_parts(key)) + ".guard")
 
     def read_lock(self, key: RepoKey) -> LockState:
         """The lock's `{request_id, fingerprint, created_at}`, or its state.
@@ -200,11 +202,16 @@ class RunStore:
         `None` means free — no lock file exists. `Malformed` means the
         file was READ and its bytes are empty/invalid: an `O_EXCL` create
         raced with a crash before the write landed. The two must stay
-        distinguishable (spec §8.1).
+        distinguishable (spec §8.1). Invalid UTF-8 is read as `Malformed`
+        too — the bytes WERE seen, so damage is proven; a strict decode
+        would crash with `UnicodeDecodeError` (a `ValueError`, invisible
+        to callers catching `(RunStoreError, OSError)`) instead of
+        classifying, which is how `release_malformed_lock` already reads
+        the same file.
         """
         path = self._lock_path(key)
         try:
-            text = path.read_text()
+            data = path.read_bytes()
         except FileNotFoundError:
             return None
         except OSError as err:
@@ -212,9 +219,9 @@ class RunStore:
             # so damage is not proven (spec §7's unreadable split).
             raise RunStoreError(f"cannot read lock for {key.as_text()}: {err}") from err
         try:
-            return LockInfo.model_validate_json(text)
+            return LockInfo.model_validate_json(data.decode(errors="replace"))
         except Exception:
-            return Malformed(detail=f"unparseable lock ({len(text)} bytes)")
+            return Malformed(detail=f"unparseable lock ({len(data)} bytes)")
 
     @contextmanager
     def guard(self, key: RepoKey) -> Iterator[None]:
@@ -428,16 +435,35 @@ class RunStore:
         never read as "nobody holds it".
         """
         try:
-            raw = lock.read_text()
+            raw = lock.read_bytes()
         except OSError:
             return None
         try:
-            return str(json.loads(raw)["request_id"])
+            # Same replace-decode as `read_lock`: invalid UTF-8 must become
+            # _UnreadableLock (via json's ValueError), never a bare
+            # UnicodeDecodeError escaping every caller's handling.
+            return str(json.loads(raw.decode(errors="replace"))["request_id"])
         except (ValueError, KeyError, TypeError) as err:
             raise _UnreadableLock(str(lock)) from err
 
     def release_lock(self, key: RepoKey, request_id: str) -> None:
         """Release only the lock this request owns (spec §5.2.1).
+
+        Runs inside `guard(key)` (spec §8.1: transition releases are
+        lock-path mutations too): read-check-unlink is not
+        compare-and-swap, so an unguarded release racing a fresh guarded
+        reserve could pass its ownership check against the OLD lock and
+        then unlink the NEW owner's. A caller that already holds the
+        guard must call `_release_lock_locked` instead — `guard` is not
+        reentrant. `GuardBusyError` propagates to the caller, bounded at
+        `GUARD_TIMEOUT_SECONDS`.
+        """
+        with self.guard(key):
+            self._release_lock_locked(key, request_id)
+
+    def _release_lock_locked(self, key: RepoKey, request_id: str) -> None:
+        """The critical section of `release_lock`; assumes `guard(key)`
+        is held by the caller.
 
         A lock file that exists but cannot be parsed is refused, not treated
         as free: `reserve()` is already conservative about this same
@@ -462,10 +488,12 @@ class RunStore:
 
     def release_malformed_lock(self, key: RepoKey, *, actor: str, reason: str) -> dict:
         """Spec §8.3: quarantine is offered only where damage is PROVEN —
-        the observed bytes are the damage. Runs inside the guard; identity
-        (inode) is re-checked under it so the file moved is provably the
-        file observed — a competing `_reserve_locked` write can never
-        interleave, since both run under the same `guard(key)`.
+        the observed bytes are the damage. Runs inside the guard: the
+        bytes are read and proven malformed UNDER it, so the file moved
+        is provably the file observed — a competing `_reserve_locked`
+        write can never interleave, since both run under the same
+        `guard(key)`. The observed identity (inode, size, sha256) is
+        recorded in the audit alongside the quarantined bytes.
         """
         with self.guard(key):
             path = self._lock_path(key)
@@ -491,8 +519,16 @@ class RunStore:
                 )
             released = path.parent / "released"
             released.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
-            name = f"{path.stem}.{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}.released"
+            # token_hex: the timestamp alone has 1-second resolution, and a
+            # second quarantine within the same second would silently
+            # overwrite the previous quarantined bytes and their audit.
+            stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+            name = f"{path.stem}.{stamp}.{secrets.token_hex(4)}.released"
             target = released / name
+            # A crash between this rename and the audit write below leaves
+            # a quarantined file with no audit record — the hash was
+            # computed but never persisted. Accepted for B1: the bytes
+            # themselves survive, and the audit is re-computable from them.
             os.rename(path, target)
             audit = {
                 "repo_key": key.as_text(),
@@ -520,7 +556,9 @@ class RunStore:
         return self._transition(request_id, state="launching")
 
     def mark_materialized(self, request_id: str, run_id: str) -> LaunchRecord:
-        """The launch is no longer in flight, so the lock is released here."""
+        """The launch is no longer in flight, so the lock is released here
+        — under the guard (via `_release_for`); a contended guard surfaces
+        as `GuardBusyError` into the caller's existing failure handling."""
         record = self._transition(request_id, state="materialized", run_id=run_id)
         self._release_for(record)
         return record
@@ -538,7 +576,21 @@ class RunStore:
     def mark_admission_rejected(
         self, request_id: str, *, code: str, detail: str, current: dict
     ) -> LaunchRecord:
-        """Terminalize a refused attempt; the lock never outlives the fact."""
+        """Terminalize a refused attempt and release its lock.
+
+        Called only from inside submit's guarded admission section, so the
+        release uses `_release_for_locked` (`guard` is not reentrant).
+
+        Two crash windows this shape cannot close (TODO: PR-C's
+        reconciliation — "healthy lock whose owning record is terminal →
+        release", inside the guard — is the doorway for both):
+        a crash between `_reserve_locked` and this call leaves a
+        `reserved` record whose lock is held until a retry of the same
+        request_id; a crash between the record write below and the unlink
+        after it leaves a TERMINAL record with a standing healthy lock,
+        which no current escape releases (`release_malformed_lock`
+        correctly refuses a lock that parses).
+        """
         record = self._transition(
             request_id,
             state="terminal",
@@ -549,17 +601,19 @@ class RunStore:
             admission_current=current,
             rejected_at=datetime.now(UTC).isoformat(),
         )
-        self._release_for(record)
+        self._release_for_locked(record)
         return record
 
     def mark_vanished_acknowledged(
         self, request_id: str, *, actor: str, reason: str, prior_run_id: str
     ) -> LaunchRecord:
         """Terminalize the audited `acknowledge-vanished` escape (spec
-        §8.3). Mirrors `mark_admission_rejected`: the lock never outlives
-        the fact, and this specific fact — someone administratively
-        released a fail-closed block on a run whose absence was never
-        proven, only observed — is recorded, not silently absorbed.
+        §8.3). Mirrors `mark_admission_rejected` — including its
+        already-guarded release and its crash windows (see there): the
+        caller (`acknowledge_vanished`) holds the guard. This specific
+        fact — someone administratively released a fail-closed block on a
+        run whose absence was never proven, only observed — is recorded,
+        not silently absorbed.
         """
         record = self._transition(
             request_id,
@@ -570,17 +624,28 @@ class RunStore:
             ack_reason=reason,
             prior_run_id=prior_run_id,
         )
-        self._release_for(record)
+        self._release_for_locked(record)
         return record
 
     def _release_for(self, record: LaunchRecord) -> None:
+        """Release `record`'s lock, taking the guard (spec §8.1) — for the
+        transitions whose callers do NOT already hold it
+        (`mark_materialized`, `mark_terminal`)."""
+        self.release_lock(self._key_of(record), record.request_id)
+
+    def _release_for_locked(self, record: LaunchRecord) -> None:
+        """`_release_for` for a caller already INSIDE `guard(key)` —
+        `guard` is not reentrant, so re-taking it here would self-block
+        for `GUARD_TIMEOUT_SECONDS` and die `GuardBusy` on every
+        admission rejection and tombstone."""
+        self._release_lock_locked(self._key_of(record), record.request_id)
+
+    @staticmethod
+    def _key_of(record: LaunchRecord) -> RepoKey:
         parts = record.repo_key.split("/")
-        key = (
-            RepoKey(host="", owner="", repo=parts[1], local=True)
-            if parts[0] == "_local"
-            else RepoKey(host=parts[0], owner=parts[1], repo=parts[2])
-        )
-        self.release_lock(key, record.request_id)
+        if parts[0] == "_local":
+            return RepoKey(host="", owner="", repo=parts[1], local=True)
+        return RepoKey(host=parts[0], owner=parts[1], repo=parts[2])
 
     def holds_lock(self, key: RepoKey) -> str | None:
         """The request_id currently holding this repo's launch lock, if any.
@@ -600,16 +665,20 @@ class RunStore:
         The second return exists because the single-live-run gate is
         fail-closed: a corrupt record must block as unknown, and a
         listing that silently dropped it would let the gate read
-        "nothing non-terminal here" off exactly the broken input. Ordered
-        by filename (== `request_id`) for determinism — callers sort by
-        their own keys.
+        "nothing non-terminal here" off exactly the broken input. The
+        same rule covers the enumeration itself: a `requests/` directory
+        that cannot be iterated at all is returned AS an unreadable
+        entry, never as "no records" — `([], [])` here would silently
+        drop every record-derived blocker at once. Ordered by filename
+        (== `request_id`) for determinism — callers sort by their own
+        keys.
         """
         records: list[LaunchRecord] = []
         unreadable: list[str] = []
         try:
             paths = sorted(self._requests.glob("*.json"))
-        except OSError:
-            return [], []
+        except OSError as err:
+            return [], [f"requests directory unlistable: {err}"]
         for path in paths:
             try:
                 records.append(LaunchRecord.model_validate_json(path.read_text()))

@@ -479,3 +479,113 @@ def test_the_guarded_race_cannot_quarantine_a_fresh_healthy_lock(
     finally:
         holder.terminate()
         holder.join()
+
+
+# -- final fix wave: guarded transition releases (I-1), fail-closed list ----
+# -- (I-2), lenient lock decode (deferred 11), quarantine naming (M-7) ------
+
+
+def test_a_transition_release_takes_the_guard(tmp_path: Path) -> None:
+    """I-1 (spec §8.1): a transition release is a lock-path mutation and
+    must run inside the per-RepoKey guard. With another process holding
+    the guard, `mark_materialized`'s release must surface GuardBusy
+    rather than read-check-unlink the lock path unguarded — the
+    interleaving the spec names (a duplicate release racing a fresh
+    guarded reserve) is exactly what an unguarded unlink allows."""
+    store = RunStore(tmp_path)
+    store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
+
+    acquired = multiprocessing.Event()
+    holder = multiprocessing.Process(
+        target=_hold_guard, args=(str(tmp_path), GUARD_TIMEOUT_SECONDS + 2, acquired)
+    )
+    holder.start()
+    try:
+        assert acquired.wait(timeout=10), "holder never acquired"
+        with pytest.raises(GuardBusyError):
+            store.mark_materialized(_REQ, "01AAA")
+        # the unguarded unlink never ran: the lock is still this request's
+        assert store.holds_lock(_KEY) == _REQ
+    finally:
+        holder.terminate()
+        holder.join()
+
+
+def test_a_duplicate_transition_release_cannot_free_anothers_lock(
+    tmp_path: Path,
+) -> None:
+    """The I-1 damage, as far as it can be forced sequentially: request A's
+    release runs again after request B reserved a fresh healthy lock at
+    the same path. The duplicate must refuse (`held by`), never unlink
+    B's lock — B would otherwise be launching with no lock at all."""
+    store = RunStore(tmp_path)
+    store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
+    store.mark_materialized(_REQ, "01AAA")  # releases A's lock
+    store.reserve(_OTHER, _KEY, known_runs=[], window_start="t")
+    with pytest.raises(LockBusyError, match="held by"):
+        store.mark_terminal(_REQ, "completed")  # A's duplicate release
+    assert store.holds_lock(_KEY) == _OTHER
+
+
+def test_an_unlistable_requests_dir_is_an_unreadable_entry_not_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I-2: `([], [])` for a `requests/` directory that cannot be iterated
+    lets the gate read "nothing non-terminal here" off exactly the broken
+    input — the enumeration-level twin of the per-record unreadable case
+    the second return exists for. It must surface as an unreadable entry
+    so `classify_repo` blocks."""
+    store = RunStore(tmp_path)
+    store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
+    requests_dir = tmp_path / "requests"
+    original_glob = Path.glob
+
+    def _boom(self: Path, pattern: str):
+        if self == requests_dir:
+            raise PermissionError("denied")
+        return original_glob(self, pattern)
+
+    monkeypatch.setattr(Path, "glob", _boom)
+    records, unreadable = store.list()
+    assert records == []
+    assert unreadable and "requests directory" in unreadable[0]
+
+
+def test_invalid_utf8_lock_bytes_read_as_malformed_not_a_crash(
+    tmp_path: Path,
+) -> None:
+    """Deferred 11: a strict decode raised UnicodeDecodeError (a
+    ValueError) for invalid UTF-8 — escaping submit's
+    `except (RunStoreError, OSError)` as a 500. The bytes WERE read, so
+    damage is proven: Malformed, same rule as `release_malformed_lock`."""
+    store = RunStore(tmp_path)
+    lock = store._lock_path(_KEY)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(b"\xff\xfe\x00bad")
+    state = store.read_lock(_KEY)
+    assert isinstance(state, Malformed)
+
+
+def test_two_quarantines_within_one_second_do_not_clobber(tmp_path: Path) -> None:
+    """M-7: the quarantine name had 1-second resolution, so a second
+    release within the same second silently overwrote the previous
+    quarantined bytes and their audit."""
+    store = RunStore(tmp_path)
+    lock = store._lock_path(_KEY)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(b"first")
+    first = store.release_malformed_lock(_KEY, actor="x", reason="r")
+    lock.write_bytes(b"second")
+    second = store.release_malformed_lock(_KEY, actor="x", reason="r")
+    released = lock.parent / "released"
+    assert first["quarantined_as"] != second["quarantined_as"]
+    assert (released / str(first["quarantined_as"])).read_bytes() == b"first"
+    assert (released / str(second["quarantined_as"])).read_bytes() == b"second"
+
+
+def test_ensure_creates_guards_alongside_requests_and_locks(tmp_path: Path) -> None:
+    """Deferred 6: `guards/` was created lazily in `guard()` only — an
+    asymmetry with `requests/` and `locks/`."""
+    store = RunStore(tmp_path)
+    store._ensure()
+    assert (tmp_path / "guards").is_dir()

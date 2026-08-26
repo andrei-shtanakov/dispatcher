@@ -86,3 +86,11 @@ def test_an_unlinked_run_blocks_and_names_its_run_id():
     )
     b = a.blockers[0]
     assert b.code == RUN_IN_FLIGHT and b.request_id is None and b.run_id == "01UNL"
+
+
+def test_an_unlinked_absent_run_is_in_flight_not_vanished():
+    """No request_id means the vanished escape has nothing to adopt —
+    `acknowledge-vanished` keys off a stored record. The unlinked
+    absent-directory case must stay RUN_IN_FLIGHT (wire contract in PR-C)."""
+    a = classify_repo(None, None, (_run("running", request_id=None, exists=False),), ())
+    assert a.blockers[0].code == RUN_IN_FLIGHT
