@@ -1863,3 +1863,24 @@ testCase('logs: a slow task-log answer never overwrites a newer selection',
       'the slow older answer overwrote the newer one');
   });
 });
+
+testCase('logs: no button while there is no run — the 404 is not offered',
+  async () => {
+  // codex round 4, minor. The view prints "no run yet" from record.run_id
+  // and then offered a logs button whose every click is a guaranteed 404 —
+  // the page contradicting a sentence it just printed, the class Task 5
+  // closed for the verbs.
+  await withPage(async page => {
+    await openView(page, 'req-unknown', {
+      record: {state: 'launch_unknown', run_id: null}, run: null, warnings: [],
+    });
+    check(maybeEl(page, '#rc-run-view') !== null, 'view rendered (sanity)');
+    check(maybeEl(page, '#rc-logs-load') === null,
+      'a logs button is offered for a run that does not exist');
+
+    // And it appears once the run does — the gate is run_id, not state.
+    await openMaterialized(page);
+    check(maybeEl(page, '#rc-logs-load') !== null,
+      'the button is missing on a materialized run');
+  });
+});

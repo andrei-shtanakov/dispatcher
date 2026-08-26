@@ -1380,3 +1380,56 @@ def test_a_huge_task_log_is_never_read_whole(tmp_path: Path) -> None:
     assert peak < 4 * RunController._MAX_TASK_LOG_BYTES, (
         f"peak {peak} bytes for a 16 MiB log — the whole file was read"
     )
+
+
+def test_a_huge_timeline_is_never_read_whole(tmp_path: Path) -> None:
+    """The events cap must bound the READ too (codex round 4).
+
+    The same defect `task_log()` had, one endpoint over: `read_text()` then
+    a 500-line slice enforced the cap only after the whole file was in
+    memory. Symmetric to `test_a_huge_task_log_is_never_read_whole`, and
+    measured the same way — the property is bounded memory, not which call
+    the code makes.
+    """
+    controller = _with_logs(tmp_path)
+    logs_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs"
+    with (logs_dir / "events.jsonl").open("w") as fh:
+        for i in range(200_000):  # ~16 MiB of lines
+            fh.write(f'{{"timestamp": "T{i}", "event": "e{i}"}}\n')
+
+    tracemalloc.start()
+    try:
+        logs = controller.logs(_REQ)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert logs.truncated is True
+    assert len(logs.events) == RunController._MAX_EVENTS
+    assert logs.events[-1].event == "e199999", "the newest line was dropped"
+    assert peak < 8 * RunController._MAX_EVENT_BYTES, (
+        f"peak {peak} bytes for a ~16 MiB timeline — the whole file was read"
+    )
+
+
+def test_one_giant_jsonl_line_is_byte_capped_not_line_counted(
+    tmp_path: Path,
+) -> None:
+    """Line count alone does not bound memory (owner review of round 4).
+
+    A single line bigger than the byte cap is one line — a reverse reader
+    counting to 500 would still swallow all of it. It must come back as a
+    bounded raw tail with `truncated` set, not as an empty timeline claiming
+    nothing happened, and not whole.
+    """
+    controller = _with_logs(tmp_path)
+    logs_dir = tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA/logs"
+    giant = '{"event": "padded", "pad": "' + "z" * (2 * 1024 * 1024) + '"}'
+    (logs_dir / "events.jsonl").write_text(giant + "\n")
+
+    logs = controller.logs(_REQ)
+
+    assert logs.truncated is True
+    assert len(logs.events) == 1, "a giant line must not vanish entirely"
+    assert logs.events[0].event == "", "its tail cannot parse — raw, not typed"
+    assert len(logs.events[0].raw) <= RunController._MAX_EVENT_BYTES

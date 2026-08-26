@@ -705,13 +705,35 @@ class RunController:
         return log_dir / f"{request_id}.log"
 
     @staticmethod
+    def _read_tail_bytes(path: Path, max_bytes: int) -> tuple[bytes, bool]:
+        """The last `max_bytes` of a file, never reading more than that.
+
+        The one tail reader for every log this controller serves. Three call
+        sites grew the same defect independently — `read` the whole file,
+        slice afterwards — which enforces a cap only after the entire file is
+        in memory, so a log larger than the worker kills the server through
+        an endpoint whose contract is "the tail". The cap must bound the
+        READ (codex rounds 3 and 4 found two of the three; this is the
+        shared fix for all of them). Raises OSError/FileNotFoundError to the
+        caller: what an unreadable file MEANS differs per surface.
+        """
+        with path.open("rb") as handle:
+            size = handle.seek(0, os.SEEK_END)
+            truncated = size > max_bytes
+            if truncated:
+                handle.seek(-max_bytes, os.SEEK_END)
+            else:
+                handle.seek(0, os.SEEK_SET)
+            return handle.read(max_bytes), truncated
+
+    @staticmethod
     def _tail(path: Path, limit: int = 4000) -> str:
         """Best-effort: the last `limit` chars of a captured stderr file."""
         try:
-            data = path.read_text(errors="replace")
+            data, _ = RunController._read_tail_bytes(path, 4 * limit)
         except OSError:
             return ""
-        return data.strip()[-limit:]
+        return data.decode(errors="replace").strip()[-limit:]
 
     def _report_materialized(
         self, store: RunStore, request: RunRequest, key: RepoKey, run_id: str
@@ -856,6 +878,11 @@ class RunController:
     #: Newest-last tails. Generous enough to hold a whole ordinary run, small
     #: enough that one request cannot pull megabytes into a browser.
     _MAX_EVENTS = 500
+    #: Line count alone does not bound memory: one giant JSONL line would
+    #: still pull megabytes through a reverse reader that counts lines
+    #: (owner review of codex round 4). Both caps apply; either one trips
+    #: `truncated`.
+    _MAX_EVENT_BYTES = 512 * 1024
     _MAX_TASK_LOG_BYTES = 256 * 1024
 
     def _logs_dir(self, record: LaunchRecord) -> Path:
@@ -894,7 +921,8 @@ class RunController:
         truncated = False
         events_path = logs_dir / "events.jsonl"
         try:
-            lines = events_path.read_text(errors="replace").splitlines()
+            data, truncated = self._read_tail_bytes(events_path, self._MAX_EVENT_BYTES)
+            lines = data.decode(errors="replace").splitlines()
         except FileNotFoundError:
             # Normal before maestro writes its first event; not a warning.
             lines = []
@@ -903,6 +931,13 @@ class RunController:
             # insisting on, because the two look identical in a UI.
             warnings.append(f"cannot read {events_path.name}: {err}")
             lines = []
+        if truncated and len(lines) > 1:
+            # A byte-bounded tail almost always starts mid-line. Dropping
+            # that fragment is honest — `truncated` already says older
+            # content was cut — but ONLY while other lines remain: a single
+            # giant line is shown as its (raw, unparseable) tail rather
+            # than as an empty timeline claiming nothing happened.
+            lines = lines[1:]
         if len(lines) > self._MAX_EVENTS:
             truncated = True
             lines = lines[-self._MAX_EVENTS :]
@@ -956,14 +991,7 @@ class RunController:
         # whole contract is "the last 256 KiB". The cap has to bound the
         # READ, not just the response.
         try:
-            with path.open("rb") as handle:
-                size = handle.seek(0, os.SEEK_END)
-                truncated = size > self._MAX_TASK_LOG_BYTES
-                handle.seek(
-                    -self._MAX_TASK_LOG_BYTES if truncated else 0,
-                    os.SEEK_END if truncated else os.SEEK_SET,
-                )
-                data = handle.read(self._MAX_TASK_LOG_BYTES)
+            data, truncated = self._read_tail_bytes(path, self._MAX_TASK_LOG_BYTES)
         except FileNotFoundError:
             raise RunRejectedError(
                 f"no log for task {task_id!r} in run {record.run_id}"

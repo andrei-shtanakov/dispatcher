@@ -1231,9 +1231,17 @@ function renderRunView(view) {
     // this whole node every five seconds, and re-fetching a growing log on
     // every tick would be waste nobody asked for. Its content is preserved
     // across re-renders the same way the verb result is.
-    + `<p><button id="rc-logs-load" type="button">logs</button>
-        <span class="rc-hint">maestro's own timeline for this run</span></p>
-       <div id="rc-logs"></div>`;
+    // Offered only once a run EXISTS (codex round 4, minor): this very
+    // view already renders "no run yet" from the same fact, and a button
+    // whose every click is a guaranteed 404 is the defect class Task 5
+    // fixed for the verbs — the page contradicting a sentence it just
+    // printed. The pane div stays, so the poll's restore logic is
+    // identical either way.
+    + (rec.run_id
+        ? `<p><button id="rc-logs-load" type="button">logs</button>
+            <span class="rc-hint">maestro's own timeline for this run</span></p>`
+        : "")
+    + `<div id="rc-logs"></div>`;
 }
 
 let rcViewTimer = null;
