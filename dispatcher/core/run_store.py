@@ -361,7 +361,13 @@ class RunStore:
         fp = fingerprint_of(key.as_text(), work_id, revision)
         existing = self.get(request_id)
         if existing is not None:
-            if existing.fingerprint == fp:
+            # A pre-B1 record has no stored fingerprint, but the identity
+            # triple it is derived from IS persisted — derive it from the
+            # record itself rather than conflicting every legacy retry.
+            stored = existing.fingerprint or fingerprint_of(
+                existing.repo_key, existing.work_id, existing.revision
+            )
+            if stored == fp:
                 return existing
             raise FingerprintMismatch(
                 f"{request_id} was already used for a different attempt"

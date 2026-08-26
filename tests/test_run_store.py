@@ -589,3 +589,47 @@ def test_ensure_creates_guards_alongside_requests_and_locks(tmp_path: Path) -> N
     store = RunStore(tmp_path)
     store._ensure()
     assert (tmp_path / "guards").is_dir()
+
+
+def test_a_legacy_reserved_record_retries_instead_of_conflicting(
+    tmp_path: Path,
+) -> None:
+    """Migration rule: a pre-B1 `reserved` record has no stored fingerprint,
+    but its identity triple (repo_key, work_id, revision) is persisted — the
+    fingerprint is DERIVED from exactly that triple, so an empty stored one
+    derives from the record itself. Without this, the documented retry path
+    dies `FingerprintMismatch` forever after an upgrade."""
+    store = RunStore(tmp_path)
+    path = tmp_path / "requests" / "rc-legacy11-00000000.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "request_id": "rc-legacy11-00000000",
+                "repo_key": _KEY.as_text(),
+                "state": "reserved",
+                "work_id": "w",
+                "revision": "a" * 40,
+            }
+        )
+    )
+    rec = store.reserve(
+        "rc-legacy11-00000000",
+        _KEY,
+        known_runs=[],
+        window_start="T1",
+        work_id="w",
+        revision="a" * 40,
+    )
+    assert rec.request_id == "rc-legacy11-00000000"
+    assert rec.state == "reserved"
+    # ...and the identity check keeps its teeth for a DIFFERENT attempt:
+    with pytest.raises(FingerprintMismatch):
+        store.reserve(
+            "rc-legacy11-00000000",
+            _KEY,
+            known_runs=[],
+            window_start="T1",
+            work_id="w",
+            revision="b" * 40,
+        )
