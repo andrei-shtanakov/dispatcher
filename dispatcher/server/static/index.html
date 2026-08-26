@@ -1433,10 +1433,17 @@ document.getElementById("rc-run-view").addEventListener("click", async ev => {
   // on screen to say so. One counter for the whole panel is deliberate:
   // `#rc-task-log` lives INSIDE `#rc-logs`, so reloading the timeline
   // legitimately supersedes a task log still in flight.
-  const gen = ++rcLogsGen;
-  const settle = (paneId, forRequest, html) => {
+  // The generation bumps ONLY when a click actually starts a log request
+  // (codex round 7, found after merge). This handler is delegated on the
+  // whole panel, so it runs for status/retry/approve clicks too — and
+  // bumping here, before the target check, made every unrelated click
+  // cancel an in-flight log fetch: the answer failed the generation guard
+  // and the pane sat on "reading…" forever. Superseding is something only
+  // a NEWER LOG REQUEST may do; the two branches below each claim their
+  // own generation at the moment they start one.
+  const settle = (paneId, forRequest, gen, html) => {
     if (rcViewRequestId !== forRequest) return;   // superseded by another open
-    if (gen !== rcLogsGen) return;                // superseded by a newer click
+    if (gen !== rcLogsGen) return;                // superseded by a newer log request
     const live = document.getElementById(paneId);
     if (live) live.innerHTML = html;
   };
@@ -1450,35 +1457,37 @@ document.getElementById("rc-run-view").addEventListener("click", async ev => {
   if (ev.target.id === "rc-logs-load") {
     const id = rcViewRequestId;
     if (!id) return;
+    const gen = ++rcLogsGen;
     box.innerHTML = `<p class="dim">reading…</p>`;
     box.dataset.request = id;
     try {
       const resp = await fetch(`/api/runs/${encodeURIComponent(id)}/logs`);
       const data = await resp.json();
-      settle("rc-logs", id, resp.ok
+      settle("rc-logs", id, gen, resp.ok
         ? renderRunLogs(data)
         : `<div class="warn">${esc(data.detail ?? `HTTP ${resp.status}`)}</div>`);
       const live = document.getElementById("rc-logs");
       if (live && rcViewRequestId === id) live.dataset.request = id;
     } catch (err) {
-      settle("rc-logs", id, `<div class="warn">${esc(String(err))}</div>`);
+      settle("rc-logs", id, gen, `<div class="warn">${esc(String(err))}</div>`);
     }
     return;
   }
   if (ev.target.classList?.contains("rc-task-log")) {
     const id = rcViewRequestId;
     const task = ev.target.dataset.task;
+    const gen = ++rcLogsGen;
     const out = document.getElementById("rc-task-log");
     out.innerHTML = `<p class="dim">reading ${esc(task)}…</p>`;
     try {
       const resp = await fetch(
         `/api/runs/${encodeURIComponent(id)}/logs/${encodeURIComponent(task)}`);
       const data = await resp.json();
-      settle("rc-task-log", id, resp.ok
+      settle("rc-task-log", id, gen, resp.ok
         ? renderTaskLog(data)
         : `<div class="warn">${esc(data.detail ?? `HTTP ${resp.status}`)}</div>`);
     } catch (err) {
-      settle("rc-task-log", id, `<div class="warn">${esc(String(err))}</div>`);
+      settle("rc-task-log", id, gen, `<div class="warn">${esc(String(err))}</div>`);
     }
   }
 });
