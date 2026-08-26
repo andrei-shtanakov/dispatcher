@@ -810,7 +810,7 @@
 
 ## codex-review: потребитель кита steward (принят 2026-08-25)
 
-- [ ] PR-B: caller-workflow гейта codex-review (по образцу пилота spec-runner:
+- [x] PR-B: caller-workflow гейта codex-review — влит #188 (`fe8da31`, 2026-08-25, пустой вердикт с первого прогона) (по образцу пилота spec-runner:
       механика из base, потолки, generated-декларация, экономный триггер по
       драфту/лейблу) + лейбл `codex-review` + секрет `CODEX_REVIEW_API_KEY`
       (кладёт владелец в настройки репо) — после мержа PR-A
