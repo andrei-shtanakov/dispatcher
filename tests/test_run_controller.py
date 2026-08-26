@@ -507,14 +507,20 @@ def test_two_candidates_are_never_guessed_between(tmp_path: Path) -> None:
 
 
 def test_adoption_releases_the_lock(tmp_path: Path) -> None:
+    """Checked directly against the lock, not via a full `submit` — Task 6
+    fix round 2's fail-closed fix means a submit ALSO checks the
+    single-live-run gate now, and "01LATE" here (a bare `mkdir`, no
+    `state.db` — a test stand-in, not a real published run) is ITSELF a
+    non-terminal adopted run for this repo, which the gate correctly keeps
+    blocking via `run_in_flight:` regardless of the lock. This test's job
+    is narrower and unaffected by that: prove adoption releases the LOCK
+    specifically."""
     controller, runs = _unknown(tmp_path)
     (runs / "01LATE").mkdir()
     controller.resolve_unknown(_REQ)
-    head = _repo_head(tmp_path / "ws")
-    second = _request(head).model_copy(
-        update={"request_id": "33333333-3333-4333-8333-333333333333"}
-    )
-    assert controller.submit(second).accepted is not False
+    assert controller._config.run_state_dir is not None
+    store = RunStore(controller._config.run_state_dir)
+    assert store.holds_lock(_DEPLOYER_KEY) is None
 
 
 def test_end_orphan_refuses_a_run_outside_the_candidate_set(tmp_path: Path) -> None:
@@ -1811,3 +1817,41 @@ def test_a_malformed_lock_blocks_with_its_own_code(tmp_path: Path) -> None:
     assert receipt.accepted is False
     assert receipt.reason is not None
     assert receipt.reason.startswith("lock_malformed:")
+
+
+def test_submit_refuses_when_a_run_directory_has_no_state_db_yet(
+    tmp_path: Path,
+) -> None:
+    """spec's Global Constraint: fail-closed, everything non-terminal
+    blocks. A run directory that EXISTS but has no `state.db` yet (died,
+    or is simply lagging, between mkdir and the db write) must not be
+    confused with a vanished run — the directory is right there — but it
+    also must not be silently unrepresented: dispatcher's own record
+    still says this run is non-terminal, so a second submit must still
+    refuse, via the ordinary RUN_IN_FLIGHT path, not RUN_VANISHED."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    assert controller.submit(_request(head)).accepted is True
+
+    assert config.maestro_home is not None
+    run_dir = config.maestro_home / "projects/github.com/owner/deployer/runs/01AAA"
+    (run_dir / "state.db").unlink()  # directory stays; only the db is gone
+
+    # A DIFFERENT cli/run_id for the second attempt: if a fail-open gate
+    # let this through, the SAME cli/run_id would collide on `mkdir` at
+    # launch time and mask the hole behind an unrelated subprocess error.
+    # A distinct binary makes the buggy symptom unambiguous instead — a
+    # second run for the SAME repo fully materializing, exactly what the
+    # single-live-run guarantee exists to prevent.
+    cli2 = _fake_maestro(tmp_path / "fake-maestro-2", creates_run="01BBB")
+    second_controller = RunController(_config(tmp_path, cli2), materialize_timeout=10.0)
+    second = _request(head).model_copy(
+        update={"request_id": "22222222-2222-4222-8222-222222222222"}
+    )
+    receipt = second_controller.submit(second)
+    assert receipt.accepted is False
+    assert receipt.reason is not None
+    assert receipt.reason.startswith("run_in_flight:")
+    assert "01AAA" in receipt.reason

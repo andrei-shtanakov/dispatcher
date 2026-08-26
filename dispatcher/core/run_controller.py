@@ -540,11 +540,14 @@ class RunController:
         checked directly against the run root. Absent → `run_dir_exists`
         `RunFact` (`classify_repo`'s `RUN_VANISHED` arm). A directory that
         DOES exist there but carries no `state.db` (most likely
-        mid-materialization, the db not written yet) is left unrepresented
-        — a real gap short of "vanished", not this predicate's job to
-        guess at. A stat failure while checking is unreadable, never
-        vanished (spec §7's unreadable split, same rule as everywhere
-        else this module applies it).
+        mid-materialization, the db not written yet, or a launch that died
+        between mkdir and the db write) is a real gap short of "vanished" —
+        it stays a non-terminal `RunFact` (`status="missing-state"`) so
+        `classify_repo`'s `RUN_IN_FLIGHT` arm fires on it (fail-closed:
+        dispatcher's own record still says this run is non-terminal, so it
+        must still block, spec's Global Constraint). A stat failure while
+        checking is unreadable, never vanished (spec §7's unreadable
+        split, same rule as everywhere else this module applies it).
         """
         _, _, home = self._require_on()
         scratch = ProjectSnapshot(name="maestro", path="")
@@ -592,6 +595,19 @@ class RunController:
                 unreadable.append(f"run {record.run_id}: cannot stat run directory")
                 continue
             if run_dir_exists:
+                # The directory exists but `classified_runs` never saw it
+                # (no `state.db` yet — died, or lagging between mkdir and
+                # the db write). Still non-terminal by dispatcher's own
+                # record, so it must stay represented as RUN_IN_FLIGHT,
+                # never fall through unrepresented (fail-open).
+                runs.append(
+                    RunFact(
+                        run_id=record.run_id,
+                        status="missing-state",
+                        request_id=record.request_id,
+                        run_dir_exists=True,
+                    )
+                )
                 continue
             runs.append(
                 RunFact(
