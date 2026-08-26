@@ -677,6 +677,27 @@ class RunStore:
         run whose absence was never proven, only observed — is recorded,
         not silently absorbed.
         """
+        existing = self.get(request_id)
+        if existing is None:
+            raise RunStoreError(f"no launch record for {request_id}")
+        # The release below refuses a lock this record does not own (a
+        # healthy lock held by a DIFFERENT request_id can stand for the
+        # same RepoKey). Prove the release CAN happen before persisting
+        # the irreversible terminal tombstone — otherwise the caller
+        # reports the refusal while the mutation silently applied. Safe
+        # against interleaving: the caller holds the guard, and every
+        # other lock mutation takes it too.
+        key = self._key_of(existing)
+        state = self.read_lock(key)
+        if isinstance(state, Malformed):
+            raise LockBusyError(
+                f"{key.as_text()}: lock file is malformed; release it via "
+                "the malformed-lock escape before acknowledging"
+            )
+        if isinstance(state, LockInfo) and state.request_id != request_id:
+            raise LockBusyError(
+                f"{key.as_text()}: lock is held by {state.request_id}, not {request_id}"
+            )
         record = self._transition(
             request_id,
             state="terminal",

@@ -2093,3 +2093,35 @@ def test_a_changed_repository_conflicts_instead_of_replaying(
     assert receipt.accepted is False
     assert receipt.reason is not None
     assert receipt.reason.startswith("request_id_conflict:")
+
+
+def test_a_foreign_lock_refuses_acknowledge_before_the_tombstone(
+    tmp_path: Path,
+) -> None:
+    """The tombstone's lock release can refuse (a healthy lock owned by a
+    DIFFERENT request_id stands for the RepoKey). That refusal must come
+    BEFORE the irreversible terminal write — otherwise the API reports 409
+    while the administrative mutation silently applied."""
+    import json as _json
+
+    from dispatcher.core.run_store import LockBusyError
+
+    controller = _materialized(tmp_path, _PUBLISH_THEN_ECHO)
+    shutil.rmtree(tmp_path / "mhome/projects/github.com/owner/deployer/runs/01AAA")
+    store = controller._store()
+    lock = store._lock_path(_DEPLOYER_KEY)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(
+        _json.dumps(
+            {
+                "request_id": "rc-ffffffff-99999999",
+                "fingerprint": "f",
+                "created_at": "t",
+            }
+        )
+    )
+    with pytest.raises(LockBusyError, match="held by"):
+        controller.acknowledge_vanished(_REQ, "01AAA", "r", None)
+    rec = store.get(_REQ)
+    assert rec is not None and rec.state != "terminal"
+    assert rec.outcome != "vanished-acknowledged"
