@@ -743,3 +743,21 @@ def test_a_swap_during_the_audit_write_is_caught_and_restored(
     assert not released.exists() or not any(
         f for f in released.iterdir() if f.name.endswith(".released")
     )
+
+
+def test_a_corrupt_record_refuses_its_request_id_instead_of_overwriting(
+    tmp_path: Path,
+) -> None:
+    """A record file that EXISTS but cannot be read is not a free
+    request_id: reserving over it would os.replace the broken bytes —
+    destroying the very evidence the unreadable-blocker points at — and
+    adopt the id as fresh. Fail-closed: refuse, file untouched."""
+    store = RunStore(tmp_path)
+    path = tmp_path / "requests" / f"{_REQ}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"{ definitely not a record")
+    with pytest.raises(RunStoreError, match="cannot be read"):
+        store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
+    assert path.read_bytes() == b"{ definitely not a record"
+    # and no lock was left behind by the refused attempt
+    assert store.holds_lock(_KEY) is None

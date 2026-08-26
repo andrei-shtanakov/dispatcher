@@ -269,15 +269,28 @@ class RunStore:
             os.close(fd)  # closing the fd releases the flock
 
     def get(self, request_id: str) -> LaunchRecord | None:
-        """The current `LaunchRecord` for `request_id`, or `None` if unknown."""
+        """The current `LaunchRecord` for `request_id`, or `None` if unknown.
+
+        `None` means PROVEN absence only. A file that exists but cannot be
+        read or parsed raises: treating it as a free request_id would let
+        the next reserve `os.replace` the broken bytes — destroying the
+        evidence the unreadable-blocker points at — and adopt the id as
+        fresh (fail-closed, same rule as everywhere else in this module).
+        """
         try:
-            raw = self._record_path(request_id).read_text()
-        except OSError:
+            raw = self._record_path(request_id).read_text(errors="replace")
+        except FileNotFoundError:
             return None
+        except OSError as err:
+            raise RunStoreError(
+                f"record for {request_id} exists but cannot be read: {err}"
+            ) from err
         try:
             return LaunchRecord.model_validate_json(raw)
-        except ValueError:
-            return None
+        except ValueError as err:
+            raise RunStoreError(
+                f"record for {request_id} exists but cannot be read (invalid content)"
+            ) from err
 
     def _write(self, record: LaunchRecord) -> None:
         """Temp-then-rename: a half-written record must never be readable."""
