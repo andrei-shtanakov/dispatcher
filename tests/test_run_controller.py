@@ -2068,3 +2068,28 @@ def test_the_malformed_lock_door_actually_unblocks_a_new_submit(
         update={"request_id": "22222222-2222-4222-8222-222222222222"}
     )
     assert controller.submit(second).accepted is True
+
+
+def test_a_changed_repository_conflicts_instead_of_replaying(
+    tmp_path: Path,
+) -> None:
+    """The replay branch must not silently ignore the repository dimension
+    of the attempt's identity: same request_id + different repository is a
+    request_id_conflict, not a replay of the old refusal. Raw-string
+    comparison — the conflict must be detectable without re-resolving the
+    checkout (replay stays reproducible when inventory changed)."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    controller = RunController(_config(tmp_path, cli), materialize_timeout=10.0)
+    assert controller.submit(_request(head)).accepted is True
+
+    second = _request(head).model_copy(
+        update={"request_id": "22222222-2222-4222-8222-222222222222"}
+    )
+    assert controller.submit(second).accepted is False
+
+    moved = second.model_copy(update={"repository": str(tmp_path / "elsewhere")})
+    receipt = controller.submit(moved)
+    assert receipt.accepted is False
+    assert receipt.reason is not None
+    assert receipt.reason.startswith("request_id_conflict:")

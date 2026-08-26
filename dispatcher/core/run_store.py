@@ -153,6 +153,12 @@ class LaunchRecord(BaseModel):
     #: fingerprint-matching repeat replays the original 409 semantically,
     #: with zero re-classification.
     fingerprint: str = ""
+    #: The request's OWN repository string, verbatim — the raw identity
+    #: dimension the fingerprint's canonical `repo_key` cannot carry into
+    #: the replay branch (which by design runs before any resolution, so a
+    #: changed repository must be detectable without re-resolving the
+    #: checkout). Empty on records written before this field existed.
+    repository: str = ""
     response_class: str | None = None
     admission_code: str | None = None
     admission_detail: str | None = None
@@ -298,6 +304,7 @@ class RunStore:
         revision: str = "",
         tasks: str = "",
         checkout: str = "",
+        repository: str = "",
         spec_ref_path: str | None = None,
         spec_commit: str | None = None,
         plan_ref_path: str | None = None,
@@ -331,6 +338,7 @@ class RunStore:
                 revision=revision,
                 tasks=tasks,
                 checkout=checkout,
+                repository=repository,
                 spec_ref_path=spec_ref_path,
                 spec_commit=spec_commit,
                 plan_ref_path=plan_ref_path,
@@ -348,6 +356,7 @@ class RunStore:
         revision: str = "",
         tasks: str = "",
         checkout: str = "",
+        repository: str = "",
         spec_ref_path: str | None = None,
         spec_commit: str | None = None,
         plan_ref_path: str | None = None,
@@ -411,6 +420,7 @@ class RunStore:
             plan_ref_path=plan_ref_path,
             plan_commit=plan_commit,
             checkout=checkout,
+            repository=repository,
             fingerprint=fp,
         )
         try:

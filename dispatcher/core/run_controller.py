@@ -348,6 +348,19 @@ class RunController:
                 fp = fingerprint_of(
                     existing.repo_key, request.work_id, request.revision
                 )
+                # The fingerprint's repo dimension is the CANONICAL key and
+                # is taken from the stored record (this branch runs before
+                # any resolution), so a changed `repository` in the repeat
+                # request would slip through it — compare the raw string
+                # the record persisted. Empty stored value = a record from
+                # before the field existed: fingerprint-only, as before.
+                if existing.repository and request.repository != existing.repository:
+                    return self._refuse(
+                        request.request_id,
+                        "request_id_conflict: the repeat names a different "
+                        f"repository than the recorded attempt "
+                        f"({existing.repository!r})",
+                    )
                 if fp == existing.fingerprint:
                     # Reproducible, zero re-classification: the ORIGINAL
                     # decision replays verbatim even if the repo's live
@@ -412,6 +425,7 @@ class RunController:
                 work_id=request.work_id,
                 revision=request.revision,
                 tasks=request.tasks,
+                repository=request.repository,
                 spec_ref_path=request.spec_ref.path if request.spec_ref else None,
                 spec_commit=validated.spec_commit,
                 plan_ref_path=request.plan_ref.path if request.plan_ref else None,
