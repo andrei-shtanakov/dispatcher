@@ -436,10 +436,30 @@ class RunController:
                 if verdict.admission == "blocked":
                     blocker = verdict.blockers[0]
                     detail = _blocker_detail(blocker)
-                    # Preflight fact first: `mark_admission_rejected`
-                    # transitions an EXISTING record, so one must exist
-                    # for this request_id before it can be terminalized.
-                    _reserve()
+                    try:
+                        # Preflight fact first: `mark_admission_rejected`
+                        # transitions an EXISTING record, so one must
+                        # exist for this request_id before it can be
+                        # terminalized.
+                        _reserve()
+                    except LockBusyError:
+                        # I1: `classify_repo` orders a lock-derived
+                        # blocker first when one applies (LAUNCH_BUSY,
+                        # LOCK_MALFORMED, LOCK_IO_UNREADABLE all share
+                        # this) — the blocker IS an existing lock file, so
+                        # the preflight `O_EXCL` create above collides
+                        # with it and there is nothing to persist against.
+                        # The refusal stays EPHEMERAL for this blocker
+                        # family (persistence through a contended lock is
+                        # a scoped-out gap, spec §8.2/§8.3 — PR-B2/C's
+                        # concern), but the operator must still see the
+                        # SPECIFIC code here: `lock_malformed:` in
+                        # particular is what spec §8.3's release-malformed
+                        # escape keys off, and a bare re-raise would lose
+                        # it behind the generic "already in flight" text.
+                        return self._refuse(
+                            request.request_id, f"{blocker.code}: {detail}"
+                        )
                     store.mark_admission_rejected(
                         request.request_id,
                         code=blocker.code,
@@ -511,6 +531,20 @@ class RunController:
         surfaces as its own `RUN_STATE_UNREADABLE` blocker rather than
         folding silently into "some run is busy" (spec §7's unreadable
         split, mirrored from `RunStore.read_lock`).
+
+        `classified_runs` only walks directories that currently EXIST —
+        it can never itself report a run that vanished. Spec §7's vanished
+        predicate runs the other way, from a non-terminal `LaunchRecord`
+        outward: after the disk-backed pass above, every non-terminal
+        record naming a `run_id` `classified_runs` never saw at all is
+        checked directly against the run root. Absent → `run_dir_exists`
+        `RunFact` (`classify_repo`'s `RUN_VANISHED` arm). A directory that
+        DOES exist there but carries no `state.db` (most likely
+        mid-materialization, the db not written yet) is left unrepresented
+        — a real gap short of "vanished", not this predicate's job to
+        guess at. A stat failure while checking is unreadable, never
+        vanished (spec §7's unreadable split, same rule as everywhere
+        else this module applies it).
         """
         _, _, home = self._require_on()
         scratch = ProjectSnapshot(name="maestro", path="")
@@ -518,9 +552,11 @@ class RunController:
         by_run_id = {r.run_id: r.request_id for r in records if r.run_id is not None}
         runs: list[RunFact] = []
         unreadable: list[str] = []
+        seen_run_ids: set[str] = set()
         for info, _ in classified_runs(home, scratch):
             if info.repo_key != key.as_text() or info.run_id is None:
                 continue
+            seen_run_ids.add(info.run_id)
             request_id = by_run_id.get(info.run_id)
             if info.status == "unreadable" and request_id is None:
                 unreadable.append(f"run {info.run_id}: state unreadable")
@@ -540,6 +576,31 @@ class RunController:
             w for w in scratch.warnings if w.startswith("runs enumeration:")
         )
         unreadable.extend(list_unreadable)
+
+        runs_root = self.runs_dir(key)
+        for record in records:
+            if (
+                record.repo_key != key.as_text()
+                or record.run_id is None
+                or record.state == "terminal"
+                or record.run_id in seen_run_ids
+            ):
+                continue
+            try:
+                run_dir_exists = (runs_root / record.run_id).is_dir()
+            except OSError:
+                unreadable.append(f"run {record.run_id}: cannot stat run directory")
+                continue
+            if run_dir_exists:
+                continue
+            runs.append(
+                RunFact(
+                    run_id=record.run_id,
+                    status="missing",
+                    request_id=record.request_id,
+                    run_dir_exists=False,
+                )
+            )
         return tuple(runs), tuple(unreadable)
 
     def _launch(

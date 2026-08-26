@@ -319,7 +319,11 @@ def test_busy_repository_is_accepted_false(tmp_path: Path) -> None:
     )
     receipt = controller.submit(second)
     assert receipt.accepted is False
-    assert "in flight" in (receipt.reason or "")
+    # Task 6 fix round 1 (I1): a held lock now surfaces the specific
+    # admission code from `classify_repo` (`launch_busy:`) instead of the
+    # old generic "already in flight" text — same refusal, a more precise
+    # reason.
+    assert (receipt.reason or "").startswith("launch_busy:")
 
 
 def test_child_is_launched_with_an_explicit_maestro_home(tmp_path: Path) -> None:
@@ -449,7 +453,9 @@ def test_mark_materialized_failure_never_claims_the_run_did_not_happen(
     )
     second_receipt = RunController(_config(tmp_path, cli)).submit(second)
     assert second_receipt.accepted is False
-    assert "in flight" in (second_receipt.reason or "")
+    # Task 6 fix round 1 (I1): see the same note in
+    # test_busy_repository_is_accepted_false.
+    assert (second_receipt.reason or "").startswith("launch_busy:")
 
 
 # -- task 5: leaving launch_unknown — adoption and operator resolution ------
@@ -1756,3 +1762,52 @@ def test_guard_busy_refuses_with_zero_lock_mutations(tmp_path: Path) -> None:
     finally:
         holder.terminate()
         holder.join()
+
+
+def test_submit_refuses_when_a_run_directory_has_vanished(tmp_path: Path) -> None:
+    """spec §7: a non-terminal LaunchRecord whose run directory is gone is
+    VANISHED, not silently "nothing to see". `classified_runs` only
+    enumerates directories that currently exist, so this predicate has to
+    be checked the OTHER way — from the LaunchRecord outward — which is
+    exactly what `_capture_run_facts` skipped before this fix."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    assert controller.submit(_request(head)).accepted is True
+
+    assert config.maestro_home is not None
+    run_dir = config.maestro_home / "projects/github.com/owner/deployer/runs/01AAA"
+    shutil.rmtree(run_dir)
+
+    second = _request(head).model_copy(
+        update={"request_id": "22222222-2222-4222-8222-222222222222"}
+    )
+    receipt = controller.submit(second)
+    assert receipt.accepted is False
+    assert receipt.reason is not None
+    assert receipt.reason.startswith("run_vanished:")
+    assert "01AAA" in receipt.reason
+
+
+def test_a_malformed_lock_blocks_with_its_own_code(tmp_path: Path) -> None:
+    """The operator MUST see lock_malformed:, not the generic in-flight
+    message, so the release-malformed escape (spec §8.3) applies.
+    Deliberately ephemeral (I1): a genuinely contended lock file means
+    there is nothing to persist against, so a replay of this refusal is
+    NOT expected to be identical — a second submit just re-classifies."""
+    head = _repo(tmp_path / "ws")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    assert config.run_state_dir is not None
+
+    store = RunStore(config.run_state_dir)
+    lock_path = store._lock_path(_DEPLOYER_KEY)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text("not valid json")
+
+    receipt = controller.submit(_request(head))
+    assert receipt.accepted is False
+    assert receipt.reason is not None
+    assert receipt.reason.startswith("lock_malformed:")
