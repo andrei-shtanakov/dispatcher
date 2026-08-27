@@ -29,8 +29,10 @@
   - NodeRef строится из узлов снапшота (по node_id); статус —
     `declared_status`;
   - сортировки §3.2; `generated_at` = `now` (ISO), параметр — для тестов.
-- `state`: `read` (все прочитаны) / `partial` (absent_repos непуст) /
-  `unavailable`.
+- `state`, в порядке проверки: `repos_read == 0` → `unavailable`
+  («ни одного TODO.md» — спека §3.1, прецедент `_todo_plane` epics.py:216);
+  absent_repos непуст → `partial`; иначе `read`. Ветка unavailable
+  срабатывает и когда все чекауты на месте, но TODO.md нет ни в одном.
 
 Тесты задачи 1 — весь список §5 спеки, кроме двух последних UI/route-строк:
 фикстурный воркспейс (tmp-манифест + TODO-файлы, паттерн
@@ -40,7 +42,9 @@ edge waiting; закрытая цель → stale, ребро не исчеза�
 loose_refs + finding; dangling todo:// → loose_refs + PF-ID-DANGLING;
 репо без чекаута → UNRESOLVABLE + absent + partial; чекаут без TODO →
 NO-TODO; нечитаемый TODO (битые байты) → absent `unreadable:*` + partial;
-нет манифеста / манифест не парсится → unavailable ×2; триггеры
+нет манифеста / манифест не парсится → unavailable ×2; все чекауты
+есть, но ни одного TODO.md → unavailable, НЕ partial (регрессионный к
+границе состояний); триггеры
 open-only; два @blocked_by → два ребра; детерминизм без generated_at.
 
 ## Задача 2 — роут `GET /api/waits` (§3.1)
