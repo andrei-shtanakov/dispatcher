@@ -3860,18 +3860,33 @@ function lpPendingItemHtml(rowKey, entry) {
 function lpRenderPending(readyRows) {
   const known = new Set(readyRows.map(r => lpRowKey(r.repo_key, r.work_id)));
   const orphans = Object.keys(lpState.pending).filter(k => !known.has(k));
-  document.getElementById("lp-pending").innerHTML = orphans.length
-    ? `<ul class="lp-pending-list">${orphans
-        .map(k => lpPendingItemHtml(k, lpState.pending[k])).join("")}</ul>`
+  // Settled outcomes whose Ready row is GONE (the normal post-launch state:
+  // the item left ready[] on the very refetch the receipt triggered) render
+  // here too — otherwise the receipt, the only place run_id appears, would
+  // be visible only for the duration of that refetch (gate pass-3 finding).
+  const outcomes = Object.keys(lpState.rowMessages)
+    .filter(k => !known.has(k) && !(k in lpState.pending));
+  const items = orphans
+    .map(k => lpPendingItemHtml(k, lpState.pending[k]))
+    .concat(outcomes.map(k =>
+      `<li>${esc(k)} — ${lpState.rowMessages[k]}</li>`));
+  document.getElementById("lp-pending").innerHTML = items.length
+    ? `<ul class="lp-pending-list">${items.join("")}</ul>`
     : `<p class="dim">no pending launches awaiting resolution</p>`;
 }
 
 function lpActiveRowHtml(row) {
+  // A linked row (request_id present) opens the run view — the same typed
+  // split as repo blockers: unlinked runs render text only (spec §2/§12.4).
+  const runCell = row.request_id
+    ? `<a href="#run-console" class="lp-open-run"
+         data-request-id="${esc(row.request_id)}">${esc(row.run_id ?? row.request_id)}</a>`
+    : esc(row.run_id ?? "—");
   return `<tr class="${row.attention ? "warn" : ""}">
     <td>${esc(row.repo_key)}</td>
     <td>${esc(row.work_id ?? "—")}</td>
     <td>${esc(row.state)}</td>
-    <td>${esc(row.run_id ?? "—")}</td>
+    <td>${runCell}</td>
     <td>${esc(row.run_status ?? "—")}</td>
     <td>${esc(row.updated_at || "—")}</td></tr>`;
 }

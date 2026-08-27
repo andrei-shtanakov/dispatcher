@@ -870,3 +870,47 @@ testCase('behaviour 5: release-malformed — a structured error keeps the '
   console.error('\nHARNESS CRASHED:', (err && err.stack) || err);
   process.exitCode = 1;
 });
+
+// ---- gate pass-3: outcomes survive the row's disappearance -------------------
+
+testCase('gate-3a: a settled receipt stays visible after the Ready row '
+  + 'vanishes on refetch', async () => {
+  let servedFirst = false;
+  await withPage(async page => {
+    // Override submit to return a real run_id, then confirm: the refetch
+    // triggered by the settled receipt serves a snapshot where the item
+    // is GONE from ready (the real post-launch state) — the receipt (the
+    // only place run_id appears) must survive that.
+    page.routes.unshift([u => u === '/api/runs/submit', () => ok({
+      request_id: 'rq-gate3a', run_id: '01RUN', accepted: true, reason: null,
+    })]);
+    await click(page, '#lp-ready tr.lp-ready-row');
+    await click(page, '#lp-ready .lp-confirm');
+    const outcomesHtml = htmlOf(page, '#lp-pending');
+    check(outcomesHtml.includes('01RUN'),
+      `the receipt's run_id survives the vanished row (got: ${outcomesHtml})`);
+  }, () => {
+    // First fetch (boot): the item is Ready. Every later fetch (the
+    // post-receipt refetch): the item is gone — launched.
+    if (!servedFirst) { servedFirst = true; return ok(readySnapshot()); }
+    return ok(snapshot());
+  });
+});
+
+testCase('gate-3b: an active row with a request_id links to the run view',
+  async () => {
+  await withPage(async page => {
+    const activeHtml = htmlOf(page, '#lp-active');
+    check(activeHtml.includes('lp-open-run'),
+      `active rows with a request_id carry the run-view opener (got: ${activeHtml})`);
+    check(!/lp-open-run[^>]*>[^<]*01UNLINKED/.test(activeHtml),
+      'an unlinked active row (request_id null) carries NO opener');
+  }, () => ok(snapshot({active: [
+    {request_id: 'rq-act1', repo_key: 'github.com/o/r', work_id: 'w1',
+     state: 'materialized', run_id: '01LINKED', run_status: 'RUNNING',
+     attention: false, updated_at: '2026-08-27T00:00:01Z'},
+    {request_id: null, repo_key: 'github.com/o/r', work_id: null,
+     state: 'unlinked-run', run_id: '01UNLINKED', run_status: 'RUNNING',
+     attention: false, updated_at: '2026-08-27T00:00:02Z'},
+  ]})));
+});
