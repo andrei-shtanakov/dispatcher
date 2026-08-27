@@ -846,25 +846,28 @@ function renderWaits(view) {
     `<tr><td colspan="2">нет</td></tr>`;
 }
 
-// refresh() fires every 10s without awaiting this poll, so a slow response
-// can outlive its successor. The generation token lets ONLY the newest
-// request render: a late answer repainting the panel would show a closed
-// wait as waiting — precisely the lie this section exists to remove.
-let waitsGeneration = 0;
+// refresh() fires every 10s without awaiting this poll, so polls could
+// overlap. Serialize instead of racing: while one request is in flight, the
+// next tick simply skips — so responses can never arrive out of order (a
+// late answer repainting a newer one would show a closed wait as waiting),
+// and, unlike a newest-wins generation token, a poll that consistently
+// outlives the interval still renders every successful response instead of
+// being discarded forever (local.sh findings 1 and 3 on this change).
+let waitsInFlight = false;
 
 async function refreshWaits() {
-  const generation = ++waitsGeneration;
+  if (waitsInFlight) return; // the running poll will paint; a later tick retries
+  waitsInFlight = true;
   try {
-    const view = await get("/api/waits");
-    if (generation !== waitsGeneration) return; // a newer poll owns the panel
-    renderWaits(view);
+    renderWaits(await get("/api/waits"));
   } catch (err) {
-    if (generation !== waitsGeneration) return;
     // named, not silent — an empty graph would read as "no obligations"
     const disc = document.getElementById("waits-disclaimer");
     disc.className = "err";
     disc.textContent = `waits unavailable: ${err && err.message ? err.message : err}`;
     document.getElementById("waits-graph").innerHTML = "";
+  } finally {
+    waitsInFlight = false;
   }
 }
 
