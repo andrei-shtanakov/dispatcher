@@ -301,11 +301,17 @@ def classify_inventory(captured: CapturedInputs) -> InventoryDecision:
         else:
             unregistered.append(decision)
 
-    open_claims = {
-        item.dag_tag
-        for item in inv.plan_items
-        if item.open and item.dag_tag is not None
-    }
+    # Same naming rule as the claims index above: an open item's
+    # PF-DAG-MISMATCH raw names its file just as a validated tag does.
+    open_claims = set()
+    for open_item in inv.plan_items:
+        if not open_item.open:
+            continue
+        named = open_item.dag_tag
+        if named is None and open_item.dag_diag == "PF-DAG-MISMATCH":
+            named = open_item.dag_raw
+        if named is not None:
+            open_claims.add(named)
     orphan_dags = tuple(
         sorted(
             d.rel_path
