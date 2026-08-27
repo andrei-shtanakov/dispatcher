@@ -25,7 +25,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from dispatcher.core.admission import Blocker, RunFact, classify_repo
+from dispatcher.core.admission import Blocker, RepoAdmission, RunFact, classify_repo
 from dispatcher.core.collectors.maestro import classified_runs
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.models import OrchestrationRunInfo, ProjectSnapshot
@@ -38,6 +38,7 @@ from dispatcher.core.run_identity import (
 from dispatcher.core.run_request import (
     RunRejectedError,
     RunRequest,
+    ValidatedRequest,
     validate_request,
 )
 from dispatcher.core.run_store import (
@@ -74,6 +75,27 @@ _VERBS = frozenset({"status", "retry", "approve", "run-end"})
 
 class ControlPlaneOff(Exception):
     """`run_state_dir` or `maestro_cli` is unset; there is no control plane."""
+
+
+class AdmissionRefused(Exception):
+    """`submit_v2`'s structured non-receipt outcome (spec §4.2).
+
+    Every refusal `submit_v2` can produce — malformed input, a replayed
+    conflict, an admission rejection, an environment fact like a missing
+    checkout — is raised as ONE of these, carrying exactly what the route
+    needs to render spec §4.2's `{code, detail, current}` shape. `status`
+    is the HTTP status the route answers with; `code`/`detail`/`current`
+    are the structured body (`app.py`'s `_structured`).
+    """
+
+    def __init__(
+        self, status: int, code: str, detail: str, current: dict | None = None
+    ) -> None:
+        super().__init__(f"{code}: {detail}")
+        self.status = status
+        self.code = code
+        self.detail = detail
+        self.current = current
 
 
 class LaunchReceipt(BaseModel):
@@ -588,7 +610,13 @@ class RunController:
 
         store = self._store()
         try:
-            existing = store.get(request.request_id)
+            result = self._replay_existing(
+                store,
+                request.request_id,
+                raw_repository=request.repository,
+                work_id=request.work_id,
+                revision=request.revision,
+            )
         except RunStoreError as err:
             # `RunRequest.request_id` is pydantic-constrained to a safe
             # charset (spec §4), but this is the second, independent layer:
@@ -599,65 +627,12 @@ class RunController:
             # UUID-shaped. Nothing has been reserved or launched yet, so
             # "no run exists" is a fact dispatcher can safely claim.
             return self._refuse(request.request_id, f"cannot use request_id: {err}")
-
-        if existing is not None and existing.state != "reserved":
-            # Spec §8.2 binds EVERY replay, not only admission_rejected
-            # ones: only the SAME attempt may get its receipt back. This
-            # branch returns BEFORE `validate_request`/`reserve` run, so
-            # it must check identity itself — `reserve`'s own check never
-            # sees a repeat whose prior attempt already left "reserved".
-            # Raw repository first: the fingerprint's repo dimension is
-            # the CANONICAL key taken from the stored record (no
-            # resolution has run), so a changed `repository` would slip
-            # through it. Empty stored values = a record from before the
-            # fields existed: replayed as before (indeterminate identity).
-            if existing.repository and request.repository != existing.repository:
-                return self._refuse(
-                    request.request_id,
-                    "request_id_conflict: the repeat names a different "
-                    f"repository than the recorded attempt "
-                    f"({existing.repository!r})",
-                )
-            stored_fp = existing.fingerprint or (
-                fingerprint_of(existing.repo_key, existing.work_id, existing.revision)
-                if (existing.work_id or existing.revision)
-                else ""
-            )
-            if stored_fp and stored_fp != fingerprint_of(
-                existing.repo_key, request.work_id, request.revision
-            ):
-                return self._refuse(
-                    request.request_id,
-                    f"request_id_conflict: {request.request_id} was "
-                    "already used for a different attempt",
-                )
-            if existing.response_class == "admission_rejected":
-                # Reproducible, zero re-classification: the ORIGINAL
-                # decision replays verbatim even if the repo's live
-                # state has since changed enough that a fresh
-                # classification could pass (spec §8.2, §10).
-                return self._refuse(
-                    request.request_id,
-                    f"{existing.admission_code}: {existing.admission_detail}",
-                )
-            # Idempotency: a repeated request_id continues or returns the
-            # existing record and never starts a second process (spec §5.2).
-            reason = existing.reason
-            if reason is None and existing.state == "launching":
-                # `mark_launching` sets no `reason` (only `mark_unknown`
-                # does), so this was the one receipt shape that told the
-                # caller nothing at all: accepted=null AND reason=null.
-                reason = (
-                    f"{request.request_id} is already launching; "
-                    "resubmission does not start a second process — poll "
-                    "this request_id again"
-                )
-            return LaunchReceipt(
-                request_id=request.request_id,
-                run_id=existing.run_id,
-                accepted=_accepted_for(existing),
-                reason=reason,
-            )
+        if isinstance(result, AdmissionRefused):
+            # v1's wire shape is one string, `f"{code}: {detail}"` — bit-
+            # identical to what this branch always rendered.
+            return self._refuse(request.request_id, f"{result.code}: {result.detail}")
+        if isinstance(result, LaunchReceipt):
+            return result
 
         try:
             validated = validate_request(request, self._config)
@@ -703,14 +678,8 @@ class RunController:
 
         try:
             with store.guard(validated.key):
-                lock_state, lock_err = self._read_lock_state(
-                    store, validated.key, request.request_id
-                )
-                run_facts, runs_unreadable = self._capture_run_facts(
-                    store, validated.key
-                )
-                verdict = classify_repo(
-                    lock_state, lock_err, run_facts, runs_unreadable
+                verdict = self._repo_admission(
+                    store, validated.key, request_id=request.request_id
                 )
                 if verdict.admission == "blocked":
                     blocker = verdict.blockers[0]
@@ -754,7 +723,7 @@ class RunController:
                         current={"blockers": [asdict(b) for b in verdict.blockers]},
                     )
                     return self._refuse(request.request_id, f"{blocker.code}: {detail}")
-                _reserve()
+                record = _reserve()
         except GuardBusyError as err:
             return self._refuse(request.request_id, f"guard_busy: {err}")
         except FingerprintMismatch as err:
@@ -768,9 +737,110 @@ class RunController:
             # one of four that had fallen behind it.
             return self._refuse(request.request_id, f"cannot use request_id: {err}")
 
-        return self._launch(
-            store, request, validated.checkout, validated.key, runs, catalog
+        return self._spawn_reserved(store, record, validated, catalog, runs)
+
+    def _replay_existing(
+        self,
+        store: RunStore,
+        request_id: str,
+        *,
+        raw_repository: str | None,
+        work_id: str,
+        revision: str,
+        repo_key: str | None = None,
+    ) -> LaunchReceipt | AdmissionRefused | None:
+        """The §8.2 branch: fingerprint identity for EVERY existing state
+        (reserved included — checked here, before any workspace
+        resolution), `admission_rejected` → the PERSISTED structured
+        refusal as an `AdmissionRefused` VALUE (v1 renders it into
+        today's receipt string; v2 raises it verbatim), receipt states →
+        the `LaunchReceipt` replay. `None` = no record, or a `reserved`
+        record whose identity matches — proceed.
+
+        Identity dimensions differ by caller and MUST NOT be conflated:
+        v1 passes `raw_repository=request.repository` and the
+        raw-vs-stored comparison runs as today. v2 has no raw repository
+        field — it passes `raw_repository=None` and that comparison is
+        skipped for it; identity is then carried entirely by the
+        fingerprint, whose repo dimension v2 supplies directly as
+        `repo_key` (the CANONICAL text `fingerprint_of` takes verbatim,
+        `run_store.py:91`) — no parsing needed. v1 leaves `repo_key`
+        unset and the candidate side of the fingerprint falls back to the
+        STORED record's own `repo_key`, exactly as today (no resolution
+        has run yet at this point in v1's flow either).
+        """
+        existing = store.get(request_id)
+        if existing is None:
+            return None
+        if (
+            raw_repository is not None
+            and existing.repository
+            and raw_repository != existing.repository
+        ):
+            return AdmissionRefused(
+                409,
+                "request_id_conflict",
+                "the repeat names a different repository than the "
+                f"recorded attempt ({existing.repository!r})",
+            )
+        candidate_key = existing.repo_key if repo_key is None else repo_key
+        stored_fp = existing.fingerprint or (
+            fingerprint_of(existing.repo_key, existing.work_id, existing.revision)
+            if (existing.work_id or existing.revision)
+            else ""
         )
+        if stored_fp and stored_fp != fingerprint_of(candidate_key, work_id, revision):
+            return AdmissionRefused(
+                409,
+                "request_id_conflict",
+                f"{request_id} was already used for a different attempt",
+            )
+        if existing.state == "reserved":
+            # Nothing to replay yet — the caller resolves/reserves again
+            # (idempotently, by fingerprint) and drives the launch tail.
+            return None
+        if existing.response_class == "admission_rejected":
+            # Reproducible, zero re-classification: the ORIGINAL decision
+            # replays verbatim even if the repo's live state has since
+            # changed enough that a fresh classification could pass
+            # (spec §8.2, §10).
+            return AdmissionRefused(
+                409,
+                existing.admission_code or "admission_rejected",
+                existing.admission_detail or "",
+                existing.admission_current,
+            )
+        # Idempotency: a repeated request_id continues or returns the
+        # existing record and never starts a second process (spec §5.2).
+        reason = existing.reason
+        if reason is None and existing.state == "launching":
+            # `mark_launching` sets no `reason` (only `mark_unknown`
+            # does), so this was the one receipt shape that told the
+            # caller nothing at all: accepted=null AND reason=null.
+            reason = (
+                f"{request_id} is already launching; resubmission does "
+                "not start a second process — poll this request_id again"
+            )
+        return LaunchReceipt(
+            request_id=request_id,
+            run_id=existing.run_id,
+            accepted=_accepted_for(existing),
+            reason=reason,
+        )
+
+    def _repo_admission(
+        self, store: RunStore, key: RepoKey, *, request_id: str | None = None
+    ) -> RepoAdmission:
+        """`read_lock_state` + `capture_run_facts` + `classify_repo` over
+        one captured set — called INSIDE the caller's guard section. v1
+        and v2 do NOT share one guard-block function (their in-guard work
+        differs: v2 adds inventory capture and the item gate); they share
+        this verdict primitive, the capture functions and the classifier
+        — which is where spec §5's equivalence actually lives.
+        """
+        lock_state, lock_err = read_lock_state(store, key, request_id)
+        run_facts, runs_unreadable = self._capture_run_facts(store, key)
+        return classify_repo(lock_state, lock_err, run_facts, runs_unreadable)
 
     @staticmethod
     def _read_lock_state(
@@ -808,27 +878,27 @@ class RunController:
             scratch_warnings=scratch.warnings,
         )
 
-    def _launch(
+    def _spawn_reserved(
         self,
         store: RunStore,
-        request: RunRequest,
-        checkout: Path,
-        key: RepoKey,
-        runs: Path,
+        record: LaunchRecord,
+        validated: ValidatedRequest,
         catalog: Path,
+        runs: Path,
     ) -> LaunchReceipt:
+        """The launch tail: everything `submit`/`submit_v2` do AFTER their
+        own guard releases — spawn maestro, mark transitions, receipt.
+        `record` is the just-reserved `LaunchRecord` (`_reserve_locked`'s
+        own return, threaded straight through — no re-fetch, no
+        "disappeared between reserve and launch" race to guard against).
+        The receipt's three-valued `accepted` keeps its slice-0 meaning
+        for both callers: it speaks only about THIS launch phase.
+        """
+        request = validated.request
+        checkout = validated.checkout
+        key = validated.key
         state_dir, cli, home = self._require_on()
-        reserved = store.get(request.request_id)
-        if reserved is None:
-            # `reserve()` just wrote this record synchronously; its absence
-            # here is a store invariant violation, not an ordinary failure
-            # mode with a safe fallback, so this is raised rather than
-            # folded into a receipt.
-            raise RunStoreError(
-                f"launch record for {request.request_id} disappeared "
-                "between reserve() and _launch(): nothing to launch against"
-            )
-        before = set(reserved.known_runs)
+        before = set(record.known_runs)
         try:
             self._validate_maestro_cli(cli)
         except RunRejectedError as err:
@@ -1106,8 +1176,9 @@ class RunController:
         """Where this launch's maestro stderr is captured (I1).
 
         `request_id` reaching here has already passed
-        `RunRequest.request_id`'s pydantic charset constraint (`submit` is
-        the only caller of `_launch`), so it is safe to use as a filename.
+        `RunRequest.request_id`'s pydantic charset constraint (`submit` and
+        `submit_v2` are the only callers of `_spawn_reserved`), so it is
+        safe to use as a filename.
         """
         log_dir = state_dir / "launch-stderr"
         log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
