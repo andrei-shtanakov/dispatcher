@@ -811,6 +811,22 @@ function renderWaitsGraph(view) {
       `aria-label="waits graph">${parts.join("")}</svg>`;
 }
 
+// Nothing was read, so nothing may claim absence: "рёбер нет" on an unread
+// plane is a statement about the fleet, not about this request — the same
+// silent-confidence failure the epics planeCell guards against. Used both
+// for a served `unavailable` and for a transport error, so stale tables from
+// the previous successful poll never sit under an "unavailable" disclaimer.
+function renderWaitsUnread() {
+  const unread = colspan =>
+    `<tr><td colspan="${colspan}" class="warn">не прочитано — см. выше</td></tr>`;
+  document.getElementById("waits-graph").innerHTML =
+    `<div class="warn">не прочитано — см. выше</div>`;
+  document.querySelector("#waits-loose tbody").innerHTML = unread(3);
+  document.querySelector("#waits-findings tbody").innerHTML = unread(2);
+  document.getElementById("waits-trigger-count").textContent = "(—)";
+  document.querySelector("#waits-triggers tbody").innerHTML = unread(2);
+}
+
 function renderWaits(view) {
   const plane = view.todo_plane || {};
   document.getElementById("waits-plane").textContent =
@@ -829,17 +845,7 @@ function renderWaits(view) {
     disc.textContent = "";
   }
   if (plane.state === "unavailable") {
-    // Nothing was read, so nothing may claim absence: "рёбер нет" on an
-    // unread plane is a statement about the fleet, not about this request —
-    // the same silent-confidence failure the epics planeCell guards against.
-    const unread = colspan =>
-      `<tr><td colspan="${colspan}" class="warn">не прочитано — см. выше</td></tr>`;
-    document.getElementById("waits-graph").innerHTML =
-      `<div class="warn">не прочитано — см. выше</div>`;
-    document.querySelector("#waits-loose tbody").innerHTML = unread(3);
-    document.querySelector("#waits-findings tbody").innerHTML = unread(2);
-    document.getElementById("waits-trigger-count").textContent = "(—)";
-    document.querySelector("#waits-triggers tbody").innerHTML = unread(2);
+    renderWaitsUnread();
     return;
   }
   renderWaitsGraph(view);
@@ -875,11 +881,12 @@ async function refreshWaits() {
   try {
     renderWaits(await get("/api/waits"));
   } catch (err) {
-    // named, not silent — an empty graph would read as "no obligations"
+    // named, not silent — an empty graph would read as "no obligations";
+    // and the previous poll's tables must not survive under this disclaimer
     const disc = document.getElementById("waits-disclaimer");
     disc.className = "err";
     disc.textContent = `waits unavailable: ${err && err.message ? err.message : err}`;
-    document.getElementById("waits-graph").innerHTML = "";
+    renderWaitsUnread();
   } finally {
     waitsInFlight = false;
   }
