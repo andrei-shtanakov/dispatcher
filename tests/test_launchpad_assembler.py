@@ -570,3 +570,36 @@ def test_active_is_capped_at_200_and_truncated_flag_set(tmp_path: Path) -> None:
 
     assert len(snap.active) == 200
     assert snap.active_truncated is True
+
+
+def test_duplicate_checkouts_of_one_repo_key_are_conflict_not_ready(
+    tmp_path,
+):
+    """Gate pass-2 finding: two checkouts of one RepoKey must not be Ready.
+
+    A ReadyRow carries only repo_key — with two checkouts behind it, submit
+    could resolve the OTHER copy (different HEAD) and persist a wrong
+    decision. Fail-closed: both rows admission="unreadable" with a named
+    duplicate-checkout blocker, no ready rows for that key.
+    """
+    remote = "git@github.com:andrei-shtanakov/dupd.git"
+    ws = tmp_path / "ws"
+    ws.mkdir(exist_ok=True)
+    for name in ("a-copy", "b-copy"):
+        make_repo(
+            ws,
+            "- [ ] A @id:w1 @dag:dags/w1.yaml\n",
+            {"dags/w1.yaml": f"repo_url: {remote}\ntasks: []\n"},
+            remote=remote,
+            name=name,
+        )
+    snap = assemble_snapshot(RunController(_config(tmp_path)))
+    key = "github.com/andrei-shtanakov/dupd"
+    rows = [r for r in snap.repositories if r.repo_key == key]
+    assert len(rows) == 2
+    for row in rows:
+        assert row.admission == "unreadable"
+        (blocker,) = row.blockers
+        assert blocker.code == "repo_unresolved"
+        assert "a-copy" in (blocker.detail or "") and "b-copy" in (blocker.detail or "")
+    assert [r for r in snap.ready if r.repo_key == key] == []

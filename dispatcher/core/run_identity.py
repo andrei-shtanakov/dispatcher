@@ -183,9 +183,15 @@ def list_workspace_checkouts(
     return entries, notes
 
 
-def find_checkout_by_identity(workspace: Path, target: RepoKey) -> Path | None:
-    """The checkout directly under `workspace` whose `origin` remote
-    resolves to `target`, or `None` if none does.
+def find_checkouts_by_identity(workspace: Path, target: RepoKey) -> list[Path]:
+    """EVERY checkout directly under `workspace` whose `origin` remote
+    resolves to `target`, in sorted-name order.
+
+    A list, not first-match: two checkouts of one identity are a real
+    workspace state (`run_store.py`'s locator contract names it), and a
+    resolver that silently picks the first could act on the copy the
+    operator was NOT looking at (gate pass-2 finding) — the caller decides
+    whether >1 is an error.
 
     submit v2's fallback when the fast path `workspace / target.repo` is
     absent or names a different repository: a checkout's workspace
@@ -198,6 +204,7 @@ def find_checkout_by_identity(workspace: Path, target: RepoKey) -> Path | None:
     `repo_key` to two different checkouts.
     """
     entries, _notes = list_workspace_checkouts(workspace)
+    matches: list[Path] = []
     for _name, checkout in entries:
         if not (checkout / ".git").exists():
             continue
@@ -206,5 +213,12 @@ def find_checkout_by_identity(workspace: Path, target: RepoKey) -> Path | None:
         except IdentityError:
             continue
         if found.as_text() == target.as_text():
-            return checkout.resolve()
-    return None
+            matches.append(checkout.resolve())
+    return matches
+
+
+def find_checkout_by_identity(workspace: Path, target: RepoKey) -> Path | None:
+    """First identity match or None — kept for callers that tolerate
+    ambiguity; submit v2 uses `find_checkouts_by_identity` and refuses >1."""
+    matches = find_checkouts_by_identity(workspace, target)
+    return matches[0] if matches else None

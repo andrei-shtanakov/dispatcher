@@ -887,3 +887,45 @@ def test_malformed_seen_revision_is_schema_invalid_not_persisted():
             request_id="rq-schema-rev2",
             seen_revision="abc123",  # short form — display-only per spec
         )
+
+
+def test_two_checkouts_of_one_repo_key_refuse_ambiguously(tmp_path: Path) -> None:
+    """Gate pass-2 finding: two checkouts of one RepoKey in the workspace.
+
+    The resolver must not silently pick the first match — the operator may
+    have clicked a Ready row derived from the OTHER copy (different HEAD),
+    which would persist a wrong revision_moved. Fail-closed: 409
+    repo_unresolved naming both paths; the operator removes the duplicate.
+    """
+    remote = _remote("dupd")
+    (tmp_path / "ws").mkdir(exist_ok=True)
+    make_repo(
+        tmp_path / "ws",
+        "- [ ] A @id:w1 @dag:dags/w1.yaml\n",
+        {"dags/w1.yaml": f"repo_url: {remote}\ntasks: []\n"},
+        remote=remote,
+        name="a-copy",
+    )
+    root_b = make_repo(
+        tmp_path / "ws",
+        "- [ ] A @id:w1 @dag:dags/w1.yaml\n",
+        {"dags/w1.yaml": f"repo_url: {remote}\ntasks: []\n"},
+        remote=remote,
+        name="b-copy",
+    )
+    head_b = _head(root_b)
+    key = _key("dupd")
+
+    cli = _fake_maestro_by_identity(tmp_path / "fake-maestro", creates_run=None)
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+
+    body = _body(repo_key=key.as_text(), work_id="w1", revision=head_b)
+    with pytest.raises(AdmissionRefused) as exc:
+        controller.submit_v2(body)
+    assert exc.value.status == 409
+    assert exc.value.code == "repo_unresolved"
+    assert "a-copy" in exc.value.detail and "b-copy" in exc.value.detail
+
+    store = RunStore(config.run_state_dir)  # type: ignore[arg-type]
+    assert store.get(_REQ) is None  # environment fact — never persisted

@@ -48,7 +48,7 @@ from dispatcher.core.models import OrchestrationRunInfo, ProjectSnapshot
 from dispatcher.core.run_identity import (
     IdentityError,
     RepoKey,
-    find_checkout_by_identity,
+    find_checkouts_by_identity,
     identity_from_checkout,
     safe_path_parts,
 )
@@ -945,11 +945,34 @@ class RunController:
                 fast_path_identity is not None
                 and fast_path_identity.as_text() == repo_key.as_text()
             ):
+                # The fast path MATCHES — but it must be the ONLY match:
+                # with a second checkout of the same identity elsewhere in
+                # the workspace, first-match resolution could act on the
+                # copy the operator was NOT looking at (a different HEAD →
+                # a wrongly PERSISTED revision_moved). Fail closed.
+                matches = find_checkouts_by_identity(workspace, repo_key)
+                if len(matches) > 1:
+                    raise AdmissionRefused(
+                        409,
+                        "repo_unresolved",
+                        f"{len(matches)} checkouts of {repo_key.as_text()!r} "
+                        "in the workspace ("
+                        + ", ".join(m.name for m in matches)
+                        + ") — ambiguous; remove or move the duplicates",
+                    )
                 return fast_path.resolve()
 
-        found = find_checkout_by_identity(workspace, repo_key)
-        if found is not None:
-            return found
+        matches = find_checkouts_by_identity(workspace, repo_key)
+        if len(matches) > 1:
+            raise AdmissionRefused(
+                409,
+                "repo_unresolved",
+                f"{len(matches)} checkouts of {repo_key.as_text()!r} in the "
+                "workspace (" + ", ".join(m.name for m in matches) + ") — "
+                "ambiguous; remove or move the duplicates",
+            )
+        if matches:
+            return matches[0]
 
         if fast_path_identity is not None:
             raise AdmissionRefused(

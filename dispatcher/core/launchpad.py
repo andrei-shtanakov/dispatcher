@@ -284,15 +284,57 @@ def assemble_snapshot(
     orphan_dags: list[OrphanRow] = []
 
     manifest_repos, manifest_notes = _manifest_repos(controller._config)  # noqa: SLF001
+
+    # Capture ONCE per repo (spec §4.1's once-per-assembly, pinned by the
+    # instrumented-counter test), then dedupe identities BEFORE classifying:
+    # two checkouts of one RepoKey make every ReadyRow behind that key
+    # ambiguous — the row carries only repo_key, so submit could resolve
+    # the OTHER copy (a different HEAD) and persist a wrong decision.
+    # Fail closed (gate pass-2 finding); submit_v2's resolver refuses the
+    # same state with the same code.
+    surfaces: list[tuple[str, Path, InventorySurface | None]] = []
+    identity_dirs: dict[str, list[str]] = {}
     for repository, checkout in manifest_repos:
         if not (checkout / ".git").exists():
-            repositories.append(_unresolved_row(repository, checkout, None))
+            surfaces.append((repository, checkout, None))
             continue
         inv = capture_inventory(checkout)
+        surfaces.append((repository, checkout, inv))
+        if inv.repo_key is not None:
+            identity_dirs.setdefault(inv.repo_key.as_text(), []).append(repository)
+    duplicated = {k for k, dirs in identity_dirs.items() if len(dirs) > 1}
+
+    for repository, checkout, inv in surfaces:
+        if inv is None:
+            repositories.append(_unresolved_row(repository, checkout, None))
+            continue
         if inv.repo_key is None:
             repositories.append(_unresolved_row(repository, checkout, inv))
             continue
         key = inv.repo_key
+        if key.as_text() in duplicated:
+            copies = ", ".join(identity_dirs[key.as_text()])
+            repositories.append(
+                RepoRow(
+                    repo_key=key.as_text(),
+                    repository=repository,
+                    default_branch=_default_branch(checkout),
+                    seen_revision=inv.head_revision,
+                    admission="unreadable",
+                    blockers=[
+                        BlockerView(
+                            code=REPO_UNRESOLVED,
+                            detail=(
+                                f"{len(identity_dirs[key.as_text()])} checkouts "
+                                f"of {key.as_text()!r} in the workspace "
+                                f"({copies}) — ambiguous; remove or move the "
+                                "duplicates"
+                            ),
+                        )
+                    ],
+                )
+            )
+            continue
         lock, lock_error = read_lock_state(store, key)
         runs_root = controller.runs_dir(key)
         run_facts, runs_unreadable = capture_run_facts(
