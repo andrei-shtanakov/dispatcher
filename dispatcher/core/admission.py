@@ -10,8 +10,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from dispatcher.core.dag_subset import Accepted, Rejected
 from plan_fields.parser import DAG_RE
+
+from dispatcher.core.dag_subset import Accepted, Rejected
 from dispatcher.core.inventory import DagFileInfo, InventorySurface, PlanItem
 from dispatcher.core.run_identity import RepoKey
 from dispatcher.core.run_store import LockInfo, Malformed
