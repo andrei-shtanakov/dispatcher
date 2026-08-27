@@ -231,6 +231,13 @@ def test_root_itself_as_checkout_is_a_candidate(tmp_path):
     root = tmp_path / "solo-repo"
     (root / ".git").mkdir(parents=True)
     (root / "child-not-repo").mkdir()
+    (root / "nested-repo" / ".git").mkdir(parents=True)
     entries, notes = list_workspace_checkouts(root)
     assert ("solo-repo", root) in entries
+    # Inside a root-as-checkout, plain internal dirs (docs/, src/...) are
+    # NOT repo candidates — only children carrying .git are (dry-run
+    # finding on #209: noise rows for every internal directory).
+    names = [name for name, _ in entries]
+    assert "child-not-repo" not in names
+    assert "nested-repo" in names
     assert notes == []

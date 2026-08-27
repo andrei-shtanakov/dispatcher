@@ -153,8 +153,8 @@ def list_workspace_checkouts(
     Only DOT-prefixed (genuinely hidden) entries are skipped: the
     repository contract permits `_` in directory names, so a valid
     `_service` checkout must stay visible (gate pass-4 finding) —
-    non-repos like `_cowork_output` are excluded by carrying no .git,
-    not by their name.
+    non-repo scratch/coordination directories are excluded by carrying
+    no .git, not by their name.
 
     `os.scandir`, not `iterdir`/`glob`: a single bad entry (a broken
     symlink, a permission-denied child) must degrade that ONE entry, not
@@ -180,7 +180,8 @@ def list_workspace_checkouts(
     # discovery checks `[root, *children]` and the B1 escape resolver
     # pinned it (review-pr finding on #209). Children are still scanned:
     # a checkout can contain sibling tooling dirs.
-    if (workspace / ".git").exists():
+    root_is_checkout = (workspace / ".git").exists()
+    if root_is_checkout:
         entries.append((workspace.name, workspace))
     for entry in raw_entries:
         if entry.name.startswith(_HIDDEN_PREFIXES):
@@ -190,8 +191,14 @@ def list_workspace_checkouts(
         except OSError as err:
             notes.append(f"cannot stat {workspace / entry.name}: {err}")
             continue
-        if is_dir:
-            entries.append((entry.name, workspace / entry.name))
+        if not is_dir:
+            continue
+        if root_is_checkout and not (workspace / entry.name / ".git").exists():
+            # Inside a root-as-checkout, a plain internal dir (docs/, src/)
+            # is repo CONTENT, not a repo candidate — only nested checkouts
+            # qualify (dry-run finding on #209).
+            continue
+        entries.append((entry.name, workspace / entry.name))
     entries.sort(key=lambda pair: pair[0])
     return entries, notes
 
