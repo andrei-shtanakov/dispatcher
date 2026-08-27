@@ -463,7 +463,8 @@
 ## Waits graph (спека docs/superpowers/specs/2026-08-26-waits-graph-design.md)
 
 - [ ] Графовый вид ожиданий флота в панели: рёбра @blocked_by + сторожевые @trigger @owner:github:andrei-shtanakov @id:waits-graph-view @epic:eco.plan-fields
-      Принятие inbox #201 (запрос ecosystem-kb, решение владельца 2026-08-26).
+      Принятие inbox #201 (запрос ecosystem-kb, решение владельца 2026-08-26);
+      пара спека+план — PR #205.
       Slice 0 — живой fleet-pass каноническим `plan_fields` (никакого пересчёта
       семантики), собственный SVG/JS-рендер без новой библиотеки; published
       snapshot как источник — отдельное расширение для мультимашинности.
