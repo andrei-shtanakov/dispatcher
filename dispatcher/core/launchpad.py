@@ -263,7 +263,10 @@ def _decode_cursor(cursor: str) -> tuple[str, str]:
     except (ValueError, UnicodeDecodeError) as err:
         raise ValueError(f"invalid cursor: {cursor!r}") from err
     updated_at, sep, request_id = raw.partition("\x00")
-    if not sep:
+    if not sep or not updated_at or not request_id:
+        # Server-issued cursors always encode a NON-EMPTY pair; an empty
+        # half (e.g. base64 of a lone NUL) was never issued by this server
+        # and silently filtering everything out would fake an empty page.
         raise ValueError(f"invalid cursor: {cursor!r}")
     return updated_at, request_id
 

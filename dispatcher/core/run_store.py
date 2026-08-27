@@ -159,6 +159,9 @@ class LaunchRecord(BaseModel):
     #: changed repository must be detectable without re-resolving the
     #: checkout). Empty on records written before this field existed.
     repository: str = ""
+    #: spec §4.2: snapshot_id is an AUDIT ECHO — which launchpad snapshot
+    #: the operator acted from; "" for v1/legacy records (escalated on #209).
+    snapshot_id: str = ""
     response_class: str | None = None
     admission_code: str | None = None
     admission_detail: str | None = None
@@ -393,6 +396,7 @@ class RunStore:
         spec_commit: str | None = None,
         plan_ref_path: str | None = None,
         plan_commit: str | None = None,
+        snapshot_id: str = "",
     ) -> LaunchRecord:
         """The critical section `reserve` runs inside `guard(key)`.
 
@@ -454,6 +458,7 @@ class RunStore:
             checkout=checkout,
             repository=repository,
             fingerprint=fp,
+            snapshot_id=snapshot_id,
         )
         try:
             self._write_new(record)
@@ -732,6 +737,7 @@ class RunStore:
         code: str,
         detail: str,
         current: dict,
+        snapshot_id: str = "",
     ) -> LaunchRecord:
         """A terminal admission-rejected record written WITHOUT the repo
         lock — for the lock-family blockers, where the blocker IS an
@@ -773,6 +779,7 @@ class RunStore:
             checkout=checkout,
             repository=repository,
             fingerprint=fp,
+            snapshot_id=snapshot_id,
             response_class="admission_rejected",
             admission_code=code,
             admission_detail=detail,

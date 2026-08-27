@@ -179,3 +179,13 @@ async def test_active_row_reflects_a_real_run(tmp_path: Path) -> None:
         assert resp.status_code == 200
         body = resp.json()
         assert [r["request_id"] for r in body["active"]] == ["req-a"]
+
+
+async def test_structurally_empty_cursor_is_422(tmp_path: Path) -> None:
+    """base64 of a lone NUL parses but was never server-issued — it must be
+    a 422, not a fake empty page (review-pr minor on #209)."""
+    config = _config(tmp_path)
+    async with _client(config) as client:
+        resp = await client.get("/api/launchpad", params={"cursor": "AA=="})
+        assert resp.status_code == 422
+        assert resp.json()["code"] == "invalid_request"

@@ -1107,6 +1107,7 @@ class RunController:
                 # is a raw workspace-relative name, not an identity.
                 repository=checkout.name,
                 checkout=str(checkout),
+                snapshot_id=body.snapshot_id,
                 code=code,
                 detail=detail,
                 current=current,
@@ -1298,6 +1299,7 @@ class RunController:
                     spec_commit=validated.spec_commit,
                     plan_commit=validated.plan_commit,
                     checkout=str(validated.checkout),
+                    snapshot_id=body.snapshot_id,
                 )
         except GuardBusyError as err:
             raise AdmissionRefused(409, GUARD_BUSY, str(err)) from err

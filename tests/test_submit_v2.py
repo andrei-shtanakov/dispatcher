@@ -1122,3 +1122,30 @@ def test_enumeration_failure_refuses_rather_than_assuming_uniqueness(
         controller.submit_v2(body)
     assert exc.value.code == "repo_unresolved"
     assert "EIO" in exc.value.detail
+
+
+def test_snapshot_id_is_persisted_as_the_audit_echo(tmp_path: Path) -> None:
+    """Spec §4.2 calls snapshot_id an audit echo — the durable record must
+    carry which snapshot the operator acted from (escalated on #209)."""
+    remote = _remote("snapecho")
+    ws = tmp_path / "ws"
+    ws.mkdir(exist_ok=True)
+    root = make_repo(
+        ws,
+        "- [ ] A @id:w1 @dag:dags/w1.yaml\n",
+        {"dags/w1.yaml": f"repo_url: {remote}\ntasks: []\n"},
+        remote=remote,
+        name="snapecho",
+    )
+    cli = _fake_maestro_by_identity(tmp_path / "fake-maestro", creates_run="01SN")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    body = _body(
+        repo_key=_key("snapecho").as_text(), work_id="w1", revision=_head(root)
+    )
+    receipt = controller.submit_v2(body)
+    assert receipt.accepted is True
+    store = RunStore(config.run_state_dir)  # type: ignore[arg-type]
+    record = store.get(_REQ)
+    assert record is not None
+    assert record.snapshot_id == body.snapshot_id != ""
