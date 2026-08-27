@@ -580,3 +580,56 @@ def test_open_mismatch_claim_keeps_the_file_out_of_orphans():
     assert decision.orphan_dags == ()
     (blocked,) = decision.blocked
     assert blocked.reason_code == DAG_INVALID
+
+
+def test_idless_line_naming_the_dag_still_blocks_the_open_owner():
+    """A ledger line with no usable @id but a grammar-valid @dag claims it.
+
+    Spec §5.1(3): ANY other ledger line naming the same DAG blocks — even a
+    line that is itself unlaunchable (no identity, appears in no list).
+    """
+    key = RepoKey(host="github.com", owner="o", repo="r")
+    dag = DagFileInfo(
+        rel_path="dags/a.yaml",
+        is_regular=True,
+        text="repo: /x\ntasks: []\n",
+        blob_sha="s1",
+        head_blob_sha="s1",
+        subset=Accepted(repo_path="/x", repo_url=None),
+        named_repo=key,
+        named_repo_error=None,
+        error=None,
+    )
+    inv = InventorySurface(
+        plan_items=(
+            PlanItem(
+                item_id="a",
+                line=3,
+                open=True,
+                shipped=False,
+                dag_raw="dags/a.yaml",
+                dag_tag="dags/a.yaml",
+                dag_diag=None,
+            ),
+            PlanItem(
+                item_id=None,
+                line=5,
+                open=True,
+                shipped=False,
+                dag_raw="dags/a.yaml",
+                dag_tag=None,
+                dag_diag=None,
+            ),
+        ),
+        dag_files=(dag,),
+        head_revision="c" * 40,
+        repo_key=key,
+        plan_error=None,
+        dag_dir_error=None,
+        capture_error=None,
+    )
+    decision = classify_inventory(_captured(inv))
+    assert decision.ready == ()
+    (item,) = decision.blocked
+    assert item.reason_code == DAG_DUPLICATE
+    assert "line 5" in item.reason

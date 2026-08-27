@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from dispatcher.core.dag_subset import Accepted, Rejected
+from plan_fields.parser import DAG_RE
 from dispatcher.core.inventory import DagFileInfo, InventorySurface, PlanItem
 from dispatcher.core.run_identity import RepoKey
 from dispatcher.core.run_store import LockInfo, Malformed
@@ -245,6 +246,20 @@ def _classify_open_item(
     return ItemDecision(work_id, dag_path, "ready", None, "")
 
 
+def _named_dag(item: PlanItem) -> str | None:
+    """The DAG path this ledger line NAMES, launchable or not (spec §5.1.3).
+
+    A validated tag names its file; failing that, a grammar-valid raw value
+    names one too — a PF-DAG-MISMATCH line, or a line with no usable @id.
+    Only a grammar-invalid raw (PF-DAG-GRAMMAR) names nothing.
+    """
+    if item.dag_tag is not None:
+        return item.dag_tag
+    if item.dag_raw is not None and DAG_RE.fullmatch(item.dag_raw):
+        return item.dag_raw
+    return None
+
+
 def classify_inventory(captured: CapturedInputs) -> InventoryDecision:
     """Ready / blocked / unregistered / orphan over one capture generation.
 
@@ -275,13 +290,9 @@ def classify_inventory(captured: CapturedInputs) -> InventoryDecision:
     dag_by_path = {d.rel_path: d for d in inv.dag_files}
     claims: dict[str, list[PlanItem]] = {}
     for claim_item in inv.plan_items:
-        # Spec §5.1(3): ANY ledger line naming the DAG claims it. A validated
-        # tag names it, and so does a PF-DAG-MISMATCH raw value — by
-        # parse_dag's construction that raw is a grammar-valid path naming
-        # someone else's artifact; only PF-DAG-GRAMMAR raws name nothing.
-        named = claim_item.dag_tag
-        if named is None and claim_item.dag_diag == "PF-DAG-MISMATCH":
-            named = claim_item.dag_raw
+        # Spec §5.1(3): ANY ledger line naming the DAG claims it — see
+        # _named_dag for what counts as naming.
+        named = _named_dag(claim_item)
         if named is not None:
             claims.setdefault(named, []).append(claim_item)
 
@@ -301,17 +312,12 @@ def classify_inventory(captured: CapturedInputs) -> InventoryDecision:
         else:
             unregistered.append(decision)
 
-    # Same naming rule as the claims index above: an open item's
-    # PF-DAG-MISMATCH raw names its file just as a validated tag does.
-    open_claims = set()
-    for open_item in inv.plan_items:
-        if not open_item.open:
-            continue
-        named = open_item.dag_tag
-        if named is None and open_item.dag_diag == "PF-DAG-MISMATCH":
-            named = open_item.dag_raw
-        if named is not None:
-            open_claims.add(named)
+    # Same naming rule as the claims index above (_named_dag).
+    open_claims = {
+        named
+        for open_item in inv.plan_items
+        if open_item.open and (named := _named_dag(open_item)) is not None
+    }
     orphan_dags = tuple(
         sorted(
             d.rel_path
