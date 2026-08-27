@@ -135,6 +135,26 @@
 <div class="sub">Ecosystem overview · auto-refresh 10s ·
   <span id="updated"></span></div>
 
+<!-- Launchpad root panel (spec §9): FIRST section in the body — the
+     existing #run-console below stays as drill-down + manual form,
+     rewired in Task 7. `#lp-store-banner` mirrors `store_unreadable`
+     ONLY (never a transport error — spec §9's transport-uncertainty
+     handling is Task 7's). -->
+<section id="launchpad"><h2>Launchpad</h2>
+  <div id="lp-store-banner" class="warn" hidden></div>
+  <h3>Repositories</h3>
+  <div id="lp-repos"></div>
+  <h3>Ready</h3>
+  <div id="lp-ready"></div>
+  <h3>Active</h3>
+  <div id="lp-active"></div>
+  <h3>Recent completed</h3>
+  <div id="lp-recent"></div>
+  <details id="lp-diagnostics"><summary><h3>Diagnostics</h3></summary>
+    <div id="lp-diagnostics-body"></div>
+  </details>
+</section>
+
 <!-- I-A: outcomes of MUTATIONS outlive the panel that started them. This
      region is deliberately outside #task-authoring and #detail-section, so
      nothing on the navigation path (detail(), ta-open-panel) can reach it:
@@ -1492,13 +1512,12 @@ document.getElementById("rc-run-view").addEventListener("click", async ev => {
   }
 });
 
-document.getElementById("rc-open").addEventListener("click", async () => {
-  const requestId = document.getElementById("rc-request-id").value.trim();
-  if (!requestId) {
-    document.getElementById("rc-run-view").innerHTML =
-      `<div class="warn">enter a request_id</div>`;
-    return;
-  }
+// The run-view opener — the ONE way any control on the page (the manual
+// #rc-open button, or a launchpad typed-blocker/recent-row link, spec §9)
+// opens a request's drill-down. Sets #rc-request-id so the field always
+// reflects whatever is open, regardless of which control triggered it.
+async function openRunView(requestId) {
+  document.getElementById("rc-request-id").value = requestId;
   if (rcViewTimer !== null) { clearInterval(rcViewTimer); rcViewTimer = null; }
   // A DISPLAY generation, not just a click generation (codex round 5,
   // minor). `rcViewRequestId` alone cannot invalidate an in-flight log
@@ -1509,6 +1528,16 @@ document.getElementById("rc-open").addEventListener("click", async () => {
   rcLogsGen++;
   rcViewRequestId = requestId;
   await rcPollView();
+}
+
+document.getElementById("rc-open").addEventListener("click", async () => {
+  const requestId = document.getElementById("rc-request-id").value.trim();
+  if (!requestId) {
+    document.getElementById("rc-run-view").innerHTML =
+      `<div class="warn">enter a request_id</div>`;
+    return;
+  }
+  await openRunView(requestId);
 });
 
 // Fires one Mode-1 verb against the currently open request (Task 5, spec
@@ -3534,6 +3563,282 @@ document.getElementById('ta-open-panel').addEventListener('click', () => {
 
 refresh();
 setInterval(refresh, 10000);
+
+// ---- Launchpad root panel (spec §9, PR-C Task 6) ---------------------------
+//
+// GET /api/launchpad's shape verbatim (dispatcher/core/launchpad.py's
+// LaunchpadSnapshot) — one internally-consistent read of the fleet.
+// Launch itself, the two-step confirm row and the acknowledge/
+// release-malformed forms are Task 7; this panel renders the snapshot and
+// exposes the typed-blocker drill-down into the existing run console.
+
+// Admission codes shared with dispatcher/core/admission.py's vocabulary —
+// spelled out here (not fetched) because the client has no import of the
+// Python module; the values are the contract, pinned by the harness.
+const LP_LAUNCH_BUSY = "launch_busy";
+const LP_RUN_IN_FLIGHT = "run_in_flight";
+const LP_RUN_VANISHED = "run_vanished";
+const LP_LOCK_MALFORMED = "lock_malformed";
+
+// The panel's own refresh period (spec §9: "30 s auto-refresh") — distinct
+// from the pre-existing dashboard's `setInterval(refresh, 10000)` above;
+// the two timers are independent, each guarding only its own section.
+const LP_REFRESH_MS = 30000;
+
+// `inflight` is a COUNTER, not a boolean (round-5 review finding): an
+// action refetch may legitimately overlap a timer fetch, and a boolean
+// cleared by whichever settles first would reopen the timer path while the
+// other request is still airborne. `pending` (rowKey = repo_key +
+// "\u0000" + work_id — repo_key's charset cannot contain a NUL
+// byte, so the join is unambiguous) is Task 7's seam: state lives
+// OUTSIDE the DOM so a wholesale rerender here can never lose an
+// attempt in progress.
+const lpState = {
+  seq: 0, applied: 0, inflight: 0, snapshot: null,
+  pending: Object.create(null),
+};
+
+const lpAdmissionCls = admission =>
+  admission === "ready" ? "ok" : admission === "blocked" ? "warn" : "err";
+
+// Typed blocker targets (spec §9): the escape is offered only where damage
+// is proven, never where fact-gathering itself is broken.
+function lpBlockerHtml(b) {
+  if ((b.code === LP_LAUNCH_BUSY || b.code === LP_RUN_IN_FLIGHT) && b.request_id) {
+    // linked: launch_busy always carries a request_id (a lock names its
+    // holder); run_in_flight carries one only when the run is linked to a
+    // controller record — either way, this is the run-view drill-down.
+    return `<a href="#" class="lp-open-run" data-request-id="${esc(b.request_id)}">`
+      + `${esc(b.code)}${b.run_id ? " " + esc(b.run_id) : ""}</a>`;
+  }
+  if (b.code === LP_RUN_IN_FLIGHT) {
+    // unlinked: a bare maestro run_id with no controller record — id and
+    // status text only, deliberately NO link (no logs pane to open — §2).
+    return `<span>${esc(b.code)}${b.run_id ? " " + esc(b.run_id) : ""}</span>`;
+  }
+  if (b.code === LP_RUN_VANISHED || b.code === LP_LOCK_MALFORMED) {
+    // Placeholder anchors — Task 7 wires the acknowledge / release-
+    // malformed forms these point at; this task only renders the anchor.
+    const label = b.code === LP_RUN_VANISHED
+      ? "acknowledge vanished run" : "release malformed lock";
+    return `<a href="#lp-${esc(b.code)}-form" class="lp-blocker-anchor" `
+      + `data-code="${esc(b.code)}" data-request-id="${esc(b.request_id ?? "")}" `
+      + `data-run-id="${esc(b.run_id ?? "")}">${label}</a>`;
+  }
+  // lock_io_unreadable / run_state_unreadable, and any code this panel
+  // does not recognize: diagnostic text only, no control — fail closed on
+  // offering an action where fact-gathering itself is what is broken.
+  return `<span class="err">${esc(b.code)}${b.detail ? ": " + esc(b.detail) : ""}</span>`;
+}
+
+function lpRepoRowHtml(row) {
+  const blockers = row.blockers.map(b => `<li>${lpBlockerHtml(b)}</li>`).join("");
+  return `<tr>
+    <td>${esc(row.repository)}</td>
+    <td><span class="badge ${lpAdmissionCls(row.admission)}">${esc(row.admission)}</span></td>
+    <td>${esc(row.default_branch || "—")}</td>
+    <td>${row.seen_revision ? esc(row.seen_revision.slice(0, 7)) : "—"}</td>
+    <td>${blockers ? `<ul class="lp-blockers">${blockers}</ul>` : ""}</td>
+  </tr>`;
+}
+
+function lpRenderRepos(rows) {
+  document.getElementById("lp-repos").innerHTML = `<div class="tablewrap"><table>
+    <thead><tr><th>Repository</th><th>Admission</th><th>Branch</th>
+      <th>Revision</th><th>Blockers</th></tr></thead>
+    <tbody>${rows.map(lpRepoRowHtml).join("")
+      || `<tr><td colspan="5" class="dim">no repositories</td></tr>`}</tbody>
+  </table></div>`;
+}
+
+function lpReadyRowHtml(row) {
+  const sha7 = row.seen_revision.slice(0, 7);
+  return `<tr><td>${esc(row.repo_key)}</td>
+    <td>${esc(row.work_id)} @ ${esc(sha7)}</td>
+    <td>${esc(row.dag_path)}</td></tr>`;
+}
+
+function lpRenderReady(rows) {
+  document.getElementById("lp-ready").innerHTML = `<div class="tablewrap"><table>
+    <thead><tr><th>Repository</th><th>Work item</th><th>DAG</th></tr></thead>
+    <tbody>${rows.map(lpReadyRowHtml).join("")
+      || `<tr><td colspan="3" class="dim">nothing ready</td></tr>`}</tbody>
+  </table></div>`;
+}
+
+function lpActiveRowHtml(row) {
+  return `<tr class="${row.attention ? "warn" : ""}">
+    <td>${esc(row.repo_key)}</td>
+    <td>${esc(row.work_id ?? "—")}</td>
+    <td>${esc(row.state)}</td>
+    <td>${esc(row.run_id ?? "—")}</td>
+    <td>${esc(row.run_status ?? "—")}</td>
+    <td>${esc(row.updated_at || "—")}</td></tr>`;
+}
+
+function lpRenderActive(rows, truncated) {
+  document.getElementById("lp-active").innerHTML = `<div class="tablewrap"><table>
+    <thead><tr><th>Repository</th><th>Work item</th><th>State</th>
+      <th>Run</th><th>Status</th><th>Updated</th></tr></thead>
+    <tbody>${rows.map(lpActiveRowHtml).join("")
+      || `<tr><td colspan="6" class="dim">nothing active</td></tr>`}</tbody>
+  </table></div>${truncated
+    ? `<div class="warn">active list truncated at 200 — the fleet needs cleanup</div>`
+    : ""}`;
+}
+
+function lpRecentRowHtml(row) {
+  const label = `${esc(row.work_id)} · ${esc(row.outcome)}`;
+  // #191's lesson: a bare run_id is not enough to promise a link —
+  // `logs_available` is computed server-side from the log directory's
+  // real presence.
+  const cell = row.logs_available
+    ? `<a href="#" class="lp-open-run" data-request-id="${esc(row.request_id)}">${label}</a>`
+    : `<span>${label}</span>`;
+  return `<tr><td>${esc(row.repo_key)}</td><td>${cell}</td>
+    <td>${row.revision ? esc(row.revision.slice(0, 7)) : "—"}</td>
+    <td>${esc(row.updated_at || "—")}</td></tr>`;
+}
+
+function lpRenderRecent(rows) {
+  document.getElementById("lp-recent").innerHTML = `<div class="tablewrap"><table>
+    <thead><tr><th>Repository</th><th>Work item</th><th>Revision</th>
+      <th>Updated</th></tr></thead>
+    <tbody>${rows.map(lpRecentRowHtml).join("")
+      || `<tr><td colspan="4" class="dim">no recent runs</td></tr>`}</tbody>
+  </table></div>`;
+}
+
+// Diagnostics folds three read-only sources under one collapsed <details>
+// (spec §9 names unregistered + orphans explicitly; `blocked` work items —
+// dag_invalid/dag_dirty/etc., item-level, distinct from a repo's own
+// blockers above — have no other home in this panel and are exactly the
+// same "why isn't this ready" shape, so they are listed here too).
+function lpRenderDiagnostics(blocked, unregistered, orphans) {
+  const blockedHtml = blocked.map(r =>
+    `<li>${esc(r.repo_key)}: ${esc(r.work_id)} — ${esc(r.reason_code)}`
+    + `${r.reason ? " (" + esc(r.reason) + ")" : ""}</li>`).join("");
+  const unregisteredHtml = unregistered.map(r =>
+    `<li>${esc(r.repo_key)}: ${esc(r.work_id)} (${esc(r.reason_code)})</li>`).join("");
+  const orphansHtml = orphans.map(r =>
+    `<li>${esc(r.repo_key)}: ${esc(r.dag_path)}</li>`).join("");
+  document.getElementById("lp-diagnostics-body").innerHTML =
+    `<h4>Blocked items</h4><ul>${blockedHtml || '<li class="dim">none</li>'}</ul>
+     <h4>Unregistered items</h4><ul>${unregisteredHtml || '<li class="dim">none</li>'}</ul>
+     <h4>Orphan DAGs</h4><ul>${orphansHtml || '<li class="dim">none</li>'}</ul>`;
+}
+
+function lpRenderStoreBanner(notes) {
+  const banner = document.getElementById("lp-store-banner");
+  banner.hidden = notes.length === 0;
+  banner.innerHTML = notes.length
+    ? `<div class="warn">store read errors: ${notes.map(esc).join("; ")}</div>` : "";
+}
+
+// The pure wholesale renderer: every container is rebuilt from the
+// fixture's own arrays, in the SERVER's order — the attention-first sort
+// on `active` is the assembler's job (Task 2), never re-sorted here.
+function lpRender(snapshot) {
+  lpRenderStoreBanner(snapshot.store_unreadable || []);
+  lpRenderRepos(snapshot.repositories || []);
+  lpRenderReady(snapshot.ready || []);
+  lpRenderActive(snapshot.active || [], !!snapshot.active_truncated);
+  lpRenderRecent(snapshot.recent_completed || []);
+  lpRenderDiagnostics(snapshot.blocked || [], snapshot.unregistered_items || [],
+    snapshot.orphan_dags || []);
+}
+
+// A failed fetch here is deliberately quiet in Task 6: spec §9's
+// transport-uncertainty handling (retry with the same request_id,
+// read-back, blocking a fresh Launch) is per-ROW and belongs to Task 7's
+// launch flow, not to this whole-snapshot refresh. Logged, not surfaced,
+// so a stale prior render simply stays on screen until the next refresh
+// succeeds.
+function lpRenderFetchError(err) {
+  console.error("launchpad snapshot fetch failed:", err);
+}
+
+// One fetch in flight is applied; a superseded one is discarded, never
+// patched in — strict supersession: `seq === lpState.seq` (the LATEST
+// issued), checked at apply time, not at issue time, so whichever of two
+// in-flight requests resolves first can still lose.
+function lpApplySnapshot(seq, snapshot) {
+  if (seq !== lpState.seq) return;
+  lpState.applied = seq;
+  lpState.snapshot = snapshot;
+  lpRender(snapshot);
+}
+
+// The one place that actually calls fetch() — both lpFetchSnapshot() and
+// lpRefetchAfterAction() funnel through here; only the INFLIGHT GATE
+// differs between them (see below). No AbortController (the sandbox has
+// none, per the harness's dom.js) — supersede-and-discard replaces it.
+function lpIssueFetch() {
+  lpState.seq++;
+  const seq = lpState.seq;
+  lpState.inflight++;
+  fetch("/api/launchpad")
+    .then(r => r.json().then(data => [r, data]))
+    .then(([r, data]) => {
+      lpState.inflight--;
+      if (!r.ok) { if (seq === lpState.seq) lpRenderFetchError(data); return; }
+      lpApplySnapshot(seq, data);
+    })
+    .catch(err => {
+      lpState.inflight--;
+      if (seq === lpState.seq) lpRenderFetchError(err);
+    });
+}
+
+// Timer-tick entry: refuses outright while ANY fetch is inflight (the
+// counter, not a boolean — see lpState's own comment) — at most one timer
+// fetch airborne at a time.
+function lpFetchSnapshot() {
+  if (lpState.inflight > 0) return;
+  lpIssueFetch();
+}
+
+// The superseding-fetch entry point submit/escape handlers call (spec §9's
+// refetch discipline, Task 7): issues immediately with a higher `seq` even
+// while a timer fetch is still in flight — a second legitimate in-flight
+// request, not a refusal.
+function lpRefetchAfterAction() { lpIssueFetch(); }
+
+let lpRefreshTimer = null;
+
+function lpScheduleRefresh() {
+  if (typeof setInterval !== "function") return;
+  if (lpRefreshTimer !== null) clearInterval(lpRefreshTimer);
+  lpRefreshTimer = setInterval(lpFetchSnapshot, LP_REFRESH_MS);
+  // Spec §9: the timer pauses while the tab is hidden and fires
+  // immediately on return. tests/web/dom.js's addEventListener is a no-op
+  // stub — the Node DOM cannot model the Page Visibility API — so this
+  // guard is inert under the harness and only takes effect in a real
+  // browser; that gap is this comment, not a stub pretending to cover it.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      if (lpRefreshTimer !== null) { clearInterval(lpRefreshTimer); lpRefreshTimer = null; }
+    } else {
+      lpFetchSnapshot();
+      if (lpRefreshTimer === null) lpRefreshTimer = setInterval(lpFetchSnapshot, LP_REFRESH_MS);
+    }
+  });
+}
+
+// Delegated click handler for the panel's drill-down: a typed in-flight
+// blocker or a logs-available recent row opens the SAME run-view opener
+// #rc-open drives. run_vanished/lock_malformed anchors are placeholders
+// here — Task 7 wires their forms.
+document.getElementById("launchpad").addEventListener("click", async e => {
+  const openLink = e.target.closest(".lp-open-run");
+  if (openLink) {
+    e.preventDefault();
+    await openRunView(openLink.dataset.requestId);
+  }
+});
+
+lpFetchSnapshot();
+lpScheduleRefresh();
 </script>
 </body>
 </html>
