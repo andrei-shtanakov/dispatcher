@@ -125,6 +125,7 @@ def build_waits(config: DispatcherConfig, *, now: str) -> WaitsView:
     from plan_fields import (
         RepoInput,
         check_fleet,
+        check_legacy_fleet,
         checkout_map,
         manifest_index,
         parse_fleet,
@@ -178,6 +179,15 @@ def build_waits(config: DispatcherConfig, *, now: str) -> WaitsView:
     try:
         doc = parse_fleet(inputs, index)
         graph_findings = check_fleet(doc)
+        # The canonical pipeline drops an item with no @id at PF-ID-MISSING,
+        # so its @blocked_by never reaches references — a wait on such an item
+        # would silently read as "no obligation" (review finding on #207).
+        # check_legacy_fleet is the package's own pass over exactly those
+        # sources; `exclude` keeps anything the canonical plane already owns.
+        canonical_refs = {
+            (ref["provenance"]["repo"], ref["raw_ref"]) for ref in doc["references"]
+        }
+        legacy_findings = check_legacy_fleet(inputs, index, exclude=canonical_refs)
     except Exception as exc:  # noqa: BLE001 — package failure, same contract
         return _unavailable(f"{type(exc).__name__}: {exc}", now)
 
@@ -242,6 +252,23 @@ def build_waits(config: DispatcherConfig, *, now: str) -> WaitsView:
         if n["declared_status"] == "open" and not n["tombstone"] and n["trigger"]
     ]
     triggers.sort(key=lambda t: t.node.node_id)
+
+    # Legacy pass verdicts, verbatim. Unlike the canonical PF-BLOCKER-STALE
+    # (excluded above — the edge itself carries it), a legacy STALE stays: an
+    # un-@id'd source has no edge to carry the state, so the finding is the
+    # ONLY place a delivered wait on such an item is visible. A live, healthy
+    # legacy blocker returns no diagnostic by the package's design — it
+    # becomes visible on this surface when the item gains an @id.
+    for legacy in legacy_findings:
+        findings.append(
+            Finding(
+                code=legacy.code,
+                subject_uri=None,
+                related_uri=None,
+                message=legacy.message,
+                repo=legacy.source_repo,
+            )
+        )
 
     return WaitsView(
         todo_plane=WaitsPlane(

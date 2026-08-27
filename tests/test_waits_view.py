@@ -277,3 +277,40 @@ def test_route_returns_200_on_both_paths(tmp_path: Path) -> None:
     resp = empty.get("/api/waits")
     assert resp.status_code == 200  # unavailability is content, not transport
     assert resp.json()["todo_plane"]["state"] == "unavailable"
+
+
+def test_unidd_item_with_delivered_legacy_blocker_is_visible(
+    tmp_path: Path,
+) -> None:
+    # The canonical pipeline drops an @id-less item at PF-ID-MISSING, so its
+    # wait would silently read as "no obligation" (ai-prosto review on #207).
+    # The package's legacy pass reports its outcome — most critically STALE:
+    # a delivered wait must never be invisible.
+    config = _workspace(
+        tmp_path,
+        {
+            "alpha": "- [ ] consumer without id @blocked_by:beta#prod\n",
+            "beta": "- [x] prod work @id:prod\n",
+        },
+    )
+    view = build_waits(config, now=NOW)
+    stale = [f for f in view.findings if f.code == "PF-BLOCKER-STALE"]
+    assert len(stale) == 1 and stale[0].repo == "alpha"
+    assert "the wait is over" in stale[0].message
+
+
+def test_legacy_pass_does_not_double_report_idd_sources(tmp_path: Path) -> None:
+    # A source WITH an @id is the canonical plane's job: its legacy ref is
+    # already a loose_ref, and the legacy pass must not add a second verdict.
+    config = _workspace(
+        tmp_path,
+        {
+            "alpha": "- [ ] consumer @id:cons @blocked_by:beta#nothere\n",
+            "beta": "- [ ] prod work @id:prod\n",
+        },
+    )
+    view = build_waits(config, now=NOW)
+    assert len(view.loose_refs) == 1
+    # exactly one verdict for the dangling ref — from the canonical plane's
+    # diagnostics (PF-LEGACY-AMBIGUOUS with zero matches), not two
+    assert len(view.findings) == 1
