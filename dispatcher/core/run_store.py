@@ -292,6 +292,25 @@ class RunStore:
                 f"record for {request_id} exists but cannot be read (invalid content)"
             ) from err
 
+    def _write_new(self, record: LaunchRecord) -> None:
+        """Create-EXCLUSIVE first write: temp, then `os.link` (never replace).
+
+        `os.replace` clobbers — two racing reserves of one request_id in
+        DIFFERENT repos would both "win" and launch twice with one record
+        (review on #209). `os.link` fails `FileExistsError` atomically when
+        another attempt already claimed the id; the caller conflicts.
+        """
+        self._ensure()
+        target = self._record_path(record.request_id)
+        fd, tmp = tempfile.mkstemp(dir=str(self._requests), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as handle:
+                handle.write(record.model_dump_json(indent=2))
+            os.chmod(tmp, _FILE_MODE)
+            os.link(tmp, target)
+        finally:
+            Path(tmp).unlink(missing_ok=True)
+
     def _write(self, record: LaunchRecord) -> None:
         """Temp-then-rename: a half-written record must never be readable."""
         self._ensure()
@@ -437,7 +456,17 @@ class RunStore:
             fingerprint=fp,
         )
         try:
-            self._write(record)
+            self._write_new(record)
+        except FileExistsError:
+            # Another attempt claimed this request_id between our replay
+            # read and this write (same-id race across repos, review on
+            # #209): OUR repo lock was created microseconds ago under
+            # O_EXCL and is ours to release; the other attempt's record
+            # and lock stay untouched.
+            lock.unlink(missing_ok=True)
+            raise FingerprintMismatch(
+                f"{request_id} was already claimed by a concurrent attempt"
+            ) from None
         except OSError as err:
             # I5: unlike `release_lock`, which must refuse a lock it cannot
             # confirm it holds, `reserve` created THIS lock microseconds ago
