@@ -105,6 +105,268 @@ def _key_from_record(record: "LaunchRecord") -> RepoKey:
     return RepoKey(host=parts[0], owner=parts[1], repo=parts[2])
 
 
+def read_lock_state(
+    store: RunStore, key: RepoKey, request_id: str | None = None
+) -> tuple[LockState, str | None]:
+    """The lock's current state, or the IO error reading it — captured
+    VALUES, exactly what `classify_repo`'s pure contract takes as its
+    first two arguments (spec §5, §7); it never touches the filesystem
+    itself.
+
+    A lock already held by THIS SAME `request_id` is this attempt's
+    own prior partial write — e.g. a crash between `_reserve_locked`
+    and `mark_launching` left a `reserved` record whose lock is still
+    standing — not a competing attempt. Reported as free (`None`) so a
+    legitimate retry of a still-`reserved` record is not blocked by
+    its own lock (spec §5.2's idempotent-retry contract, unchanged by
+    this gate). `request_id=None` — the launchpad assembler's case,
+    where no attempt of its own is in flight — never matches a held
+    lock's own id, so any standing lock reads as busy.
+    """
+    try:
+        state = store.read_lock(key)
+    except RunStoreError as err:
+        return None, str(err)
+    if isinstance(state, LockInfo) and state.request_id == request_id:
+        return None, None
+    return state, None
+
+
+def capture_run_facts(
+    store: RunStore,
+    key: RepoKey,
+    runs_root: Path,
+    home: Path,
+    *,
+    records: list[LaunchRecord],
+    list_unreadable: list[str],
+    classified: list[tuple[OrchestrationRunInfo, Path]],
+    scratch_warnings: list[str],
+) -> tuple[tuple[RunFact, ...], tuple[str, ...]]:
+    """Every run maestro currently classifies for `key`, joined to its
+    `request_id` via `RunStore.list()` — the same classifier `view()`
+    uses (spec §3.2), so a request's status and the dashboard's can
+    never disagree.
+
+    A run whose `state.db` failed to read (`OrchestrationRunInfo`
+    status `"unreadable"`) stays an ordinary non-terminal `RunFact`
+    when THIS store has a `request_id` on file for it: that is a
+    freshly materialized run of dispatcher's OWN launch whose db
+    content can transiently lag its directory's appearance, not
+    external corruption, so it stays inside the same fail-closed
+    RUN_IN_FLIGHT/RUN_VANISHED handling as any other non-terminal
+    status. An unreadable run this store cannot attribute to any
+    request is escalated instead, into `runs_unreadable`:
+    `classify_repo` cannot even name who is responsible for it, so it
+    surfaces as its own `RUN_STATE_UNREADABLE` blocker rather than
+    folding silently into "some run is busy" (spec §7's unreadable
+    split, mirrored from `RunStore.read_lock`).
+
+    `classified_runs` only walks directories that currently EXIST —
+    it can never itself report a run that vanished. Spec §7's vanished
+    predicate runs the other way, from a non-terminal `LaunchRecord`
+    outward: after the disk-backed pass above, every non-terminal
+    record naming a `run_id` `classified_runs` never saw at all is
+    checked directly against the run root. Absent → `run_dir_exists`
+    `RunFact` (`classify_repo`'s `RUN_VANISHED` arm). A directory that
+    DOES exist there but carries no `state.db` (most likely
+    mid-materialization, the db not written yet, or a launch that died
+    between mkdir and the db write) is a real gap short of "vanished" —
+    it stays a non-terminal `RunFact` (`status="missing-state"`) so
+    `classify_repo`'s `RUN_IN_FLIGHT` arm fires on it (fail-closed:
+    dispatcher's own record still says this run is non-terminal, so it
+    must still block, spec's Global Constraint). A stat failure while
+    checking is unreadable, never vanished (spec §7's unreadable
+    split, same rule as everywhere else this module applies it).
+
+    `store` is not read here — `records`/`list_unreadable` and
+    `classified`/`scratch_warnings` are ONE capture generation's worth
+    of global reads (`RunStore.list_with_mtime()` and one
+    `classified_runs` walk), hoisted to parameters so the launchpad
+    assembler (PR-C) can thread the SAME pair into every repo instead
+    of re-reading the store and re-walking maestro's runs once per
+    repo (spec §4.1's "every source read once" made structural).
+    `submit`'s own delegate (`RunController._capture_run_facts`)
+    performs both reads fresh, exactly as before extraction.
+    """
+    by_run_id = {r.run_id: r.request_id for r in records if r.run_id is not None}
+    runs: list[RunFact] = []
+    unreadable: list[str] = []
+    seen_run_ids: set[str] = set()
+    for info, _ in classified:
+        if info.repo_key != key.as_text() or info.run_id is None:
+            continue
+        seen_run_ids.add(info.run_id)
+        request_id = by_run_id.get(info.run_id)
+        if info.status == "unreadable":
+            # Linkage to a request_id does not make a broken state.db
+            # readable (review on #200): run_in_flight promises a
+            # KNOWN non-terminal state; here the reading itself must
+            # be fixed. The linkage travels as metadata in the
+            # detail — the code stays run_state_unreadable.
+            suffix = f" (request {request_id})" if request_id else ""
+            unreadable.append(f"run {info.run_id}{suffix}: state unreadable")
+            continue
+        runs.append(
+            RunFact(
+                run_id=info.run_id,
+                status=info.status,
+                request_id=request_id,
+                run_dir_exists=True,
+            )
+        )
+    # Enumeration-level failures (an unlistable `runs/` or `projects/`
+    # dir, `dispatcher/core/collectors/maestro.py:239`) are not tied to
+    # any single run_id and never produced a `RunFact` above. Filtered
+    # to THIS RepoKey: fail-closed is per-repo, so only a failure that
+    # could have hidden this repo's runs blocks it — its own subtree,
+    # or an ancestor on the path to it (projects/, host, owner). A
+    # neighbour repo's broken subtree is that repo's blocker, not a
+    # fleet-wide outage. A warning whose path cannot be matched at all
+    # stays blocking (unknown scope = fail-closed).
+    project_dir = runs_root.parent
+    projects_root = home / "projects"
+    lineage = [project_dir]
+    for parent in project_dir.parents:
+        lineage.append(parent)
+        if parent == projects_root:
+            break
+    relevant_markers = [f"cannot list {p}:" for p in lineage]
+    relevant_markers.append(f"cannot list {project_dir}/")
+
+    def _concerns_this_repo(warning: str) -> bool:
+        if "cannot list " not in warning:
+            return True  # unrecognized shape — keep, fail-closed
+        if any(marker in warning for marker in relevant_markers):
+            return True
+        return projects_root.as_posix() not in warning
+
+    unreadable.extend(
+        w
+        for w in scratch_warnings
+        if w.startswith("runs enumeration:") and _concerns_this_repo(w)
+    )
+    unreadable.extend(list_unreadable)
+    for record in records:
+        if (
+            record.repo_key != key.as_text()
+            or record.run_id is None
+            or record.state == "terminal"
+            or record.run_id in seen_run_ids
+        ):
+            continue
+        try:
+            run_dir_exists = _present_at(runs_root / record.run_id)
+        except OSError:
+            unreadable.append(f"run {record.run_id}: cannot stat run directory")
+            continue
+        if run_dir_exists:
+            # The directory exists but `classified_runs` never saw it
+            # (no `state.db` yet — died, or lagging between mkdir and
+            # the db write). Still non-terminal by dispatcher's own
+            # record, so it must stay represented as RUN_IN_FLIGHT,
+            # never fall through unrepresented (fail-open).
+            runs.append(
+                RunFact(
+                    run_id=record.run_id,
+                    status="missing-state",
+                    request_id=record.request_id,
+                    run_dir_exists=True,
+                )
+            )
+            continue
+        runs.append(
+            RunFact(
+                run_id=record.run_id,
+                status="missing",
+                request_id=record.request_id,
+                run_dir_exists=False,
+            )
+        )
+    # Third source: the repo's runs/ directory itself. A run dir that
+    # never got a state.db AND has no LaunchRecord (a foreign maestro
+    # process, or a launch that died between mkdir and any bookkeeping)
+    # is invisible to both passes above — the classifier skips no-db
+    # dirs, the record pass walks records. An unexplained entry is a
+    # fail-closed blocker, not an empty repo; entry type is deliberately
+    # ignored (a stray file or symlink where a run dir belongs is
+    # unexplained state, same rule).
+    represented = seen_run_ids | {fact.run_id for fact in runs}
+    try:
+        with os.scandir(runs_root) as entries:
+            stray = sorted(e.name for e in entries)
+    except FileNotFoundError:
+        stray = []
+    except OSError as err:
+        unreadable.append(f"runs directory unlistable: {err}")
+        stray = []
+    for name in stray:
+        if name in represented:
+            continue
+        runs.append(
+            RunFact(
+                run_id=name,
+                status="missing-state",
+                request_id=by_run_id.get(name),
+                run_dir_exists=True,
+            )
+        )
+    return tuple(runs), tuple(unreadable)
+
+
+def logs_dir(home: Path, record: "LaunchRecord") -> Path:
+    """`<run dir>/logs` for an adopted run.
+
+    The run id comes from the durable record, never from the URL: the
+    caller names a `request_id`, and which run that is, is dispatcher's
+    own recorded answer. That is the same reasoning as `_verb_cwd` —
+    a read must not be re-pointed at another run by its own request.
+    `home` is hoisted to a parameter (was `self._require_on()`'s third
+    element) so a caller outside the controller — the launchpad
+    assembler's `logs_available` check (PR-C) — can reuse this exact
+    resolution and symlink-refusal logic without a controller instance.
+    """
+    if record.run_id is None:
+        raise RunRejectedError(
+            f"{record.request_id} has no run to read logs from (state: {record.state})"
+        )
+    key = _key_from_record(record)
+    # The path must also BE where the record says it is (codex round 5).
+    # `01AAA/logs` as a symlink to `01BBB/logs` passed every check the
+    # callers made — task_log's containment resolved the link FIRST and
+    # then confirmed the file sat "inside" it — while the response still
+    # said `run_id="01AAA"`: one run's logs under another run's identity,
+    # the feature's central guarantee inverted. With `home` resolved as
+    # the trusted base, a fully-resolved path that still equals itself
+    # contains no symlink at ANY component — run dir, `logs/`, or a
+    # parent — so the whole class closes at once, not the one observed
+    # example. Refusal, not a warning: serving bytes whose owner is
+    # unknown is worse than serving nothing.
+    resolved = home.resolve().joinpath(
+        "projects", *safe_path_parts(key), "runs", record.run_id, "logs"
+    )
+    if resolved.resolve() != resolved:
+        raise RunRejectedError(
+            f"log path for run {record.run_id} is redirected by a symlink "
+            f"— refusing to serve another run's files under this run's "
+            f"identity"
+        )
+    # A durable run_id proves the run EXISTED, not that it still does
+    # (codex round 6, major): `view()` maps a vanished run directory to
+    # `run=None`, and /logs answering 200 for the same request would
+    # have the two surfaces disagree about whether the run exists. The
+    # distinction that matters: the RUN directory gone is absence and
+    # refuses; `logs/` or `events.jsonl` not written yet is an ordinary
+    # young run and stays a 200 with an empty timeline.
+    if not resolved.parent.is_dir():
+        raise RunRejectedError(
+            f"run {record.run_id} is recorded for {record.request_id} "
+            f"but its directory is gone — the run is absent, which is "
+            f"not the same as a run that has not logged yet"
+        )
+    return resolved
+
+
 def _parse_event(line: str) -> "RunLogEvent":
     """One `events.jsonl` line, degrading to `raw` rather than vanishing.
 
@@ -514,193 +776,37 @@ class RunController:
     def _read_lock_state(
         store: RunStore, key: RepoKey, request_id: str
     ) -> tuple[LockState, str | None]:
-        """The lock's current state, or the IO error reading it — captured
-        VALUES, exactly what `classify_repo`'s pure contract takes as its
-        first two arguments (spec §5, §7); it never touches the filesystem
-        itself.
-
-        A lock already held by THIS SAME `request_id` is this attempt's
-        own prior partial write — e.g. a crash between `_reserve_locked`
-        and `mark_launching` left a `reserved` record whose lock is still
-        standing — not a competing attempt. Reported as free (`None`) so a
-        legitimate retry of a still-`reserved` record is not blocked by
-        its own lock (spec §5.2's idempotent-retry contract, unchanged by
-        this gate).
-        """
-        try:
-            state = store.read_lock(key)
-        except RunStoreError as err:
-            return None, str(err)
-        if isinstance(state, LockInfo) and state.request_id == request_id:
-            return None, None
-        return state, None
+        """Thin delegate — see module-level `read_lock_state` for the body
+        and rationale. `submit`'s own attempt always names its `request_id`
+        so its own in-progress lock reads as free; the launchpad assembler
+        (PR-C) calls `read_lock_state` directly with no `request_id`."""
+        return read_lock_state(store, key, request_id)
 
     def _capture_run_facts(
         self, store: RunStore, key: RepoKey
     ) -> tuple[tuple[RunFact, ...], tuple[str, ...]]:
-        """Every run maestro currently classifies for `key`, joined to its
-        `request_id` via `RunStore.list()` — the same classifier `view()`
-        uses (spec §3.2), so a request's status and the dashboard's can
-        never disagree.
-
-        A run whose `state.db` failed to read (`OrchestrationRunInfo`
-        status `"unreadable"`) stays an ordinary non-terminal `RunFact`
-        when THIS store has a `request_id` on file for it: that is a
-        freshly materialized run of dispatcher's OWN launch whose db
-        content can transiently lag its directory's appearance, not
-        external corruption, so it stays inside the same fail-closed
-        RUN_IN_FLIGHT/RUN_VANISHED handling as any other non-terminal
-        status. An unreadable run this store cannot attribute to any
-        request is escalated instead, into `runs_unreadable`:
-        `classify_repo` cannot even name who is responsible for it, so it
-        surfaces as its own `RUN_STATE_UNREADABLE` blocker rather than
-        folding silently into "some run is busy" (spec §7's unreadable
-        split, mirrored from `RunStore.read_lock`).
-
-        `classified_runs` only walks directories that currently EXIST —
-        it can never itself report a run that vanished. Spec §7's vanished
-        predicate runs the other way, from a non-terminal `LaunchRecord`
-        outward: after the disk-backed pass above, every non-terminal
-        record naming a `run_id` `classified_runs` never saw at all is
-        checked directly against the run root. Absent → `run_dir_exists`
-        `RunFact` (`classify_repo`'s `RUN_VANISHED` arm). A directory that
-        DOES exist there but carries no `state.db` (most likely
-        mid-materialization, the db not written yet, or a launch that died
-        between mkdir and the db write) is a real gap short of "vanished" —
-        it stays a non-terminal `RunFact` (`status="missing-state"`) so
-        `classify_repo`'s `RUN_IN_FLIGHT` arm fires on it (fail-closed:
-        dispatcher's own record still says this run is non-terminal, so it
-        must still block, spec's Global Constraint). A stat failure while
-        checking is unreadable, never vanished (spec §7's unreadable
-        split, same rule as everywhere else this module applies it).
+        """Performs `submit`'s two global reads — `RunStore.list()` and one
+        `classified_runs` walk — then delegates to the module-level
+        `capture_run_facts` (see there for the classification rationale).
+        `submit` calls this once per admission attempt, so a fresh pair of
+        reads here is correct; the launchpad assembler (PR-C) instead reads
+        both ONCE per assembly and threads the SAME pair into every repo
+        via the module-level function directly, never through this method.
         """
         _, _, home = self._require_on()
         scratch = ProjectSnapshot(name="maestro", path="")
         records, list_unreadable = store.list()
-        by_run_id = {r.run_id: r.request_id for r in records if r.run_id is not None}
-        runs: list[RunFact] = []
-        unreadable: list[str] = []
-        seen_run_ids: set[str] = set()
-        for info, _ in classified_runs(home, scratch):
-            if info.repo_key != key.as_text() or info.run_id is None:
-                continue
-            seen_run_ids.add(info.run_id)
-            request_id = by_run_id.get(info.run_id)
-            if info.status == "unreadable":
-                # Linkage to a request_id does not make a broken state.db
-                # readable (review on #200): run_in_flight promises a
-                # KNOWN non-terminal state; here the reading itself must
-                # be fixed. The linkage travels as metadata in the
-                # detail — the code stays run_state_unreadable.
-                suffix = f" (request {request_id})" if request_id else ""
-                unreadable.append(f"run {info.run_id}{suffix}: state unreadable")
-                continue
-            runs.append(
-                RunFact(
-                    run_id=info.run_id,
-                    status=info.status,
-                    request_id=request_id,
-                    run_dir_exists=True,
-                )
-            )
-        # Enumeration-level failures (an unlistable `runs/` or `projects/`
-        # dir, `dispatcher/core/collectors/maestro.py:239`) are not tied to
-        # any single run_id and never produced a `RunFact` above. Filtered
-        # to THIS RepoKey: fail-closed is per-repo, so only a failure that
-        # could have hidden this repo's runs blocks it — its own subtree,
-        # or an ancestor on the path to it (projects/, host, owner). A
-        # neighbour repo's broken subtree is that repo's blocker, not a
-        # fleet-wide outage. A warning whose path cannot be matched at all
-        # stays blocking (unknown scope = fail-closed).
-        runs_root = self.runs_dir(key)
-        project_dir = runs_root.parent
-        projects_root = home / "projects"
-        lineage = [project_dir]
-        for parent in project_dir.parents:
-            lineage.append(parent)
-            if parent == projects_root:
-                break
-        relevant_markers = [f"cannot list {p}:" for p in lineage]
-        relevant_markers.append(f"cannot list {project_dir}/")
-
-        def _concerns_this_repo(warning: str) -> bool:
-            if "cannot list " not in warning:
-                return True  # unrecognized shape — keep, fail-closed
-            if any(marker in warning for marker in relevant_markers):
-                return True
-            return projects_root.as_posix() not in warning
-
-        unreadable.extend(
-            w
-            for w in scratch.warnings
-            if w.startswith("runs enumeration:") and _concerns_this_repo(w)
+        classified = classified_runs(home, scratch)
+        return capture_run_facts(
+            store,
+            key,
+            self.runs_dir(key),
+            home,
+            records=records,
+            list_unreadable=list_unreadable,
+            classified=classified,
+            scratch_warnings=scratch.warnings,
         )
-        unreadable.extend(list_unreadable)
-        for record in records:
-            if (
-                record.repo_key != key.as_text()
-                or record.run_id is None
-                or record.state == "terminal"
-                or record.run_id in seen_run_ids
-            ):
-                continue
-            try:
-                run_dir_exists = _present_at(runs_root / record.run_id)
-            except OSError:
-                unreadable.append(f"run {record.run_id}: cannot stat run directory")
-                continue
-            if run_dir_exists:
-                # The directory exists but `classified_runs` never saw it
-                # (no `state.db` yet — died, or lagging between mkdir and
-                # the db write). Still non-terminal by dispatcher's own
-                # record, so it must stay represented as RUN_IN_FLIGHT,
-                # never fall through unrepresented (fail-open).
-                runs.append(
-                    RunFact(
-                        run_id=record.run_id,
-                        status="missing-state",
-                        request_id=record.request_id,
-                        run_dir_exists=True,
-                    )
-                )
-                continue
-            runs.append(
-                RunFact(
-                    run_id=record.run_id,
-                    status="missing",
-                    request_id=record.request_id,
-                    run_dir_exists=False,
-                )
-            )
-        # Third source: the repo's runs/ directory itself. A run dir that
-        # never got a state.db AND has no LaunchRecord (a foreign maestro
-        # process, or a launch that died between mkdir and any bookkeeping)
-        # is invisible to both passes above — the classifier skips no-db
-        # dirs, the record pass walks records. An unexplained entry is a
-        # fail-closed blocker, not an empty repo; entry type is deliberately
-        # ignored (a stray file or symlink where a run dir belongs is
-        # unexplained state, same rule).
-        represented = seen_run_ids | {fact.run_id for fact in runs}
-        try:
-            with os.scandir(runs_root) as entries:
-                stray = sorted(e.name for e in entries)
-        except FileNotFoundError:
-            stray = []
-        except OSError as err:
-            unreadable.append(f"runs directory unlistable: {err}")
-            stray = []
-        for name in stray:
-            if name in represented:
-                continue
-            runs.append(
-                RunFact(
-                    run_id=name,
-                    status="missing-state",
-                    request_id=by_run_id.get(name),
-                    run_dir_exists=True,
-                )
-            )
-        return tuple(runs), tuple(unreadable)
 
     def _launch(
         self,
@@ -1206,54 +1312,11 @@ class RunController:
     _REASON_CAP = 1024
 
     def _logs_dir(self, record: LaunchRecord) -> Path:
-        """`<run dir>/logs` for an adopted run.
-
-        The run id comes from the durable record, never from the URL: the
-        caller names a `request_id`, and which run that is, is dispatcher's
-        own recorded answer. That is the same reasoning as `_verb_cwd` —
-        a read must not be re-pointed at another run by its own request.
-        """
-        if record.run_id is None:
-            raise RunRejectedError(
-                f"{record.request_id} has no run to read logs from "
-                f"(state: {record.state})"
-            )
+        """Thin delegate — see module-level `logs_dir` for the body and
+        rationale. The launchpad assembler's `logs_available` check (PR-C)
+        calls `logs_dir` directly with an already-resolved `home`."""
         _, _, home = self._require_on()
-        key = _key_from_record(record)
-        # The path must also BE where the record says it is (codex round 5).
-        # `01AAA/logs` as a symlink to `01BBB/logs` passed every check the
-        # callers made — task_log's containment resolved the link FIRST and
-        # then confirmed the file sat "inside" it — while the response still
-        # said `run_id="01AAA"`: one run's logs under another run's identity,
-        # the feature's central guarantee inverted. With `home` resolved as
-        # the trusted base, a fully-resolved path that still equals itself
-        # contains no symlink at ANY component — run dir, `logs/`, or a
-        # parent — so the whole class closes at once, not the one observed
-        # example. Refusal, not a warning: serving bytes whose owner is
-        # unknown is worse than serving nothing.
-        logs_dir = home.resolve().joinpath(
-            "projects", *safe_path_parts(key), "runs", record.run_id, "logs"
-        )
-        if logs_dir.resolve() != logs_dir:
-            raise RunRejectedError(
-                f"log path for run {record.run_id} is redirected by a symlink "
-                f"— refusing to serve another run's files under this run's "
-                f"identity"
-            )
-        # A durable run_id proves the run EXISTED, not that it still does
-        # (codex round 6, major): `view()` maps a vanished run directory to
-        # `run=None`, and /logs answering 200 for the same request would
-        # have the two surfaces disagree about whether the run exists. The
-        # distinction that matters: the RUN directory gone is absence and
-        # refuses; `logs/` or `events.jsonl` not written yet is an ordinary
-        # young run and stays a 200 with an empty timeline.
-        if not logs_dir.parent.is_dir():
-            raise RunRejectedError(
-                f"run {record.run_id} is recorded for {record.request_id} "
-                f"but its directory is gone — the run is absent, which is "
-                f"not the same as a run that has not logged yet"
-            )
-        return logs_dir
+        return logs_dir(home, record)
 
     def logs(self, request_id: str) -> RunLogs:
         """maestro's own event timeline for this run, plus its task-log names.

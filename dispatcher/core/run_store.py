@@ -852,8 +852,9 @@ class RunStore:
         except _UnreadableLock:
             return None
 
-    def list(self) -> tuple[list[LaunchRecord], list[str]]:
-        """Every record, plus the FILENAMES that failed to parse.
+    def list_with_mtime(self) -> tuple[list[tuple[LaunchRecord, str]], list[str]]:
+        """Every record paired with its file's last-modified time (ISO
+        UTC), plus the FILENAMES that failed to parse.
 
         The second return exists because the single-live-run gate is
         fail-closed: a corrupt record must block as unknown, and a
@@ -865,8 +866,26 @@ class RunStore:
         drop every record-derived blocker at once. Ordered by filename
         (== `request_id`) for determinism — callers sort by their own
         keys.
+
+        The mtime is this method's own addition (PR-C's launchpad
+        assembler needs a "last transition" timestamp per record):
+        `_write`'s temp-then-rename refreshes a record's mtime on every
+        transition, so it is durable, not a read-time artifact. A record
+        whose `os.stat` fails degrades to mtime `""` — sorts last as a
+        bare string, never raises — rather than dropping the record: the
+        CONTENT is still readable and must still count, only the
+        freshness signal is missing (mirrors the fail-closed rule above,
+        applied to a stat instead of a parse).
+
+        Defined ABOVE `list()` on purpose (not just alphabetically): with
+        `from __future__ import annotations`, a bare `list[...]` in a
+        later method's signature resolves against this class's OWN
+        namespace once a method literally named `list` has been defined
+        above it, shadowing the builtin generic — pyrefly flags exactly
+        that. Declaring the generic-typed method first keeps `list[...]`
+        meaning the builtin everywhere in this file.
         """
-        records: list[LaunchRecord] = []
+        records: list[tuple[LaunchRecord, str]] = []
         unreadable: list[str] = []
         try:
             # os.scandir, not Path.glob: glob SUPPRESSES OSError raised
@@ -885,7 +904,23 @@ class RunStore:
             return [], [f"requests directory unlistable: {err}"]
         for path in paths:
             try:
-                records.append(LaunchRecord.model_validate_json(path.read_text()))
+                record = LaunchRecord.model_validate_json(path.read_text())
             except Exception:
                 unreadable.append(path.name)
+                continue
+            try:
+                mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).isoformat()
+            except OSError:
+                mtime = ""
+            records.append((record, mtime))
         return records, unreadable
+
+    def list(self) -> tuple[list[LaunchRecord], list[str]]:
+        """Every record, plus the FILENAMES that failed to parse.
+
+        Thin delegate over `list_with_mtime()`, mtime column dropped — see
+        there for the fail-closed enumeration contract (shared verbatim)
+        and for why the mtime column exists at all.
+        """
+        records, unreadable = self.list_with_mtime()
+        return [record for record, _ in records], unreadable
