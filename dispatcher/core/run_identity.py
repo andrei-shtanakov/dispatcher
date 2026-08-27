@@ -235,7 +235,12 @@ def find_checkouts_by_identity(
             continue
         try:
             found = identity_from_checkout(checkout)
-        except IdentityError:
+        except IdentityError as err:
+            # This candidate MIGHT be the duplicate — an unreadable origin
+            # proves nothing, and silently skipping it turned an incomplete
+            # scan into a uniqueness proof (review on #209). The note makes
+            # the resolver refuse until the workspace is fixed.
+            notes.append(f"cannot read identity of {checkout}: {err}")
             continue
         if found.as_text() == target.as_text():
             matches.append(checkout.resolve())

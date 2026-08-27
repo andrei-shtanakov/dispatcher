@@ -11,6 +11,7 @@ from dispatcher.core.run_identity import (
     RepoKey,
     find_checkout_by_identity,
     identity_from_checkout,
+    find_checkouts_by_identity,
     list_workspace_checkouts,
     parse_remote_url,
     safe_path_parts,
@@ -259,3 +260,32 @@ def test_symlinked_workspace_entries_are_not_candidates(tmp_path):
     assert "real-repo" in names
     assert "sneaky" not in names
     assert notes == []
+
+
+def test_unreadable_candidate_identity_is_a_note_not_a_skip(tmp_path):
+    """A .git-bearing candidate whose origin cannot be read might BE the
+    duplicate — silently skipping it proves nothing (review-pr on #209):
+    the failure joins the notes so the resolver refuses."""
+    ws = tmp_path / "ws"
+    good = ws / "good"
+    (good / ".git").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(good)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(good),
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:o/good.git",
+        ],
+        check=True,
+    )
+    broken = ws / "broken"
+    (broken / ".git").mkdir(parents=True)  # .git present, no config → IdentityError
+    matches, notes = find_checkouts_by_identity(
+        ws, RepoKey(host="github.com", owner="o", repo="good")
+    )
+    assert [m.name for m in matches] == ["good"]
+    assert any("broken" in n for n in notes)
