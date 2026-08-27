@@ -460,6 +460,18 @@
 - [ ] Флейк `test_run_end_through_the_resolution_path_also_binds_to_the_checkout` (fake-maestro subprocess timing; выстреливал в плане B1 и падает и standalone ~25-50% — замер 2026-08-26 на fbaed1c и HEAD, симптом: поздняя строка `run` от исходного launch-процесса перекрывает `run-end` в cwd-логе) @owner:github:andrei-shtanakov @id:flake-run-end-checkout
 - [ ] Флейк `test_revendor_script.py::test_a_signal_mid_run_leaves_the_working_copy_alone[SIGINT]` (периодически в полном прогоне, standalone зелёный) @owner:github:andrei-shtanakov @id:flake-revendor-sigint
 
+## Waits graph (спека docs/superpowers/specs/2026-08-26-waits-graph-design.md)
+
+- [ ] Графовый вид ожиданий флота в панели: рёбра @blocked_by + сторожевые @trigger @owner:github:andrei-shtanakov @id:waits-graph-view @epic:eco.plan-fields
+      Принятие inbox #201 (запрос ecosystem-kb, решение владельца 2026-08-26);
+      пара спека+план — PR #205.
+      Slice 0 — живой fleet-pass каноническим `plan_fields` (никакого пересчёта
+      семантики), собственный SVG/JS-рендер без новой библиотеки; published
+      snapshot как источник — отдельное расширение для мультимашинности.
+      Нерезолвленные/legacy-ссылки показываются отдельно от рёбер;
+      PF-BLOCKER-STALE — состояние ребра, не его исчезновение. Имплементация
+      после решения по launchpad B2 либо после проверки непересечения файлов.
+
 ## Хвосты качества
 
 - [x] Проход 1 слайса 0 ПРИНЯТ — deployer#40 @owner:github:andrei-shtanakov @id:df-slice0-pass1-acceptance
