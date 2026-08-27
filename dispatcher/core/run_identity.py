@@ -226,7 +226,7 @@ def find_checkouts_by_identity(workspace: Path, target: RepoKey) -> list[Path]:
     `repo_key` in the first place, so the two can never resolve a
     `repo_key` to two different checkouts.
     """
-    entries, _notes = list_workspace_checkouts(workspace)
+    entries, notes = list_workspace_checkouts(workspace)
     matches: list[Path] = []
     for _name, checkout in entries:
         if not (checkout / ".git").exists():
@@ -237,11 +237,12 @@ def find_checkouts_by_identity(workspace: Path, target: RepoKey) -> list[Path]:
             continue
         if found.as_text() == target.as_text():
             matches.append(checkout.resolve())
-    return matches
+    return matches, notes
 
 
 def find_checkout_by_identity(workspace: Path, target: RepoKey) -> Path | None:
     """First identity match or None — kept for callers that tolerate
-    ambiguity; submit v2 uses `find_checkouts_by_identity` and refuses >1."""
-    matches = find_checkouts_by_identity(workspace, target)
+    ambiguity AND scan gaps; submit v2 uses `find_checkouts_by_identity`
+    and refuses both."""
+    matches, _notes = find_checkouts_by_identity(workspace, target)
     return matches[0] if matches else None

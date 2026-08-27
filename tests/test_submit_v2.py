@@ -1083,3 +1083,42 @@ def test_concurrent_repeat_of_a_reserved_attempt_spawns_exactly_once(
     store = RunStore(config.run_state_dir)  # type: ignore[arg-type]
     record = store.get(_REQ)
     assert record is not None and record.state != "terminal"
+
+
+def test_enumeration_failure_refuses_rather_than_assuming_uniqueness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Publish-run finding on #209: a failed/partial workspace scan must
+    not count as proof there is no duplicate checkout — unknown is a 409
+    repo_unresolved naming the scan failure, never a silent fast-path win.
+    """
+    import dispatcher.core.run_identity as ri
+
+    remote = _remote("scanfail")
+    ws = tmp_path / "ws"
+    ws.mkdir(exist_ok=True)
+    root = make_repo(
+        ws,
+        "- [ ] A @id:w1 @dag:dags/w1.yaml\n",
+        {"dags/w1.yaml": f"repo_url: {remote}\ntasks: []\n"},
+        remote=remote,
+        name="scanfail",
+    )
+    head = _head(root)
+    cli = _fake_maestro_by_identity(tmp_path / "fake-maestro", creates_run=None)
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+
+    real_scandir = ri.os.scandir
+
+    def broken_scandir(path):  # noqa: ANN001
+        if Path(str(path)) == ws:
+            raise OSError("EIO: workspace unreadable")
+        return real_scandir(path)
+
+    monkeypatch.setattr(ri.os, "scandir", broken_scandir)
+    body = _body(repo_key=_key("scanfail").as_text(), work_id="w1", revision=head)
+    with pytest.raises(AdmissionRefused) as exc:
+        controller.submit_v2(body)
+    assert exc.value.code == "repo_unresolved"
+    assert "EIO" in exc.value.detail

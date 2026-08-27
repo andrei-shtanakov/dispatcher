@@ -953,7 +953,17 @@ class RunController:
                 # the workspace, first-match resolution could act on the
                 # copy the operator was NOT looking at (a different HEAD →
                 # a wrongly PERSISTED revision_moved). Fail closed.
-                matches = find_checkouts_by_identity(workspace, repo_key)
+                matches, scan_notes = find_checkouts_by_identity(workspace, repo_key)
+                if scan_notes:
+                    # A failed/partial scan cannot PROVE the fast path is
+                    # the only checkout of this identity — unknown is a
+                    # refusal, never a silent win (publish finding, #209).
+                    raise AdmissionRefused(
+                        409,
+                        "repo_unresolved",
+                        "workspace scan incomplete — duplicate-checkout "
+                        "uniqueness unprovable: " + "; ".join(scan_notes),
+                    )
                 if len(matches) > 1:
                     raise AdmissionRefused(
                         409,
@@ -965,7 +975,14 @@ class RunController:
                     )
                 return fast_path.resolve()
 
-        matches = find_checkouts_by_identity(workspace, repo_key)
+        matches, scan_notes = find_checkouts_by_identity(workspace, repo_key)
+        if scan_notes:
+            raise AdmissionRefused(
+                409,
+                "repo_unresolved",
+                "workspace scan incomplete — checkout resolution "
+                "unprovable: " + "; ".join(scan_notes),
+            )
         if len(matches) > 1:
             raise AdmissionRefused(
                 409,
