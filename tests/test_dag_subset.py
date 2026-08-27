@@ -97,3 +97,13 @@ def test_alias_bomb_is_rejected_at_the_event_stream():
     verdict = classify_dag_text(bomb)
     assert isinstance(verdict, Rejected)
     assert "alias" in verdict.reason
+
+
+def test_deeply_nested_yaml_is_rejected_not_crashed():
+    # RecursionError is not a yaml.YAMLError: without an explicit catch a
+    # <1MiB doc of thousands of nested lists crashes the caller instead of
+    # classifying as Rejected (fail-closed).
+    bomb = "[" * 5000 + "]" * 5000
+    verdict = classify_dag_text(bomb)
+    assert isinstance(verdict, Rejected)
+    assert verdict.reason

@@ -46,6 +46,11 @@ def classify_dag_text(text: str) -> DagSubsetVerdict:
         doc = yaml.safe_load(text)
     except yaml.YAMLError as exc:
         return Rejected(f"not parseable as YAML: {exc}")
+    except RecursionError:
+        # Not a YAMLError: thousands of nested collections inside the size
+        # cap blow the constructor's recursion instead — same verdict, and
+        # the caller (capture) must never see the crash.
+        return Rejected("YAML nesting too deep for the supported subset")
     if not isinstance(doc, dict):
         return Rejected("top level is not a mapping")
     if _MODE2_MARKER in doc:
