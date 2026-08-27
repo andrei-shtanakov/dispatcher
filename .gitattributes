@@ -6,3 +6,8 @@
 # мержа, снятие — сразу): объявить файл generated и спрятать его тем же
 # патчем нельзя. Не объявлено — ревьюируется построчно.
 uv.lock linguist-generated=true
+# Вендоренные пиненые копии контрактов (plan-fields v3, epics/v1): байты
+# проверяет манифест-хэш (tests/test_pf6_drift.py), построчное ревью копии
+# живёт у канона (prograph-vault), не здесь. Правится только ре-вендором.
+packages/plan-fields/src/plan_fields/contract/** linguist-generated=true
+packages/plan-fields/src/plan_fields/contract_epics/** linguist-generated=true
