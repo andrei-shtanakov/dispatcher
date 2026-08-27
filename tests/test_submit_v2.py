@@ -9,6 +9,7 @@ clean launch tail.
 
 from __future__ import annotations
 
+import dataclasses
 import multiprocessing
 import subprocess
 import time
@@ -929,3 +930,37 @@ def test_two_checkouts_of_one_repo_key_refuse_ambiguously(tmp_path: Path) -> Non
 
     store = RunStore(config.run_state_dir)  # type: ignore[arg-type]
     assert store.get(_REQ) is None  # environment fact — never persisted
+
+
+def test_root_as_checkout_config_is_visible_and_launchable(tmp_path: Path) -> None:
+    """roots=(the repo itself,) — supported since slice 0 (test_run_api pins
+    it) — must yield a launchpad row AND resolve through submit v2
+    (review-pr finding on #209)."""
+    from dispatcher.core.launchpad import assemble_snapshot
+
+    remote = _remote("solo")
+    ws = tmp_path / "ws"
+    ws.mkdir(exist_ok=True)
+    root = make_repo(
+        ws,
+        "- [ ] A @id:w1 @dag:dags/w1.yaml\n",
+        {"dags/w1.yaml": f"repo_url: {remote}\ntasks: []\n"},
+        remote=remote,
+        name="solo-dir",
+    )
+    head = _head(root)
+    key = _key("solo")
+
+    cli = _fake_maestro_by_identity(tmp_path / "fake-maestro", creates_run="01SOLO")
+    config = _config(tmp_path, cli)
+    config = dataclasses.replace(config, roots=(root,))
+    controller = RunController(config, materialize_timeout=10.0)
+
+    snap = assemble_snapshot(controller)
+    assert any(r.repo_key == key.as_text() for r in snap.repositories)
+    assert any(r.repo_key == key.as_text() for r in snap.ready)
+
+    receipt = controller.submit_v2(
+        _body(repo_key=key.as_text(), work_id="w1", revision=head)
+    )
+    assert receipt.accepted is True

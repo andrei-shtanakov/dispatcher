@@ -175,6 +175,13 @@ def list_workspace_checkouts(
         return [], [f"cannot list workspace {workspace}: {err}"]
     entries: list[tuple[str, Path]] = []
     notes: list[str] = []
+    # The root ITSELF is a candidate when it carries .git (a plain dir or
+    # a worktree's .git FILE): `roots=(repo,)` is a supported shape —
+    # discovery checks `[root, *children]` and the B1 escape resolver
+    # pinned it (review-pr finding on #209). Children are still scanned:
+    # a checkout can contain sibling tooling dirs.
+    if (workspace / ".git").exists():
+        entries.append((workspace.name, workspace))
     for entry in raw_entries:
         if entry.name.startswith(_HIDDEN_PREFIXES):
             continue

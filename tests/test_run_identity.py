@@ -220,3 +220,17 @@ def test_underscore_prefixed_git_checkout_is_enumerated(tmp_path):
     assert "_service" in names
     assert ".hidden" not in names
     assert notes == []
+
+
+def test_root_itself_as_checkout_is_a_candidate(tmp_path):
+    """roots=(repo,) is a supported shape (discovery checks [root, *children],
+    the B1 escape resolver pinned root-as-checkout incl. the worktree
+    .git-FILE shape) — the shared enumerator must offer the root itself
+    when it carries .git, or launchpad/submit-v2 are blind to it (review-pr
+    finding on #209)."""
+    root = tmp_path / "solo-repo"
+    (root / ".git").mkdir(parents=True)
+    (root / "child-not-repo").mkdir()
+    entries, notes = list_workspace_checkouts(root)
+    assert ("solo-repo", root) in entries
+    assert notes == []

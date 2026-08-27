@@ -117,6 +117,13 @@ def _checkout(repository: str, config: DispatcherConfig) -> Path:
         raise RunRejectedError("no existing workspace root configured")
     target = workspace / repository
     if not (target / ".git").exists():
+        # The root ITSELF may be the checkout (`roots=(repo,)` — discovery's
+        # own contract checks `[root, *children]`): when the name matches
+        # the root and the root carries .git, resolve to the root. Without
+        # this, submit v2's repository=<dir name> recovered from a
+        # root-as-checkout config could never validate (review on #209).
+        if workspace.name == repository and (workspace / ".git").exists():
+            return workspace.resolve()
         raise RunRejectedError(f"not a git repo in workspace: {repository}")
     # ABSOLUTE, always. `config.roots` is only `expanduser()`-normalised
     # (`dispatcher/core/discovery.py:104`), so a relative root in
