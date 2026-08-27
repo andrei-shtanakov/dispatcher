@@ -206,7 +206,9 @@ def list_workspace_checkouts(
     return entries, notes
 
 
-def find_checkouts_by_identity(workspace: Path, target: RepoKey) -> list[Path]:
+def find_checkouts_by_identity(
+    workspace: Path, target: RepoKey
+) -> tuple[list[Path], list[str]]:
     """EVERY checkout directly under `workspace` whose `origin` remote
     resolves to `target`, in sorted-name order.
 
