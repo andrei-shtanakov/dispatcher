@@ -1831,6 +1831,12 @@ document.getElementById("rc-run-view").addEventListener("change", e => {
 });
 
 async function refresh() {
+  // Waits is fired BEFORE the shared Promise.all and outside its try: a
+  // failing /api/models must not stop a healthy /api/waits from painting,
+  // and refreshWaits carries its own catch + generation guard. Placing the
+  // call after the await (as Epics is) skips it whenever any unrelated
+  // endpoint rejects — the local.sh finding on this change.
+  refreshWaits();
   try {
     const errorsUrl = "/api/errors?limit=50"
       + (errorsDays === null ? "" : `&days=${errorsDays}`)
@@ -1850,8 +1856,6 @@ async function refresh() {
     // looking at Sync should not lose it because the registry is unreadable.
     // The failure is shown in the panel instead of swallowed.
     refreshEpics();
-    // Waits: same isolation rule as Epics, same reason.
-    refreshWaits();
     // one global section, one writer, one polling loop — refresh() itself
     // IS the stale-response guard; no generation counter needed here.
     renderBenchmarks(benchmarks);
