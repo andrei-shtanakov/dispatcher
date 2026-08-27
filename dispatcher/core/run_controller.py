@@ -1097,6 +1097,39 @@ class RunController:
 
         try:
             with store.guard(found_key):
+                # Authoritative replay re-check UNDER the guard: the
+                # pre-guard replay is only a fast path, and a concurrent
+                # submit of the same request_id can have created the
+                # record between the two (publish-run finding on #209).
+                # Without this, the repeat would re-classify — its own
+                # live run reads as a blocker, TERMINALIZING the live
+                # record — or double-spawn via _reserve_locked's
+                # matching-fingerprint return.
+                raced = self._replay_existing(
+                    store,
+                    body.request_id,
+                    raw_repository=None,
+                    work_id=body.work_id,
+                    revision=body.seen_revision,
+                    repo_key=found_key.as_text(),
+                )
+                if isinstance(raced, AdmissionRefused):
+                    raise raced
+                if raced is not None:
+                    return raced
+                if store.get(body.request_id) is not None:
+                    # A matching `reserved` record: the OTHER submit owns
+                    # the launch tail — never spawn a second process.
+                    return LaunchReceipt(
+                        request_id=body.request_id,
+                        run_id=None,
+                        accepted=None,
+                        reason=(
+                            f"{body.request_id} is already reserved by an "
+                            "in-flight attempt; resubmission does not start "
+                            "a second process — poll this request_id"
+                        ),
+                    )
                 try:
                     inv = capture_inventory(checkout)
                     lock_state, lock_err = read_lock_state(

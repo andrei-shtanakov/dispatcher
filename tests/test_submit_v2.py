@@ -277,18 +277,18 @@ def test_reserved_state_identity_mismatch_is_request_id_conflict(
     assert exc.value.code == "request_id_conflict"
 
 
-def test_refusal_against_a_pre_existing_reserved_record_terminalizes_it(
+def test_repeat_on_a_reserved_record_replays_without_reclassification(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Fix round 1 (review, Important): `_replay_existing` returns `None`
-    for a `reserved` record whose fingerprint matches — the guard then
-    re-runs its checks fresh. If the workspace regressed since that
-    reservation (the DAG went dirty here) and a check now fails, the
-    refusal must terminalize THAT existing record and release its lock —
-    `store.record_admission_rejection` alone would find the existing
-    fingerprint-matching record and return it UNCHANGED (no rejection
-    written, lock still held), breaking §8.2 replay for this request_id
-    and leaking the repo lock onto every other launch."""
+    """Superseded semantics (publish-run finding on #209): a repeat of a
+    matching `reserved` attempt must NOT re-classify at all — §8.2 binds
+    every prior state, and re-running admission here either terminalized
+    a possibly-LIVE concurrent attempt or double-spawned. The in-guard
+    authoritative re-check returns a poll receipt (accepted=None), the
+    record and its lock stay exactly as the owning attempt left them.
+    (A reserved record whose owner CRASHED is the recorded
+    terminal-crash-window reconciliation tail — an escape, not a repeat
+    side effect.)"""
     name = "leak-fix"
     root, head = _ready(tmp_path, name, "w1")
     cli = _fake_maestro(tmp_path / "fake-maestro", creates_run=None)
@@ -314,57 +314,14 @@ def test_refusal_against_a_pre_existing_reserved_record_terminalizes_it(
 
     controller = RunController(config)
     body = _body(repo_key=key.as_text(), work_id="w1", revision=head)
-    with pytest.raises(AdmissionRefused) as exc:
-        controller.submit_v2(body)
-    assert exc.value.status == 409
-    assert exc.value.code == "dag_dirty"
+    receipt = controller.submit_v2(body)
+    assert receipt.accepted is None
+    assert receipt.reason is not None and "poll" in receipt.reason
 
     record = store.get(_REQ)
     assert record is not None
-    assert record.state == "terminal"
-    assert record.response_class == "admission_rejected"
-    assert record.admission_code == "dag_dirty"
-    assert store.holds_lock(key) is None, "the lock must not leak"
-
-    # A DIFFERENT request_id against the same repo is no longer
-    # launch_busy — the leaked lock is gone.
-    other = _body(
-        repo_key=key.as_text(),
-        work_id="w-ghost",
-        revision=head,
-        request_id="22222222-2222-4222-8222-222222222222",
-    )
-    with pytest.raises(AdmissionRefused) as other_exc:
-        controller.submit_v2(other)
-    assert other_exc.value.code == "item_unregistered"  # not launch_busy
-
-    # Replay: repeat `_REQ` after the workspace is CLEAN again — the
-    # persisted refusal is immutable, and zero calls prove no re-check.
-    (root / "dags" / "w1.yaml").write_text(f"repo_url: {_remote(name)}\ntasks: []\n")
-    import dispatcher.core.run_controller as rc
-
-    calls = {"inventory": 0, "repo": 0}
-    real_inventory = rc.classify_inventory
-    real_repo = rc.classify_repo
-
-    def _counting_inventory(*a: object, **k: object) -> object:
-        calls["inventory"] += 1
-        return real_inventory(*a, **k)  # type: ignore[arg-type]
-
-    def _counting_repo(*a: object, **k: object) -> object:
-        calls["repo"] += 1
-        return real_repo(*a, **k)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(rc, "classify_inventory", _counting_inventory)
-    monkeypatch.setattr(rc, "classify_repo", _counting_repo)
-    with pytest.raises(AdmissionRefused) as replay_exc:
-        controller.submit_v2(body)
-
-    assert calls == {"inventory": 0, "repo": 0}
-    assert replay_exc.value.status == exc.value.status
-    assert replay_exc.value.code == exc.value.code
-    assert replay_exc.value.detail == exc.value.detail
-    assert replay_exc.value.current == exc.value.current
+    assert record.state == "reserved", "the owning attempt's record is untouched"
+    assert store.holds_lock(key) == _REQ, "the owning attempt's lock is untouched"
 
 
 def test_admission_rejected_replay_is_409_with_persisted_fields_zero_calls(
@@ -1016,12 +973,19 @@ def test_persist_refusal_never_terminalizes_another_attempts_record(
     assert store.holds_lock(key_a) is not None
 
     # Attempt B: SAME request_id, DIFFERENT repo. The race window is
-    # between B's replay check (which saw NO record) and B's refusal
-    # persist (by which time A's record exists) — model exactly that
-    # interleave by silencing B's replay, as if it ran a moment earlier.
-    controller._replay_existing = (  # type: ignore[method-assign]  # noqa: SLF001
-        lambda *a, **k: None
-    )
+    # between B's PRE-guard replay (which saw NO record) and the guard —
+    # silence only that first call; the in-guard authoritative re-check
+    # runs the real logic and must raise the conflict.
+    real_replay = controller._replay_existing  # noqa: SLF001
+    calls = {"n": 0}
+
+    def racy_replay(*a, **k):  # noqa: ANN002, ANN003
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None
+        return real_replay(*a, **k)
+
+    controller._replay_existing = racy_replay  # type: ignore[method-assign]  # noqa: SLF001
     body = _body(
         repo_key=_key("race-b").as_text(), work_id="missing", revision="f" * 40
     )
@@ -1060,3 +1024,62 @@ def test_symlinked_fast_path_is_not_resolved(tmp_path: Path) -> None:
     with pytest.raises(AdmissionRefused) as exc:
         controller.submit_v2(body)
     assert exc.value.code == "repo_unresolved"
+
+
+def test_concurrent_repeat_of_a_reserved_attempt_spawns_exactly_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Publish-run finding on #209: same request_id, same repo, concurrent.
+
+    Both pass replay while the record is `reserved` (matching fingerprint →
+    None → proceed); both reach `_reserve_locked` (returns the one record);
+    without a compare-and-set at the launch tail BOTH spawn. Exactly one
+    caller may win reserved→launching; the loser gets the existing receipt.
+    """
+    remote = _remote("caslaunch")
+    ws = tmp_path / "ws"
+    ws.mkdir(exist_ok=True)
+    root = make_repo(
+        ws,
+        "- [ ] A @id:w1 @dag:dags/w1.yaml\n",
+        {"dags/w1.yaml": f"repo_url: {remote}\ntasks: []\n"},
+        remote=remote,
+        name="caslaunch",
+    )
+    head = _head(root)
+    cli = _fake_maestro_by_identity(tmp_path / "fake-maestro", creates_run="01CAS")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+
+    spawns: list[str] = []
+    real_popen = subprocess.Popen
+
+    def counting_popen(*args, **kwargs):  # noqa: ANN002, ANN003
+        # subprocess.run() is Popen underneath — count only the maestro
+        # launch itself, not the git plumbing.
+        argv = args[0] if args else kwargs.get("args", [])
+        if any(str(cli) in str(part) for part in argv):
+            spawns.append("spawn")
+        return real_popen(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "dispatcher.core.run_controller.subprocess.Popen", counting_popen
+    )
+
+    body = _body(repo_key=_key("caslaunch").as_text(), work_id="w1", revision=head)
+    first = controller.submit_v2(body)
+    assert first.accepted is True and spawns == ["spawn"]
+
+    # The racing repeat: its replay ran a moment before the record existed.
+    controller._replay_existing = (  # type: ignore[method-assign]  # noqa: SLF001
+        lambda *a, **k: None
+    )
+    second = controller.submit_v2(body)
+    assert spawns == ["spawn"], "a concurrent repeat must not spawn again"
+    assert second.request_id == first.request_id
+    # The in-guard re-check is the authority: the repeat neither spawned
+    # nor re-classified (its own run would have classified as a blocker
+    # and TERMINALIZED the live record — the worse cousin of the race).
+    store = RunStore(config.run_state_dir)  # type: ignore[arg-type]
+    record = store.get(_REQ)
+    assert record is not None and record.state != "terminal"
