@@ -241,3 +241,21 @@ def test_root_itself_as_checkout_is_a_candidate(tmp_path):
     assert "child-not-repo" not in names
     assert "nested-repo" in names
     assert notes == []
+
+
+def test_symlinked_workspace_entries_are_not_candidates(tmp_path):
+    """A symlink in the workspace root must not smuggle an EXTERNAL
+    checkout in as a candidate (review-pr on #209): enumeration takes
+    real directories only — a launch must never act outside the
+    workspace the operator configured.
+    """
+    outside = tmp_path / "outside-repo"
+    (outside / ".git").mkdir(parents=True)
+    ws = tmp_path / "ws"
+    (ws / "real-repo" / ".git").mkdir(parents=True)
+    (ws / "sneaky").symlink_to(outside)
+    entries, notes = list_workspace_checkouts(ws)
+    names = [name for name, _ in entries]
+    assert "real-repo" in names
+    assert "sneaky" not in names
+    assert notes == []

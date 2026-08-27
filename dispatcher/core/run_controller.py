@@ -936,7 +936,10 @@ class RunController:
             )
         fast_path = workspace / repo_key.repo
         fast_path_identity: RepoKey | None = None
-        if (fast_path / ".git").exists():
+        # Same no-follow rule as `list_workspace_checkouts`: a symlinked
+        # workspace entry must not resolve a launch OUTSIDE the configured
+        # workspace (review on #209).
+        if not fast_path.is_symlink() and (fast_path / ".git").exists():
             try:
                 fast_path_identity = identity_from_checkout(fast_path)
             except IdentityError:

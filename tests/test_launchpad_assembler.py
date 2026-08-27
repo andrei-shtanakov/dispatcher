@@ -228,7 +228,7 @@ class _FakeEntry:
         self.name = name
         self._boom = boom
 
-    def is_dir(self) -> bool:
+    def is_dir(self, *, follow_symlinks=True) -> bool:
         if self._boom:
             raise OSError("stat boom")
         return True

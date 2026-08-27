@@ -187,7 +187,10 @@ def list_workspace_checkouts(
         if entry.name.startswith(_HIDDEN_PREFIXES):
             continue
         try:
-            is_dir = entry.is_dir()
+            # follow_symlinks=False: a symlink in the workspace root would
+            # smuggle an EXTERNAL checkout in as a candidate and a launch
+            # would act outside the configured workspace (review on #209).
+            is_dir = entry.is_dir(follow_symlinks=False)
         except OSError as err:
             notes.append(f"cannot stat {workspace / entry.name}: {err}")
             continue

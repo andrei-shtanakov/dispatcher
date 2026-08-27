@@ -1032,3 +1032,31 @@ def test_persist_refusal_never_terminalizes_another_attempts_record(
     record = store.get(_REQ)
     assert record is not None and record.state == "reserved"
     assert store.holds_lock(key_a) is not None  # A's lock untouched
+
+
+def test_symlinked_fast_path_is_not_resolved(tmp_path: Path) -> None:
+    """The fast path workspace/<segment> must not follow a symlink out of
+    the workspace (review-pr on #209) — same rule as enumeration."""
+    remote = _remote("slink")
+    outside_ws = tmp_path / "elsewhere"
+    outside_ws.mkdir()
+    outside = make_repo(
+        outside_ws,
+        "- [ ] A @id:w1 @dag:dags/w1.yaml\n",
+        {"dags/w1.yaml": f"repo_url: {remote}\ntasks: []\n"},
+        remote=remote,
+        name="slink",
+    )
+    ws = tmp_path / "ws"
+    ws.mkdir(exist_ok=True)
+    (ws / "slink").symlink_to(outside)
+
+    cli = _fake_maestro_by_identity(tmp_path / "fake-maestro", creates_run=None)
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    body = _body(
+        repo_key=_key("slink").as_text(), work_id="w1", revision=_head(outside)
+    )
+    with pytest.raises(AdmissionRefused) as exc:
+        controller.submit_v2(body)
+    assert exc.value.code == "repo_unresolved"
