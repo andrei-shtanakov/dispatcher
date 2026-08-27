@@ -10,26 +10,20 @@ legal Mode-1 remote-URL naming, not a Mode-2 marker — it mirrors the
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import yaml
+
+from dispatcher.core.inventory_types import Accepted, DagSubsetVerdict, Rejected
+
+__all__ = [
+    "Accepted",
+    "Rejected",
+    "DagSubsetVerdict",
+    "MAX_DAG_BYTES",
+    "classify_dag_text",
+]
 
 MAX_DAG_BYTES = 1024 * 1024  # a plan DAG is text; anything bigger is refused
 _MODE2_MARKER = "workstreams"  # recorded ruling: repo_url is legal Mode-1
-
-
-@dataclass(frozen=True)
-class Accepted:
-    repo_path: str | None  # `repo:` — a checkout path (submit semantics)
-    repo_url: str | None  # `repo_url:` — wins when both are present
-
-
-@dataclass(frozen=True)
-class Rejected:
-    reason: str
-
-
-DagSubsetVerdict = Accepted | Rejected
 
 
 def classify_dag_text(text: str) -> DagSubsetVerdict:
