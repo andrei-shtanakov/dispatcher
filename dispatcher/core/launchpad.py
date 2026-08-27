@@ -12,6 +12,7 @@ docstring there promises.
 from __future__ import annotations
 
 import base64
+import os
 import subprocess
 import uuid
 from datetime import UTC, datetime
@@ -134,10 +135,14 @@ class LaunchpadSnapshot(BaseModel):
     recent_completed: list[CompletedRow]
     completed_total: int
     next_cursor: str | None
-    store_unreadable: list[str]  # unreadable record names — global banner
+    store_unreadable: list[str]  # unreadable record names + workspace-listing
+    # failures — global banner (fix round 1: a manifest scan failure must
+    # be visible here too, never a silently empty `repositories` list)
 
 
-def _manifest_repos(config: DispatcherConfig) -> list[tuple[str, Path]]:
+def _manifest_repos(
+    config: DispatcherConfig,
+) -> tuple[list[tuple[str, Path]], list[str]]:
     """`(name, checkout)` pairs — the workspace `run_request._checkout`
     resolves a bare `repository` name against, enumerated instead of
     looked up by name. Same workspace (first existing root), same
@@ -145,19 +150,46 @@ def _manifest_repos(config: DispatcherConfig) -> list[tuple[str, Path]]:
     fetch_workspace` — a directory need not carry `.git` to be listed
     here; that is exactly what makes `repo_unresolved` observable below
     rather than the entry simply not existing.
+
+    Returns `(entries, notes)`. `os.scandir`, not `iterdir`/`glob`: both
+    of those raise OSError from INSIDE the generator the moment a bad
+    entry's `is_dir()` stat fails (a broken symlink, a permission-denied
+    child) — an earlier version of this function built `children` with
+    `sorted(d for d in workspace.iterdir() if d.is_dir() ...)`, and one
+    bad entry ANYWHERE under the workspace root aborted that whole
+    comprehension, caught by a blanket `except OSError: return []` that
+    silently emptied the ENTIRE manifest (fail-open: the snapshot would
+    render "no repositories" as if the fleet were empty, review fix
+    round 1). `os.scandir` makes each entry's stat a SEPARATE call this
+    loop can catch and skip — mirrors `RunStore.list_with_mtime`'s
+    per-record degradation. A failure to scan the workspace root itself
+    is a different class of problem (nothing was listed at all) and is
+    reported as a note too, rather than a silent `[]`, so the caller can
+    surface it in the snapshot instead of it reading as an empty, healthy
+    fleet.
     """
     workspace = next((r for r in config.roots if r.is_dir()), None)
     if workspace is None:
-        return []
+        return [], []
     try:
-        children = sorted(
-            d
-            for d in workspace.iterdir()
-            if d.is_dir() and not d.name.startswith(_HIDDEN_PREFIXES)
-        )
-    except OSError:
-        return []
-    return [(child.name, child) for child in children]
+        with os.scandir(workspace) as scanned:
+            raw_entries = list(scanned)
+    except OSError as err:
+        return [], [f"cannot list workspace {workspace}: {err}"]
+    entries: list[tuple[str, Path]] = []
+    notes: list[str] = []
+    for entry in raw_entries:
+        if entry.name.startswith(_HIDDEN_PREFIXES):
+            continue
+        try:
+            is_dir = entry.is_dir()
+        except OSError as err:
+            notes.append(f"cannot stat {workspace / entry.name}: {err}")
+            continue
+        if is_dir:
+            entries.append((entry.name, workspace / entry.name))
+    entries.sort(key=lambda pair: pair[0])
+    return entries, notes
 
 
 def _default_branch(checkout: Path) -> str:
@@ -280,7 +312,8 @@ def assemble_snapshot(
     unregistered_items: list[UnregisteredRow] = []
     orphan_dags: list[OrphanRow] = []
 
-    for repository, checkout in _manifest_repos(controller._config):  # noqa: SLF001
+    manifest_repos, manifest_notes = _manifest_repos(controller._config)  # noqa: SLF001
+    for repository, checkout in manifest_repos:
         if not (checkout / ".git").exists():
             repositories.append(_unresolved_row(repository, checkout, None))
             continue
@@ -445,5 +478,5 @@ def assemble_snapshot(
         recent_completed=page,
         completed_total=completed_total,
         next_cursor=next_cursor,
-        store_unreadable=list(store_unreadable),
+        store_unreadable=list(store_unreadable) + manifest_notes,
     )

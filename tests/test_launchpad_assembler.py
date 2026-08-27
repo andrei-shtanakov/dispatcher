@@ -130,6 +130,93 @@ def test_missing_checkout_is_unreadable_others_unaffected(tmp_path: Path) -> Non
     assert row_c.admission == "ready"
 
 
+def _matches_workspace(path: object, ws: Path) -> bool:
+    """`capture_inventory` also calls `os.scandir` with an int dir-fd
+    (`dags/` opened via `O_DIRECTORY`, `inventory.py`) — a `Path(...)`
+    conversion must not blow up on that, it must just not match."""
+    return isinstance(path, (str, Path)) and Path(path) == ws
+
+
+def test_workspace_scan_failure_surfaces_not_a_silent_empty_fleet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix round 1: a workspace root that cannot even be scanned (a
+    permission error, a bad mount) must not read as "no repositories" —
+    the snapshot must carry a named failure the UI can show instead."""
+    _ready_repo(tmp_path, "repo-a", "a1")
+    config = _config(tmp_path)
+    ws = tmp_path / "ws"
+    real_scandir = os.scandir
+
+    def flaky_scandir(path: object) -> object:
+        if _matches_workspace(path, ws):
+            raise OSError("permission denied")
+        return real_scandir(path)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(launchpad_module.os, "scandir", flaky_scandir)
+
+    snap = assemble_snapshot(RunController(config))
+
+    assert snap.repositories == []
+    assert any("permission denied" in note for note in snap.store_unreadable)
+
+
+class _FakeEntry:
+    """A minimal `os.DirEntry` stand-in — the real type is immutable
+    (a non-heap C type), so its `is_dir` cannot be monkeypatched to raise;
+    this lets the test target the per-entry degradation directly instead
+    of depending on an OS-specific permission trick to provoke a real
+    stat failure."""
+
+    def __init__(self, name: str, *, boom: bool = False) -> None:
+        self.name = name
+        self._boom = boom
+
+    def is_dir(self) -> bool:
+        if self._boom:
+            raise OSError("stat boom")
+        return True
+
+
+class _FakeScan:
+    def __init__(self, entries: list[_FakeEntry]) -> None:
+        self._entries = entries
+
+    def __enter__(self) -> list[_FakeEntry]:
+        return self._entries
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
+def test_one_bad_manifest_entry_does_not_empty_the_whole_listing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ready_repo(tmp_path, "repo-a", "a1")
+    _ready_repo(tmp_path, "repo-b", "b1")
+    config = _config(tmp_path)
+    ws = tmp_path / "ws"
+    real_scandir = os.scandir
+
+    def flaky_scandir(path: object) -> object:
+        if _matches_workspace(path, ws):
+            return _FakeScan(
+                [
+                    _FakeEntry("repo-a"),
+                    _FakeEntry("broken-entry", boom=True),
+                    _FakeEntry("repo-b"),
+                ]
+            )
+        return real_scandir(path)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(launchpad_module.os, "scandir", flaky_scandir)
+
+    snap = assemble_snapshot(RunController(config))
+
+    names = {r.repository for r in snap.repositories}
+    assert names == {"repo-a", "repo-b"}
+
+
 def _set_mtime(store: RunStore, request_id: str, when: float) -> None:
     path = store._record_path(request_id)  # noqa: SLF001 — test-only introspection
     os.utime(path, (when, when))
