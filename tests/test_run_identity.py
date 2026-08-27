@@ -133,8 +133,10 @@ def test_list_workspace_checkouts_skips_hidden_and_sorts(tmp_path: Path) -> None
     entries, notes = list_workspace_checkouts(ws)
 
     assert notes == []
-    assert [name for name, _ in entries] == ["a-repo", "b-repo"]
-    assert entries[0][1] == ws / "a-repo"
+    # dot-prefixed skipped; underscore stays (the repo contract permits it —
+    # gate pass-4); non-git dirs are the CALLERS' concern, not the scan's
+    assert [name for name, _ in entries] == ["_scratch", "a-repo", "b-repo"]
+    assert entries[1][1] == ws / "a-repo"
 
 
 def test_list_workspace_checkouts_reports_an_unscannable_root_as_a_note(
@@ -199,3 +201,22 @@ def test_find_checkout_by_identity_skips_non_git_and_unresolvable_entries(
     target = RepoKey(host="github.com", owner="andrei-shtanakov", repo="the-target")
 
     assert find_checkout_by_identity(ws, target) == root.resolve()
+
+
+def test_underscore_prefixed_git_checkout_is_enumerated(tmp_path):
+    """A valid checkout named `_service` must be visible (gate pass-4).
+
+    The repository contract permits `_` in directory names; only
+    dot-prefixed (genuinely hidden) entries are skipped. Non-git
+    directories like `_cowork_output` stay invisible NOT via the name
+    filter but because they carry no .git.
+    """
+    ws = tmp_path / "ws"
+    (ws / "_service" / ".git").mkdir(parents=True)
+    (ws / "_scratch_no_git").mkdir(parents=True)
+    (ws / ".hidden").mkdir(parents=True)
+    entries, notes = list_workspace_checkouts(ws)
+    names = [name for name, _ in entries]
+    assert "_service" in names
+    assert ".hidden" not in names
+    assert notes == []

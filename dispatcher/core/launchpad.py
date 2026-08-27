@@ -165,11 +165,32 @@ def _manifest_repos(
 
 def _default_branch(checkout: Path) -> str:
     """Best-effort, display-only — never used for identity or admission.
-    The checkout's OWN current branch (right for the ordinary case: a
-    workspace clone sits on its default branch); a detached HEAD or any
-    git failure degrades to `""` rather than raising, same as every other
-    cosmetic field in this module.
+    The REMOTE default (`origin/HEAD`) when the clone recorded one — the
+    field is NAMED default_branch (spec §4.1), and a checkout parked on a
+    feature branch must not report that branch as the default (gate
+    pass-4). Falls back to the current branch (a fresh clone sits on the
+    default), and any git failure degrades to `""` rather than raising,
+    same as every other cosmetic field in this module.
     """
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(checkout),
+                "symbolic-ref",
+                "--short",
+                "refs/remotes/origin/HEAD",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            # "origin/master" → "master"
+            return proc.stdout.strip().split("/", 1)[-1]
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
     try:
         proc = subprocess.run(
             ["git", "-C", str(checkout), "symbolic-ref", "--short", "HEAD"],

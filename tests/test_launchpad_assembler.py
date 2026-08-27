@@ -5,6 +5,7 @@ classification pass per repo, one internally-consistent `LaunchpadSnapshot`.
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -603,3 +604,48 @@ def test_duplicate_checkouts_of_one_repo_key_are_conflict_not_ready(
         assert blocker.code == "repo_unresolved"
         assert "a-copy" in (blocker.detail or "") and "b-copy" in (blocker.detail or "")
     assert [r for r in snap.ready if r.repo_key == key] == []
+
+
+def test_default_branch_is_the_remote_default_not_the_checked_out_one(
+    tmp_path,
+):
+    """Gate pass-4 minor: the field is NAMED default_branch (spec §4.1).
+
+    A checkout sitting on a feature branch must still report the
+    repository's default (origin/HEAD), falling back to the current
+    branch only when origin/HEAD is not recorded locally.
+    """
+    ws = tmp_path / "ws"
+    ws.mkdir(exist_ok=True)
+    remote = "git@github.com:andrei-shtanakov/defbr.git"
+    root = make_repo(
+        ws,
+        "- [ ] A @id:w1 @dag:dags/w1.yaml\n",
+        {"dags/w1.yaml": f"repo_url: {remote}\ntasks: []\n"},
+        remote=remote,
+        name="defbr",
+    )
+    default = subprocess.run(
+        ["git", "-C", str(root), "symbolic-ref", "--short", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            f"refs/remotes/origin/{default}",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "checkout", "-q", "-b", "feat/work"],
+        check=True,
+    )
+    snap = assemble_snapshot(RunController(_config(tmp_path)))
+    row = next(r for r in snap.repositories if r.repository == "defbr")
+    assert row.default_branch == default

@@ -30,7 +30,7 @@ _URL_LIKE = re.compile(
 )
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 _GIT_TIMEOUT = 15
-_HIDDEN_PREFIXES = ("_", ".")
+_HIDDEN_PREFIXES = (".",)
 
 
 def _segment_is_safe(segment: str) -> bool:
@@ -149,6 +149,12 @@ def list_workspace_checkouts(
     submit v2's identity-based checkout resolver
     (`RunController._resolve_v2_checkout`), so the two adapters can never
     walk a workspace differently (review fix wave C, C1).
+
+    Only DOT-prefixed (genuinely hidden) entries are skipped: the
+    repository contract permits `_` in directory names, so a valid
+    `_service` checkout must stay visible (gate pass-4 finding) —
+    non-repos like `_cowork_output` are excluded by carrying no .git,
+    not by their name.
 
     `os.scandir`, not `iterdir`/`glob`: a single bad entry (a broken
     symlink, a permission-denied child) must degrade that ONE entry, not
