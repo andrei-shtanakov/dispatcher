@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -93,6 +94,7 @@ from dispatcher.core.suggest_cli import (
 from dispatcher.core.sync import HostPanel, kb_snapshot_dirs, load_kb_snapshots
 from dispatcher.core.sync_service import SyncService, SyncStatus
 from dispatcher.core.tracking import TrackAction, decide
+from dispatcher.core.waits import WaitsView, build_waits
 
 __all__ = ["create_app", "recent_errors"]  # re-export: old import path
 
@@ -389,6 +391,16 @@ def create_app(
         """
         snapshots, errors = _epic_snapshots()
         return build_view(config, snapshots, kind=kind, snapshot_errors=errors)
+
+    @app.get("/api/waits", response_model=WaitsView)
+    def waits() -> WaitsView:
+        """The fleet's waiting axis: @blocked_by edges, loose refs, triggers.
+
+        Always HTTP 200 — an unreadable source is content (`todo_plane.state`),
+        not a transport error (spec 2026-08-26-waits-graph-design §3.1).
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        return build_waits(config, now=now)
 
     @app.get("/api/epics/{epic_id}", response_model=EpicDetail)
     def epic_detail(epic_id: str) -> EpicDetail:

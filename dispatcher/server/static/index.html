@@ -297,6 +297,26 @@
     <thead><tr><th>Defect class</th><th>Count</th><th>By epic</th></tr></thead>
     <tbody></tbody></table></div></section>
 
+<section><h2>Waits <span id="waits-plane" class="sub"></span></h2>
+  <div id="waits-disclaimer" class="fresh"></div>
+  <div id="waits-graph" class="tablewrap"></div>
+  <div class="sub" style="margin:4px 0 10px">
+    сплошное ребро — waiting · <span style="color:#b45309">жирное с бейджем</span> —
+    доставлено (цель закрыта, источник открыт) · счётчик у цели — входящие рёбра
+  </div>
+  <div class="tablewrap"><table id="waits-loose">
+    <thead><tr><th>Источник</th><th>Написано</th><th>Нормализовано</th></tr></thead>
+    <tbody></tbody></table></div>
+  <div class="tablewrap" style="margin-top:10px"><table id="waits-findings">
+    <thead><tr><th>Код</th><th>Сообщение</th></tr></thead>
+    <tbody></tbody></table></div>
+  <details style="margin-top:10px"><summary>Сторожевые @trigger
+    <span id="waits-trigger-count" class="sub"></span></summary>
+    <div class="tablewrap"><table id="waits-triggers">
+      <thead><tr><th>Пункт</th><th>Условие</th></tr></thead>
+      <tbody></tbody></table></div>
+  </details></section>
+
 <section><h2>Roadmap <span id="roadmap-names" class="sub"></span></h2>
   <div class="tablewrap" style="margin-bottom:10px"><table id="roadmap-summary">
     <thead><tr><th>Project</th><th>Done</th><th>Readiness</th>
@@ -721,6 +741,154 @@ async function refreshEpics() {
     }
     document.querySelector("#epics tbody").innerHTML =
       `<tr><td colspan="8" class="err">not read — see above</td></tr>`;
+  }
+}
+
+// ── Waits (spec 2026-08-26-waits-graph-design) ──────────────────────────
+// Own SVG, no library: two columns (waiters left, producers right, grouped
+// by repo), cubic edges. A stale edge stays VISIBLE — it is a state, not a
+// disappearance; loose references are tables below, never fake edges.
+
+function waitsNodeLabel(ref) {
+  const id = ref.node_id.replace("todo://", "");
+  return id.length > 44 ? id.slice(0, 41) + "…" : id;
+}
+
+function renderWaitsGraph(view) {
+  const host = document.getElementById("waits-graph");
+  const edges = view.edges || [];
+  if (!edges.length) {
+    host.innerHTML = `<div class="sub">рёбер нет — ни одного разрешённого @blocked_by во флоте</div>`;
+    return;
+  }
+  // unique nodes per column, keyed by node_id, grouped by repo (sorted)
+  const sources = new Map(), targets = new Map();
+  edges.forEach(e => {
+    sources.set(e.source.node_id, e.source);
+    targets.set(e.target.node_id, e.target);
+  });
+  const byRepo = m => [...m.values()].sort((a, b) =>
+    a.repo === b.repo ? (a.node_id < b.node_id ? -1 : 1)
+                      : (a.repo < b.repo ? -1 : 1));
+  const left = byRepo(sources), right = byRepo(targets);
+  const inbound = {};
+  edges.forEach(e => { inbound[e.target.node_id] = (inbound[e.target.node_id] || 0) + 1; });
+
+  const ROW = 30, PAD = 24, BOX_W = 330, GAP = 220;
+  const width = BOX_W * 2 + GAP, height = PAD * 2 + ROW * Math.max(left.length, right.length);
+  const yOf = {}, parts = [];
+  const box = (node, col, i) => {
+    const x = col === 0 ? 0 : BOX_W + GAP;
+    const y = PAD + i * ROW;
+    yOf[(col === 0 ? "s:" : "t:") + node.node_id] = y;
+    const badge = col === 1 && inbound[node.node_id] > 1
+      ? ` <tspan font-weight="bold">×${inbound[node.node_id]}</tspan>` : "";
+    parts.push(
+      `<rect x="${x}" y="${y - 11}" width="${BOX_W}" height="22" rx="3" ` +
+        `fill="var(--waits-node-bg, #f8f8f6)" stroke="#999"></rect>`,
+      `<text x="${x + 6}" y="${y + 4}" font-size="11" fill="#222">` +
+        `<title>${esc(node.title)} [${esc(node.status)}]</title>` +
+        `${esc(waitsNodeLabel(node))}${badge}</text>`);
+  };
+  left.forEach((n, i) => box(n, 0, i));
+  right.forEach((n, i) => box(n, 1, i));
+  edges.forEach(e => {
+    const y1 = yOf["s:" + e.source.node_id], y2 = yOf["t:" + e.target.node_id];
+    const x1 = BOX_W, x2 = BOX_W + GAP;
+    const stale = e.state === "stale";
+    parts.push(
+      `<path d="M ${x1} ${y1} C ${x1 + GAP / 2} ${y1}, ${x2 - GAP / 2} ${y2}, ${x2} ${y2}" ` +
+        `fill="none" stroke="${stale ? "#b45309" : "#8a8a86"}" ` +
+        `stroke-width="${stale ? 2.5 : 1.2}"></path>`);
+    if (stale) {
+      parts.push(
+        `<text x="${x1 + 8}" y="${y1 - 4}" font-size="10" fill="#b45309">доставлено</text>`);
+    }
+  });
+  host.innerHTML =
+    `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" ` +
+      `xmlns="http://www.w3.org/2000/svg" role="img" ` +
+      `aria-label="waits graph">${parts.join("")}</svg>`;
+}
+
+// Nothing was read, so nothing may claim absence: "рёбер нет" on an unread
+// plane is a statement about the fleet, not about this request — the same
+// silent-confidence failure the epics planeCell guards against. Used both
+// for a served `unavailable` and for a transport error, so stale tables from
+// the previous successful poll never sit under an "unavailable" disclaimer.
+function renderWaitsUnread() {
+  const unread = colspan =>
+    `<tr><td colspan="${colspan}" class="warn">не прочитано — см. выше</td></tr>`;
+  document.getElementById("waits-graph").innerHTML =
+    `<div class="warn">не прочитано — см. выше</div>`;
+  document.querySelector("#waits-loose tbody").innerHTML = unread(3);
+  document.querySelector("#waits-findings tbody").innerHTML = unread(2);
+  document.getElementById("waits-trigger-count").textContent = "(—)";
+  document.querySelector("#waits-triggers tbody").innerHTML = unread(2);
+}
+
+function renderWaits(view) {
+  const plane = view.todo_plane || {};
+  document.getElementById("waits-plane").textContent =
+    plane.state === "read" ? `${(view.edges || []).length} рёбер · ${plane.repos_read} репо`
+      : plane.state || "";
+  const disc = document.getElementById("waits-disclaimer");
+  if (plane.state === "unavailable") {
+    disc.className = "err";
+    disc.textContent = `не прочитано: ${plane.detail || "unavailable"}`;
+  } else if (plane.state === "partial") {
+    disc.className = "warn";
+    disc.textContent = "картина ЧАСТИЧНАЯ — не прочитаны: " +
+      (view.absent_repos || []).map(a => `${a.repo} (${a.reason})`).join(", ");
+  } else {
+    disc.className = "fresh";
+    disc.textContent = "";
+  }
+  if (plane.state === "unavailable") {
+    renderWaitsUnread();
+    return;
+  }
+  renderWaitsGraph(view);
+  document.querySelector("#waits-loose tbody").innerHTML =
+    (view.loose_refs || []).map(r => `
+      <tr><td>${esc(r.source_node_id)}</td><td>${esc(r.raw_ref)}</td>
+      <td>${esc(r.normalized || "—")}</td></tr>`).join("") ||
+    `<tr><td colspan="3">нет ссылок-не-рёбер</td></tr>`;
+  document.querySelector("#waits-findings tbody").innerHTML =
+    (view.findings || []).map(f => `
+      <tr><td>${esc(f.code)}</td><td>${esc(f.message)}</td></tr>`).join("") ||
+    `<tr><td colspan="2">находок нет</td></tr>`;
+  const triggers = view.triggers || [];
+  document.getElementById("waits-trigger-count").textContent = `(${triggers.length})`;
+  document.querySelector("#waits-triggers tbody").innerHTML =
+    triggers.map(t => `
+      <tr><td>${esc(t.node.node_id)}</td><td>${esc(t.condition)}</td></tr>`).join("") ||
+    `<tr><td colspan="2">нет</td></tr>`;
+}
+
+// refresh() fires every 10s without awaiting this poll, so polls could
+// overlap. Serialize instead of racing: while one request is in flight, the
+// next tick simply skips — so responses can never arrive out of order (a
+// late answer repainting a newer one would show a closed wait as waiting),
+// and, unlike a newest-wins generation token, a poll that consistently
+// outlives the interval still renders every successful response instead of
+// being discarded forever (local.sh findings 1 and 3 on this change).
+let waitsInFlight = false;
+
+async function refreshWaits() {
+  if (waitsInFlight) return; // the running poll will paint; a later tick retries
+  waitsInFlight = true;
+  try {
+    renderWaits(await get("/api/waits"));
+  } catch (err) {
+    // named, not silent — an empty graph would read as "no obligations";
+    // and the previous poll's tables must not survive under this disclaimer
+    const disc = document.getElementById("waits-disclaimer");
+    disc.className = "err";
+    disc.textContent = `waits unavailable: ${err && err.message ? err.message : err}`;
+    renderWaitsUnread();
+  } finally {
+    waitsInFlight = false;
   }
 }
 
@@ -1687,6 +1855,12 @@ document.getElementById("rc-run-view").addEventListener("change", e => {
 });
 
 async function refresh() {
+  // Waits is fired BEFORE the shared Promise.all and outside its try: a
+  // failing /api/models must not stop a healthy /api/waits from painting,
+  // and refreshWaits carries its own catch + generation guard. Placing the
+  // call after the await (as Epics is) skips it whenever any unrelated
+  // endpoint rejects — the local.sh finding on this change.
+  refreshWaits();
   try {
     const errorsUrl = "/api/errors?limit=50"
       + (errorsDays === null ? "" : `&days=${errorsDays}`)
