@@ -47,6 +47,16 @@
     color: var(--dim); font-size: 13px; }
   #task-authoring input, #ta-prose, #run-console input { display: block;
     width: 100%; max-width: 640px; box-sizing: border-box; }
+  /* Task 7's inline forms live inside #launchpad (Ready-row confirm,
+     acknowledge-vanished/release-malformed escapes) — same discipline as
+     #run-console's labels/inputs above, scoped separately since they sit
+     inside table cells rather than a form section. */
+  .lp-escape-form label { display: block; margin-top: 6px; color: var(--dim);
+    font-size: 12px; }
+  .lp-escape-form input { display: block; width: 100%; max-width: 360px;
+    box-sizing: border-box; }
+  .lp-ready-detail td { white-space: normal; }
+  .lp-pending-list { margin: 0; padding-left: 18px; }
   #ta-prose { margin: 10px 0; font: inherit; padding: 8px 10px;
     background: var(--card); color: var(--ink);
     border: 1px solid var(--line); border-radius: 8px; resize: vertical; }
@@ -135,6 +145,28 @@
 <div class="sub">Ecosystem overview · auto-refresh 10s ·
   <span id="updated"></span></div>
 
+<!-- Launchpad root panel (spec §9): FIRST section in the body — the
+     existing #run-console below stays as drill-down + manual form,
+     rewired in Task 7. `#lp-store-banner` mirrors `store_unreadable`
+     ONLY (never a transport error — spec §9's transport-uncertainty
+     handling is Task 7's). -->
+<section id="launchpad"><h2>Launchpad</h2>
+  <div id="lp-store-banner" class="warn" hidden></div>
+  <h3>Repositories</h3>
+  <div id="lp-repos"></div>
+  <h3>Ready</h3>
+  <div id="lp-ready"></div>
+  <h3>Pending launches</h3>
+  <div id="lp-pending"></div>
+  <h3>Active</h3>
+  <div id="lp-active"></div>
+  <h3>Recent completed</h3>
+  <div id="lp-recent"></div>
+  <details id="lp-diagnostics"><summary><h3>Diagnostics</h3></summary>
+    <div id="lp-diagnostics-body"></div>
+  </details>
+</section>
+
 <!-- I-A: outcomes of MUTATIONS outlive the panel that started them. This
      region is deliberately outside #task-authoring and #detail-section, so
      nothing on the navigation path (detail(), ta-open-panel) can reach it:
@@ -160,29 +192,25 @@
     <button id="run-status-check" type="button">Check status</button></div>
   <div id="run-status-result"></div></section>
 
+<!-- Task 7 (spec §9 "Manual (advanced)"): the operator names WHAT to run
+     (repo_key, work_id) and dispatcher recovers everything launch-time from
+     canon (spec §4.2) — the legacy revision/tasks/spec_ref/plan_ref inputs
+     are gone. snapshot_id/seen_revision are attached SILENTLY from the
+     launchpad panel's own snapshot once repo_key is recognized; typing them
+     by hand would recreate the old API-console. request_id is optional
+     here for diagnostics (pin a known id) and doubles as the "Open run"
+     field below. -->
 <section id="run-console"><h2>Run console</h2>
-  <label for="rc-repository">repository</label>
-  <input id="rc-repository" type="text" spellcheck="false">
-  <label for="rc-revision">revision (full 40-hex commit sha)</label>
-  <input id="rc-revision" type="text" spellcheck="false">
-  <label for="rc-tasks">tasks (repo-relative path)</label>
-  <input id="rc-tasks" type="text" spellcheck="false">
+  <label for="rc-repo-key">repo_key</label>
+  <input id="rc-repo-key" type="text" spellcheck="false">
   <label for="rc-work-id">work_id</label>
   <input id="rc-work-id" type="text" spellcheck="false">
-  <label for="rc-spec-ref-path">spec_ref path (optional)</label>
-  <input id="rc-spec-ref-path" type="text" spellcheck="false">
-  <label for="rc-spec-ref-commit">spec_ref commit (optional, defaults to revision)</label>
-  <input id="rc-spec-ref-commit" type="text" spellcheck="false">
-  <label for="rc-plan-ref-path">plan_ref path (optional)</label>
-  <input id="rc-plan-ref-path" type="text" spellcheck="false">
-  <label for="rc-plan-ref-commit">plan_ref commit (optional, defaults to revision)</label>
-  <input id="rc-plan-ref-commit" type="text" spellcheck="false">
   <div id="rc-actions">
     <button id="rc-submit" type="button">Submit run</button>
   </div>
   <div id="rc-receipt"></div>
   <div id="rc-view-open">
-    <label for="rc-request-id">request_id</label>
+    <label for="rc-request-id">request_id (optional at submit; required to open a run)</label>
     <input id="rc-request-id" type="text" spellcheck="false">
     <button id="rc-open" type="button">Open run</button>
   </div>
@@ -1015,23 +1043,31 @@ function renderReceipt(r, blocked) {
     <span class="rc-hint">${recovery}</span></div>`;
 }
 
-// Mirrors exactly two of the server's refusals (dispatcher/core/run_request.py,
-// `validate_request`), in the server's own words, to save an operator a
-// round trip on the two mistakes they make constantly. This is NOT a safety
-// layer: the repository-manifest check, the `git cat-file` existence check
-// and the `repo:` reconciliation happen only on the server and are
-// invisible from here — a client that guessed at them would refuse valid
-// requests, which is worse than the round trip this saves.
-const _RC_SHA_RE = /^[0-9a-f]{40}$/;
-
-function validateRunRequest(fields) {
-  if (!_RC_SHA_RE.test(fields.revision)) {
-    return `revision must be a full 40-hex commit sha, got '${fields.revision}': `
-      + "a ref would make the request non-reproducible on retry";
+// Task 7 (spec §4.2/§9's "Manual (advanced)"): the legacy revision/tasks
+// checks are gone with the fields they mirrored. The one thing worth
+// checking client-side now is whether repo_key has even been SEEN by the
+// launchpad snapshot this page already holds — without a matching entry
+// there is no `seen_revision` to silently attach, and typing one by hand
+// would recreate the old API-console (spec §9). This is NOT a safety
+// layer: the checkout's existence, the `@dag` resolution and the
+// admission classification happen only on the server, inside the recovery
+// guard (§5/§8.1), and are invisible from here — a client that guessed at
+// them would refuse valid requests, which is worse than the round trip
+// this saves.
+function validateManualSubmit(repoKey, workId) {
+  if (!repoKey) return "repo_key is required";
+  if (!workId) return "work_id is required";
+  if (!lpState.snapshot) {
+    return "the launchpad snapshot has not loaded yet — wait for it before submitting";
   }
-  const tasks = fields.tasks;
-  if (tasks.startsWith("/") || tasks.split("/").includes("..") || !tasks.trim()) {
-    return `tasks must be a repo-relative path without '..', got '${tasks}'`;
+  const repo = (lpState.snapshot.repositories || [])
+    .find(r => r.repo_key === repoKey);
+  if (!repo) {
+    return `unknown repo_key '${repoKey}' — must match a repository in the `
+      + "current launchpad snapshot";
+  }
+  if (!repo.seen_revision) {
+    return `repository '${repoKey}' has no readable revision yet`;
   }
   return null;
 }
@@ -1073,45 +1109,60 @@ let rcSubmitBlocked = false;
 // fresh id is minted only once an attempt reaches accepted true/false.
 let rcPendingRequestId = null;
 
+// Task 7: the OTHER fields a v2 submit needs (snapshot_id, repo_key,
+// work_id, seen_revision), captured once per attempt alongside
+// rcPendingRequestId and resent VERBATIM on retry — never re-derived from
+// a possibly-moved-on snapshot. A retry that resent a fresher seen_revision
+// would change the fingerprint `reserve` compares against (spec §8.2) and
+// the server would answer `request_id_conflict` instead of replaying, which
+// is exactly the failure idempotent retry exists to prevent.
+let rcPendingSubmitBody = null;
+
+// Distinguishes an operator-TYPED request_id (an explicit diagnostic pin)
+// from #rc-request-id's own auto-fill after a settled submit (C1): without
+// this, submitting a second time would silently reuse the FIRST attempt's
+// id forever, because the field the operator never touched already
+// contains it. Only a value that differs from what this page itself last
+// wrote counts as "typed".
+let rcLastAutoFilledRequestId = null;
+
 document.getElementById("rc-submit").addEventListener("click", async () => {
   const btn = document.getElementById("rc-submit");
   const out = document.getElementById("rc-receipt");
 
-  // Validated before anything else runs: a request rejected here was never
-  // sent, so it must not consume or clear rcPendingRequestId.
-  const problem = validateRunRequest({
-    revision: document.getElementById("rc-revision").value,
-    tasks: document.getElementById("rc-tasks").value,
-  });
-  if (problem) {
-    out.innerHTML = renderReceipt(
-      {request_id: null, run_id: null, accepted: false, reason: problem});
-    return;
+  let requestId;
+  let body;
+  if (rcPendingRequestId !== null && rcPendingSubmitBody !== null) {
+    // A retry of an unresolved attempt (transport uncertainty or a
+    // server-declared launch_unknown): reuse everything verbatim, ignoring
+    // whatever is currently typed in the form — same discipline
+    // renderReceipt's own recovery text already promises the operator.
+    requestId = rcPendingRequestId;
+    body = {...rcPendingSubmitBody, request_id: requestId};
+  } else {
+    // Validated before anything else runs: a request rejected here was
+    // never sent, so it must not consume or clear rcPendingRequestId.
+    const repoKey = document.getElementById("rc-repo-key").value.trim();
+    const workId = document.getElementById("rc-work-id").value.trim();
+    const problem = validateManualSubmit(repoKey, workId);
+    if (problem) {
+      out.innerHTML = renderReceipt(
+        {request_id: null, run_id: null, accepted: false, reason: problem});
+      return;
+    }
+    const repo = lpState.snapshot.repositories.find(r => r.repo_key === repoKey);
+    const requestIdField = document.getElementById("rc-request-id").value.trim();
+    requestId = (requestIdField && requestIdField !== rcLastAutoFilledRequestId)
+      ? requestIdField : rcRequestId();
+    rcPendingRequestId = requestId;
+    rcPendingSubmitBody = {snapshot_id: lpState.snapshot.snapshot_id,
+      repo_key: repoKey, work_id: workId, seen_revision: repo.seen_revision};
+    body = {...rcPendingSubmitBody, request_id: requestId};
   }
 
   btn.disabled = true;
   out.textContent = "…";
-  const requestId = rcPendingRequestId ?? rcRequestId();
-  rcPendingRequestId = requestId;
   try {
-    const body = {
-      request_id: requestId,
-      work_id: document.getElementById("rc-work-id").value,
-      repository: document.getElementById("rc-repository").value,
-      revision: document.getElementById("rc-revision").value,
-      tasks: document.getElementById("rc-tasks").value,
-    };
-    const specPath = document.getElementById("rc-spec-ref-path").value.trim();
-    if (specPath) {
-      const commit = document.getElementById("rc-spec-ref-commit").value.trim();
-      body.spec_ref = {path: specPath, commit: commit || null};
-    }
-    const planPath = document.getElementById("rc-plan-ref-path").value.trim();
-    if (planPath) {
-      const commit = document.getElementById("rc-plan-ref-commit").value.trim();
-      body.plan_ref = {path: planPath, commit: commit || null};
-    }
-
     let resp;
     try {
       resp = await fetch("/api/runs/submit", {
@@ -1160,8 +1211,10 @@ document.getElementById("rc-submit").addEventListener("click", async () => {
       // even though it arrived as a non-2xx status rather than a
       // LaunchReceipt body.
       out.innerHTML = renderReceipt({request_id: requestId, run_id: null,
-        accepted: false, reason: data.detail ?? `HTTP ${resp.status}`});
+        accepted: false, reason: data.code ? `${data.code}: ${data.detail}`
+          : (data.detail ?? `HTTP ${resp.status}`)});
       rcPendingRequestId = null;
+      rcPendingSubmitBody = null;
       rcSubmitBlocked = false;
       return;
     }
@@ -1180,9 +1233,11 @@ document.getElementById("rc-submit").addEventListener("click", async () => {
     // story, right there in the receipt.
     if (data.accepted === true || data.accepted === null) {
       document.getElementById("rc-request-id").value = data.request_id;
+      rcLastAutoFilledRequestId = data.request_id;
     }
     if (data.accepted !== null) {
       rcPendingRequestId = null;
+      rcPendingSubmitBody = null;
       rcSubmitBlocked = false;
     } else {
       // Fix round 1: the SERVER answered with accepted:null — a record
@@ -1296,7 +1351,7 @@ function renderResolution(res) {
 // `approve` and `retry` are easy to confuse — this exact mix-up already
 // cost a fix round on the server side (run_controller.py:666-681) — so the
 // pre-flight refusal below and the button labels both restate the server's
-// own wording verbatim, the same discipline validateRunRequest uses for the
+// own wording verbatim, the same discipline validateManualSubmit uses for the
 // submit form's two client-side checks.
 const RC_VERB_TASK_ID_MESSAGE = {
   approve: "approve needs a task_id: it releases a task sitting in "
@@ -1314,7 +1369,7 @@ const RC_VERB_TASK_ID_MESSAGE = {
 // once (a UI contradicting a sentence it just printed) — a click would
 // only earn the operator a round trip to learn what this page already
 // knew: `RunController.control` refuses with "{request_id} has no run to
-// act on (state: ...)" (run_controller.py:652-656). validateRunRequest
+// act on (state: ...)" (run_controller.py:652-656). validateManualSubmit
 // already sets the precedent for predicting a server refusal client-side
 // (Task 2); this case is easier, since the client does not have to predict
 // anything — it already HAS `rec.run_id`. Disabled, not hidden: `reserved`
@@ -1660,13 +1715,12 @@ document.getElementById("rc-run-view").addEventListener("click", async ev => {
   }
 });
 
-document.getElementById("rc-open").addEventListener("click", async () => {
-  const requestId = document.getElementById("rc-request-id").value.trim();
-  if (!requestId) {
-    document.getElementById("rc-run-view").innerHTML =
-      `<div class="warn">enter a request_id</div>`;
-    return;
-  }
+// The run-view opener — the ONE way any control on the page (the manual
+// #rc-open button, or a launchpad typed-blocker/recent-row link, spec §9)
+// opens a request's drill-down. Sets #rc-request-id so the field always
+// reflects whatever is open, regardless of which control triggered it.
+async function openRunView(requestId) {
+  document.getElementById("rc-request-id").value = requestId;
   if (rcViewTimer !== null) { clearInterval(rcViewTimer); rcViewTimer = null; }
   // A DISPLAY generation, not just a click generation (codex round 5,
   // minor). `rcViewRequestId` alone cannot invalidate an in-flight log
@@ -1677,12 +1731,22 @@ document.getElementById("rc-open").addEventListener("click", async () => {
   rcLogsGen++;
   rcViewRequestId = requestId;
   await rcPollView();
+}
+
+document.getElementById("rc-open").addEventListener("click", async () => {
+  const requestId = document.getElementById("rc-request-id").value.trim();
+  if (!requestId) {
+    document.getElementById("rc-run-view").innerHTML =
+      `<div class="warn">enter a request_id</div>`;
+    return;
+  }
+  await openRunView(requestId);
 });
 
 // Fires one Mode-1 verb against the currently open request (Task 5, spec
 // §6). `approve`/`retry` are checked for a task id BEFORE anything is sent
 // — a request rejected here never reaches the wire, same discipline as
-// validateRunRequest on the submit form — and the refusal is the server's
+// validateManualSubmit on the submit form — and the refusal is the server's
 // own wording (RC_VERB_TASK_ID_MESSAGE), so an operator reads one
 // vocabulary for the rule, not two. `status` needs no task id and is sent
 // immediately. Same staleness discipline as #rc-resolve/#rc-end above:
@@ -3708,6 +3772,725 @@ document.getElementById('ta-open-panel').addEventListener('click', () => {
 
 refresh();
 setInterval(refresh, 10000);
+
+// ---- Launchpad root panel (spec §9, PR-C Task 6) ---------------------------
+//
+// GET /api/launchpad's shape verbatim (dispatcher/core/launchpad.py's
+// LaunchpadSnapshot) — one internally-consistent read of the fleet.
+// Launch itself, the two-step confirm row and the acknowledge/
+// release-malformed forms are Task 7; this panel renders the snapshot and
+// exposes the typed-blocker drill-down into the existing run console.
+
+// Admission codes shared with dispatcher/core/admission.py's vocabulary —
+// spelled out here (not fetched) because the client has no import of the
+// Python module; the values are the contract, pinned by the harness.
+const LP_LAUNCH_BUSY = "launch_busy";
+const LP_RUN_IN_FLIGHT = "run_in_flight";
+const LP_RUN_VANISHED = "run_vanished";
+const LP_LOCK_MALFORMED = "lock_malformed";
+
+// The panel's own refresh period (spec §9: "30 s auto-refresh") — distinct
+// from the pre-existing dashboard's `setInterval(refresh, 10000)` above;
+// the two timers are independent, each guarding only its own section.
+const LP_REFRESH_MS = 30000;
+
+// `inflight` is a COUNTER, not a boolean (round-5 review finding): an
+// action refetch may legitimately overlap a timer fetch, and a boolean
+// cleared by whichever settles first would reopen the timer path while the
+// other request is still airborne. `pending` (rowKey = `lpRowKey`,
+// below) is Task 7's seam: state lives OUTSIDE the DOM so a wholesale
+// rerender here can never lose an attempt in progress.
+const lpState = {
+  seq: 0, inflight: 0, snapshot: null,
+  pending: Object.create(null),
+  // Task 7: one-shot text left behind by a SETTLED submit (a 2xx receipt or
+  // a structured error) — rule 3/§9's "code: detail" message. Deliberately
+  // NOT part of `pending` (which tracks attempts still in flight/unknown):
+  // a settled answer clears its pending entry outright, but the message it
+  // produced still deserves to be seen, same discipline `#ta-outcomes`
+  // already established for mutation outcomes outliving the panel that
+  // started them.
+  rowMessages: Object.create(null),
+  // Task 7: the acknowledge-vanished / release-malformed escape forms
+  // (spec §8.3), keyed `rv:<request_id>` / `lm:<repo_key>` — same "state
+  // outside the DOM" discipline as `pending`, since these forms sit inside
+  // #lp-repos's wholesale rerender and must survive a 30s auto-refresh
+  // landing mid-fill.
+  escapes: Object.create(null),
+};
+
+// A plain space join (not a NUL byte, despite dispatcher/core/run_store.py
+// precedent elsewhere): this key sometimes round-trips through a DOM
+// `data-*` attribute, and real browsers replace NUL with U+FFFD while
+// tokenizing HTML — a control character here would silently break the
+// join on the way back. repo_key/work_id are canonical identifiers
+// (RepoKey.as_text() / an `@id` slug) that do not contain spaces.
+function lpRowKey(repoKey, workId) { return repoKey + " " + workId; }
+
+const lpAdmissionCls = admission =>
+  admission === "ready" ? "ok" : admission === "blocked" ? "warn" : "err";
+
+// Typed blocker targets (spec §9): the escape is offered only where damage
+// is proven, never where fact-gathering itself is broken. `repoKey` is
+// threaded down from `lpRepoRowHtml` — `lock_malformed` blockers carry no
+// request_id/run_id of their own (the lock is a repo-level fact), so
+// release-malformed's `confirm_repo_key` target has nowhere else to come
+// from.
+function lpBlockerHtml(b, repoKey) {
+  if ((b.code === LP_LAUNCH_BUSY || b.code === LP_RUN_IN_FLIGHT) && b.request_id) {
+    // linked: launch_busy always carries a request_id (a lock names its
+    // holder); run_in_flight carries one only when the run is linked to a
+    // controller record — either way, this is the run-view drill-down.
+    return `<a href="#" class="lp-open-run" data-request-id="${esc(b.request_id)}">`
+      + `${esc(b.code)}${b.run_id ? " " + esc(b.run_id) : ""}</a>`;
+  }
+  if (b.code === LP_RUN_IN_FLIGHT) {
+    // unlinked: a bare maestro run_id with no controller record — id and
+    // status text only, deliberately NO link (no logs pane to open — §2).
+    return `<span>${esc(b.code)}${b.run_id ? " " + esc(b.run_id) : ""}</span>`;
+  }
+  if (b.code === LP_RUN_VANISHED || b.code === LP_LOCK_MALFORMED) {
+    const key = b.code === LP_RUN_VANISHED ? `rv:${b.request_id}` : `lm:${repoKey}`;
+    const entry = lpState.escapes[key];
+    if (entry) return lpEscapeFormHtml(key, entry);
+    const label = b.code === LP_RUN_VANISHED
+      ? "acknowledge vanished run" : "release malformed lock";
+    return `<a href="#lp-${esc(b.code)}-form" class="lp-blocker-anchor" `
+      + `data-code="${esc(b.code)}" data-request-id="${esc(b.request_id ?? "")}" `
+      + `data-run-id="${esc(b.run_id ?? "")}" data-repo-key="${esc(repoKey)}">${label}</a>`;
+  }
+  // lock_io_unreadable / run_state_unreadable, and any code this panel
+  // does not recognize: diagnostic text only, no control — fail closed on
+  // offering an action where fact-gathering itself is what is broken.
+  return `<span class="err">${esc(b.code)}${b.detail ? ": " + esc(b.detail) : ""}</span>`;
+}
+
+// The audited escape forms (spec §8.3): confirm_run_id/confirm_repo_key
+// are NEVER prefilled — the retyping is the guard against a blind click —
+// and `reason` is required before Submit enables. Both fields are synced
+// live from `lpState.escapes` (the delegated `input` handler below) so a
+// wholesale #lp-repos rerender mid-fill (the 30s auto-refresh, or another
+// repo's own action) cannot lose what the operator already typed.
+function lpEscapeFormHtml(key, entry) {
+  const vanished = entry.code === LP_RUN_VANISHED;
+  const confirmLabel = vanished ? "retype run_id to confirm" : "retype repo_key to confirm";
+  const submitting = entry.status === "submitting";
+  const canSubmit = lpEscapeCanSubmit(entry);
+  return `<div class="lp-escape-form">
+    <label>${confirmLabel}</label>
+    <input type="text" data-escape-field="confirm" data-escape-key="${esc(key)}"
+      value="${esc(entry.confirmValue)}" ${submitting ? "disabled" : ""}>
+    <label>reason (required)</label>
+    <input type="text" data-escape-field="reason" data-escape-key="${esc(key)}"
+      value="${esc(entry.reason)}" ${submitting ? "disabled" : ""}>
+    <button type="button" class="lp-escape-submit" data-escape-key="${esc(key)}"
+      ${canSubmit ? "" : "disabled"}>${submitting ? "…" : "Submit"}</button>
+    <button type="button" class="lp-escape-cancel" data-escape-key="${esc(key)}"
+      ${submitting ? "disabled" : ""}>Cancel</button>
+    ${entry.errorMessage ? `<div class="rc-result err">${entry.errorMessage}</div>` : ""}
+  </div>`;
+}
+
+function lpEscapeCanSubmit(entry) {
+  return entry.status !== "submitting" && entry.confirmValue === entry.expectedConfirm
+    && entry.reason.trim().length > 0;
+}
+
+function lpRepoRowHtml(row) {
+  const blockers = row.blockers
+    .map(b => `<li>${lpBlockerHtml(b, row.repo_key)}</li>`).join("");
+  return `<tr>
+    <td>${esc(row.repository)}</td>
+    <td><span class="badge ${lpAdmissionCls(row.admission)}">${esc(row.admission)}</span></td>
+    <td>${esc(row.default_branch || "—")}</td>
+    <td>${row.seen_revision ? esc(row.seen_revision.slice(0, 7)) : "—"}</td>
+    <td>${blockers ? `<ul class="lp-blockers">${blockers}</ul>` : ""}</td>
+  </tr>`;
+}
+
+function lpRenderRepos(rows) {
+  document.getElementById("lp-repos").innerHTML = `<div class="tablewrap"><table>
+    <thead><tr><th>Repository</th><th>Admission</th><th>Branch</th>
+      <th>Revision</th><th>Blockers</th></tr></thead>
+    <tbody>${rows.map(lpRepoRowHtml).join("")
+      || `<tr><td colspan="5" class="dim">no repositories</td></tr>`}</tbody>
+  </table></div>`;
+}
+
+// A row's own click toggles its two-step confirm (spec §9); its detail —
+// confirm / submitting / unknown — is a pure function of `lpState.pending`,
+// never of what was last painted, so it survives the wholesale rerenders
+// every fetch (timer or action) performs.
+function lpReadyRowHtml(row) {
+  const sha7 = row.seen_revision.slice(0, 7);
+  const rowKey = lpRowKey(row.repo_key, row.work_id);
+  const main = `<tr class="lp-ready-row" data-row-key="${esc(rowKey)}">
+    <td>${esc(row.repo_key)}</td>
+    <td>${esc(row.work_id)} @ ${esc(sha7)}</td>
+    <td>${esc(row.dag_path)}</td></tr>`;
+  const entry = lpState.pending[rowKey];
+  const message = lpState.rowMessages[rowKey];
+  if (!entry && !message) return main;
+  return main + `<tr class="lp-ready-detail"><td colspan="3">`
+    + lpReadyDetailHtml(rowKey, entry, message) + `</td></tr>`;
+}
+
+// Re-validation of an OPEN (not yet submitted) confirmation after a
+// refetch (spec §9, behaviour 4): the row must still be Ready, at the
+// SAME seen_revision the confirm captured, or Confirm disables with the
+// cause shown — typed state (which row is expanded) is preserved either
+// way, never silently collapsed. A row missing from the fresh `ready[]`
+// covers both "left Ready" and "gained a blocker": admission condition 8
+// (§5.1) means a blocked repo's items are not in `ready[]` at all, so the
+// two causes collapse into the same observable fact from here.
+function lpValidateOpenConfirm(rowKey, entry) {
+  const ready = lpState.snapshot ? (lpState.snapshot.ready || []) : [];
+  const row = ready.find(r => lpRowKey(r.repo_key, r.work_id) === rowKey);
+  if (!row) {
+    return "this item is no longer in the Ready list — it may have been "
+      + "claimed, blocked, or closed since this was opened";
+  }
+  if (row.seen_revision !== entry.seenRevision) {
+    return `revision changed to ${row.seen_revision.slice(0, 7)} since this was opened`;
+  }
+  return null;
+}
+
+// Shared by the inline Ready-row detail AND an orphaned #lp-pending entry
+// (an `open` confirmation whose row has since vanished from `ready[]` is
+// exactly the "left Ready" cause `lpValidateOpenConfirm` already reports —
+// same markup, same disabled Confirm, same message, just relocated).
+function lpOpenConfirmFragment(rowKey, entry) {
+  const workLabel = `<code>${esc(entry.workId)}</code> @ `
+    + `<code>${esc((entry.seenRevision || "").slice(0, 7))}</code>`;
+  const cause = lpValidateOpenConfirm(rowKey, entry);
+  return `Launch ${workLabel}?
+    <button type="button" class="lp-confirm" data-row-key="${esc(rowKey)}"
+      ${cause ? "disabled" : ""}>Confirm</button>
+    <button type="button" class="lp-cancel" data-row-key="${esc(rowKey)}">Cancel</button>
+    ${cause ? `<span class="warn">${esc(cause)}</span>` : ""}`;
+}
+
+// Same recovery wording renderReceipt uses for the run console's own
+// transport-uncertainty case (spec §9's B2 lesson, now per-row): Retry is
+// safe by construction — the server's idempotency (keyed on request_id)
+// absorbs a duplicate — and a 404 read-back means only "not visible yet or
+// never arrived", never "refused".
+function lpUnknownFragment(rowKey, entry) {
+  return `launch outcome unknown — ${esc(entry.reason || "")}
+    <span class="rc-hint">Retry is safe — the same request_id
+    (<code>${esc(entry.requestId)}</code>) will be reused, so a run that
+    did start cannot be duplicated. A 404 on Check status means the
+    record may not be visible yet or the request never arrived —
+    Retry is safe either way.</span>
+    <button type="button" class="lp-retry" data-row-key="${esc(rowKey)}">Retry</button>
+    <button type="button" class="lp-check-status" data-row-key="${esc(rowKey)}"
+      >Check status</button>`;
+}
+
+function lpReadyDetailHtml(rowKey, entry, message) {
+  if (!entry) {
+    return `<div class="rc-hint">${message}</div>`;
+  }
+  if (entry.status === "submitting") {
+    const workLabel = `<code>${esc(entry.workId)}</code> @ `
+      + `<code>${esc((entry.seenRevision || "").slice(0, 7))}</code>`;
+    return `<div class="dim">Launching ${workLabel}…</div>`;
+  }
+  if (entry.status === "unknown") {
+    return `<div class="rc-result unknown">${lpUnknownFragment(rowKey, entry)}</div>`;
+  }
+  // status === "open": not yet submitted.
+  return `<div>${lpOpenConfirmFragment(rowKey, entry)}</div>`;
+}
+
+function lpRenderReady(rows) {
+  document.getElementById("lp-ready").innerHTML = `<div class="tablewrap"><table>
+    <thead><tr><th>Repository</th><th>Work item</th><th>DAG</th></tr></thead>
+    <tbody>${rows.map(lpReadyRowHtml).join("")
+      || `<tr><td colspan="3" class="dim">nothing ready</td></tr>`}</tbody>
+  </table></div>`;
+}
+
+// A pending attempt whose Ready row vanished from the latest snapshot
+// (claimed, blocked, or simply aged out of the bounded `ready[]`) still
+// needs a place an operator can find it — Retry/read-back for `unknown`;
+// an `open` confirmation gets the SAME disabled-Confirm-with-cause markup
+// it would show inline (spec §9, behaviour 4 — re-validation does not stop
+// applying just because the row moved to this list). `readyRows` is passed
+// explicitly (not read off `lpState.snapshot`) so this stays a pure
+// function of its argument, same as `lpRenderReady`.
+function lpPendingItemHtml(rowKey, entry) {
+  const label = `${esc(entry.repoKey)}: ${esc(entry.workId)}`;
+  if (entry.status === "unknown") {
+    return `<li>${label} — ${lpUnknownFragment(rowKey, entry)}</li>`;
+  }
+  if (entry.status === "open") {
+    return `<li>${label} — ${lpOpenConfirmFragment(rowKey, entry)}</li>`;
+  }
+  return `<li>${label} — ${esc(entry.status)}</li>`;
+}
+
+function lpRenderPending(readyRows) {
+  const known = new Set(readyRows.map(r => lpRowKey(r.repo_key, r.work_id)));
+  const orphans = Object.keys(lpState.pending).filter(k => !known.has(k));
+  // Settled outcomes whose Ready row is GONE (the normal post-launch state:
+  // the item left ready[] on the very refetch the receipt triggered) render
+  // here too — otherwise the receipt, the only place run_id appears, would
+  // be visible only for the duration of that refetch (gate pass-3 finding).
+  const outcomes = Object.keys(lpState.rowMessages)
+    .filter(k => !known.has(k) && !(k in lpState.pending));
+  const items = orphans
+    .map(k => lpPendingItemHtml(k, lpState.pending[k]))
+    .concat(outcomes.map(k =>
+      `<li>${esc(k)} — ${lpState.rowMessages[k]}</li>`));
+  document.getElementById("lp-pending").innerHTML = items.length
+    ? `<ul class="lp-pending-list">${items.join("")}</ul>`
+    : `<p class="dim">no pending launches awaiting resolution</p>`;
+}
+
+function lpActiveRowHtml(row) {
+  // A linked row (request_id present) opens the run view — the same typed
+  // split as repo blockers: unlinked runs render text only (spec §2/§12.4).
+  const runCell = row.request_id
+    ? `<a href="#run-console" class="lp-open-run"
+         data-request-id="${esc(row.request_id)}">${esc(row.run_id ?? row.request_id)}</a>`
+    : esc(row.run_id ?? "—");
+  return `<tr class="${row.attention ? "warn" : ""}">
+    <td>${esc(row.repo_key)}</td>
+    <td>${esc(row.work_id ?? "—")}</td>
+    <td>${esc(row.state)}</td>
+    <td>${runCell}</td>
+    <td>${esc(row.run_status ?? "—")}</td>
+    <td>${esc(row.updated_at || "—")}</td></tr>`;
+}
+
+function lpRenderActive(rows, truncated) {
+  document.getElementById("lp-active").innerHTML = `<div class="tablewrap"><table>
+    <thead><tr><th>Repository</th><th>Work item</th><th>State</th>
+      <th>Run</th><th>Status</th><th>Updated</th></tr></thead>
+    <tbody>${rows.map(lpActiveRowHtml).join("")
+      || `<tr><td colspan="6" class="dim">nothing active</td></tr>`}</tbody>
+  </table></div>${truncated
+    ? `<div class="warn">active list truncated at 200 — the fleet needs cleanup</div>`
+    : ""}`;
+}
+
+function lpRecentRowHtml(row) {
+  const label = `${esc(row.work_id)} · ${esc(row.outcome)}`;
+  // #191's lesson: a bare run_id is not enough to promise a link —
+  // `logs_available` is computed server-side from the log directory's
+  // real presence.
+  const cell = row.logs_available
+    ? `<a href="#" class="lp-open-run" data-request-id="${esc(row.request_id)}">${label}</a>`
+    : `<span>${label}</span>`;
+  return `<tr><td>${esc(row.repo_key)}</td><td>${cell}</td>
+    <td>${row.revision ? esc(row.revision.slice(0, 7)) : "—"}</td>
+    <td>${esc(row.updated_at || "—")}</td></tr>`;
+}
+
+function lpRenderRecent(rows) {
+  document.getElementById("lp-recent").innerHTML = `<div class="tablewrap"><table>
+    <thead><tr><th>Repository</th><th>Work item</th><th>Revision</th>
+      <th>Updated</th></tr></thead>
+    <tbody>${rows.map(lpRecentRowHtml).join("")
+      || `<tr><td colspan="4" class="dim">no recent runs</td></tr>`}</tbody>
+  </table></div>`;
+}
+
+// Diagnostics folds three read-only sources under one collapsed <details>
+// (spec §9 names unregistered + orphans explicitly; `blocked` work items —
+// dag_invalid/dag_dirty/etc., item-level, distinct from a repo's own
+// blockers above — have no other home in this panel and are exactly the
+// same "why isn't this ready" shape, so they are listed here too).
+function lpRenderDiagnostics(blocked, unregistered, orphans) {
+  const blockedHtml = blocked.map(r =>
+    `<li>${esc(r.repo_key)}: ${esc(r.work_id)} — ${esc(r.reason_code)}`
+    + `${r.reason ? " (" + esc(r.reason) + ")" : ""}</li>`).join("");
+  const unregisteredHtml = unregistered.map(r =>
+    `<li>${esc(r.repo_key)}: ${esc(r.work_id)} (${esc(r.reason_code)})</li>`).join("");
+  const orphansHtml = orphans.map(r =>
+    `<li>${esc(r.repo_key)}: ${esc(r.dag_path)}</li>`).join("");
+  document.getElementById("lp-diagnostics-body").innerHTML =
+    `<h4>Blocked items</h4><ul>${blockedHtml || '<li class="dim">none</li>'}</ul>
+     <h4>Unregistered items</h4><ul>${unregisteredHtml || '<li class="dim">none</li>'}</ul>
+     <h4>Orphan DAGs</h4><ul>${orphansHtml || '<li class="dim">none</li>'}</ul>`;
+}
+
+function lpRenderStoreBanner(notes) {
+  const banner = document.getElementById("lp-store-banner");
+  banner.hidden = notes.length === 0;
+  banner.innerHTML = notes.length
+    ? `<div class="warn">store read errors: ${notes.map(esc).join("; ")}</div>` : "";
+}
+
+// The pure wholesale renderer: every container is rebuilt from the
+// fixture's own arrays, in the SERVER's order — the attention-first sort
+// on `active` is the assembler's job (Task 2), never re-sorted here.
+function lpRender(snapshot) {
+  lpRenderStoreBanner(snapshot.store_unreadable || []);
+  lpRenderRepos(snapshot.repositories || []);
+  lpRenderReady(snapshot.ready || []);
+  lpRenderPending(snapshot.ready || []);
+  lpRenderActive(snapshot.active || [], !!snapshot.active_truncated);
+  lpRenderRecent(snapshot.recent_completed || []);
+  lpRenderDiagnostics(snapshot.blocked || [], snapshot.unregistered_items || [],
+    snapshot.orphan_dags || []);
+}
+
+// Task 7's two re-render entry points: neither one re-fetches — they
+// re-paint from lpState.snapshot (the last APPLIED snapshot, possibly
+// stale) plus whatever just changed in `pending`/`rowMessages`/`escapes`.
+// A submit/escape action that wants FRESH facts calls `lpRefetchAfterAction`
+// separately (spec §9's refetch discipline), never these.
+function lpRerenderReady() {
+  const ready = lpState.snapshot ? (lpState.snapshot.ready || []) : [];
+  lpRenderReady(ready);
+  lpRenderPending(ready);
+}
+function lpRerenderRepos() {
+  lpRenderRepos(lpState.snapshot ? (lpState.snapshot.repositories || []) : []);
+}
+
+// A failed fetch here is deliberately quiet in Task 6: spec §9's
+// transport-uncertainty handling (retry with the same request_id,
+// read-back, blocking a fresh Launch) is per-ROW and belongs to Task 7's
+// launch flow, not to this whole-snapshot refresh. Logged, not surfaced,
+// so a stale prior render simply stays on screen until the next refresh
+// succeeds.
+function lpRenderFetchError(err) {
+  console.error("launchpad snapshot fetch failed:", err);
+}
+
+// One fetch in flight is applied; a superseded one is discarded, never
+// patched in — strict supersession: `seq === lpState.seq` (the LATEST
+// issued), checked at apply time, not at issue time, so whichever of two
+// in-flight requests resolves first can still lose.
+function lpApplySnapshot(seq, snapshot) {
+  if (seq !== lpState.seq) return;
+  lpState.snapshot = snapshot;
+  lpRender(snapshot);
+}
+
+// The one place that actually calls fetch() — both lpFetchSnapshot() and
+// lpRefetchAfterAction() funnel through here; only the INFLIGHT GATE
+// differs between them (see below). No AbortController (the sandbox has
+// none, per the harness's dom.js) — supersede-and-discard replaces it.
+function lpIssueFetch() {
+  lpState.seq++;
+  const seq = lpState.seq;
+  lpState.inflight++;
+  fetch("/api/launchpad")
+    .then(r => r.json().then(data => [r, data]))
+    .then(([r, data]) => {
+      lpState.inflight--;
+      if (!r.ok) { if (seq === lpState.seq) lpRenderFetchError(data); return; }
+      lpApplySnapshot(seq, data);
+    })
+    .catch(err => {
+      lpState.inflight--;
+      if (seq === lpState.seq) lpRenderFetchError(err);
+    });
+}
+
+// Timer-tick entry: refuses outright while ANY fetch is inflight (the
+// counter, not a boolean — see lpState's own comment) — at most one timer
+// fetch airborne at a time.
+function lpFetchSnapshot() {
+  if (lpState.inflight > 0) return;
+  lpIssueFetch();
+}
+
+// The superseding-fetch entry point submit/escape handlers call (spec §9's
+// refetch discipline, Task 7): issues immediately with a higher `seq` even
+// while a timer fetch is still in flight — a second legitimate in-flight
+// request, not a refusal.
+function lpRefetchAfterAction() { lpIssueFetch(); }
+
+let lpRefreshTimer = null;
+
+function lpScheduleRefresh() {
+  if (typeof setInterval !== "function") return;
+  if (lpRefreshTimer !== null) clearInterval(lpRefreshTimer);
+  lpRefreshTimer = setInterval(lpFetchSnapshot, LP_REFRESH_MS);
+  // Spec §9: the timer pauses while the tab is hidden and fires
+  // immediately on return. tests/web/dom.js's addEventListener is a no-op
+  // stub — the Node DOM cannot model the Page Visibility API — so this
+  // guard is inert under the harness and only takes effect in a real
+  // browser; that gap is this comment, not a stub pretending to cover it.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      if (lpRefreshTimer !== null) { clearInterval(lpRefreshTimer); lpRefreshTimer = null; }
+    } else {
+      lpFetchSnapshot();
+      if (lpRefreshTimer === null) lpRefreshTimer = setInterval(lpFetchSnapshot, LP_REFRESH_MS);
+    }
+  });
+}
+
+// -- Task 7: the two-step launch flow -----------------------------------
+
+// Clicking a Ready row expands its confirm (spec §9); clicking an already-
+// open row collapses it (a no-op Cancel). Clicking a row mid-attempt
+// (submitting/unknown) does nothing here — those states have their own
+// explicit controls (Retry/Check status) and must not be dismissed by a
+// stray row click.
+function lpToggleRow(rowKey) {
+  const entry = lpState.pending[rowKey];
+  if (entry && (entry.status === "submitting" || entry.status === "unknown")) return;
+  if (entry && entry.status === "open") {
+    delete lpState.pending[rowKey];
+    lpRerenderReady();
+    return;
+  }
+  const ready = lpState.snapshot ? (lpState.snapshot.ready || []) : [];
+  const row = ready.find(r => lpRowKey(r.repo_key, r.work_id) === rowKey);
+  if (!row) return;
+  delete lpState.rowMessages[rowKey];
+  lpState.pending[rowKey] = {status: "open", requestId: null,
+    repoKey: row.repo_key, workId: row.work_id, dagPath: row.dag_path,
+    seenRevision: row.seen_revision, snapshotId: lpState.snapshot.snapshot_id};
+  lpRerenderReady();
+}
+
+// Collapses an OPEN confirm with nothing sent yet, or dismisses an orphaned
+// `open` entry in #lp-pending. Never touches `submitting`/`unknown` — an
+// attempt already on the wire, or left ambiguous, is never silently
+// discarded (spec §9: "no auto-clear: resolution is operator-driven").
+function lpCancelLaunch(rowKey) {
+  const entry = lpState.pending[rowKey];
+  if (entry && (entry.status === "submitting" || entry.status === "unknown")) return;
+  delete lpState.pending[rowKey];
+  delete lpState.rowMessages[rowKey];
+  lpRerenderReady();
+}
+
+// Confirm AND Retry both land here: Retry is the SAME attempt (same
+// request_id, same captured body), not a new one — `entry` already carries
+// everything from when the row was opened. Re-validation (open confirms
+// only) is defence-in-depth: the Confirm button is already rendered
+// disabled when `cause` is set, so a real click never reaches here with one
+// — this guard exists for the same reason dom.js's `dispatch()` documents
+// its own `force` escape hatch, in case something reaches this function
+// other than a live click.
+async function lpConfirmLaunch(rowKey) {
+  const entry = lpState.pending[rowKey];
+  if (!entry) return;
+  if (entry.status === "open") {
+    const cause = lpValidateOpenConfirm(rowKey, entry);
+    if (cause) return;
+  }
+  const requestId = entry.requestId || rcRequestId();
+  entry.requestId = requestId;
+  entry.status = "submitting";
+  lpRerenderReady();
+  const body = {snapshot_id: entry.snapshotId, repo_key: entry.repoKey,
+    work_id: entry.workId, request_id: requestId, seen_revision: entry.seenRevision};
+  let resp;
+  try {
+    resp = await fetch("/api/runs/submit", {
+      method: "POST",
+      headers: {"Content-Type": "application/json",
+                "X-Action-Token": await ensureActionToken()},
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    entry.status = "unknown";
+    entry.reason = `no response reached the browser: ${err}`;
+    lpRerenderReady();
+    return;
+  }
+  let data;
+  try {
+    data = await resp.json();
+  } catch (err) {
+    entry.status = "unknown";
+    entry.reason = `response body was unreadable: ${err}`;
+    lpRerenderReady();
+    return;
+  }
+  // A settled definite answer (spec §9, behaviour 1) — 2xx receipt or any
+  // structured error body — clears the pending entry outright, regardless
+  // of what the receipt itself says (even accepted:null is a definite HTTP
+  // answer: the server was reached, only the LAUNCH's own outcome is
+  // ambiguous — that is a fact for the run view/resolve flow, not for this
+  // row's transport-uncertainty tracking).
+  delete lpState.pending[rowKey];
+  if (resp.ok) {
+    lpState.rowMessages[rowKey] = renderReceipt(data, data.accepted === null);
+  } else {
+    // `current` is shown INSIDE this message text only (plan §3) — it is
+    // never spliced into `lpState.snapshot`, only appended to a text
+    // string nothing else reads.
+    let msg = `${esc(data.code ?? "error")}: ${esc(data.detail ?? `HTTP ${resp.status}`)}`;
+    if (data.current !== undefined && data.current !== null) {
+      let currentText;
+      try {
+        currentText = JSON.stringify(data.current);
+      } catch (err) {
+        currentText = String(data.current);
+      }
+      if (currentText.length > 200) currentText = currentText.slice(0, 200) + "…";
+      msg += ` (current: ${esc(currentText)})`;
+    }
+    lpState.rowMessages[rowKey] = msg;
+  }
+  lpRerenderReady();
+  lpRefetchAfterAction();
+}
+
+// The one-shot read-back (spec §9, behaviour 2): only a definite HTTP
+// answer resolves `unknown` — a 404 means "not visible yet or never
+// arrived", not "refused", and leaves the row exactly as it was so Retry
+// stays available. No polling: this fires once, on an explicit click.
+async function lpReadBack(rowKey) {
+  const entry = lpState.pending[rowKey];
+  if (!entry || entry.status !== "unknown") return;
+  let resp;
+  try {
+    resp = await fetch(`/api/runs/${encodeURIComponent(entry.requestId)}`);
+  } catch (err) {
+    return; // transport failure on the read-back itself: stays unknown
+  }
+  if (resp.status === 404) return; // stays unknown — Retry remains the recovery
+  let data;
+  try {
+    data = await resp.json();
+  } catch (err) {
+    return;
+  }
+  if (!resp.ok) return; // any other non-ok: leave unknown, do not guess
+  delete lpState.pending[rowKey];
+  // `data.record?.state`, not `data.record.state`: a shape surprise here
+  // must not throw inside this async handler and leave the row stuck
+  // "unknown" with no feedback at all — a fallback text beats a silent hang.
+  const recordState = data.record?.state ?? "unknown (unexpected response shape)";
+  lpState.rowMessages[rowKey] =
+    `read-back found the record: state ${esc(recordState)}`;
+  lpRerenderReady();
+  lpRefetchAfterAction();
+}
+
+// -- Task 7: the acknowledge-vanished / release-malformed escape forms --
+
+function lpOpenEscape(anchor) {
+  const code = anchor.dataset.code;
+  const requestId = anchor.dataset.requestId || null;
+  const runId = anchor.dataset.runId || null;
+  const repoKey = anchor.dataset.repoKey || null;
+  const vanished = code === LP_RUN_VANISHED;
+  const key = vanished ? `rv:${requestId}` : `lm:${repoKey}`;
+  lpState.escapes[key] = {status: "open", code, requestId, runId, repoKey,
+    expectedConfirm: vanished ? runId : repoKey, reason: "", confirmValue: ""};
+  lpRerenderRepos();
+}
+
+async function lpSubmitEscape(key) {
+  const entry = lpState.escapes[key];
+  if (!entry || !lpEscapeCanSubmit(entry)) return;
+  entry.status = "submitting";
+  entry.errorMessage = null;
+  lpRerenderRepos();
+  const vanished = entry.code === LP_RUN_VANISHED;
+  const url = vanished
+    ? `/api/runs/${encodeURIComponent(entry.requestId)}/acknowledge-vanished`
+    : "/api/locks/release-malformed";
+  const body = vanished
+    ? {confirm_run_id: entry.confirmValue, reason: entry.reason}
+    : {repo_key: entry.repoKey, confirm_repo_key: entry.confirmValue, reason: entry.reason};
+  let resp;
+  try {
+    resp = await fetch(url, {
+      method: "POST",
+      headers: {"Content-Type": "application/json",
+                "X-Action-Token": await ensureActionToken()},
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    entry.status = "open";
+    entry.errorMessage = `no response reached the browser: ${esc(String(err))}`;
+    lpRerenderRepos();
+    return;
+  }
+  let data;
+  try {
+    data = await resp.json();
+  } catch (err) {
+    entry.status = "open";
+    entry.errorMessage = `response body was unreadable: ${esc(String(err))}`;
+    lpRerenderRepos();
+    return;
+  }
+  if (!resp.ok) {
+    // These two routes answer with plain FastAPI HTTPException bodies
+    // ({detail}), not SubmitV2's {code, detail, current} shape — rule 3's
+    // discipline (a text message, no splicing, no auto-clear) still
+    // applies, just without a `code` to prefix.
+    entry.status = "open";
+    entry.errorMessage = esc(data.detail ?? `HTTP ${resp.status}`);
+    lpRerenderRepos();
+    return;
+  }
+  delete lpState.escapes[key];
+  lpRerenderRepos();
+  lpRefetchAfterAction();
+}
+
+// Delegated click handler for the panel: the run-view opener (Task 6), the
+// Ready-row two-step confirm and its Retry/Check-status/Cancel, and the
+// escape forms' anchor/Submit/Cancel — one listener on the whole section
+// covers #lp-repos, #lp-ready and #lp-pending alike.
+document.getElementById("launchpad").addEventListener("click", async e => {
+  const openLink = e.target.closest(".lp-open-run");
+  if (openLink) {
+    e.preventDefault();
+    await openRunView(openLink.dataset.requestId);
+    return;
+  }
+
+  const confirmBtn = e.target.closest(".lp-confirm");
+  if (confirmBtn) { await lpConfirmLaunch(confirmBtn.dataset.rowKey); return; }
+  const retryBtn = e.target.closest(".lp-retry");
+  if (retryBtn) { await lpConfirmLaunch(retryBtn.dataset.rowKey); return; }
+  const checkBtn = e.target.closest(".lp-check-status");
+  if (checkBtn) { await lpReadBack(checkBtn.dataset.rowKey); return; }
+  const cancelBtn = e.target.closest(".lp-cancel");
+  if (cancelBtn) { lpCancelLaunch(cancelBtn.dataset.rowKey); return; }
+
+  const escapeAnchor = e.target.closest(".lp-blocker-anchor");
+  if (escapeAnchor) { e.preventDefault(); lpOpenEscape(escapeAnchor); return; }
+  const escapeSubmit = e.target.closest(".lp-escape-submit");
+  if (escapeSubmit) { await lpSubmitEscape(escapeSubmit.dataset.escapeKey); return; }
+  const escapeCancel = e.target.closest(".lp-escape-cancel");
+  if (escapeCancel) {
+    delete lpState.escapes[escapeCancel.dataset.escapeKey];
+    lpRerenderRepos();
+    return;
+  }
+
+  const rowTr = e.target.closest("tr.lp-ready-row");
+  if (rowTr) { lpToggleRow(rowTr.dataset.rowKey); return; }
+});
+
+// Delegated `input` handler: keeps `lpState.escapes` in sync as the
+// operator types, so a wholesale #lp-repos rerender landing mid-fill (the
+// 30s auto-refresh, or another repo's own action) cannot lose it. Toggles
+// the Submit button directly rather than re-rendering the whole form on
+// every keystroke, which would lose focus/cursor position.
+document.getElementById("launchpad").addEventListener("input", e => {
+  const field = e.target.closest("[data-escape-field]");
+  if (!field) return;
+  const entry = lpState.escapes[field.dataset.escapeKey];
+  if (!entry) return;
+  if (field.dataset.escapeField === "confirm") entry.confirmValue = field.value;
+  else entry.reason = field.value;
+  const submitBtn = field.closest(".lp-escape-form")
+    ?.querySelector(".lp-escape-submit");
+  if (submitBtn) submitBtn.disabled = !lpEscapeCanSubmit(entry);
+});
+
+lpFetchSnapshot();
+lpScheduleRefresh();
 </script>
 </body>
 </html>

@@ -33,17 +33,18 @@ import os
 import re
 import stat
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 
 from plan_fields.parser import DAG_RE, ITEM_ID_RE, parse_dag
 from plan_fields.scrape import scrape_items
 
-from dispatcher.core.dag_subset import (
-    MAX_DAG_BYTES,
+from dispatcher.core.dag_subset import MAX_DAG_BYTES, classify_dag_text
+from dispatcher.core.inventory_types import (
     Accepted,
+    DagFileInfo,
     DagSubsetVerdict,
-    classify_dag_text,
+    InventorySurface,
+    PlanItem,
 )
 from dispatcher.core.run_identity import (
     IdentityError,
@@ -52,45 +53,17 @@ from dispatcher.core.run_identity import (
     parse_remote_url,
 )
 
+__all__ = [
+    "PlanItem",
+    "DagFileInfo",
+    "InventorySurface",
+    "capture_inventory",
+]
+
 _GIT_TIMEOUT = 15
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _READ_CHUNK = 65536
-
-
-@dataclass(frozen=True)
-class PlanItem:
-    item_id: str | None
-    line: int
-    open: bool  # `- [ ]` vs anything else
-    shipped: bool  # under a `##`-level section whose title contains "Shipped"
-    dag_raw: str | None  # the @dag tag as the tags map holds it (last-wins)
-    dag_tag: str | None  # validated value (grammar + equality), else None
-    dag_diag: str | None  # "PF-DAG-GRAMMAR" | "PF-DAG-MISMATCH" | None
-
-
-@dataclass(frozen=True)
-class DagFileInfo:
-    rel_path: str  # "dags/<name>.yaml"
-    is_regular: bool  # fstat on the opened fd: regular file
-    text: str | None  # decoded from the SAME captured bytes; None if undecodable
-    blob_sha: str | None  # `git hash-object --stdin` over the SAME bytes
-    head_blob_sha: str | None  # blob at <head_revision>:<rel>; None = ABSENT
-    subset: DagSubsetVerdict | None  # classify_dag_text(text); None when text is None
-    named_repo: RepoKey | None  # the repo the DAG names, resolved at capture
-    named_repo_error: str | None  # why resolution failed, when it did
-    error: str | None  # named IO/git FAILURE for THIS file
-
-
-@dataclass(frozen=True)
-class InventorySurface:
-    plan_items: tuple[PlanItem, ...]  # FULL ledger, Shipped included
-    dag_files: tuple[DagFileInfo, ...]
-    head_revision: str | None  # full 40-hex; None on capture failure
-    repo_key: RepoKey | None  # None on identity failure
-    plan_error: str | None  # TODO.md unreadable
-    dag_dir_error: str | None  # dags/ dir unreadable (absent dir is not an error)
-    capture_error: str | None  # HEAD/identity failure, named
 
 
 def capture_inventory(checkout: Path) -> InventorySurface:
@@ -389,6 +362,10 @@ def _read_capped(fd: int, cap: int) -> bytes:
     return b"".join(chunks)
 
 
+# git hash-object --stdin applies no gitattributes filters, while ls-tree
+# returns the FILTERED blob: on a repo with `* text=auto` or a clean filter
+# this comparison reports a permanent dag_dirty — fail-closed direction,
+# named limit (B2 review M7).
 def _hash_object(checkout: Path, data: bytes) -> tuple[str | None, str | None]:
     try:
         proc = subprocess.run(

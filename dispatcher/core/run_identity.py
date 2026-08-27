@@ -17,6 +17,7 @@ by the producer itself. Do not "fix" a mismatch by editing the rule here.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ _URL_LIKE = re.compile(
 )
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 _GIT_TIMEOUT = 15
+_HIDDEN_PREFIXES = (".",)
 
 
 def _segment_is_safe(segment: str) -> bool:
@@ -136,3 +138,118 @@ def identity_from_checkout(repo_root: Path) -> RepoKey:
             f"{proc.stderr.strip() or 'git exited ' + str(proc.returncode)}"
         )
     return parse_remote_url(proc.stdout)
+
+
+def list_workspace_checkouts(
+    workspace: Path,
+) -> tuple[list[tuple[str, Path]], list[str]]:
+    """`(name, checkout)` pairs for every visible directory directly under
+    `workspace` — the ONE enumeration shared by the launchpad assembler's
+    manifest scan (`dispatcher/core/launchpad.py::_manifest_repos`) and
+    submit v2's identity-based checkout resolver
+    (`RunController._resolve_v2_checkout`), so the two adapters can never
+    walk a workspace differently (review fix wave C, C1).
+
+    Only DOT-prefixed (genuinely hidden) entries are skipped: the
+    repository contract permits `_` in directory names, so a valid
+    `_service` checkout must stay visible (gate pass-4 finding) —
+    non-repo scratch/coordination directories are excluded by carrying
+    no .git, not by their name.
+
+    `os.scandir`, not `iterdir`/`glob`: a single bad entry (a broken
+    symlink, a permission-denied child) must degrade that ONE entry, not
+    abort a whole comprehension via a blanket `except OSError` around it
+    — an earlier version of the launchpad scan did exactly that and
+    silently emptied the entire manifest (fail-open, review fix round 1).
+    `os.scandir` makes each entry's stat a separate call this loop can
+    catch and skip.
+
+    Returns `(entries, notes)`; a failure to scan `workspace` itself is a
+    different class of problem (nothing was listed at all) and is
+    reported as a note too, rather than a silent `[]`.
+    """
+    try:
+        with os.scandir(workspace) as scanned:
+            raw_entries = list(scanned)
+    except OSError as err:
+        return [], [f"cannot list workspace {workspace}: {err}"]
+    entries: list[tuple[str, Path]] = []
+    notes: list[str] = []
+    # The root ITSELF is a candidate when it carries .git (a plain dir or
+    # a worktree's .git FILE): `roots=(repo,)` is a supported shape —
+    # discovery checks `[root, *children]` and the B1 escape resolver
+    # pinned it (review-pr finding on #209). Children are still scanned:
+    # a checkout can contain sibling tooling dirs.
+    root_is_checkout = (workspace / ".git").exists()
+    if root_is_checkout:
+        entries.append((workspace.name, workspace))
+    for entry in raw_entries:
+        if entry.name.startswith(_HIDDEN_PREFIXES):
+            continue
+        try:
+            # follow_symlinks=False: a symlink in the workspace root would
+            # smuggle an EXTERNAL checkout in as a candidate and a launch
+            # would act outside the configured workspace (review on #209).
+            is_dir = entry.is_dir(follow_symlinks=False)
+        except OSError as err:
+            notes.append(f"cannot stat {workspace / entry.name}: {err}")
+            continue
+        if not is_dir:
+            continue
+        if root_is_checkout and not (workspace / entry.name / ".git").exists():
+            # Inside a root-as-checkout, a plain internal dir (docs/, src/)
+            # is repo CONTENT, not a repo candidate — only nested checkouts
+            # qualify (dry-run finding on #209).
+            continue
+        entries.append((entry.name, workspace / entry.name))
+    entries.sort(key=lambda pair: pair[0])
+    return entries, notes
+
+
+def find_checkouts_by_identity(
+    workspace: Path, target: RepoKey
+) -> tuple[list[Path], list[str]]:
+    """EVERY checkout directly under `workspace` whose `origin` remote
+    resolves to `target`, in sorted-name order.
+
+    A list, not first-match: two checkouts of one identity are a real
+    workspace state (`run_store.py`'s locator contract names it), and a
+    resolver that silently picks the first could act on the copy the
+    operator was NOT looking at (gate pass-2 finding) — the caller decides
+    whether >1 is an error.
+
+    submit v2's fallback when the fast path `workspace / target.repo` is
+    absent or names a different repository: a checkout's workspace
+    directory name need not match its remote's `repo` segment (real fleet
+    case: a directory named `open-prose/` cloned from `.../libretto.git`)
+    — resolving by directory name alone made such a repo's Ready row
+    unlaunchable (review fix wave C, C1). Uses `list_workspace_checkouts`,
+    the SAME enumeration the launchpad assembler uses to derive each row's
+    `repo_key` in the first place, so the two can never resolve a
+    `repo_key` to two different checkouts.
+    """
+    entries, notes = list_workspace_checkouts(workspace)
+    matches: list[Path] = []
+    for _name, checkout in entries:
+        if not (checkout / ".git").exists():
+            continue
+        try:
+            found = identity_from_checkout(checkout)
+        except IdentityError as err:
+            # This candidate MIGHT be the duplicate — an unreadable origin
+            # proves nothing, and silently skipping it turned an incomplete
+            # scan into a uniqueness proof (review on #209). The note makes
+            # the resolver refuse until the workspace is fixed.
+            notes.append(f"cannot read identity of {checkout}: {err}")
+            continue
+        if found.as_text() == target.as_text():
+            matches.append(checkout.resolve())
+    return matches, notes
+
+
+def find_checkout_by_identity(workspace: Path, target: RepoKey) -> Path | None:
+    """First identity match or None — kept for callers that tolerate
+    ambiguity AND scan gaps; submit v2 uses `find_checkouts_by_identity`
+    and refuses both."""
+    matches, _notes = find_checkouts_by_identity(workspace, target)
+    return matches[0] if matches else None

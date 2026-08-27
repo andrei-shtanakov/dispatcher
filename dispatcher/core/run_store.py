@@ -159,6 +159,9 @@ class LaunchRecord(BaseModel):
     #: changed repository must be detectable without re-resolving the
     #: checkout). Empty on records written before this field existed.
     repository: str = ""
+    #: spec §4.2: snapshot_id is an AUDIT ECHO — which launchpad snapshot
+    #: the operator acted from; "" for v1/legacy records (escalated on #209).
+    snapshot_id: str = ""
     response_class: str | None = None
     admission_code: str | None = None
     admission_detail: str | None = None
@@ -292,6 +295,25 @@ class RunStore:
                 f"record for {request_id} exists but cannot be read (invalid content)"
             ) from err
 
+    def _write_new(self, record: LaunchRecord) -> None:
+        """Create-EXCLUSIVE first write: temp, then `os.link` (never replace).
+
+        `os.replace` clobbers — two racing reserves of one request_id in
+        DIFFERENT repos would both "win" and launch twice with one record
+        (review on #209). `os.link` fails `FileExistsError` atomically when
+        another attempt already claimed the id; the caller conflicts.
+        """
+        self._ensure()
+        target = self._record_path(record.request_id)
+        fd, tmp = tempfile.mkstemp(dir=str(self._requests), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as handle:
+                handle.write(record.model_dump_json(indent=2))
+            os.chmod(tmp, _FILE_MODE)
+            os.link(tmp, target)
+        finally:
+            Path(tmp).unlink(missing_ok=True)
+
     def _write(self, record: LaunchRecord) -> None:
         """Temp-then-rename: a half-written record must never be readable."""
         self._ensure()
@@ -374,6 +396,7 @@ class RunStore:
         spec_commit: str | None = None,
         plan_ref_path: str | None = None,
         plan_commit: str | None = None,
+        snapshot_id: str = "",
     ) -> LaunchRecord:
         """The critical section `reserve` runs inside `guard(key)`.
 
@@ -435,9 +458,20 @@ class RunStore:
             checkout=checkout,
             repository=repository,
             fingerprint=fp,
+            snapshot_id=snapshot_id,
         )
         try:
-            self._write(record)
+            self._write_new(record)
+        except FileExistsError:
+            # Another attempt claimed this request_id between our replay
+            # read and this write (same-id race across repos, review on
+            # #209): OUR repo lock was created microseconds ago under
+            # O_EXCL and is ours to release; the other attempt's record
+            # and lock stay untouched.
+            lock.unlink(missing_ok=True)
+            raise FingerprintMismatch(
+                f"{request_id} was already claimed by a concurrent attempt"
+            ) from None
         except OSError as err:
             # I5: unlike `release_lock`, which must refuse a lock it cannot
             # confirm it holds, `reserve` created THIS lock microseconds ago
@@ -703,6 +737,7 @@ class RunStore:
         code: str,
         detail: str,
         current: dict,
+        snapshot_id: str = "",
     ) -> LaunchRecord:
         """A terminal admission-rejected record written WITHOUT the repo
         lock — for the lock-family blockers, where the blocker IS an
@@ -713,10 +748,12 @@ class RunStore:
         would re-classify — and launch — once the blocking lock frees,
         breaking immutable replay (spec §8.2).
 
-        Caller holds `guard(key)`. The write itself is atomic per
-        request_id (`_write` → `os.replace`). A repeated call replays
-        the existing record under the same fingerprint semantics as
-        `_reserve_locked`.
+        Caller holds `guard(key)`. The first write is create-EXCLUSIVE
+        per request_id (`_write_new` → `os.link`): the get-then-write
+        window here raced `_reserve_locked` in ANOTHER repo sharing the
+        request_id, and `os.replace` would have clobbered that live
+        record (review on #209). A repeated call replays the existing
+        record under the same fingerprint semantics as `_reserve_locked`.
         """
         fp = fingerprint_of(key.as_text(), work_id, revision)
         existing = self.get(request_id)
@@ -742,13 +779,28 @@ class RunStore:
             checkout=checkout,
             repository=repository,
             fingerprint=fp,
+            snapshot_id=snapshot_id,
             response_class="admission_rejected",
             admission_code=code,
             admission_detail=detail,
             admission_current=current,
             rejected_at=datetime.now(UTC).isoformat(),
         )
-        self._write(record)
+        try:
+            self._write_new(record)
+        except FileExistsError:
+            # Lost the same-id race: re-read and apply the same replay-or-
+            # conflict semantics the front of this method already defines.
+            raced = self.get(request_id)
+            if raced is not None:
+                stored = raced.fingerprint or fingerprint_of(
+                    raced.repo_key, raced.work_id, raced.revision
+                )
+                if stored == fp:
+                    return raced
+            raise FingerprintMismatch(
+                f"{request_id} was already claimed by a concurrent attempt"
+            ) from None
         return record
 
     def mark_admission_rejected(
@@ -852,8 +904,9 @@ class RunStore:
         except _UnreadableLock:
             return None
 
-    def list(self) -> tuple[list[LaunchRecord], list[str]]:
-        """Every record, plus the FILENAMES that failed to parse.
+    def list_with_mtime(self) -> tuple[list[tuple[LaunchRecord, str]], list[str]]:
+        """Every record paired with its file's last-modified time (ISO
+        UTC), plus the FILENAMES that failed to parse.
 
         The second return exists because the single-live-run gate is
         fail-closed: a corrupt record must block as unknown, and a
@@ -865,8 +918,26 @@ class RunStore:
         drop every record-derived blocker at once. Ordered by filename
         (== `request_id`) for determinism — callers sort by their own
         keys.
+
+        The mtime is this method's own addition (PR-C's launchpad
+        assembler needs a "last transition" timestamp per record):
+        `_write`'s temp-then-rename refreshes a record's mtime on every
+        transition, so it is durable, not a read-time artifact. A record
+        whose `os.stat` fails degrades to mtime `""` — sorts last as a
+        bare string, never raises — rather than dropping the record: the
+        CONTENT is still readable and must still count, only the
+        freshness signal is missing (mirrors the fail-closed rule above,
+        applied to a stat instead of a parse).
+
+        Defined ABOVE `list()` on purpose (not just alphabetically): with
+        `from __future__ import annotations`, a bare `list[...]` in a
+        later method's signature resolves against this class's OWN
+        namespace once a method literally named `list` has been defined
+        above it, shadowing the builtin generic — pyrefly flags exactly
+        that. Declaring the generic-typed method first keeps `list[...]`
+        meaning the builtin everywhere in this file.
         """
-        records: list[LaunchRecord] = []
+        records: list[tuple[LaunchRecord, str]] = []
         unreadable: list[str] = []
         try:
             # os.scandir, not Path.glob: glob SUPPRESSES OSError raised
@@ -885,7 +956,23 @@ class RunStore:
             return [], [f"requests directory unlistable: {err}"]
         for path in paths:
             try:
-                records.append(LaunchRecord.model_validate_json(path.read_text()))
+                record = LaunchRecord.model_validate_json(path.read_text())
             except Exception:
                 unreadable.append(path.name)
+                continue
+            try:
+                mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).isoformat()
+            except OSError:
+                mtime = ""
+            records.append((record, mtime))
         return records, unreadable
+
+    def list(self) -> tuple[list[LaunchRecord], list[str]]:
+        """Every record, plus the FILENAMES that failed to parse.
+
+        Thin delegate over `list_with_mtime()`, mtime column dropped — see
+        there for the fail-closed enumeration contract (shared verbatim)
+        and for why the mtime column exists at all.
+        """
+        records, unreadable = self.list_with_mtime()
+        return [record for record, _ in records], unreadable

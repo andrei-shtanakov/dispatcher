@@ -8,10 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi import Path as FastapiPath
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from dispatcher.core import read_api
 from dispatcher.core.actions import (
@@ -33,6 +34,7 @@ from dispatcher.core.epics import (
     build_view,
 )
 from dispatcher.core.governance import BundleGovernance
+from dispatcher.core.launchpad import LaunchpadSnapshot, assemble_snapshot
 from dispatcher.core.models import (
     ContractStatus,
     ErrorEvent,
@@ -52,6 +54,7 @@ from dispatcher.core.roadmap import (
     default_roadmap_dirs,
 )
 from dispatcher.core.run_controller import (
+    AdmissionRefused,
     ControlPlaneOff,
     LaunchReceipt,
     RunController,
@@ -62,7 +65,7 @@ from dispatcher.core.run_controller import (
     VerbOutcome,
 )
 from dispatcher.core.run_identity import IdentityError, RepoKey, identity_from_checkout
-from dispatcher.core.run_request import RunRejectedError, RunRequest
+from dispatcher.core.run_request import RunRejectedError, SubmitV2
 from dispatcher.core.run_store import (
     GuardBusyError,
     LaunchRecord,
@@ -260,6 +263,64 @@ def create_app(
     # CSRF-токен на процесс: SOP не даст чужой странице его прочитать,
     # значит POST с токеном мог отправить только наш UI (DESIGN-204)
     action_token = secrets.token_hex(16)
+
+    def _structured(
+        status: int, code: str, detail: str, current: dict[str, Any] | None = None
+    ) -> JSONResponse:
+        """The spec §4.2 structured error shape — `{code, detail, current}` —
+        shared by every route that answers something other than its
+        `response_model` on failure. Introduced here for `/api/launchpad`;
+        Task 4 reuses it as-is."""
+        return JSONResponse(
+            status_code=status,
+            content={"code": code, "detail": detail, "current": current},
+        )
+
+    _RECENT_LIMIT_DEFAULT = 20
+    _RECENT_LIMIT_MAX = 100
+
+    @app.get("/api/launchpad", response_model=LaunchpadSnapshot)
+    def launchpad(
+        cursor: str | None = Query(default=None),
+        recent_limit: str | None = Query(default=None),
+    ) -> LaunchpadSnapshot | JSONResponse:
+        """One internally-consistent read of the whole fleet (spec §4.1,
+        §4.2). `recent_limit` is parsed by hand — not `Query(ge=1, le=100)`
+        — so an out-of-range or non-integer value gets OUR structured 422,
+        not FastAPI's default validation-error body."""
+        limit = _RECENT_LIMIT_DEFAULT
+        if recent_limit is not None:
+            try:
+                limit = int(recent_limit)
+            except ValueError:
+                return _structured(
+                    422,
+                    "invalid_request",
+                    f"recent_limit must be an integer, got {recent_limit!r}",
+                )
+        if not (1 <= limit <= _RECENT_LIMIT_MAX):
+            return _structured(
+                422,
+                "invalid_request",
+                f"recent_limit must be between 1 and {_RECENT_LIMIT_MAX}, got {limit}",
+            )
+        try:
+            return assemble_snapshot(runs, recent_limit=limit, cursor=cursor)
+        except ValidationError:
+            # `ValidationError` is a `ValueError` SUBCLASS — without this
+            # clause ahead of the one below, a server-side model bug
+            # (bad data reaching a pydantic model somewhere inside the
+            # assembler) would be caught by `except ValueError` and
+            # answered as a 422 blaming the client's `cursor`/
+            # `recent_limit`, when it is actually a 500. Only
+            # `_decode_cursor`'s own plain `ValueError` — an actually
+            # invalid cursor — belongs in the branch below; a
+            # `ValidationError` must propagate.
+            raise
+        except ValueError as err:
+            return _structured(422, "invalid_request", str(err))
+        except ControlPlaneOff as err:
+            return _structured(409, "control_plane_off", str(err))
 
     @app.get("/api/overview", response_model=OverviewResponse)
     def overview() -> OverviewResponse:
@@ -733,18 +794,56 @@ def create_app(
                     return found
         return None
 
-    @app.post("/api/runs/submit", response_model=LaunchReceipt)
-    def submit_run(
-        request: RunRequest,
-        x_action_token: str | None = Header(default=None),
-    ) -> LaunchReceipt:
-        """Explicit human click: start one Mode-1 run (spec §5.3).
+    #: Every field the pre-PR-C `RunRequest` body carried — a caller still
+    #: sending the legacy shape gets a clear `legacy_body` 400 naming
+    #: exactly which fields it used, not a confusing `SubmitV2` 422 about
+    #: fields it never meant to send at all (spec §4.2's migration rule).
+    _LEGACY_SUBMIT_KEYS = frozenset(
+        {"revision", "tasks", "repository", "spec_ref", "plan_ref"}
+    )
 
-        Every outcome is a receipt, including a refusal: `accepted` is
-        three-valued and `null` (launch_unknown) is not an error.
+    @app.post("/api/runs/submit", response_model=LaunchReceipt)
+    async def submit_run(
+        request: Request,
+        x_action_token: str | None = Header(default=None),
+    ) -> LaunchReceipt | JSONResponse:
+        """Explicit human click: start one Mode-1 run (spec §4.2, §5.3).
+
+        v2 only: the operator names WHAT to run and WHAT THEY SAW, and
+        dispatcher recovers the launch-time fields from canon itself
+        (`RunController.submit_v2`). The body is read as raw JSON once —
+        a legacy v1 field among it is refused by name (400 `legacy_body`)
+        before `SubmitV2`'s own validation ever runs, so a caller still on
+        the old shape gets a migration pointer, not a puzzling 422 about
+        fields it never sent.
         """
         _require_token(x_action_token)
-        return runs.submit(request)
+        try:
+            raw = await request.json()
+        except Exception as err:  # noqa: BLE001 — any parse failure is 422
+            return _structured(422, "invalid_request", f"invalid JSON body: {err}")
+        if not isinstance(raw, dict):
+            return _structured(422, "invalid_request", "body must be a JSON object")
+        legacy = _LEGACY_SUBMIT_KEYS & raw.keys()
+        if legacy:
+            pointer = ", ".join(sorted(legacy))
+            return _structured(
+                400,
+                "legacy_body",
+                f"legacy submit field(s) no longer accepted: {pointer}; "
+                "submit now takes {snapshot_id, repo_key, work_id, "
+                "request_id, seen_revision} (spec §4.2)",
+            )
+        try:
+            body = SubmitV2.model_validate(raw)
+        except ValidationError as err:
+            return _structured(422, "invalid_request", str(err))
+        try:
+            return runs.submit_v2(body)
+        except AdmissionRefused as err:
+            return _structured(err.status, err.code, err.detail, err.current)
+        except ControlPlaneOff as err:
+            return _structured(409, "control_plane_off", str(err))
 
     @app.get("/api/runs/{request_id}", response_model=RunView)
     def read_run(request_id: str) -> RunView:

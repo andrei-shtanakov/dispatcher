@@ -149,7 +149,7 @@ submit-time revalidation exists for.
   "active":             [{ "request_id": "rc-…|null", "repo_key": "…", "work_id": "…|null",
                            "state": "…", "run_id": "…|null", "run_status": "…|null",
                            "attention": true, "updated_at": "…" }],
-  "recent_completed":   [{ "request_id": "…", "repo_key": "…", "work_id": "…", "run_id": "…",
+  "recent_completed":   [{ "request_id": "…", "repo_key": "…", "work_id": "…", "run_id": "…|null",
                            "revision": "…", "outcome": "…", "updated_at": "…",
                            "logs_available": true }],
   "completed_total": 41,
@@ -198,7 +198,7 @@ distinguish:
 | 409 | admission codes | a well-formed request that lost re-validation: `{code, detail, current}` |
 | 200 | `LaunchReceipt` | an admitted launch; its `true/false/null` speak about the launch phase, exactly as in slice 0 |
 
-Admission codes: `revision_moved`, `lock_busy`, `run_in_flight`,
+Admission codes: `revision_moved`, `launch_busy`, `run_in_flight`,
 `run_state_unreadable`, `lock_malformed`, `lock_io_unreadable`,
 `item_closed`, `item_unregistered`, `dag_invalid`, `dag_duplicate`,
 `dag_dirty`, `request_id_conflict`.
@@ -244,7 +244,9 @@ An item is Ready iff, on the captured inputs:
 1. the plan item is open (`- [ ]`);
 2. it carries `@id` and `@dag`, grammar-valid, `@dag == dags/<id>.yaml`;
 3. no other ledger line — Shipped included — names the same DAG
-   (`dag_duplicate` otherwise, on both items);
+   (`dag_duplicate` otherwise, **on both open items**; a closed
+   co-claimant is named inside the open item's reason — a closed item
+   appears in no launchpad list);
 4. the file exists, is a regular file, not a symlink (`lstat`);
 5. it parses as a **supported DAG subset** (§6.1);
 6. the DAG's `repo:` resolves to the same `RepoKey` as the item's
@@ -266,8 +268,11 @@ grammar-valid DAG file referenced by no open item goes to `orphan_dags`
 
 dispatcher does not vendor maestro's schema. The structural predicate:
 parses as YAML; top-level `repo:` string and `tasks:` list present;
-`workstreams:` and `repo_url:` absent (those two are Mode-2 markers —
-`OrchestratorConfig` requires them, `ProjectConfig` lacks them). This is
+`workstreams:` present marks Mode-2 (`OrchestratorConfig` requires it,
+`ProjectConfig` lacks it). `repo_url:` is legal Mode-1 remote-URL repo
+naming — submit's shipped, test-pinned semantics (`_reconcile_repo`)
+accept it with precedence over `repo:`, which is a checkout path (ruling
+on PR #202/#204). This is
 deliberately named a **supported subset**, not "Mode-1 validation":
 authoritative validation stays with maestro at launch. Fleet-derived
 fixtures — a minimal Mode-2 config modeled on `proctor-a-*.yaml` and
@@ -295,7 +300,10 @@ Fail-closed classification:
 - proven terminal → does not block;
 - `running`, `suspended`, `interrupted` → blocks (`run_in_flight`);
 - run state absent or unreadable → blocks as **unknown**
-  (`run_state_unreadable`), never treated as finished;
+  (`run_state_unreadable`), never treated as finished — this holds even
+  when the run is linked (a `request_id` is known): a linked run with
+  unreadable state classifies `run_state_unreadable`, never
+  `run_in_flight`; the linkage is metadata carried in `detail`;
 - `launch_unknown` keeps blocking through the existing durable lock
   (`launch_busy`), unchanged from slice 0.
 

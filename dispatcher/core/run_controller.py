@@ -25,19 +25,38 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from dispatcher.core.admission import Blocker, RunFact, classify_repo
+from dispatcher.core.admission import (
+    DAG_DIRTY,
+    DAG_DUPLICATE,
+    DAG_INVALID,
+    GUARD_BUSY,
+    ITEM_CLOSED,
+    ITEM_UNREGISTERED,
+    LAUNCH_BUSY,
+    REVISION_MOVED,
+    Blocker,
+    CapturedInputs,
+    RepoAdmission,
+    RunFact,
+    classify_inventory,
+    classify_repo,
+)
 from dispatcher.core.collectors.maestro import classified_runs
 from dispatcher.core.discovery import DispatcherConfig
+from dispatcher.core.inventory import capture_inventory
 from dispatcher.core.models import OrchestrationRunInfo, ProjectSnapshot
 from dispatcher.core.run_identity import (
     IdentityError,
     RepoKey,
+    find_checkouts_by_identity,
     identity_from_checkout,
     safe_path_parts,
 )
 from dispatcher.core.run_request import (
     RunRejectedError,
     RunRequest,
+    SubmitV2,
+    ValidatedRequest,
     validate_request,
 )
 from dispatcher.core.run_store import (
@@ -71,9 +90,39 @@ _OPERATOR_ENDINGS = frozenset({"cancelled", "superseded"})
 #: silently kill every other run the scheduler is managing.
 _VERBS = frozenset({"status", "retry", "approve", "run-end"})
 
+#: `_classify_open_item`'s own reason codes (spec §5.1) — a `blocked`
+#: item's `reason_code` OUTSIDE this set is not a DAG-level problem at
+#: all: it is the repo's own blocker code, baked into an otherwise-ready
+#: item by `_classify_open_item`'s last check (`admission.py`). submit_v2
+#: must not treat that borrowed code/reason as this item's OWN decision —
+#: it falls through to the repo-blockers check instead (row e), which
+#: reports the full blocker list, not one item's paraphrase of it.
+_DAG_ITEM_REASON_CODES = frozenset({DAG_INVALID, DAG_DUPLICATE, DAG_DIRTY})
+
 
 class ControlPlaneOff(Exception):
     """`run_state_dir` or `maestro_cli` is unset; there is no control plane."""
+
+
+class AdmissionRefused(Exception):
+    """`submit_v2`'s structured non-receipt outcome (spec §4.2).
+
+    Every refusal `submit_v2` can produce — malformed input, a replayed
+    conflict, an admission rejection, an environment fact like a missing
+    checkout — is raised as ONE of these, carrying exactly what the route
+    needs to render spec §4.2's `{code, detail, current}` shape. `status`
+    is the HTTP status the route answers with; `code`/`detail`/`current`
+    are the structured body (`app.py`'s `_structured`).
+    """
+
+    def __init__(
+        self, status: int, code: str, detail: str, current: dict | None = None
+    ) -> None:
+        super().__init__(f"{code}: {detail}")
+        self.status = status
+        self.code = code
+        self.detail = detail
+        self.current = current
 
 
 class LaunchReceipt(BaseModel):
@@ -103,6 +152,293 @@ def _key_from_record(record: "LaunchRecord") -> RepoKey:
     if parts[0] == "_local":
         return RepoKey(host="", owner="", repo=parts[1], local=True)
     return RepoKey(host=parts[0], owner=parts[1], repo=parts[2])
+
+
+def _repo_key_from_text(text: str) -> RepoKey | None:
+    """Parse `SubmitV2.repo_key`'s canonical text into a `RepoKey`, or
+    `None` if it is not exactly that shape — untrusted client text, unlike
+    `_key_from_record`'s trusted stored form, so every segment is checked
+    (`safe_path_parts`, which refuses only `''`/`'.'`/`'..'` and any
+    segment containing `/` or `\\` — a path-traversal guard, NOT a
+    charset restriction; it does not itself reject spaces or other odd
+    bytes) before anything downstream ever sees it, and the text must
+    round-trip through `RepoKey.as_text()` exactly: `fingerprint_of`
+    takes this text verbatim (`run_store.py:91`), so a spelling
+    `safe_path_parts` would accept but `as_text()` would not reproduce
+    must not silently pass.
+    """
+    parts = text.split("/")
+    if len(parts) == 2 and parts[0] == "_local":
+        key = RepoKey(host="", owner="", repo=parts[1], local=True)
+    elif len(parts) == 3:
+        key = RepoKey(host=parts[0], owner=parts[1], repo=parts[2])
+    else:
+        return None
+    try:
+        safe_path_parts(key)
+    except IdentityError:
+        return None
+    return key if key.as_text() == text else None
+
+
+def read_lock_state(
+    store: RunStore, key: RepoKey, request_id: str | None = None
+) -> tuple[LockState, str | None]:
+    """The lock's current state, or the IO error reading it — captured
+    VALUES, exactly what `classify_repo`'s pure contract takes as its
+    first two arguments (spec §5, §7); it never touches the filesystem
+    itself.
+
+    A lock already held by THIS SAME `request_id` is this attempt's
+    own prior partial write — e.g. a crash between `_reserve_locked`
+    and `mark_launching` left a `reserved` record whose lock is still
+    standing — not a competing attempt. Reported as free (`None`) so a
+    legitimate retry of a still-`reserved` record is not blocked by
+    its own lock (spec §5.2's idempotent-retry contract, unchanged by
+    this gate). `request_id=None` — the launchpad assembler's case,
+    where no attempt of its own is in flight — never matches a held
+    lock's own id, so any standing lock reads as busy.
+    """
+    try:
+        state = store.read_lock(key)
+    except RunStoreError as err:
+        return None, str(err)
+    if isinstance(state, LockInfo) and state.request_id == request_id:
+        return None, None
+    return state, None
+
+
+def capture_run_facts(
+    store: RunStore,
+    key: RepoKey,
+    runs_root: Path,
+    home: Path,
+    *,
+    records: list[LaunchRecord],
+    list_unreadable: list[str],
+    classified: list[tuple[OrchestrationRunInfo, Path]],
+    scratch_warnings: list[str],
+) -> tuple[tuple[RunFact, ...], tuple[str, ...]]:
+    """Every run maestro currently classifies for `key`, joined to its
+    `request_id` via `RunStore.list()` — the same classifier `view()`
+    uses (spec §3.2), so a request's status and the dashboard's can
+    never disagree.
+
+    A run whose `state.db` failed to read (`OrchestrationRunInfo`
+    status `"unreadable"`) is ALWAYS escalated into `runs_unreadable`,
+    linked to a `request_id` in this store or not (owner override on
+    #200's review): linkage does not make a broken `state.db` readable
+    — `RUN_IN_FLIGHT` promises a KNOWN non-terminal state, and here the
+    reading itself must be fixed, not assumed. The `request_id`, when
+    there is one, travels only as metadata in the detail string; the
+    code stays `RUN_STATE_UNREADABLE`. `classify_repo` surfaces it as
+    its own blocker rather than folding silently into "some run is
+    busy" (spec §7's unreadable split, mirrored from
+    `RunStore.read_lock`).
+
+    `classified_runs` only walks directories that currently EXIST —
+    it can never itself report a run that vanished. Spec §7's vanished
+    predicate runs the other way, from a non-terminal `LaunchRecord`
+    outward: after the disk-backed pass above, every non-terminal
+    record naming a `run_id` `classified_runs` never saw at all is
+    checked directly against the run root. Absent → `run_dir_exists`
+    `RunFact` (`classify_repo`'s `RUN_VANISHED` arm). A directory that
+    DOES exist there but carries no `state.db` (most likely
+    mid-materialization, the db not written yet, or a launch that died
+    between mkdir and the db write) is a real gap short of "vanished" —
+    it stays a non-terminal `RunFact` (`status="missing-state"`) so
+    `classify_repo`'s `RUN_IN_FLIGHT` arm fires on it (fail-closed:
+    dispatcher's own record still says this run is non-terminal, so it
+    must still block, spec's Global Constraint). A stat failure while
+    checking is unreadable, never vanished (spec §7's unreadable
+    split, same rule as everywhere else this module applies it).
+
+    `store` is not read here — `records`/`list_unreadable` and
+    `classified`/`scratch_warnings` are ONE capture generation's worth
+    of global reads (`RunStore.list_with_mtime()` and one
+    `classified_runs` walk), hoisted to parameters so the launchpad
+    assembler (PR-C) can thread the SAME pair into every repo instead
+    of re-reading the store and re-walking maestro's runs once per
+    repo (spec §4.1's "every source read once" made structural).
+    `submit`'s own delegate (`RunController._capture_run_facts`)
+    performs both reads fresh, exactly as before extraction.
+    """
+    by_run_id = {r.run_id: r.request_id for r in records if r.run_id is not None}
+    runs: list[RunFact] = []
+    unreadable: list[str] = []
+    seen_run_ids: set[str] = set()
+    for info, _ in classified:
+        if info.repo_key != key.as_text() or info.run_id is None:
+            continue
+        seen_run_ids.add(info.run_id)
+        request_id = by_run_id.get(info.run_id)
+        if info.status == "unreadable":
+            # Linkage to a request_id does not make a broken state.db
+            # readable (review on #200): run_in_flight promises a
+            # KNOWN non-terminal state; here the reading itself must
+            # be fixed. The linkage travels as metadata in the
+            # detail — the code stays run_state_unreadable.
+            suffix = f" (request {request_id})" if request_id else ""
+            unreadable.append(f"run {info.run_id}{suffix}: state unreadable")
+            continue
+        runs.append(
+            RunFact(
+                run_id=info.run_id,
+                status=info.status,
+                request_id=request_id,
+                run_dir_exists=True,
+            )
+        )
+    # Enumeration-level failures (an unlistable `runs/` or `projects/`
+    # dir, `dispatcher/core/collectors/maestro.py:239`) are not tied to
+    # any single run_id and never produced a `RunFact` above. Filtered
+    # to THIS RepoKey: fail-closed is per-repo, so only a failure that
+    # could have hidden this repo's runs blocks it — its own subtree,
+    # or an ancestor on the path to it (projects/, host, owner). A
+    # neighbour repo's broken subtree is that repo's blocker, not a
+    # fleet-wide outage. A warning whose path cannot be matched at all
+    # stays blocking (unknown scope = fail-closed).
+    project_dir = runs_root.parent
+    projects_root = home / "projects"
+    lineage = [project_dir]
+    for parent in project_dir.parents:
+        lineage.append(parent)
+        if parent == projects_root:
+            break
+    relevant_markers = [f"cannot list {p}:" for p in lineage]
+    relevant_markers.append(f"cannot list {project_dir}/")
+
+    def _concerns_this_repo(warning: str) -> bool:
+        if "cannot list " not in warning:
+            return True  # unrecognized shape — keep, fail-closed
+        if any(marker in warning for marker in relevant_markers):
+            return True
+        return projects_root.as_posix() not in warning
+
+    unreadable.extend(
+        w
+        for w in scratch_warnings
+        if w.startswith("runs enumeration:") and _concerns_this_repo(w)
+    )
+    unreadable.extend(list_unreadable)
+    for record in records:
+        if (
+            record.repo_key != key.as_text()
+            or record.run_id is None
+            or record.state == "terminal"
+            or record.run_id in seen_run_ids
+        ):
+            continue
+        try:
+            run_dir_exists = _present_at(runs_root / record.run_id)
+        except OSError:
+            unreadable.append(f"run {record.run_id}: cannot stat run directory")
+            continue
+        if run_dir_exists:
+            # The directory exists but `classified_runs` never saw it
+            # (no `state.db` yet — died, or lagging between mkdir and
+            # the db write). Still non-terminal by dispatcher's own
+            # record, so it must stay represented as RUN_IN_FLIGHT,
+            # never fall through unrepresented (fail-open).
+            runs.append(
+                RunFact(
+                    run_id=record.run_id,
+                    status="missing-state",
+                    request_id=record.request_id,
+                    run_dir_exists=True,
+                )
+            )
+            continue
+        runs.append(
+            RunFact(
+                run_id=record.run_id,
+                status="missing",
+                request_id=record.request_id,
+                run_dir_exists=False,
+            )
+        )
+    # Third source: the repo's runs/ directory itself. A run dir that
+    # never got a state.db AND has no LaunchRecord (a foreign maestro
+    # process, or a launch that died between mkdir and any bookkeeping)
+    # is invisible to both passes above — the classifier skips no-db
+    # dirs, the record pass walks records. An unexplained entry is a
+    # fail-closed blocker, not an empty repo; entry type is deliberately
+    # ignored (a stray file or symlink where a run dir belongs is
+    # unexplained state, same rule).
+    represented = seen_run_ids | {fact.run_id for fact in runs}
+    try:
+        with os.scandir(runs_root) as entries:
+            stray = sorted(e.name for e in entries)
+    except FileNotFoundError:
+        stray = []
+    except OSError as err:
+        unreadable.append(f"runs directory unlistable: {err}")
+        stray = []
+    for name in stray:
+        if name in represented:
+            continue
+        runs.append(
+            RunFact(
+                run_id=name,
+                status="missing-state",
+                request_id=by_run_id.get(name),
+                run_dir_exists=True,
+            )
+        )
+    return tuple(runs), tuple(unreadable)
+
+
+def logs_dir(home: Path, record: "LaunchRecord") -> Path:
+    """`<run dir>/logs` for an adopted run.
+
+    The run id comes from the durable record, never from the URL: the
+    caller names a `request_id`, and which run that is, is dispatcher's
+    own recorded answer. That is the same reasoning as `_verb_cwd` —
+    a read must not be re-pointed at another run by its own request.
+    `home` is hoisted to a parameter (was `self._require_on()`'s third
+    element) so a caller outside the controller — the launchpad
+    assembler's `logs_available` check (PR-C) — can reuse this exact
+    resolution and symlink-refusal logic without a controller instance.
+    """
+    if record.run_id is None:
+        raise RunRejectedError(
+            f"{record.request_id} has no run to read logs from (state: {record.state})"
+        )
+    key = _key_from_record(record)
+    # The path must also BE where the record says it is (codex round 5).
+    # `01AAA/logs` as a symlink to `01BBB/logs` passed every check the
+    # callers made — task_log's containment resolved the link FIRST and
+    # then confirmed the file sat "inside" it — while the response still
+    # said `run_id="01AAA"`: one run's logs under another run's identity,
+    # the feature's central guarantee inverted. With `home` resolved as
+    # the trusted base, a fully-resolved path that still equals itself
+    # contains no symlink at ANY component — run dir, `logs/`, or a
+    # parent — so the whole class closes at once, not the one observed
+    # example. Refusal, not a warning: serving bytes whose owner is
+    # unknown is worse than serving nothing.
+    resolved = home.resolve().joinpath(
+        "projects", *safe_path_parts(key), "runs", record.run_id, "logs"
+    )
+    if resolved.resolve() != resolved:
+        raise RunRejectedError(
+            f"log path for run {record.run_id} is redirected by a symlink "
+            f"— refusing to serve another run's files under this run's "
+            f"identity"
+        )
+    # A durable run_id proves the run EXISTED, not that it still does
+    # (codex round 6, major): `view()` maps a vanished run directory to
+    # `run=None`, and /logs answering 200 for the same request would
+    # have the two surfaces disagree about whether the run exists. The
+    # distinction that matters: the RUN directory gone is absence and
+    # refuses; `logs/` or `events.jsonl` not written yet is an ordinary
+    # young run and stays a 200 with an empty timeline.
+    if not resolved.parent.is_dir():
+        raise RunRejectedError(
+            f"run {record.run_id} is recorded for {record.request_id} "
+            f"but its directory is gone — the run is absent, which is "
+            f"not the same as a run that has not logged yet"
+        )
+    return resolved
 
 
 def _parse_event(line: str) -> "RunLogEvent":
@@ -318,7 +654,13 @@ class RunController:
     # -- submit -------------------------------------------------------------
 
     def submit(self, request: RunRequest) -> LaunchReceipt:
-        """Start one run; return what is known, never more (spec §5.3)."""
+        """Start one run; return what is known, never more (spec §5.3).
+
+        The v1 engine. No route serves it any more — `submit_v2` is the
+        production launch path (PR-C, spec §4.2) — so this stays wired
+        only to the controller's own test suite and as internal reference
+        for the shape `submit_v2` recovers canon into.
+        """
         try:
             self._require_on()
         except ControlPlaneOff as err:
@@ -326,7 +668,13 @@ class RunController:
 
         store = self._store()
         try:
-            existing = store.get(request.request_id)
+            result = self._replay_existing(
+                store,
+                request.request_id,
+                raw_repository=request.repository,
+                work_id=request.work_id,
+                revision=request.revision,
+            )
         except RunStoreError as err:
             # `RunRequest.request_id` is pydantic-constrained to a safe
             # charset (spec §4), but this is the second, independent layer:
@@ -337,65 +685,12 @@ class RunController:
             # UUID-shaped. Nothing has been reserved or launched yet, so
             # "no run exists" is a fact dispatcher can safely claim.
             return self._refuse(request.request_id, f"cannot use request_id: {err}")
-
-        if existing is not None and existing.state != "reserved":
-            # Spec §8.2 binds EVERY replay, not only admission_rejected
-            # ones: only the SAME attempt may get its receipt back. This
-            # branch returns BEFORE `validate_request`/`reserve` run, so
-            # it must check identity itself — `reserve`'s own check never
-            # sees a repeat whose prior attempt already left "reserved".
-            # Raw repository first: the fingerprint's repo dimension is
-            # the CANONICAL key taken from the stored record (no
-            # resolution has run), so a changed `repository` would slip
-            # through it. Empty stored values = a record from before the
-            # fields existed: replayed as before (indeterminate identity).
-            if existing.repository and request.repository != existing.repository:
-                return self._refuse(
-                    request.request_id,
-                    "request_id_conflict: the repeat names a different "
-                    f"repository than the recorded attempt "
-                    f"({existing.repository!r})",
-                )
-            stored_fp = existing.fingerprint or (
-                fingerprint_of(existing.repo_key, existing.work_id, existing.revision)
-                if (existing.work_id or existing.revision)
-                else ""
-            )
-            if stored_fp and stored_fp != fingerprint_of(
-                existing.repo_key, request.work_id, request.revision
-            ):
-                return self._refuse(
-                    request.request_id,
-                    f"request_id_conflict: {request.request_id} was "
-                    "already used for a different attempt",
-                )
-            if existing.response_class == "admission_rejected":
-                # Reproducible, zero re-classification: the ORIGINAL
-                # decision replays verbatim even if the repo's live
-                # state has since changed enough that a fresh
-                # classification could pass (spec §8.2, §10).
-                return self._refuse(
-                    request.request_id,
-                    f"{existing.admission_code}: {existing.admission_detail}",
-                )
-            # Idempotency: a repeated request_id continues or returns the
-            # existing record and never starts a second process (spec §5.2).
-            reason = existing.reason
-            if reason is None and existing.state == "launching":
-                # `mark_launching` sets no `reason` (only `mark_unknown`
-                # does), so this was the one receipt shape that told the
-                # caller nothing at all: accepted=null AND reason=null.
-                reason = (
-                    f"{request.request_id} is already launching; "
-                    "resubmission does not start a second process — poll "
-                    "this request_id again"
-                )
-            return LaunchReceipt(
-                request_id=request.request_id,
-                run_id=existing.run_id,
-                accepted=_accepted_for(existing),
-                reason=reason,
-            )
+        if isinstance(result, AdmissionRefused):
+            # v1's wire shape is one string, `f"{code}: {detail}"` — bit-
+            # identical to what this branch always rendered.
+            return self._refuse(request.request_id, f"{result.code}: {result.detail}")
+        if isinstance(result, LaunchReceipt):
+            return result
 
         try:
             validated = validate_request(request, self._config)
@@ -441,14 +736,8 @@ class RunController:
 
         try:
             with store.guard(validated.key):
-                lock_state, lock_err = self._read_lock_state(
-                    store, validated.key, request.request_id
-                )
-                run_facts, runs_unreadable = self._capture_run_facts(
-                    store, validated.key
-                )
-                verdict = classify_repo(
-                    lock_state, lock_err, run_facts, runs_unreadable
+                verdict = self._repo_admission(
+                    store, validated.key, request_id=request.request_id
                 )
                 if verdict.admission == "blocked":
                     blocker = verdict.blockers[0]
@@ -492,7 +781,7 @@ class RunController:
                         current={"blockers": [asdict(b) for b in verdict.blockers]},
                     )
                     return self._refuse(request.request_id, f"{blocker.code}: {detail}")
-                _reserve()
+                record = _reserve()
         except GuardBusyError as err:
             return self._refuse(request.request_id, f"guard_busy: {err}")
         except FingerprintMismatch as err:
@@ -506,223 +795,582 @@ class RunController:
             # one of four that had fallen behind it.
             return self._refuse(request.request_id, f"cannot use request_id: {err}")
 
-        return self._launch(
-            store, request, validated.checkout, validated.key, runs, catalog
+        return self._spawn_reserved(store, record, validated, catalog, runs)
+
+    def _replay_existing(
+        self,
+        store: RunStore,
+        request_id: str,
+        *,
+        raw_repository: str | None,
+        work_id: str,
+        revision: str,
+        repo_key: str | None = None,
+    ) -> LaunchReceipt | AdmissionRefused | None:
+        """The §8.2 branch: fingerprint identity for EVERY existing state
+        (reserved included — checked here, before any workspace
+        resolution), `admission_rejected` → the PERSISTED structured
+        refusal as an `AdmissionRefused` VALUE (v1 renders it into
+        today's receipt string; v2 raises it verbatim), receipt states →
+        the `LaunchReceipt` replay. `None` = no record, or a `reserved`
+        record whose identity matches — proceed.
+
+        Identity dimensions differ by caller and MUST NOT be conflated:
+        v1 passes `raw_repository=request.repository` and the
+        raw-vs-stored comparison runs as today. v2 has no raw repository
+        field — it passes `raw_repository=None` and that comparison is
+        skipped for it; identity is then carried entirely by the
+        fingerprint, whose repo dimension v2 supplies directly as
+        `repo_key` (the CANONICAL text `fingerprint_of` takes verbatim,
+        `run_store.py:91`) — no parsing needed. v1 leaves `repo_key`
+        unset and the candidate side of the fingerprint falls back to the
+        STORED record's own `repo_key`, exactly as today (no resolution
+        has run yet at this point in v1's flow either).
+        """
+        existing = store.get(request_id)
+        if existing is None:
+            return None
+        if (
+            raw_repository is not None
+            and existing.repository
+            and raw_repository != existing.repository
+        ):
+            return AdmissionRefused(
+                409,
+                "request_id_conflict",
+                "the repeat names a different repository than the "
+                f"recorded attempt ({existing.repository!r})",
+            )
+        candidate_key = existing.repo_key if repo_key is None else repo_key
+        stored_fp = existing.fingerprint or (
+            fingerprint_of(existing.repo_key, existing.work_id, existing.revision)
+            if (existing.work_id or existing.revision)
+            else ""
         )
+        if stored_fp and stored_fp != fingerprint_of(candidate_key, work_id, revision):
+            return AdmissionRefused(
+                409,
+                "request_id_conflict",
+                f"{request_id} was already used for a different attempt",
+            )
+        if existing.state == "reserved":
+            # Nothing to replay yet — the caller resolves/reserves again
+            # (idempotently, by fingerprint) and drives the launch tail.
+            return None
+        if existing.response_class == "admission_rejected":
+            # Reproducible, zero re-classification: the ORIGINAL decision
+            # replays verbatim even if the repo's live state has since
+            # changed enough that a fresh classification could pass
+            # (spec §8.2, §10).
+            return AdmissionRefused(
+                409,
+                existing.admission_code or "admission_rejected",
+                existing.admission_detail or "",
+                existing.admission_current,
+            )
+        # Idempotency: a repeated request_id continues or returns the
+        # existing record and never starts a second process (spec §5.2).
+        reason = existing.reason
+        if reason is None and existing.state == "launching":
+            # `mark_launching` sets no `reason` (only `mark_unknown`
+            # does), so this was the one receipt shape that told the
+            # caller nothing at all: accepted=null AND reason=null.
+            reason = (
+                f"{request_id} is already launching; resubmission does "
+                "not start a second process — poll this request_id again"
+            )
+        return LaunchReceipt(
+            request_id=request_id,
+            run_id=existing.run_id,
+            accepted=_accepted_for(existing),
+            reason=reason,
+        )
+
+    def _repo_admission(
+        self, store: RunStore, key: RepoKey, *, request_id: str | None = None
+    ) -> RepoAdmission:
+        """`read_lock_state` + `capture_run_facts` + `classify_repo` over
+        one captured set — called INSIDE the caller's guard section. v1
+        and v2 do NOT share one guard-block function (their in-guard work
+        differs: v2 adds inventory capture and the item gate); they share
+        this verdict primitive, the capture functions and the classifier
+        — which is where spec §5's equivalence actually lives.
+        """
+        lock_state, lock_err = read_lock_state(store, key, request_id)
+        run_facts, runs_unreadable = self._capture_run_facts(store, key)
+        return classify_repo(lock_state, lock_err, run_facts, runs_unreadable)
+
+    def _resolve_v2_checkout(self, repo_key: RepoKey) -> Path:
+        """The workspace checkout matching `repo_key` by IDENTITY, not by
+        directory name (review fix wave C, C1).
+
+        A checkout's workspace directory name need not match its origin
+        remote's `repo` segment (real fleet case: a directory named
+        `open-prose/` cloned from `.../libretto.git`) — the assembler
+        (`launchpad.py::assemble_snapshot`) derives every row's `repo_key`
+        from each checkout's ORIGIN REMOTE, so resolving here by
+        `workspace / repo_key.repo` alone could show a repo as Ready while
+        submit could never find its checkout: a 409 the UI cannot recover
+        from by refetching, since the row stays Ready forever.
+
+        `workspace / repo_key.repo` is tried FIRST (the common case, no
+        scan needed); only when that directory is absent or names a
+        DIFFERENT repository does this fall back to
+        `find_checkout_by_identity`, which scans the SAME enumeration the
+        launchpad assembler uses (`list_workspace_checkouts`) — so the two
+        adapters can never resolve one `repo_key` to two different
+        checkouts.
+
+        Raises `AdmissionRefused` directly rather than returning `None`:
+        409 `repo_unresolved` when nothing in the workspace names this
+        `repo_key` at all, 422 `identity_mismatch` when the fast-path
+        directory exists but names something else AND no other checkout
+        in the workspace matches either.
+        """
+        workspace = next((r for r in self._config.roots if r.is_dir()), None)
+        if workspace is None:
+            raise AdmissionRefused(
+                409,
+                "repo_unresolved",
+                f"no checkout for {repo_key.as_text()!r} in the workspace",
+            )
+        fast_path = workspace / repo_key.repo
+        fast_path_identity: RepoKey | None = None
+        # Same no-follow rule as `list_workspace_checkouts`: a symlinked
+        # workspace entry must not resolve a launch OUTSIDE the configured
+        # workspace (review on #209).
+        if not fast_path.is_symlink() and (fast_path / ".git").exists():
+            try:
+                fast_path_identity = identity_from_checkout(fast_path)
+            except IdentityError:
+                fast_path_identity = None
+            if (
+                fast_path_identity is not None
+                and fast_path_identity.as_text() == repo_key.as_text()
+            ):
+                # The fast path MATCHES — but it must be the ONLY match:
+                # with a second checkout of the same identity elsewhere in
+                # the workspace, first-match resolution could act on the
+                # copy the operator was NOT looking at (a different HEAD →
+                # a wrongly PERSISTED revision_moved). Fail closed.
+                matches, scan_notes = find_checkouts_by_identity(workspace, repo_key)
+                if scan_notes:
+                    # A failed/partial scan cannot PROVE the fast path is
+                    # the only checkout of this identity — unknown is a
+                    # refusal, never a silent win (publish finding, #209).
+                    raise AdmissionRefused(
+                        409,
+                        "repo_unresolved",
+                        "workspace scan incomplete — duplicate-checkout "
+                        "uniqueness unprovable: " + "; ".join(scan_notes),
+                    )
+                if len(matches) > 1:
+                    raise AdmissionRefused(
+                        409,
+                        "repo_unresolved",
+                        f"{len(matches)} checkouts of {repo_key.as_text()!r} "
+                        "in the workspace ("
+                        + ", ".join(m.name for m in matches)
+                        + ") — ambiguous; remove or move the duplicates",
+                    )
+                return fast_path.resolve()
+
+        matches, scan_notes = find_checkouts_by_identity(workspace, repo_key)
+        if scan_notes:
+            raise AdmissionRefused(
+                409,
+                "repo_unresolved",
+                "workspace scan incomplete — checkout resolution "
+                "unprovable: " + "; ".join(scan_notes),
+            )
+        if len(matches) > 1:
+            raise AdmissionRefused(
+                409,
+                "repo_unresolved",
+                f"{len(matches)} checkouts of {repo_key.as_text()!r} in the "
+                "workspace (" + ", ".join(m.name for m in matches) + ") — "
+                "ambiguous; remove or move the duplicates",
+            )
+        if matches:
+            return matches[0]
+
+        if fast_path_identity is not None:
+            raise AdmissionRefused(
+                422,
+                "identity_mismatch",
+                f"{fast_path} names {fast_path_identity.as_text()!r}, not "
+                f"the requested {repo_key.as_text()!r}",
+            )
+        raise AdmissionRefused(
+            409,
+            "repo_unresolved",
+            f"no checkout for {repo_key.as_text()!r} in the workspace",
+        )
+
+    def submit_v2(self, body: SubmitV2) -> LaunchReceipt:
+        """Start one run from the recovered-canon v2 body (spec §4.2, PR-C
+        Task 4). Every non-receipt outcome raises `AdmissionRefused`
+        rather than folding into a v1-style string — the route renders it
+        into the structured `{code, detail, current}` shape.
+        """
+        self._require_on()  # ControlPlaneOff propagates to the route
+        store = self._store()
+
+        repo_key = _repo_key_from_text(body.repo_key)
+        if repo_key is None:
+            raise AdmissionRefused(
+                422, "invalid_request", f"malformed repo_key: {body.repo_key!r}"
+            )
+
+        try:
+            result = self._replay_existing(
+                store,
+                body.request_id,
+                raw_repository=None,
+                work_id=body.work_id,
+                revision=body.seen_revision,
+                repo_key=repo_key.as_text(),
+            )
+        except RunStoreError as err:
+            raise AdmissionRefused(
+                422, "invalid_request", f"cannot use request_id: {err}"
+            ) from err
+        if isinstance(result, AdmissionRefused):
+            raise result
+        if isinstance(result, LaunchReceipt):
+            return result
+
+        try:
+            catalog = self._catalog_path()
+        except RunRejectedError as err:
+            raise AdmissionRefused(422, "invalid_request", str(err)) from err
+
+        # Resolves by IDENTITY, not by directory name (review fix wave C,
+        # C1) — raises `AdmissionRefused` itself on every failure shape,
+        # so a success here guarantees `checkout`'s origin remote IS
+        # `repo_key`: no separate re-verification needed.
+        checkout = self._resolve_v2_checkout(repo_key)
+        found_key = repo_key
+
+        runs = self.runs_dir(found_key)
+
+        def _persist_refusal(
+            *, tasks: str, code: str, detail: str, current: dict
+        ) -> None:
+            # A record for THIS request_id can already exist here: the
+            # only way this guard block runs at all for an existing
+            # record is `_replay_existing` returning `None` for a
+            # `reserved` record whose fingerprint already matched (a
+            # prior attempt got as far as reserving, then the workspace
+            # regressed before this repeat). `record_admission_rejection`
+            # alone would find that fingerprint-matching record and
+            # return it UNCHANGED — no rejection written, its lock still
+            # held (fix round 1: leaks the lock onto every other launch
+            # in this repo, and breaks §8.2 replay for this request_id).
+            # `mark_admission_rejected` terminalizes the EXISTING record
+            # and releases its lock — v1's own path for the identical
+            # shape (`_reserve()` succeeded, THEN the verdict blocked).
+            existing = store.get(body.request_id)
+            if existing is not None and existing.state != "terminal":
+                # …but ONLY a record of THIS attempt: two parallel submits
+                # can share a request_id across DIFFERENT repos, both pass
+                # replay before either record exists, and the loser's
+                # refusal would otherwise terminalize the winner's LIVE
+                # record and release the winner's lock (review on #209).
+                # A fingerprint mismatch is a request_id conflict — mutate
+                # nothing that belongs to another attempt.
+                stored_fp = existing.fingerprint or fingerprint_of(
+                    existing.repo_key, existing.work_id, existing.revision
+                )
+                candidate_fp = fingerprint_of(
+                    found_key.as_text(), body.work_id, body.seen_revision
+                )
+                if stored_fp != candidate_fp:
+                    raise AdmissionRefused(
+                        409,
+                        "request_id_conflict",
+                        f"{body.request_id} already belongs to a different "
+                        f"attempt ({existing.repo_key})",
+                    )
+                store.mark_admission_rejected(
+                    body.request_id, code=code, detail=detail, current=current
+                )
+                return
+            store.record_admission_rejection(
+                body.request_id,
+                found_key,
+                work_id=body.work_id,
+                revision=body.seen_revision,
+                tasks=tasks,
+                # The checkout's actual workspace DIRECTORY name, not
+                # `repo_key.repo` — they can differ (C1), and this field
+                # is a raw workspace-relative name, not an identity.
+                repository=checkout.name,
+                checkout=str(checkout),
+                snapshot_id=body.snapshot_id,
+                code=code,
+                detail=detail,
+                current=current,
+            )
+
+        try:
+            with store.guard(found_key):
+                # Authoritative replay re-check UNDER the guard: the
+                # pre-guard replay is only a fast path, and a concurrent
+                # submit of the same request_id can have created the
+                # record between the two (publish-run finding on #209).
+                # Without this, the repeat would re-classify — its own
+                # live run reads as a blocker, TERMINALIZING the live
+                # record — or double-spawn via _reserve_locked's
+                # matching-fingerprint return.
+                raced = self._replay_existing(
+                    store,
+                    body.request_id,
+                    raw_repository=None,
+                    work_id=body.work_id,
+                    revision=body.seen_revision,
+                    repo_key=found_key.as_text(),
+                )
+                if isinstance(raced, AdmissionRefused):
+                    raise raced
+                if raced is not None:
+                    return raced
+                if store.get(body.request_id) is not None:
+                    # A matching `reserved` record: the OTHER submit owns
+                    # the launch tail — never spawn a second process.
+                    return LaunchReceipt(
+                        request_id=body.request_id,
+                        run_id=None,
+                        accepted=None,
+                        reason=(
+                            f"{body.request_id} is already reserved by an "
+                            "in-flight attempt; resubmission does not start "
+                            "a second process — poll this request_id"
+                        ),
+                    )
+                try:
+                    inv = capture_inventory(checkout)
+                    lock_state, lock_err = read_lock_state(
+                        store, found_key, body.request_id
+                    )
+                    run_facts, runs_unreadable = self._capture_run_facts(
+                        store, found_key
+                    )
+                except OSError as err:
+                    # Environment, not a decision: never persisted.
+                    raise AdmissionRefused(
+                        409, "repo_unresolved", f"cannot capture inventory: {err}"
+                    ) from err
+                captured = CapturedInputs(
+                    inventory=inv,
+                    lock=lock_state,
+                    lock_error=lock_err,
+                    runs=run_facts,
+                    runs_unreadable=runs_unreadable,
+                )
+                decision = classify_inventory(captured)
+                if decision.unreadable is not None:
+                    raise AdmissionRefused(409, "repo_unresolved", decision.unreadable)
+
+                item = next(
+                    (i for i in decision.ready if i.work_id == body.work_id), None
+                )
+                blocked = next(
+                    (i for i in decision.blocked if i.work_id == body.work_id), None
+                )
+                unregistered = next(
+                    (
+                        i
+                        for i in decision.unregistered_items
+                        if i.work_id == body.work_id
+                    ),
+                    None,
+                )
+
+                if unregistered is not None:
+                    detail = unregistered.reason
+                    current = {"reason": detail}
+                    _persist_refusal(
+                        tasks="",
+                        code=ITEM_UNREGISTERED,
+                        detail=detail,
+                        current=current,
+                    )
+                    raise AdmissionRefused(409, ITEM_UNREGISTERED, detail, current)
+                if (
+                    blocked is not None
+                    and blocked.reason_code in _DAG_ITEM_REASON_CODES
+                ):
+                    # A genuine DAG-level problem — the item's OWN decision,
+                    # not a repo blocker `_classify_open_item` baked in
+                    # (that case falls through below, to row e).
+                    code = blocked.reason_code
+                    assert code is not None
+                    detail = blocked.reason
+                    current = {"reason": detail}
+                    _persist_refusal(
+                        tasks=blocked.dag_path or "",
+                        code=code,
+                        detail=detail,
+                        current=current,
+                    )
+                    raise AdmissionRefused(409, code, detail, current)
+                if item is None and blocked is None:
+                    closed = any(
+                        pi.item_id == body.work_id and not pi.open
+                        for pi in inv.plan_items
+                    )
+                    code = ITEM_CLOSED if closed else ITEM_UNREGISTERED
+                    detail = (
+                        f"{body.work_id} is closed"
+                        if closed
+                        else f"{body.work_id} is not a registered open item"
+                    )
+                    current = {"reason": detail}
+                    _persist_refusal(
+                        tasks="", code=code, detail=detail, current=current
+                    )
+                    raise AdmissionRefused(409, code, detail, current)
+
+                # `item` is genuinely ready, OR only "blocked" because
+                # `_classify_open_item` folded a REPO blocker into it —
+                # either way its `dag_path` is resolved, and the repo
+                # blockers check below (row e) is the sole authority on
+                # that repo-level reason, never this item's paraphrase.
+                resolved = item if item is not None else blocked
+                assert resolved is not None
+
+                # Only THEN the revision check — a nonexistent item can
+                # never be persisted as revision_moved (spec §5, row d).
+                if body.seen_revision != inv.head_revision:
+                    current = {"seen_revision": inv.head_revision}
+                    detail = (
+                        f"HEAD has moved to {inv.head_revision}; resubmit "
+                        "against the current revision"
+                    )
+                    _persist_refusal(
+                        tasks=resolved.dag_path or "",
+                        code=REVISION_MOVED,
+                        detail=detail,
+                        current=current,
+                    )
+                    raise AdmissionRefused(409, REVISION_MOVED, detail, current)
+
+                if decision.repo.blockers:
+                    blocker = decision.repo.blockers[0]
+                    detail = _blocker_detail(blocker)
+                    current = {"blockers": [asdict(b) for b in decision.repo.blockers]}
+                    _persist_refusal(
+                        tasks=resolved.dag_path or "",
+                        code=blocker.code,
+                        detail=detail,
+                        current=current,
+                    )
+                    raise AdmissionRefused(409, blocker.code, detail, current)
+
+                assert resolved.dag_path is not None  # ready items always resolve one
+                internal_request = RunRequest(
+                    request_id=body.request_id,
+                    work_id=body.work_id,
+                    # `checkout.name`, not `repo_key.repo`: `validate_request`
+                    # re-resolves this by directory name via its own
+                    # `_checkout()` (`run_request.py`), which knows nothing
+                    # about identity — passing the identity's `repo` segment
+                    # here would reopen C1 one call deeper whenever the
+                    # workspace directory name and the repo_key disagree.
+                    repository=checkout.name,
+                    revision=body.seen_revision,
+                    tasks=resolved.dag_path,
+                )
+                try:
+                    validated = validate_request(internal_request, self._config)
+                except RunRejectedError as err:
+                    raise AdmissionRefused(422, "invalid_request", str(err)) from err
+
+                record = store._reserve_locked(  # noqa: SLF001 — guarded caller
+                    body.request_id,
+                    found_key,
+                    known_runs=self._listing(runs),
+                    window_start=datetime.now(UTC).isoformat(),
+                    work_id=body.work_id,
+                    revision=body.seen_revision,
+                    tasks=resolved.dag_path,
+                    repository=checkout.name,
+                    spec_commit=validated.spec_commit,
+                    plan_commit=validated.plan_commit,
+                    checkout=str(validated.checkout),
+                    snapshot_id=body.snapshot_id,
+                )
+        except GuardBusyError as err:
+            raise AdmissionRefused(409, GUARD_BUSY, str(err)) from err
+        except FingerprintMismatch as err:
+            raise AdmissionRefused(409, "request_id_conflict", str(err)) from err
+        except LockBusyError as err:
+            raise AdmissionRefused(409, LAUNCH_BUSY, str(err)) from err
+        except (RunStoreError, OSError) as err:
+            raise AdmissionRefused(
+                422, "invalid_request", f"cannot use request_id: {err}"
+            ) from err
+
+        return self._spawn_reserved(store, record, validated, catalog, runs)
 
     @staticmethod
     def _read_lock_state(
         store: RunStore, key: RepoKey, request_id: str
     ) -> tuple[LockState, str | None]:
-        """The lock's current state, or the IO error reading it — captured
-        VALUES, exactly what `classify_repo`'s pure contract takes as its
-        first two arguments (spec §5, §7); it never touches the filesystem
-        itself.
-
-        A lock already held by THIS SAME `request_id` is this attempt's
-        own prior partial write — e.g. a crash between `_reserve_locked`
-        and `mark_launching` left a `reserved` record whose lock is still
-        standing — not a competing attempt. Reported as free (`None`) so a
-        legitimate retry of a still-`reserved` record is not blocked by
-        its own lock (spec §5.2's idempotent-retry contract, unchanged by
-        this gate).
-        """
-        try:
-            state = store.read_lock(key)
-        except RunStoreError as err:
-            return None, str(err)
-        if isinstance(state, LockInfo) and state.request_id == request_id:
-            return None, None
-        return state, None
+        """Thin delegate — see module-level `read_lock_state` for the body
+        and rationale. `submit`'s own attempt always names its `request_id`
+        so its own in-progress lock reads as free; the launchpad assembler
+        (PR-C) calls `read_lock_state` directly with no `request_id`."""
+        return read_lock_state(store, key, request_id)
 
     def _capture_run_facts(
         self, store: RunStore, key: RepoKey
     ) -> tuple[tuple[RunFact, ...], tuple[str, ...]]:
-        """Every run maestro currently classifies for `key`, joined to its
-        `request_id` via `RunStore.list()` — the same classifier `view()`
-        uses (spec §3.2), so a request's status and the dashboard's can
-        never disagree.
-
-        A run whose `state.db` failed to read (`OrchestrationRunInfo`
-        status `"unreadable"`) stays an ordinary non-terminal `RunFact`
-        when THIS store has a `request_id` on file for it: that is a
-        freshly materialized run of dispatcher's OWN launch whose db
-        content can transiently lag its directory's appearance, not
-        external corruption, so it stays inside the same fail-closed
-        RUN_IN_FLIGHT/RUN_VANISHED handling as any other non-terminal
-        status. An unreadable run this store cannot attribute to any
-        request is escalated instead, into `runs_unreadable`:
-        `classify_repo` cannot even name who is responsible for it, so it
-        surfaces as its own `RUN_STATE_UNREADABLE` blocker rather than
-        folding silently into "some run is busy" (spec §7's unreadable
-        split, mirrored from `RunStore.read_lock`).
-
-        `classified_runs` only walks directories that currently EXIST —
-        it can never itself report a run that vanished. Spec §7's vanished
-        predicate runs the other way, from a non-terminal `LaunchRecord`
-        outward: after the disk-backed pass above, every non-terminal
-        record naming a `run_id` `classified_runs` never saw at all is
-        checked directly against the run root. Absent → `run_dir_exists`
-        `RunFact` (`classify_repo`'s `RUN_VANISHED` arm). A directory that
-        DOES exist there but carries no `state.db` (most likely
-        mid-materialization, the db not written yet, or a launch that died
-        between mkdir and the db write) is a real gap short of "vanished" —
-        it stays a non-terminal `RunFact` (`status="missing-state"`) so
-        `classify_repo`'s `RUN_IN_FLIGHT` arm fires on it (fail-closed:
-        dispatcher's own record still says this run is non-terminal, so it
-        must still block, spec's Global Constraint). A stat failure while
-        checking is unreadable, never vanished (spec §7's unreadable
-        split, same rule as everywhere else this module applies it).
+        """Performs `submit`'s two global reads — `RunStore.list()` and one
+        `classified_runs` walk — then delegates to the module-level
+        `capture_run_facts` (see there for the classification rationale).
+        `submit` calls this once per admission attempt, so a fresh pair of
+        reads here is correct; the launchpad assembler (PR-C) instead reads
+        both ONCE per assembly and threads the SAME pair into every repo
+        via the module-level function directly, never through this method.
         """
         _, _, home = self._require_on()
         scratch = ProjectSnapshot(name="maestro", path="")
         records, list_unreadable = store.list()
-        by_run_id = {r.run_id: r.request_id for r in records if r.run_id is not None}
-        runs: list[RunFact] = []
-        unreadable: list[str] = []
-        seen_run_ids: set[str] = set()
-        for info, _ in classified_runs(home, scratch):
-            if info.repo_key != key.as_text() or info.run_id is None:
-                continue
-            seen_run_ids.add(info.run_id)
-            request_id = by_run_id.get(info.run_id)
-            if info.status == "unreadable":
-                # Linkage to a request_id does not make a broken state.db
-                # readable (review on #200): run_in_flight promises a
-                # KNOWN non-terminal state; here the reading itself must
-                # be fixed. The linkage travels as metadata in the
-                # detail — the code stays run_state_unreadable.
-                suffix = f" (request {request_id})" if request_id else ""
-                unreadable.append(f"run {info.run_id}{suffix}: state unreadable")
-                continue
-            runs.append(
-                RunFact(
-                    run_id=info.run_id,
-                    status=info.status,
-                    request_id=request_id,
-                    run_dir_exists=True,
-                )
-            )
-        # Enumeration-level failures (an unlistable `runs/` or `projects/`
-        # dir, `dispatcher/core/collectors/maestro.py:239`) are not tied to
-        # any single run_id and never produced a `RunFact` above. Filtered
-        # to THIS RepoKey: fail-closed is per-repo, so only a failure that
-        # could have hidden this repo's runs blocks it — its own subtree,
-        # or an ancestor on the path to it (projects/, host, owner). A
-        # neighbour repo's broken subtree is that repo's blocker, not a
-        # fleet-wide outage. A warning whose path cannot be matched at all
-        # stays blocking (unknown scope = fail-closed).
-        runs_root = self.runs_dir(key)
-        project_dir = runs_root.parent
-        projects_root = home / "projects"
-        lineage = [project_dir]
-        for parent in project_dir.parents:
-            lineage.append(parent)
-            if parent == projects_root:
-                break
-        relevant_markers = [f"cannot list {p}:" for p in lineage]
-        relevant_markers.append(f"cannot list {project_dir}/")
-
-        def _concerns_this_repo(warning: str) -> bool:
-            if "cannot list " not in warning:
-                return True  # unrecognized shape — keep, fail-closed
-            if any(marker in warning for marker in relevant_markers):
-                return True
-            return projects_root.as_posix() not in warning
-
-        unreadable.extend(
-            w
-            for w in scratch.warnings
-            if w.startswith("runs enumeration:") and _concerns_this_repo(w)
+        classified = classified_runs(home, scratch)
+        return capture_run_facts(
+            store,
+            key,
+            self.runs_dir(key),
+            home,
+            records=records,
+            list_unreadable=list_unreadable,
+            classified=classified,
+            scratch_warnings=scratch.warnings,
         )
-        unreadable.extend(list_unreadable)
-        for record in records:
-            if (
-                record.repo_key != key.as_text()
-                or record.run_id is None
-                or record.state == "terminal"
-                or record.run_id in seen_run_ids
-            ):
-                continue
-            try:
-                run_dir_exists = _present_at(runs_root / record.run_id)
-            except OSError:
-                unreadable.append(f"run {record.run_id}: cannot stat run directory")
-                continue
-            if run_dir_exists:
-                # The directory exists but `classified_runs` never saw it
-                # (no `state.db` yet — died, or lagging between mkdir and
-                # the db write). Still non-terminal by dispatcher's own
-                # record, so it must stay represented as RUN_IN_FLIGHT,
-                # never fall through unrepresented (fail-open).
-                runs.append(
-                    RunFact(
-                        run_id=record.run_id,
-                        status="missing-state",
-                        request_id=record.request_id,
-                        run_dir_exists=True,
-                    )
-                )
-                continue
-            runs.append(
-                RunFact(
-                    run_id=record.run_id,
-                    status="missing",
-                    request_id=record.request_id,
-                    run_dir_exists=False,
-                )
-            )
-        # Third source: the repo's runs/ directory itself. A run dir that
-        # never got a state.db AND has no LaunchRecord (a foreign maestro
-        # process, or a launch that died between mkdir and any bookkeeping)
-        # is invisible to both passes above — the classifier skips no-db
-        # dirs, the record pass walks records. An unexplained entry is a
-        # fail-closed blocker, not an empty repo; entry type is deliberately
-        # ignored (a stray file or symlink where a run dir belongs is
-        # unexplained state, same rule).
-        represented = seen_run_ids | {fact.run_id for fact in runs}
-        try:
-            with os.scandir(runs_root) as entries:
-                stray = sorted(e.name for e in entries)
-        except FileNotFoundError:
-            stray = []
-        except OSError as err:
-            unreadable.append(f"runs directory unlistable: {err}")
-            stray = []
-        for name in stray:
-            if name in represented:
-                continue
-            runs.append(
-                RunFact(
-                    run_id=name,
-                    status="missing-state",
-                    request_id=by_run_id.get(name),
-                    run_dir_exists=True,
-                )
-            )
-        return tuple(runs), tuple(unreadable)
 
-    def _launch(
+    def _spawn_reserved(
         self,
         store: RunStore,
-        request: RunRequest,
-        checkout: Path,
-        key: RepoKey,
-        runs: Path,
+        record: LaunchRecord,
+        validated: ValidatedRequest,
         catalog: Path,
+        runs: Path,
     ) -> LaunchReceipt:
+        """The launch tail: everything `submit`/`submit_v2` do AFTER their
+        own guard releases — spawn maestro, mark transitions, receipt.
+        `record` is the just-reserved `LaunchRecord` (`_reserve_locked`'s
+        own return, threaded straight through — no re-fetch, no
+        "disappeared between reserve and launch" race to guard against).
+        The receipt's three-valued `accepted` keeps its slice-0 meaning
+        for both callers: it speaks only about THIS launch phase.
+        """
+        request = validated.request
+        checkout = validated.checkout
+        key = validated.key
         state_dir, cli, home = self._require_on()
-        reserved = store.get(request.request_id)
-        if reserved is None:
-            # `reserve()` just wrote this record synchronously; its absence
-            # here is a store invariant violation, not an ordinary failure
-            # mode with a safe fallback, so this is raised rather than
-            # folded into a receipt.
-            raise RunStoreError(
-                f"launch record for {request.request_id} disappeared "
-                "between reserve() and _launch(): nothing to launch against"
-            )
-        before = set(reserved.known_runs)
+        before = set(record.known_runs)
         try:
             self._validate_maestro_cli(cli)
         except RunRejectedError as err:
@@ -1000,8 +1648,9 @@ class RunController:
         """Where this launch's maestro stderr is captured (I1).
 
         `request_id` reaching here has already passed
-        `RunRequest.request_id`'s pydantic charset constraint (`submit` is
-        the only caller of `_launch`), so it is safe to use as a filename.
+        `RunRequest.request_id`'s pydantic charset constraint (`submit` and
+        `submit_v2` are the only callers of `_spawn_reserved`), so it is
+        safe to use as a filename.
         """
         log_dir = state_dir / "launch-stderr"
         log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1206,54 +1855,11 @@ class RunController:
     _REASON_CAP = 1024
 
     def _logs_dir(self, record: LaunchRecord) -> Path:
-        """`<run dir>/logs` for an adopted run.
-
-        The run id comes from the durable record, never from the URL: the
-        caller names a `request_id`, and which run that is, is dispatcher's
-        own recorded answer. That is the same reasoning as `_verb_cwd` —
-        a read must not be re-pointed at another run by its own request.
-        """
-        if record.run_id is None:
-            raise RunRejectedError(
-                f"{record.request_id} has no run to read logs from "
-                f"(state: {record.state})"
-            )
+        """Thin delegate — see module-level `logs_dir` for the body and
+        rationale. The launchpad assembler's `logs_available` check (PR-C)
+        calls `logs_dir` directly with an already-resolved `home`."""
         _, _, home = self._require_on()
-        key = _key_from_record(record)
-        # The path must also BE where the record says it is (codex round 5).
-        # `01AAA/logs` as a symlink to `01BBB/logs` passed every check the
-        # callers made — task_log's containment resolved the link FIRST and
-        # then confirmed the file sat "inside" it — while the response still
-        # said `run_id="01AAA"`: one run's logs under another run's identity,
-        # the feature's central guarantee inverted. With `home` resolved as
-        # the trusted base, a fully-resolved path that still equals itself
-        # contains no symlink at ANY component — run dir, `logs/`, or a
-        # parent — so the whole class closes at once, not the one observed
-        # example. Refusal, not a warning: serving bytes whose owner is
-        # unknown is worse than serving nothing.
-        logs_dir = home.resolve().joinpath(
-            "projects", *safe_path_parts(key), "runs", record.run_id, "logs"
-        )
-        if logs_dir.resolve() != logs_dir:
-            raise RunRejectedError(
-                f"log path for run {record.run_id} is redirected by a symlink "
-                f"— refusing to serve another run's files under this run's "
-                f"identity"
-            )
-        # A durable run_id proves the run EXISTED, not that it still does
-        # (codex round 6, major): `view()` maps a vanished run directory to
-        # `run=None`, and /logs answering 200 for the same request would
-        # have the two surfaces disagree about whether the run exists. The
-        # distinction that matters: the RUN directory gone is absence and
-        # refuses; `logs/` or `events.jsonl` not written yet is an ordinary
-        # young run and stays a 200 with an empty timeline.
-        if not logs_dir.parent.is_dir():
-            raise RunRejectedError(
-                f"run {record.run_id} is recorded for {record.request_id} "
-                f"but its directory is gone — the run is absent, which is "
-                f"not the same as a run that has not logged yet"
-            )
-        return logs_dir
+        return logs_dir(home, record)
 
     def logs(self, request_id: str) -> RunLogs:
         """maestro's own event timeline for this run, plus its task-log names.

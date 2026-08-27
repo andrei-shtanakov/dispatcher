@@ -65,6 +65,28 @@ class RunRequest(BaseModel):
     plan_ref: Ref | None = None
 
 
+class SubmitV2(BaseModel):
+    """v2 submit body (PR-C Task 4, spec §4.2): the operator names WHAT to
+    run and WHAT THEY SAW — `repo_key`/`work_id`/`seen_revision` — and
+    dispatcher recovers the launch-time fields (`tasks`, `repository`)
+    from canon itself, inside the admission guard, rather than trusting a
+    client-supplied path. `snapshot_id` is an audit echo only: it is never
+    consulted for authority — the guard re-captures fresh facts and
+    refuses on `revision_moved` if the workspace no longer matches what
+    the operator saw.
+    """
+
+    snapshot_id: str
+    repo_key: str
+    work_id: str
+    request_id: str = Field(pattern=_REQUEST_ID_RE.pattern)
+    # Full 40-hex only (spec §4.1: short forms are display-only). A looser
+    # string like "HEAD" would sail past the schema, lose to the missing-
+    # item branch and PERSIST as a terminal admission_rejected replayed
+    # forever — schema-invalid input must die as 422 before any decision.
+    seen_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+
+
 @dataclass(frozen=True)
 class ValidatedRequest:
     request: RunRequest
@@ -95,6 +117,13 @@ def _checkout(repository: str, config: DispatcherConfig) -> Path:
         raise RunRejectedError("no existing workspace root configured")
     target = workspace / repository
     if not (target / ".git").exists():
+        # The root ITSELF may be the checkout (`roots=(repo,)` — discovery's
+        # own contract checks `[root, *children]`): when the name matches
+        # the root and the root carries .git, resolve to the root. Without
+        # this, submit v2's repository=<dir name> recovered from a
+        # root-as-checkout config could never validate (review on #209).
+        if workspace.name == repository and (workspace / ".git").exists():
+            return workspace.resolve()
         raise RunRejectedError(f"not a git repo in workspace: {repository}")
     # ABSOLUTE, always. `config.roots` is only `expanduser()`-normalised
     # (`dispatcher/core/discovery.py:104`), so a relative root in

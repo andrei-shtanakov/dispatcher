@@ -9,7 +9,10 @@ import pytest
 from dispatcher.core.run_identity import (
     IdentityError,
     RepoKey,
+    find_checkout_by_identity,
+    find_checkouts_by_identity,
     identity_from_checkout,
+    list_workspace_checkouts,
     parse_remote_url,
     safe_path_parts,
 )
@@ -104,3 +107,185 @@ def test_identity_from_checkout_without_origin_refuses(tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     with pytest.raises(IdentityError):
         identity_from_checkout(tmp_path)
+
+
+# --- list_workspace_checkouts / find_checkout_by_identity (review fix
+# wave C, C1) — the ONE enumeration the launchpad assembler and submit
+# v2's checkout resolver both use, so they can never walk a workspace
+# differently. ------------------------------------------------------------
+
+
+def _init_checkout(root: Path, remote: str) -> None:
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "remote", "add", "origin", remote], check=True
+    )
+
+
+def test_list_workspace_checkouts_skips_hidden_and_sorts(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "b-repo").mkdir()
+    (ws / "a-repo").mkdir()
+    (ws / "_scratch").mkdir()
+    (ws / ".git-like").mkdir()
+
+    entries, notes = list_workspace_checkouts(ws)
+
+    assert notes == []
+    # dot-prefixed skipped; underscore stays (the repo contract permits it —
+    # gate pass-4); non-git dirs are the CALLERS' concern, not the scan's
+    assert [name for name, _ in entries] == ["_scratch", "a-repo", "b-repo"]
+    assert entries[1][1] == ws / "a-repo"
+
+
+def test_list_workspace_checkouts_reports_an_unscannable_root_as_a_note(
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "does-not-exist"
+
+    entries, notes = list_workspace_checkouts(missing)
+
+    assert entries == []
+    assert len(notes) == 1
+    assert str(missing) in notes[0]
+
+
+def test_find_checkout_by_identity_resolves_a_directory_name_mismatch(
+    tmp_path: Path,
+) -> None:
+    """The real fleet case (C1): a checkout's workspace directory name
+    (`open-prose/`) need not match its origin remote's `repo` segment
+    (`libretto`). `list_workspace_checkouts` — the SAME enumeration the
+    launchpad assembler uses to classify this checkout in the first
+    place — and `find_checkout_by_identity` must agree on exactly which
+    checkout that repo_key names, so the assembler and submit v2 can
+    never resolve one repo_key to two different checkouts."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    root = ws / "open-prose"
+    _init_checkout(root, "git@github.com:andrei-shtanakov/libretto.git")
+    target = RepoKey(host="github.com", owner="andrei-shtanakov", repo="libretto")
+
+    entries, notes = list_workspace_checkouts(ws)
+    assert notes == []
+    assert [name for name, _ in entries] == ["open-prose"]
+
+    found = find_checkout_by_identity(ws, target)
+    assert found == root.resolve()
+
+
+def test_find_checkout_by_identity_returns_none_when_nothing_matches(
+    tmp_path: Path,
+) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    root = ws / "some-repo"
+    _init_checkout(root, "git@github.com:andrei-shtanakov/some-repo.git")
+    target = RepoKey(host="github.com", owner="andrei-shtanakov", repo="nope")
+
+    assert find_checkout_by_identity(ws, target) is None
+
+
+def test_find_checkout_by_identity_skips_non_git_and_unresolvable_entries(
+    tmp_path: Path,
+) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "not-a-checkout").mkdir()  # no .git at all
+    no_origin = ws / "no-origin"
+    no_origin.mkdir()
+    subprocess.run(["git", "init", "-q", str(no_origin)], check=True)  # .git, no origin
+    root = ws / "the-target"
+    _init_checkout(root, "git@github.com:andrei-shtanakov/the-target.git")
+    target = RepoKey(host="github.com", owner="andrei-shtanakov", repo="the-target")
+
+    assert find_checkout_by_identity(ws, target) == root.resolve()
+
+
+def test_underscore_prefixed_git_checkout_is_enumerated(tmp_path):
+    """A valid checkout named `_service` must be visible (gate pass-4).
+
+    The repository contract permits `_` in directory names; only
+    dot-prefixed (genuinely hidden) entries are skipped. Non-git
+    directories like `_cowork_output` stay invisible NOT via the name
+    filter but because they carry no .git.
+    """
+    ws = tmp_path / "ws"
+    (ws / "_service" / ".git").mkdir(parents=True)
+    (ws / "_scratch_no_git").mkdir(parents=True)
+    (ws / ".hidden").mkdir(parents=True)
+    entries, notes = list_workspace_checkouts(ws)
+    names = [name for name, _ in entries]
+    assert "_service" in names
+    assert ".hidden" not in names
+    assert notes == []
+
+
+def test_root_itself_as_checkout_is_a_candidate(tmp_path):
+    """roots=(repo,) is a supported shape (discovery checks [root, *children],
+    the B1 escape resolver pinned root-as-checkout incl. the worktree
+    .git-FILE shape) — the shared enumerator must offer the root itself
+    when it carries .git, or launchpad/submit-v2 are blind to it (review-pr
+    finding on #209)."""
+    root = tmp_path / "solo-repo"
+    (root / ".git").mkdir(parents=True)
+    (root / "child-not-repo").mkdir()
+    (root / "nested-repo" / ".git").mkdir(parents=True)
+    entries, notes = list_workspace_checkouts(root)
+    assert ("solo-repo", root) in entries
+    # Inside a root-as-checkout, plain internal dirs (docs/, src/...) are
+    # NOT repo candidates — only children carrying .git are (dry-run
+    # finding on #209: noise rows for every internal directory).
+    names = [name for name, _ in entries]
+    assert "child-not-repo" not in names
+    assert "nested-repo" in names
+    assert notes == []
+
+
+def test_symlinked_workspace_entries_are_not_candidates(tmp_path):
+    """A symlink in the workspace root must not smuggle an EXTERNAL
+    checkout in as a candidate (review-pr on #209): enumeration takes
+    real directories only — a launch must never act outside the
+    workspace the operator configured.
+    """
+    outside = tmp_path / "outside-repo"
+    (outside / ".git").mkdir(parents=True)
+    ws = tmp_path / "ws"
+    (ws / "real-repo" / ".git").mkdir(parents=True)
+    (ws / "sneaky").symlink_to(outside)
+    entries, notes = list_workspace_checkouts(ws)
+    names = [name for name, _ in entries]
+    assert "real-repo" in names
+    assert "sneaky" not in names
+    assert notes == []
+
+
+def test_unreadable_candidate_identity_is_a_note_not_a_skip(tmp_path):
+    """A .git-bearing candidate whose origin cannot be read might BE the
+    duplicate — silently skipping it proves nothing (review-pr on #209):
+    the failure joins the notes so the resolver refuses."""
+    ws = tmp_path / "ws"
+    good = ws / "good"
+    (good / ".git").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(good)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(good),
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:o/good.git",
+        ],
+        check=True,
+    )
+    broken = ws / "broken"
+    (broken / ".git").mkdir(parents=True)  # .git present, no config → IdentityError
+    matches, notes = find_checkouts_by_identity(
+        ws, RepoKey(host="github.com", owner="o", repo="good")
+    )
+    assert [m.name for m in matches] == ["good"]
+    assert any("broken" in n for n in notes)
