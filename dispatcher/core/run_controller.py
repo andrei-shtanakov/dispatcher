@@ -25,9 +25,22 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from dispatcher.core.admission import Blocker, RepoAdmission, RunFact, classify_repo
+from dispatcher.core.admission import (
+    DAG_DIRTY,
+    DAG_DUPLICATE,
+    DAG_INVALID,
+    ITEM_CLOSED,
+    ITEM_UNREGISTERED,
+    Blocker,
+    CapturedInputs,
+    RepoAdmission,
+    RunFact,
+    classify_inventory,
+    classify_repo,
+)
 from dispatcher.core.collectors.maestro import classified_runs
 from dispatcher.core.discovery import DispatcherConfig
+from dispatcher.core.inventory import capture_inventory
 from dispatcher.core.models import OrchestrationRunInfo, ProjectSnapshot
 from dispatcher.core.run_identity import (
     IdentityError,
@@ -38,6 +51,7 @@ from dispatcher.core.run_identity import (
 from dispatcher.core.run_request import (
     RunRejectedError,
     RunRequest,
+    SubmitV2,
     ValidatedRequest,
     validate_request,
 )
@@ -71,6 +85,15 @@ _OPERATOR_ENDINGS = frozenset({"cancelled", "superseded"})
 #: process), not one run. Wiring it up would make a per-request control
 #: silently kill every other run the scheduler is managing.
 _VERBS = frozenset({"status", "retry", "approve", "run-end"})
+
+#: `_classify_open_item`'s own reason codes (spec §5.1) — a `blocked`
+#: item's `reason_code` OUTSIDE this set is not a DAG-level problem at
+#: all: it is the repo's own blocker code, baked into an otherwise-ready
+#: item by `_classify_open_item`'s last check (`admission.py`). submit_v2
+#: must not treat that borrowed code/reason as this item's OWN decision —
+#: it falls through to the repo-blockers check instead (row e), which
+#: reports the full blocker list, not one item's paraphrase of it.
+_DAG_ITEM_REASON_CODES = frozenset({DAG_INVALID, DAG_DUPLICATE, DAG_DIRTY})
 
 
 class ControlPlaneOff(Exception):
@@ -125,6 +148,30 @@ def _key_from_record(record: "LaunchRecord") -> RepoKey:
     if parts[0] == "_local":
         return RepoKey(host="", owner="", repo=parts[1], local=True)
     return RepoKey(host=parts[0], owner=parts[1], repo=parts[2])
+
+
+def _repo_key_from_text(text: str) -> RepoKey | None:
+    """Parse `SubmitV2.repo_key`'s canonical text into a `RepoKey`, or
+    `None` if it is not exactly that shape — untrusted client text, unlike
+    `_key_from_record`'s trusted stored form, so every segment is checked
+    (`safe_path_parts`, the same charset `RunStore` refuses a path on)
+    before anything downstream ever sees it, and the text must round-trip
+    through `RepoKey.as_text()` exactly: `fingerprint_of` takes this text
+    verbatim (`run_store.py:91`), so a spelling `safe_path_parts` would
+    accept but `as_text()` would not reproduce must not silently pass.
+    """
+    parts = text.split("/")
+    if len(parts) == 2 and parts[0] == "_local":
+        key = RepoKey(host="", owner="", repo=parts[1], local=True)
+    elif len(parts) == 3:
+        key = RepoKey(host=parts[0], owner=parts[1], repo=parts[2])
+    else:
+        return None
+    try:
+        safe_path_parts(key)
+    except IdentityError:
+        return None
+    return key if key.as_text() == text else None
 
 
 def read_lock_state(
@@ -841,6 +888,257 @@ class RunController:
         lock_state, lock_err = read_lock_state(store, key, request_id)
         run_facts, runs_unreadable = self._capture_run_facts(store, key)
         return classify_repo(lock_state, lock_err, run_facts, runs_unreadable)
+
+    def _resolve_v2_checkout(self, repo: str) -> Path | None:
+        """The workspace checkout `SubmitV2.repo_key`'s own `repo` segment
+        names, or `None` if there is none — mirrors `run_request._checkout`
+        (same workspace-root convention `v1`'s `repository` field uses),
+        minus its raising: absence here is `repo_unresolved` (409, a
+        workspace fact), never `invalid_request`.
+        """
+        workspace = next((r for r in self._config.roots if r.is_dir()), None)
+        if workspace is None:
+            return None
+        target = workspace / repo
+        if not (target / ".git").exists():
+            return None
+        return target.resolve()
+
+    def submit_v2(self, body: SubmitV2) -> LaunchReceipt:
+        """Start one run from the recovered-canon v2 body (spec §4.2, PR-C
+        Task 4). Every non-receipt outcome raises `AdmissionRefused`
+        rather than folding into a v1-style string — the route renders it
+        into the structured `{code, detail, current}` shape.
+        """
+        self._require_on()  # ControlPlaneOff propagates to the route
+        store = self._store()
+
+        repo_key = _repo_key_from_text(body.repo_key)
+        if repo_key is None:
+            raise AdmissionRefused(
+                422, "invalid_request", f"malformed repo_key: {body.repo_key!r}"
+            )
+
+        try:
+            result = self._replay_existing(
+                store,
+                body.request_id,
+                raw_repository=None,
+                work_id=body.work_id,
+                revision=body.seen_revision,
+                repo_key=repo_key.as_text(),
+            )
+        except RunStoreError as err:
+            raise AdmissionRefused(
+                422, "invalid_request", f"cannot use request_id: {err}"
+            ) from err
+        if isinstance(result, AdmissionRefused):
+            raise result
+        if isinstance(result, LaunchReceipt):
+            return result
+
+        try:
+            catalog = self._catalog_path()
+        except RunRejectedError as err:
+            raise AdmissionRefused(422, "invalid_request", str(err)) from err
+
+        checkout = self._resolve_v2_checkout(repo_key.repo)
+        if checkout is None:
+            raise AdmissionRefused(
+                409,
+                "repo_unresolved",
+                f"no checkout for {body.repo_key!r} in the workspace",
+            )
+        try:
+            found_key = identity_from_checkout(checkout)
+        except IdentityError as err:
+            raise AdmissionRefused(409, "repo_unresolved", str(err)) from err
+        if found_key.as_text() != repo_key.as_text():
+            raise AdmissionRefused(
+                422,
+                "identity_mismatch",
+                f"{checkout} names {found_key.as_text()!r}, not the "
+                f"requested {body.repo_key!r}",
+            )
+
+        runs = self.runs_dir(found_key)
+
+        def _persist_refusal(
+            *, tasks: str, code: str, detail: str, current: dict
+        ) -> None:
+            store.record_admission_rejection(
+                body.request_id,
+                found_key,
+                work_id=body.work_id,
+                revision=body.seen_revision,
+                tasks=tasks,
+                repository=repo_key.repo,
+                checkout=str(checkout),
+                code=code,
+                detail=detail,
+                current=current,
+            )
+
+        try:
+            with store.guard(found_key):
+                try:
+                    inv = capture_inventory(checkout)
+                    lock_state, lock_err = read_lock_state(
+                        store, found_key, body.request_id
+                    )
+                    run_facts, runs_unreadable = self._capture_run_facts(
+                        store, found_key
+                    )
+                except OSError as err:
+                    # Environment, not a decision: never persisted.
+                    raise AdmissionRefused(
+                        409, "repo_unresolved", f"cannot capture inventory: {err}"
+                    ) from err
+                captured = CapturedInputs(
+                    inventory=inv,
+                    lock=lock_state,
+                    lock_error=lock_err,
+                    runs=run_facts,
+                    runs_unreadable=runs_unreadable,
+                )
+                decision = classify_inventory(captured)
+                if decision.unreadable is not None:
+                    raise AdmissionRefused(409, "repo_unresolved", decision.unreadable)
+
+                item = next(
+                    (i for i in decision.ready if i.work_id == body.work_id), None
+                )
+                blocked = next(
+                    (i for i in decision.blocked if i.work_id == body.work_id), None
+                )
+                unregistered = next(
+                    (
+                        i
+                        for i in decision.unregistered_items
+                        if i.work_id == body.work_id
+                    ),
+                    None,
+                )
+
+                if unregistered is not None:
+                    detail = unregistered.reason
+                    current = {"reason": detail}
+                    _persist_refusal(
+                        tasks="",
+                        code=ITEM_UNREGISTERED,
+                        detail=detail,
+                        current=current,
+                    )
+                    raise AdmissionRefused(409, ITEM_UNREGISTERED, detail, current)
+                if (
+                    blocked is not None
+                    and blocked.reason_code in _DAG_ITEM_REASON_CODES
+                ):
+                    # A genuine DAG-level problem — the item's OWN decision,
+                    # not a repo blocker `_classify_open_item` baked in
+                    # (that case falls through below, to row e).
+                    code = blocked.reason_code
+                    assert code is not None
+                    detail = blocked.reason
+                    current = {"reason": detail}
+                    _persist_refusal(
+                        tasks=blocked.dag_path or "",
+                        code=code,
+                        detail=detail,
+                        current=current,
+                    )
+                    raise AdmissionRefused(409, code, detail, current)
+                if item is None and blocked is None:
+                    closed = any(
+                        pi.item_id == body.work_id and not pi.open
+                        for pi in inv.plan_items
+                    )
+                    code = ITEM_CLOSED if closed else ITEM_UNREGISTERED
+                    detail = (
+                        f"{body.work_id} is closed"
+                        if closed
+                        else f"{body.work_id} is not a registered open item"
+                    )
+                    current = {"reason": detail}
+                    _persist_refusal(
+                        tasks="", code=code, detail=detail, current=current
+                    )
+                    raise AdmissionRefused(409, code, detail, current)
+
+                # `item` is genuinely ready, OR only "blocked" because
+                # `_classify_open_item` folded a REPO blocker into it —
+                # either way its `dag_path` is resolved, and the repo
+                # blockers check below (row e) is the sole authority on
+                # that repo-level reason, never this item's paraphrase.
+                resolved = item if item is not None else blocked
+                assert resolved is not None
+
+                # Only THEN the revision check — a nonexistent item can
+                # never be persisted as revision_moved (spec §5, row d).
+                if body.seen_revision != inv.head_revision:
+                    current = {"seen_revision": inv.head_revision}
+                    detail = (
+                        f"HEAD has moved to {inv.head_revision}; resubmit "
+                        "against the current revision"
+                    )
+                    _persist_refusal(
+                        tasks=resolved.dag_path or "",
+                        code="revision_moved",
+                        detail=detail,
+                        current=current,
+                    )
+                    raise AdmissionRefused(409, "revision_moved", detail, current)
+
+                if decision.repo.blockers:
+                    blocker = decision.repo.blockers[0]
+                    detail = _blocker_detail(blocker)
+                    current = {"blockers": [asdict(b) for b in decision.repo.blockers]}
+                    _persist_refusal(
+                        tasks=resolved.dag_path or "",
+                        code=blocker.code,
+                        detail=detail,
+                        current=current,
+                    )
+                    raise AdmissionRefused(409, blocker.code, detail, current)
+
+                assert resolved.dag_path is not None  # ready items always resolve one
+                internal_request = RunRequest(
+                    request_id=body.request_id,
+                    work_id=body.work_id,
+                    repository=repo_key.repo,
+                    revision=body.seen_revision,
+                    tasks=resolved.dag_path,
+                )
+                try:
+                    validated = validate_request(internal_request, self._config)
+                except RunRejectedError as err:
+                    raise AdmissionRefused(422, "invalid_request", str(err)) from err
+
+                record = store._reserve_locked(  # noqa: SLF001 — guarded caller
+                    body.request_id,
+                    found_key,
+                    known_runs=self._listing(runs),
+                    window_start=datetime.now(UTC).isoformat(),
+                    work_id=body.work_id,
+                    revision=body.seen_revision,
+                    tasks=resolved.dag_path,
+                    repository=repo_key.repo,
+                    spec_commit=validated.spec_commit,
+                    plan_commit=validated.plan_commit,
+                    checkout=str(validated.checkout),
+                )
+        except GuardBusyError as err:
+            raise AdmissionRefused(409, "guard_busy", str(err)) from err
+        except FingerprintMismatch as err:
+            raise AdmissionRefused(409, "request_id_conflict", str(err)) from err
+        except LockBusyError as err:
+            raise AdmissionRefused(409, "launch_busy", str(err)) from err
+        except (RunStoreError, OSError) as err:
+            raise AdmissionRefused(
+                422, "invalid_request", f"cannot use request_id: {err}"
+            ) from err
+
+        return self._spawn_reserved(store, record, validated, catalog, runs)
 
     @staticmethod
     def _read_lock_state(

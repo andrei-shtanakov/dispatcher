@@ -65,6 +65,24 @@ class RunRequest(BaseModel):
     plan_ref: Ref | None = None
 
 
+class SubmitV2(BaseModel):
+    """v2 submit body (PR-C Task 4, spec §4.2): the operator names WHAT to
+    run and WHAT THEY SAW — `repo_key`/`work_id`/`seen_revision` — and
+    dispatcher recovers the launch-time fields (`tasks`, `repository`)
+    from canon itself, inside the admission guard, rather than trusting a
+    client-supplied path. `snapshot_id` is an audit echo only: it is never
+    consulted for authority — the guard re-captures fresh facts and
+    refuses on `revision_moved` if the workspace no longer matches what
+    the operator saw.
+    """
+
+    snapshot_id: str
+    repo_key: str
+    work_id: str
+    request_id: str = Field(pattern=_REQUEST_ID_RE.pattern)
+    seen_revision: str
+
+
 @dataclass(frozen=True)
 class ValidatedRequest:
     request: RunRequest

@@ -7,11 +7,11 @@ import secrets
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi import Path as FastapiPath
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from dispatcher.core import read_api
 from dispatcher.core.actions import (
@@ -53,6 +53,7 @@ from dispatcher.core.roadmap import (
     default_roadmap_dirs,
 )
 from dispatcher.core.run_controller import (
+    AdmissionRefused,
     ControlPlaneOff,
     LaunchReceipt,
     RunController,
@@ -63,7 +64,7 @@ from dispatcher.core.run_controller import (
     VerbOutcome,
 )
 from dispatcher.core.run_identity import IdentityError, RepoKey, identity_from_checkout
-from dispatcher.core.run_request import RunRejectedError, RunRequest
+from dispatcher.core.run_request import RunRejectedError, SubmitV2
 from dispatcher.core.run_store import (
     GuardBusyError,
     LaunchRecord,
@@ -770,18 +771,56 @@ def create_app(
                     return found
         return None
 
-    @app.post("/api/runs/submit", response_model=LaunchReceipt)
-    def submit_run(
-        request: RunRequest,
-        x_action_token: str | None = Header(default=None),
-    ) -> LaunchReceipt:
-        """Explicit human click: start one Mode-1 run (spec §5.3).
+    #: Every field the pre-PR-C `RunRequest` body carried — a caller still
+    #: sending the legacy shape gets a clear `legacy_body` 400 naming
+    #: exactly which fields it used, not a confusing `SubmitV2` 422 about
+    #: fields it never meant to send at all (spec §4.2's migration rule).
+    _LEGACY_SUBMIT_KEYS = frozenset(
+        {"revision", "tasks", "repository", "spec_ref", "plan_ref"}
+    )
 
-        Every outcome is a receipt, including a refusal: `accepted` is
-        three-valued and `null` (launch_unknown) is not an error.
+    @app.post("/api/runs/submit", response_model=LaunchReceipt)
+    async def submit_run(
+        request: Request,
+        x_action_token: str | None = Header(default=None),
+    ) -> LaunchReceipt | JSONResponse:
+        """Explicit human click: start one Mode-1 run (spec §4.2, §5.3).
+
+        v2 only: the operator names WHAT to run and WHAT THEY SAW, and
+        dispatcher recovers the launch-time fields from canon itself
+        (`RunController.submit_v2`). The body is read as raw JSON once —
+        a legacy v1 field among it is refused by name (400 `legacy_body`)
+        before `SubmitV2`'s own validation ever runs, so a caller still on
+        the old shape gets a migration pointer, not a puzzling 422 about
+        fields it never sent.
         """
         _require_token(x_action_token)
-        return runs.submit(request)
+        try:
+            raw = await request.json()
+        except Exception as err:  # noqa: BLE001 — any parse failure is 422
+            return _structured(422, "invalid_request", f"invalid JSON body: {err}")
+        if not isinstance(raw, dict):
+            return _structured(422, "invalid_request", "body must be a JSON object")
+        legacy = _LEGACY_SUBMIT_KEYS & raw.keys()
+        if legacy:
+            pointer = ", ".join(sorted(legacy))
+            return _structured(
+                400,
+                "legacy_body",
+                f"legacy submit field(s) no longer accepted: {pointer}; "
+                "submit now takes {snapshot_id, repo_key, work_id, "
+                "request_id, seen_revision} (spec §4.2)",
+            )
+        try:
+            body = SubmitV2.model_validate(raw)
+        except ValidationError as err:
+            return _structured(422, "invalid_request", str(err))
+        try:
+            return runs.submit_v2(body)
+        except AdmissionRefused as err:
+            return _structured(err.status, err.code, err.detail, err.current)
+        except ControlPlaneOff as err:
+            return _structured(409, "control_plane_off", str(err))
 
     @app.get("/api/runs/{request_id}", response_model=RunView)
     def read_run(request_id: str) -> RunView:

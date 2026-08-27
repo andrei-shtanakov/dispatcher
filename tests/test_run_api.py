@@ -33,12 +33,13 @@ def _client(tmp_path: Path, *, control_plane: bool = False) -> httpx.AsyncClient
 
 
 def _body() -> dict:
+    """v2 submit shape (PR-C Task 4, spec §4.2)."""
     return {
-        "request_id": "11111111-1111-4111-8111-111111111111",
+        "snapshot_id": "11111111-1111-4111-8111-111111111112",
+        "repo_key": "github.com/owner/deployer",
         "work_id": "todo://deployer/entrypoint-token-boundary-match",
-        "repository": "deployer",
-        "revision": "a" * 40,
-        "tasks": "tasks.yaml",
+        "request_id": "11111111-1111-4111-8111-111111111111",
+        "seen_revision": "a" * 40,
     }
 
 
@@ -51,6 +52,9 @@ async def test_submit_requires_the_action_token(tmp_path: Path) -> None:
 async def test_submit_with_the_control_plane_off_is_a_refusal_not_a_crash(
     tmp_path: Path,
 ) -> None:
+    """`ControlPlaneOff` is a structured 409 for v2, matching every other
+    route's treatment of the same condition — not v1's 200 `accepted:
+    false` receipt, which submit_v2 never produces for this case."""
     async with _client(tmp_path) as client:
         token = (await client.get("/api/actions/session")).json()["token"]
         resp = await client.post(
@@ -58,10 +62,45 @@ async def test_submit_with_the_control_plane_off_is_a_refusal_not_a_crash(
             json=_body(),
             headers={"X-Action-Token": token},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 409
         payload = resp.json()
-        assert payload["accepted"] is False
-        assert "control plane is off" in payload["reason"]
+        assert payload["code"] == "control_plane_off"
+        assert "control plane is off" in payload["detail"]
+
+
+async def test_submit_with_a_legacy_v1_body_is_400_naming_the_fields(
+    tmp_path: Path,
+) -> None:
+    async with _client(tmp_path) as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/runs/submit",
+            json={
+                "request_id": "11111111-1111-4111-8111-111111111111",
+                "work_id": "todo://deployer/entrypoint-token-boundary-match",
+                "repository": "deployer",
+                "revision": "a" * 40,
+                "tasks": "tasks.yaml",
+            },
+            headers={"X-Action-Token": token},
+        )
+        assert resp.status_code == 400
+        payload = resp.json()
+        assert payload["code"] == "legacy_body"
+        for field in ("repository", "revision", "tasks"):
+            assert field in payload["detail"]
+
+
+async def test_submit_with_schema_garbage_is_422(tmp_path: Path) -> None:
+    async with _client(tmp_path, control_plane=True) as client:
+        token = (await client.get("/api/actions/session")).json()["token"]
+        resp = await client.post(
+            "/api/runs/submit",
+            json={"snapshot_id": "s"},
+            headers={"X-Action-Token": token},
+        )
+        assert resp.status_code == 422
+        assert resp.json()["code"] == "invalid_request"
 
 
 async def test_unknown_request_reads_404(tmp_path: Path) -> None:
