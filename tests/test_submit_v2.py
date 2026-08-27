@@ -964,3 +964,71 @@ def test_root_as_checkout_config_is_visible_and_launchable(tmp_path: Path) -> No
         _body(repo_key=key.as_text(), work_id="w1", revision=head)
     )
     assert receipt.accepted is True
+
+
+def test_persist_refusal_never_terminalizes_another_attempts_record(
+    tmp_path: Path,
+) -> None:
+    """Race (review-pr on #209): same request_id, DIFFERENT repo_keys, in
+    parallel. Both pass replay before a record exists; A reserves and
+    releases its guard; B, refusing under ITS OWN repo's guard, must NOT
+    terminalize A's live record and release A's lock — a fingerprint
+    mismatch is request_id_conflict, mutating nothing.
+    """
+    remote_a = _remote("race-a")
+    remote_b = _remote("race-b")
+    ws = tmp_path / "ws"
+    ws.mkdir(exist_ok=True)
+    root_a = make_repo(
+        ws,
+        "- [ ] A @id:wa @dag:dags/wa.yaml\n",
+        {"dags/wa.yaml": f"repo_url: {remote_a}\ntasks: []\n"},
+        remote=remote_a,
+        name="race-a",
+    )
+    make_repo(
+        ws,
+        "- [ ] B @id:wb @dag:dags/wb.yaml\n",
+        {"dags/wb.yaml": f"repo_url: {remote_b}\ntasks: []\n"},
+        remote=remote_b,
+        name="race-b",
+    )
+    cli = _fake_maestro_by_identity(tmp_path / "fake-maestro", creates_run=None)
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+    store = RunStore(config.run_state_dir)  # type: ignore[arg-type]
+
+    # Attempt A got as far as reserving (the state the racing replay saw
+    # as "no record" moments earlier).
+    key_a = _key("race-a")
+    with store.guard(key_a):
+        store._reserve_locked(  # noqa: SLF001 — guarded caller
+            _REQ,
+            key_a,
+            known_runs=[],
+            window_start="2026-08-27T00:00:00+00:00",
+            work_id="wa",
+            revision=_head(root_a),
+            tasks="dags/wa.yaml",
+            repository="race-a",
+            checkout=str(root_a),
+        )
+    assert store.holds_lock(key_a) is not None
+
+    # Attempt B: SAME request_id, DIFFERENT repo. The race window is
+    # between B's replay check (which saw NO record) and B's refusal
+    # persist (by which time A's record exists) — model exactly that
+    # interleave by silencing B's replay, as if it ran a moment earlier.
+    controller._replay_existing = (  # type: ignore[method-assign]  # noqa: SLF001
+        lambda *a, **k: None
+    )
+    body = _body(
+        repo_key=_key("race-b").as_text(), work_id="missing", revision="f" * 40
+    )
+    with pytest.raises(AdmissionRefused) as exc:
+        controller.submit_v2(body)
+    assert exc.value.code == "request_id_conflict"
+
+    record = store.get(_REQ)
+    assert record is not None and record.state == "reserved"
+    assert store.holds_lock(key_a) is not None  # A's lock untouched

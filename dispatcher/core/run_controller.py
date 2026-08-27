@@ -1052,6 +1052,26 @@ class RunController:
             # shape (`_reserve()` succeeded, THEN the verdict blocked).
             existing = store.get(body.request_id)
             if existing is not None and existing.state != "terminal":
+                # …but ONLY a record of THIS attempt: two parallel submits
+                # can share a request_id across DIFFERENT repos, both pass
+                # replay before either record exists, and the loser's
+                # refusal would otherwise terminalize the winner's LIVE
+                # record and release the winner's lock (review on #209).
+                # A fingerprint mismatch is a request_id conflict — mutate
+                # nothing that belongs to another attempt.
+                stored_fp = existing.fingerprint or fingerprint_of(
+                    existing.repo_key, existing.work_id, existing.revision
+                )
+                candidate_fp = fingerprint_of(
+                    found_key.as_text(), body.work_id, body.seen_revision
+                )
+                if stored_fp != candidate_fp:
+                    raise AdmissionRefused(
+                        409,
+                        "request_id_conflict",
+                        f"{body.request_id} already belongs to a different "
+                        f"attempt ({existing.repo_key})",
+                    )
                 store.mark_admission_rejected(
                     body.request_id, code=code, detail=detail, current=current
                 )
