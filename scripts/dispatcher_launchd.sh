@@ -18,7 +18,10 @@
 #     that value lived in an environment instead of a config.
 #   * Any secret. A plist is world-readable and ends up in backups.
 #
-# launchd does not inherit an interactive shell's PATH, so `uv` is invoked by
+# launchd does not inherit an interactive shell's PATH: `uv` is invoked by
+# absolute path, and the SERVICE gets an explicit PATH with ~/.local/bin —
+# maestro's agents need `claude` there (live-acceptance run 01M11…: the
+# first panel launch died in 6ms on a bare launchd PATH). Original note:
 # absolute path and `WorkingDirectory` is set to the repo — without it `uv run`
 # cannot find the project.
 #
@@ -104,6 +107,8 @@ generate() {
     <string>$cfg</string>
   </array>
   <key>WorkingDirectory</key><string>$REPO_ROOT</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>$LOG_DIR/out.log</string>
