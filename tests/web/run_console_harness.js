@@ -100,9 +100,31 @@ const DEFAULT_RECEIPT = {
   accepted: true, reason: null,
 };
 
+// Task 7: the manual/advanced #run-console form now silently attaches
+// snapshot_id/seen_revision from the launchpad panel's OWN snapshot once
+// repo_key is recognized (validateManualSubmit, index.html) — so the whole
+// script's own `lpFetchSnapshot()` (fired at boot, same as every other
+// harness's fixtures below) needs a matching repository or every submit
+// test would fail validation before ever reaching the wire. `fillValid`
+// below always names this exact repo_key.
+const DEFAULT_REPO_KEY = 'github.com/andrei-shtanakov/deployer';
+const DEFAULT_SEEN_REVISION = 'a'.repeat(40);
+const DEFAULT_SNAPSHOT_ID = 'rc-harness-snap';
+const DEFAULT_LAUNCHPAD_SNAPSHOT = {
+  snapshot_id: DEFAULT_SNAPSHOT_ID, generated_at: '2026-08-27T00:00:00Z',
+  repositories: [{repo_key: DEFAULT_REPO_KEY, repository: 'deployer',
+    default_branch: 'master', seen_revision: DEFAULT_SEEN_REVISION,
+    admission: 'ready', blockers: []}],
+  ready: [], blocked: [], unregistered_items: [], orphan_dags: [],
+  active: [], active_truncated: false, recent_completed: [],
+  completed_total: 0, next_cursor: null, store_unreadable: [],
+};
+
 // refresh() (index.html:651-669) fans out to exactly these eight endpoints on
 // load; the run console lives at the top level and needs none of the
 // detail()-only routes (onboarding, governance, product-proposals, runs).
+// `/api/launchpad` is a ninth: the whole page script's own `lpFetchSnapshot()`
+// call at the bottom fires unconditionally too (Task 6/7).
 function defaultRoutes(submitRoute) {
   return [
     [u => u.startsWith('/api/overview'), () => ok({projects: []})],
@@ -126,6 +148,7 @@ function defaultRoutes(submitRoute) {
     })],
     [u => u.startsWith('/api/actions/session'), () => ok({token: 'test-token'})],
     [u => u === '/api/runs/submit', submitRoute || (() => ok(DEFAULT_RECEIPT))],
+    [u => u === '/api/launchpad', () => ok(DEFAULT_LAUNCHPAD_SNAPSHOT)],
   ];
 }
 
@@ -239,11 +262,11 @@ function receiptHtml(page, receipt, blocked) {
     `renderReceipt(${JSON.stringify(receipt)}, ${JSON.stringify(!!blocked)})`,
     page.ctx);
 }
-/** Fills the form with values that pass both the client and server checks. */
+/** Fills the form with values that pass validateManualSubmit — repo_key
+ * matching DEFAULT_LAUNCHPAD_SNAPSHOT's own repository, so snapshot_id/
+ * seen_revision attach silently. */
 function fillValid(page) {
-  fill(page, '#rc-repository', 'deployer');
-  fill(page, '#rc-revision', 'a'.repeat(40));
-  fill(page, '#rc-tasks', 'tasks.yaml');
+  fill(page, '#rc-repo-key', DEFAULT_REPO_KEY);
   fill(page, '#rc-work-id', 'todo://deployer/entrypoint-token-boundary-match');
 }
 /** Calls the page's own renderRunView(), not a copy of it. */
@@ -317,12 +340,9 @@ function check(cond, message) {
 
 // ---- cases -----------------------------------------------------------------
 
-testCase('submitting the form posts to /api/runs/submit with the token', async () => {
+testCase('submitting the form posts to /api/runs/submit with the v2 body', async () => {
   const page = await boot();
-  fill(page, '#rc-repository', 'deployer');
-  fill(page, '#rc-revision', 'a'.repeat(40));
-  fill(page, '#rc-tasks', 'tasks.yaml');
-  fill(page, '#rc-work-id', 'todo://deployer/entrypoint-token-boundary-match');
+  fillValid(page);
   await click(page, '#rc-submit');
   const call = page.calls.find(c => c.url === '/api/runs/submit');
   check(!!call, 'submit posted to /api/runs/submit');
@@ -332,11 +352,17 @@ testCase('submitting the form posts to /api/runs/submit with the token', async (
   check(call.opts.headers['Content-Type'] === 'application/json',
     'JSON content-type is sent');
   const body = JSON.parse(call.opts.body);
-  check(body.repository === 'deployer' && body.tasks === 'tasks.yaml',
-    `body carries the form (got: ${JSON.stringify(body)})`);
-  check(body.revision === 'a'.repeat(40), 'body carries revision');
-  check(body.work_id === 'todo://deployer/entrypoint-token-boundary-match',
-    'body carries work_id');
+  check(body.repo_key === DEFAULT_REPO_KEY
+    && body.work_id === 'todo://deployer/entrypoint-token-boundary-match',
+    `body carries repo_key/work_id (got: ${JSON.stringify(body)})`);
+  check(body.snapshot_id === DEFAULT_SNAPSHOT_ID,
+    `body carries snapshot_id from the launchpad snapshot (got: ${body.snapshot_id})`);
+  check(body.seen_revision === DEFAULT_SEEN_REVISION,
+    `body carries seen_revision from the matching repository (got: ${body.seen_revision})`);
+  check(typeof body.request_id === 'string' && body.request_id.length > 0,
+    `body carries a generated request_id (got: ${JSON.stringify(body.request_id)})`);
+  check(!('revision' in body) && !('tasks' in body) && !('repository' in body),
+    `the legacy v1 fields are gone (got: ${JSON.stringify(body)})`);
 });
 
 testCase('accepted:true renders as started and shows the run id', async () => {
@@ -500,32 +526,34 @@ testCase('a new submission after a settled outcome mints a fresh request_id',
       + 'submission to the same request_id');
   });
 
-// -- TASK-2: client-side validation that mirrors the server's refusals ------
-// validateRunRequest() only saves a round trip on the two mistakes an
-// operator makes constantly (dispatcher/core/run_request.py: revision must
-// be 40 hex chars, tasks must be repo-relative with no '..'). It is not a
-// safety layer, so the third case below matters as much as the first two:
-// an over-eager check that refuses a good request is worse than no check.
+// -- TASK-2/7: client-side validation that mirrors the server's refusals ----
+// validateManualSubmit() (Task 7) replaces the old revision/tasks checks
+// with the one thing worth catching now: repo_key must name a repository
+// the launchpad snapshot has actually seen, or there is no seen_revision to
+// silently attach. It is not a safety layer, so the "valid-looking request
+// IS sent" case below matters as much as the refusal cases: an over-eager
+// check that refuses a good request is worse than no check.
 
-testCase('a bad revision never reaches the wire, and says what the server says',
-  async () => {
-    const page = await boot();
-    fill(page, '#rc-repository', 'deployer');
-    fill(page, '#rc-revision', 'HEAD');
-    fill(page, '#rc-tasks', 'tasks.yaml');
-    await click(page, '#rc-submit');
-    check(!page.calls.some(c => c.url === '/api/runs/submit'), 'not sent');
-    check(/40-hex/.test(text(page, '#rc-receipt')),
-      `says 40-hex, as the server does (got: ${text(page, '#rc-receipt')})`);
-  });
-
-testCase('".." in tasks is caught client-side', async () => {
+testCase('an empty work_id never reaches the wire', async () => {
   const page = await boot();
-  fillValid(page);
-  fill(page, '#rc-tasks', '../outside.yaml');
+  fill(page, '#rc-repo-key', DEFAULT_REPO_KEY);
+  fill(page, '#rc-work-id', '');
   await click(page, '#rc-submit');
   check(!page.calls.some(c => c.url === '/api/runs/submit'), 'not sent');
+  check(/work_id is required/.test(text(page, '#rc-receipt')),
+    `names the missing field (got: ${text(page, '#rc-receipt')})`);
 });
+
+testCase('an unknown repo_key never reaches the wire, names the snapshot requirement',
+  async () => {
+    const page = await boot();
+    fill(page, '#rc-repo-key', 'github.com/andrei-shtanakov/never-seen');
+    fill(page, '#rc-work-id', 'todo://x/y');
+    await click(page, '#rc-submit');
+    check(!page.calls.some(c => c.url === '/api/runs/submit'), 'not sent');
+    check(/unknown repo_key/.test(text(page, '#rc-receipt')),
+      `names the requirement (got: ${text(page, '#rc-receipt')})`);
+  });
 
 testCase('a valid-looking request IS sent — the client must not invent refusals',
   async () => {
@@ -538,15 +566,30 @@ testCase('a valid-looking request IS sent — the client must not invent refusal
 testCase('a client-side rejection leaves rcPendingRequestId untouched',
   async () => {
     const page = await boot();
-    fill(page, '#rc-repository', 'deployer');
-    fill(page, '#rc-revision', 'HEAD');
-    fill(page, '#rc-tasks', 'tasks.yaml');
+    fill(page, '#rc-repo-key', 'github.com/andrei-shtanakov/never-seen');
+    fill(page, '#rc-work-id', 'todo://x/y');
     await click(page, '#rc-submit');
     check(!page.calls.some(c => c.url === '/api/runs/submit'), 'not sent');
     const pending = vm.runInContext('rcPendingRequestId', page.ctx);
     check(pending === null,
       `nothing was sent, so no request_id should be pinned (got: ${pending})`);
   });
+
+testCase('a retry after a transport failure resends an IDENTICAL body '
+  + '(the snapshot fields, not just request_id)', async () => {
+  const page = await boot(() => Promise.reject(new Error('network down')));
+  fillValid(page);
+  await click(page, '#rc-submit');
+  await click(page, '#rc-submit');
+  const submits = page.calls.filter(c => c.url === '/api/runs/submit');
+  check(submits.length === 2, `two attempts were made (got ${submits.length})`);
+  if (submits.length !== 2) return;
+  const first = JSON.parse(submits[0].opts.body);
+  const second = JSON.parse(submits[1].opts.body);
+  check(JSON.stringify(first) === JSON.stringify(second),
+    `retry sends an IDENTICAL body, even if the snapshot moved on meanwhile `
+    + `(got: ${JSON.stringify(first)} vs ${JSON.stringify(second)})`);
+});
 
 // -- TASK-3: the run view — dispatcher's record joined to maestro's run ----
 // record.state (dispatcher's launch machine) and run.status (maestro's own

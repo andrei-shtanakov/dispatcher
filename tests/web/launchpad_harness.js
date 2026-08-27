@@ -527,6 +527,322 @@ testCase('applying a second snapshot rebuilds containers — stale nodes gone',
   });
 });
 
+// ---- Task 7: the launch flow (spec §9/§10) -----------------------------------
+//
+// task-7-brief.md's four NAMED §10 scenarios come first, then the six
+// behaviours. The stale-snapshot sequence guard (§10's second named
+// scenario) is case 3 above, unmodified — Task 7 adds nothing to it.
+
+const READY_ITEM = {
+  repo_key: 'github.com/andrei-shtanakov/deployer',
+  work_id: 'todo://deployer/some-work-item', dag_path: 'tasks/dag.yaml',
+  seen_revision: 'a'.repeat(40),
+};
+function readySnapshot(overrides = {}) {
+  return snapshot({ready: [READY_ITEM], ...overrides});
+}
+/** Sets a control's value and fires 'input', exactly as a real keystroke
+ * does — dom.js's `dispatch()` bubbles it to the delegated listener on
+ * #launchpad the same way it bubbles 'click' (tests/web/dom.js). */
+async function typeInto(page, selector, value) {
+  const node = el(page, selector);
+  node.value = value;
+  await Promise.all(dispatch(node, 'input'));
+  await drain();
+}
+function submitBodies(page) {
+  return page.calls.filter(c => c.url === '/api/runs/submit')
+    .map(c => JSON.parse(c.opts.body));
+}
+
+// ---- §10 named scenario 1: lost response → unknown → Retry same id → -------
+// ---- read-back finds the record ---------------------------------------------
+
+testCase('§10: lost response → unknown → Retry same id → read-back finds the record',
+  async () => {
+  await withPage(async page => {
+    page.routes.unshift([u => u === '/api/runs/submit',
+      () => Promise.reject(new Error('connection reset'))]);
+    await click(page, '#lp-ready tr.lp-ready-row');
+    await click(page, '#lp-ready .lp-confirm');
+    check(/launch outcome unknown/.test(htmlOf(page, '#lp-ready')),
+      `a lost response renders the row as unknown (got: ${htmlOf(page, '#lp-ready')})`);
+
+    const firstBody = submitBodies(page)[0];
+    check(!!(firstBody && firstBody.request_id), 'the attempt minted a request_id');
+    if (!firstBody) return;
+
+    // Retry — still lost. This proves id reuse, NOT resolution: transport
+    // uncertainty is only resolved by a DEFINITE HTTP answer (spec §9).
+    await click(page, '#lp-ready .lp-retry');
+    const bodies = submitBodies(page);
+    check(bodies.length === 2, `retry hit the wire again (got ${bodies.length})`);
+    if (bodies.length === 2) {
+      check(bodies[1].request_id === firstBody.request_id,
+        `Retry resends the SAME request_id (got ${bodies[1].request_id} `
+        + `vs ${firstBody.request_id})`);
+    }
+    check(/launch outcome unknown/.test(htmlOf(page, '#lp-ready')),
+      'still unknown after a second lost response');
+
+    // Read-back: 404 first (KEEPS unknown), then 200 (resolves it).
+    page.routes.unshift([u => u === `/api/runs/${firstBody.request_id}`,
+      () => resp(404, {detail: 'no such request'})]);
+    await click(page, '#lp-ready .lp-check-status');
+    check(/launch outcome unknown/.test(htmlOf(page, '#lp-ready')),
+      'a 404 read-back KEEPS the unknown state');
+
+    page.routes.unshift([u => u === `/api/runs/${firstBody.request_id}`,
+      () => ok({record: {state: 'materialized', run_id: '01AAA'},
+        run: {status: 'running'}, warnings: []})]);
+    const before = callsTo(page, '/api/launchpad');
+    await click(page, '#lp-ready .lp-check-status');
+    check(!/launch outcome unknown/.test(htmlOf(page, '#lp-ready')),
+      `a 200 read-back resolves the unknown state (got: ${htmlOf(page, '#lp-ready')})`);
+    check(callsTo(page, '/api/launchpad') === before + 1,
+      'a resolved read-back triggers exactly one whole-snapshot refetch');
+  }, () => ok(readySnapshot()));
+});
+
+// ---- §10 named scenario 2: the stale-snapshot sequence guard — see case 3 --
+// (kept from Task 6, unmodified; nothing to add here.)
+
+// ---- §10 named scenario 3: a Ready row vanishing under an open confirm -----
+
+testCase('§10: a Ready row vanishing under an open confirmation → Confirm '
+  + 'disabled with cause, the expanded state is preserved', async () => {
+  await withPage(async page => {
+    await click(page, '#lp-ready tr.lp-ready-row');
+    check(!!maybeEl(page, '#lp-ready .lp-confirm'), 'row expanded with a Confirm control');
+    check(el(page, '#lp-ready .lp-confirm').disabled === false, 'Confirm starts enabled');
+
+    page.routes.unshift([u => u === '/api/launchpad', () => ok(snapshot({ready: []}))]);
+    await page.ctx.lpRefetchAfterAction();
+    await drain();
+
+    check(/nothing ready/.test(htmlOf(page, '#lp-ready')),
+      'the vanished item is no longer listed in #lp-ready itself');
+    const confirmBtn = maybeEl(page, '#lp-pending .lp-confirm');
+    check(!!confirmBtn, 'the open confirmation reappears in #lp-pending, not silently dropped');
+    if (!confirmBtn) return;
+    check(confirmBtn.disabled === true, 'Confirm is disabled once the row is gone');
+    check(/no longer in the Ready list/.test(htmlOf(page, '#lp-pending')),
+      `the cause is shown (got: ${htmlOf(page, '#lp-pending')})`);
+    check(htmlOf(page, '#lp-pending').includes('some-work-item'),
+      'the expanded item is still named — typed/expanded state is preserved');
+  }, () => ok(readySnapshot()));
+});
+
+// ---- §10 named scenario 4: repeat submit, same request_id, IDENTICAL body --
+
+testCase('§10: repeat submit with the same request_id sends an IDENTICAL body',
+  async () => {
+  await withPage(async page => {
+    page.routes.unshift([u => u === '/api/runs/submit',
+      () => Promise.reject(new Error('network blip'))]);
+    await click(page, '#lp-ready tr.lp-ready-row');
+    await click(page, '#lp-ready .lp-confirm');
+    await click(page, '#lp-ready .lp-retry');
+    const calls = page.calls.filter(c => c.url === '/api/runs/submit');
+    check(calls.length === 2, `two attempts reached the wire (got ${calls.length})`);
+    if (calls.length !== 2) return;
+    check(calls[0].opts.body === calls[1].opts.body,
+      `retry sends an IDENTICAL body, byte for byte (got: ${calls[0].opts.body} `
+      + `vs ${calls[1].opts.body})`);
+  }, () => ok(readySnapshot()));
+});
+
+// ---- behaviour 1: two-step launch --------------------------------------------
+
+testCase('behaviour 1: clicking a Ready row expands the two-step confirm; '
+  + 'Confirm POSTs the v2 body', async () => {
+  await withPage(async page => {
+    check(!maybeEl(page, '#lp-ready .lp-confirm'), 'no confirm control before the row is clicked');
+    await click(page, '#lp-ready tr.lp-ready-row');
+    const expanded = htmlOf(page, '#lp-ready');
+    check(expanded.includes('some-work-item') && expanded.includes('aaaaaaa'),
+      `expanded confirm names work_id @ sha7 (got: ${expanded})`);
+
+    await click(page, '#lp-ready .lp-confirm');
+    const body = submitBodies(page)[0];
+    check(!!body, 'Confirm posted to /api/runs/submit');
+    if (!body) return;
+    check(body.repo_key === READY_ITEM.repo_key && body.work_id === READY_ITEM.work_id,
+      `body names repo_key/work_id (got: ${JSON.stringify(body)})`);
+    check(body.seen_revision === READY_ITEM.seen_revision, 'body carries seen_revision');
+    check(body.snapshot_id === 'snap-base', 'body carries snapshot_id');
+    check(typeof body.request_id === 'string' && body.request_id.length > 0,
+      'body carries a generated request_id');
+  }, () => ok(readySnapshot()));
+});
+
+testCase('behaviour 1: a settled 2xx receipt clears the pending entry — a '
+  + 'fresh attempt mints a new request_id', async () => {
+  await withPage(async page => {
+    await click(page, '#lp-ready tr.lp-ready-row');
+    await click(page, '#lp-ready .lp-confirm');
+    check(!maybeEl(page, '#lp-ready .lp-confirm')
+      && !maybeEl(page, '#lp-ready .lp-retry') && !maybeEl(page, '#lp-ready .lp-check-status'),
+      'a settled 2xx receipt leaves no open/unknown controls behind');
+
+    await click(page, '#lp-ready tr.lp-ready-row');
+    await click(page, '#lp-ready .lp-confirm');
+    const bodies = submitBodies(page);
+    check(bodies.length === 2, `two independent attempts were sent (got ${bodies.length})`);
+    if (bodies.length !== 2) return;
+    check(bodies[0].request_id !== bodies[1].request_id,
+      `a settled attempt does not pin the next one to the same id `
+      + `(got ${bodies[0].request_id} vs ${bodies[1].request_id})`);
+  }, () => ok(readySnapshot()));
+});
+
+// ---- behaviour 2: transport uncertainty --------------------------------------
+
+testCase('behaviour 2: a whole-snapshot refetch alone does not resolve an '
+  + 'unknown row — only Retry or read-back can', async () => {
+  await withPage(async page => {
+    page.routes.unshift([u => u === '/api/runs/submit',
+      () => Promise.reject(new Error('dropped'))]);
+    await click(page, '#lp-ready tr.lp-ready-row');
+    await click(page, '#lp-ready .lp-confirm');
+    check(/launch outcome unknown/.test(htmlOf(page, '#lp-ready')), 'unknown after the drop');
+
+    const timer = page.timers.byPeriod(LP_REFRESH_MS);
+    check(!!timer, 'the 30s refresh timer is registered');
+    if (timer) { timer.cb(); await drain(); }
+
+    check(/launch outcome unknown/.test(htmlOf(page, '#lp-ready')),
+      'still unknown after an unrelated whole-snapshot refetch — spec §9: '
+      + '"a full refetch alone cannot resolve it"');
+  }, () => ok(readySnapshot()));
+});
+
+// ---- behaviour 3: structured errors ------------------------------------------
+
+testCase('behaviour 3: a structured {code,detail} error renders "code: '
+  + 'detail" text, then ONE whole-snapshot refetch; current is never spliced',
+  async () => {
+  await withPage(async page => {
+    page.routes.unshift([u => u === '/api/runs/submit', () => resp(409, {
+      code: 'revision_moved', detail: 'HEAD moved since the operator saw it',
+      current: {seen_revision: 'z'.repeat(40)},
+    })]);
+    const before = callsTo(page, '/api/launchpad');
+    await click(page, '#lp-ready tr.lp-ready-row');
+    await click(page, '#lp-ready .lp-confirm');
+    const html = htmlOf(page, '#lp-ready');
+    check(html.includes('revision_moved: HEAD moved since the operator saw it'),
+      `renders "code: detail" (got: ${html})`);
+    check(!html.includes('z'.repeat(40)),
+      '`current` is never spliced into the rendered snapshot');
+    check(!maybeEl(page, '#lp-ready .lp-confirm') && !maybeEl(page, '#lp-ready .lp-retry'),
+      'the pending entry is cleared — a structured error is a settled answer');
+    check(callsTo(page, '/api/launchpad') === before + 1,
+      'exactly ONE whole-snapshot refetch follows the error');
+  }, () => ok(readySnapshot()));
+});
+
+// ---- behaviour 4: re-validation of open confirmations after a refetch -------
+// (the "row left Ready" case is §10 named scenario 3 above; this covers the
+// other named cause — seen_revision changing while the row stays Ready.)
+
+testCase('behaviour 4: seen_revision changing under an open confirmation '
+  + 'disables Confirm with the new revision named', async () => {
+  await withPage(async page => {
+    await click(page, '#lp-ready tr.lp-ready-row');
+    check(el(page, '#lp-ready .lp-confirm').disabled === false, 'starts enabled');
+
+    const moved = {...READY_ITEM, seen_revision: 'b'.repeat(40)};
+    page.routes.unshift([u => u === '/api/launchpad', () => ok(snapshot({ready: [moved]}))]);
+    await page.ctx.lpRefetchAfterAction();
+    await drain();
+
+    const confirmBtn = el(page, '#lp-ready .lp-confirm');
+    check(confirmBtn.disabled === true, 'Confirm disables when seen_revision moved');
+    check(htmlOf(page, '#lp-ready').includes('bbbbbbb'),
+      `the cause names the new revision (got: ${htmlOf(page, '#lp-ready')})`);
+  }, () => ok(readySnapshot()));
+});
+
+// ---- behaviour 5: the audited escape forms -----------------------------------
+
+const REPO_VANISHED = {
+  repo_key: 'github.com/andrei-shtanakov/proctor-a', repository: 'proctor-a',
+  default_branch: 'master', seen_revision: 'c'.repeat(40), admission: 'blocked',
+  blockers: [{code: 'run_vanished', request_id: 'rc-vanished-1', run_id: '01VAN', detail: null}],
+};
+const REPO_LOCK_MALFORMED = {
+  repo_key: 'github.com/andrei-shtanakov/kapelle', repository: 'kapelle',
+  default_branch: 'master', seen_revision: 'd'.repeat(40), admission: 'blocked',
+  blockers: [{code: 'lock_malformed', request_id: null, run_id: null, detail: 'empty lock'}],
+};
+
+testCase('behaviour 5: acknowledge-vanished — retyped confirm_run_id (never '
+  + 'prefilled) + required reason; success refetches', async () => {
+  await withPage(async page => {
+    await click(page, '#lp-repos a.lp-blocker-anchor');
+    const confirmInput = el(page, '.lp-escape-form input[data-escape-field="confirm"]');
+    check(confirmInput.value === '', 'confirm_run_id is NEVER prefilled');
+    check(el(page, '.lp-escape-submit').disabled === true,
+      'Submit starts disabled — nothing typed yet');
+
+    await typeInto(page, '.lp-escape-form input[data-escape-field="confirm"]', 'wrong-run-id');
+    check(el(page, '.lp-escape-submit').disabled === true,
+      'still disabled — the retyped value must match exactly');
+    await typeInto(page, '.lp-escape-form input[data-escape-field="confirm"]', '01VAN');
+    check(el(page, '.lp-escape-submit').disabled === true,
+      'still disabled — reason is required too');
+    await typeInto(page, '.lp-escape-form input[data-escape-field="reason"]',
+      'confirmed via maestro logs');
+    check(el(page, '.lp-escape-submit').disabled === false,
+      'enabled once both the confirmation and the reason are filled');
+
+    page.routes.unshift([u => u === '/api/runs/rc-vanished-1/acknowledge-vanished',
+      () => ok({request_id: 'rc-vanished-1', repo_key: REPO_VANISHED.repo_key,
+        state: 'terminal', run_id: null, outcome: 'vanished-acknowledged'})]);
+    const before = callsTo(page, '/api/launchpad');
+    await click(page, '.lp-escape-submit');
+    const call = page.calls.find(c => c.url === '/api/runs/rc-vanished-1/acknowledge-vanished');
+    check(!!call, 'submitted to the acknowledge-vanished route');
+    if (call) {
+      const body = JSON.parse(call.opts.body);
+      check(body.confirm_run_id === '01VAN' && body.reason === 'confirmed via maestro logs',
+        `body carries the retyped confirmation and reason (got: ${JSON.stringify(body)})`);
+    }
+    check(!maybeEl(page, '.lp-escape-form'), 'success closes the form');
+    check(callsTo(page, '/api/launchpad') === before + 1, 'success triggers a whole refetch');
+  }, () => ok(snapshot({repositories: [REPO_VANISHED]})));
+});
+
+testCase('behaviour 5: release-malformed — a structured error keeps the '
+  + 'form open with typed values intact (rule 3 discipline)', async () => {
+  await withPage(async page => {
+    await click(page, '#lp-repos a.lp-blocker-anchor');
+    await typeInto(page, '.lp-escape-form input[data-escape-field="confirm"]',
+      REPO_LOCK_MALFORMED.repo_key);
+    await typeInto(page, '.lp-escape-form input[data-escape-field="reason"]',
+      'checked the lock by hand');
+
+    page.routes.unshift([u => u === '/api/locks/release-malformed',
+      () => resp(409, {detail: 'guard_busy: timed out acquiring the lock'})]);
+    const before = callsTo(page, '/api/launchpad');
+    await click(page, '.lp-escape-submit');
+
+    check(!!maybeEl(page, '.lp-escape-form'), 'the form stays open after an error');
+    check(htmlOf(page, '#lp-repos').includes('guard_busy: timed out acquiring the lock'),
+      'the error text is shown');
+    check(el(page, '.lp-escape-form input[data-escape-field="confirm"]').value
+      === REPO_LOCK_MALFORMED.repo_key, 'the retyped confirmation is preserved');
+    check(el(page, '.lp-escape-form input[data-escape-field="reason"]').value
+      === 'checked the lock by hand', 'the typed reason is preserved');
+    check(callsTo(page, '/api/launchpad') === before,
+      'an error does NOT refetch — only success does (rule 3)');
+  }, () => ok(snapshot({repositories: [REPO_LOCK_MALFORMED]})));
+});
+
+// Behaviour 6 (the manual/advanced form) lives in run_console_harness.js —
+// #run-console is that harness's page, not this one's.
+
 // ---- main -------------------------------------------------------------------
 
 (async () => {
