@@ -49,6 +49,16 @@ class IdentityError(Exception):
     """Identity could not be established; the request must be refused."""
 
 
+class NoRemoteIdentity(IdentityError):
+    """DETERMINATE absence: the checkout has no `origin` remote at all.
+
+    Distinct from an unreadable one: a local-only repo (the fleet has
+    them by design — spec-runner-tasks) provably has no canonical
+    identity, so it can never match or duplicate a remote-derived
+    `RepoKey`; scanners skip it silently instead of refusing the fleet
+    (live-acceptance finding)."""
+
+
 @dataclass(frozen=True)
 class RepoKey:
     host: str
@@ -133,9 +143,14 @@ def identity_from_checkout(repo_root: Path) -> RepoKey:
     except (OSError, subprocess.SubprocessError) as err:
         raise IdentityError(f"cannot read origin of {repo_root}: {err}") from err
     if proc.returncode != 0:
+        stderr = proc.stderr.strip()
+        if "No such remote" in stderr:
+            raise NoRemoteIdentity(
+                f"{repo_root} has no origin remote (local-only checkout)"
+            )
         raise IdentityError(
             f"{repo_root} has no usable origin remote: "
-            f"{proc.stderr.strip() or 'git exited ' + str(proc.returncode)}"
+            f"{stderr or 'git exited ' + str(proc.returncode)}"
         )
     return parse_remote_url(proc.stdout)
 
@@ -235,8 +250,14 @@ def find_checkouts_by_identity(
             continue
         try:
             found = identity_from_checkout(checkout)
+        except NoRemoteIdentity:
+            # Determinate: a local-only checkout has no canonical identity
+            # and cannot be anyone's duplicate — silent skip, NOT a note
+            # (a note here refused every submit fleet-wide the moment one
+            # local-only repo existed; live-acceptance finding).
+            continue
         except IdentityError as err:
-            # This candidate MIGHT be the duplicate — an unreadable origin
+            # This candidate MIGHT be the duplicate — an UNREADABLE origin
             # proves nothing, and silently skipping it turned an incomplete
             # scan into a uniqueness proof (review on #209). The note makes
             # the resolver refuse until the workspace is fixed.
