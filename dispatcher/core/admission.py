@@ -108,6 +108,10 @@ ITEM_UNREGISTERED = "item_unregistered"
 DAG_INVALID = "dag_invalid"
 DAG_DUPLICATE = "dag_duplicate"
 DAG_DIRTY = "dag_dirty"
+#: submit_v2's own code (spec §4.2, row d): the workspace's HEAD moved
+#: past what the operator's `seen_revision` named — checked LAST among
+#: the item decisions, never for an item that isn't there at all.
+REVISION_MOVED = "revision_moved"
 
 #: the launchpad `unregistered_items` list's own diagnostic (spec §4.1's
 #: literal field value) — distinct from ITEM_UNREGISTERED above, which is

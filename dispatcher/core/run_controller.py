@@ -29,8 +29,11 @@ from dispatcher.core.admission import (
     DAG_DIRTY,
     DAG_DUPLICATE,
     DAG_INVALID,
+    GUARD_BUSY,
     ITEM_CLOSED,
     ITEM_UNREGISTERED,
+    LAUNCH_BUSY,
+    REVISION_MOVED,
     Blocker,
     CapturedInputs,
     RepoAdmission,
@@ -154,11 +157,14 @@ def _repo_key_from_text(text: str) -> RepoKey | None:
     """Parse `SubmitV2.repo_key`'s canonical text into a `RepoKey`, or
     `None` if it is not exactly that shape — untrusted client text, unlike
     `_key_from_record`'s trusted stored form, so every segment is checked
-    (`safe_path_parts`, the same charset `RunStore` refuses a path on)
-    before anything downstream ever sees it, and the text must round-trip
-    through `RepoKey.as_text()` exactly: `fingerprint_of` takes this text
-    verbatim (`run_store.py:91`), so a spelling `safe_path_parts` would
-    accept but `as_text()` would not reproduce must not silently pass.
+    (`safe_path_parts`, which refuses only `''`/`'.'`/`'..'` and any
+    segment containing `/` or `\\` — a path-traversal guard, NOT a
+    charset restriction; it does not itself reject spaces or other odd
+    bytes) before anything downstream ever sees it, and the text must
+    round-trip through `RepoKey.as_text()` exactly: `fingerprint_of`
+    takes this text verbatim (`run_store.py:91`), so a spelling
+    `safe_path_parts` would accept but `as_text()` would not reproduce
+    must not silently pass.
     """
     parts = text.split("/")
     if len(parts) == 2 and parts[0] == "_local":
@@ -966,6 +972,25 @@ class RunController:
         def _persist_refusal(
             *, tasks: str, code: str, detail: str, current: dict
         ) -> None:
+            # A record for THIS request_id can already exist here: the
+            # only way this guard block runs at all for an existing
+            # record is `_replay_existing` returning `None` for a
+            # `reserved` record whose fingerprint already matched (a
+            # prior attempt got as far as reserving, then the workspace
+            # regressed before this repeat). `record_admission_rejection`
+            # alone would find that fingerprint-matching record and
+            # return it UNCHANGED — no rejection written, its lock still
+            # held (fix round 1: leaks the lock onto every other launch
+            # in this repo, and breaks §8.2 replay for this request_id).
+            # `mark_admission_rejected` terminalizes the EXISTING record
+            # and releases its lock — v1's own path for the identical
+            # shape (`_reserve()` succeeded, THEN the verdict blocked).
+            existing = store.get(body.request_id)
+            if existing is not None and existing.state != "terminal":
+                store.mark_admission_rejected(
+                    body.request_id, code=code, detail=detail, current=current
+                )
+                return
             store.record_admission_rejection(
                 body.request_id,
                 found_key,
@@ -1083,11 +1108,11 @@ class RunController:
                     )
                     _persist_refusal(
                         tasks=resolved.dag_path or "",
-                        code="revision_moved",
+                        code=REVISION_MOVED,
                         detail=detail,
                         current=current,
                     )
-                    raise AdmissionRefused(409, "revision_moved", detail, current)
+                    raise AdmissionRefused(409, REVISION_MOVED, detail, current)
 
                 if decision.repo.blockers:
                     blocker = decision.repo.blockers[0]
@@ -1128,11 +1153,11 @@ class RunController:
                     checkout=str(validated.checkout),
                 )
         except GuardBusyError as err:
-            raise AdmissionRefused(409, "guard_busy", str(err)) from err
+            raise AdmissionRefused(409, GUARD_BUSY, str(err)) from err
         except FingerprintMismatch as err:
             raise AdmissionRefused(409, "request_id_conflict", str(err)) from err
         except LockBusyError as err:
-            raise AdmissionRefused(409, "launch_busy", str(err)) from err
+            raise AdmissionRefused(409, LAUNCH_BUSY, str(err)) from err
         except (RunStoreError, OSError) as err:
             raise AdmissionRefused(
                 422, "invalid_request", f"cannot use request_id: {err}"

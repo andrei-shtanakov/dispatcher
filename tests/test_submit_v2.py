@@ -19,7 +19,7 @@ import pytest
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.run_controller import AdmissionRefused, RunController
 from dispatcher.core.run_identity import RepoKey
-from dispatcher.core.run_request import RunRequest, SubmitV2
+from dispatcher.core.run_request import RunRejectedError, RunRequest, SubmitV2
 from dispatcher.core.run_store import GUARD_TIMEOUT_SECONDS, RunStore
 from tests.test_inventory_capture import make_repo
 
@@ -166,6 +166,56 @@ def test_hostile_request_id_is_422_not_a_crash(tmp_path: Path) -> None:
     assert exc.value.code == "invalid_request"
 
 
+@pytest.mark.parametrize(
+    "repo_key",
+    [
+        "onlyonesegment",
+        "too/many/segments/here",
+        "github.com/owner/..",
+        "github.com/owner/repo/",
+    ],
+)
+def test_malformed_repo_key_is_422_invalid_request(
+    tmp_path: Path, repo_key: str
+) -> None:
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run=None)
+    (tmp_path / "ws").mkdir()
+    controller = RunController(_config(tmp_path, cli))
+    body = _body(repo_key=repo_key, work_id="w1", revision="a" * 40)
+    with pytest.raises(AdmissionRefused) as exc:
+        controller.submit_v2(body)
+    assert exc.value.status == 422
+    assert exc.value.code == "invalid_request"
+
+
+def test_repeat_naming_a_different_repo_key_conflicts(tmp_path: Path) -> None:
+    """The fingerprint's repo dimension is `body.repo_key` itself for v2 —
+    a repeat under the SAME request_id that switches repo_key must
+    conflict even when work_id/revision stay identical."""
+    name_a = "repo-a-conflict"
+    name_b = "repo-b-conflict"
+    _ready(tmp_path, name_a, "w1")
+    root_b, head_b = _ready(tmp_path, name_b, "w1")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run=None)
+    config = _config(tmp_path, cli)
+    store = RunStore(config.run_state_dir)  # type: ignore[arg-type]
+    store.reserve(
+        _REQ,
+        _key(name_a),
+        known_runs=[],
+        window_start="t",
+        work_id="w1",
+        revision=head_b,
+        repository=name_a,
+    )
+    controller = RunController(config)
+    body = _body(repo_key=_key(name_b).as_text(), work_id="w1", revision=head_b)
+    with pytest.raises(AdmissionRefused) as exc:
+        controller.submit_v2(body)
+    assert exc.value.status == 409
+    assert exc.value.code == "request_id_conflict"
+
+
 # --- row 2: _replay_existing -------------------------------------------
 
 
@@ -192,6 +242,96 @@ def test_reserved_state_identity_mismatch_is_request_id_conflict(
         controller.submit_v2(body)
     assert exc.value.status == 409
     assert exc.value.code == "request_id_conflict"
+
+
+def test_refusal_against_a_pre_existing_reserved_record_terminalizes_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix round 1 (review, Important): `_replay_existing` returns `None`
+    for a `reserved` record whose fingerprint matches — the guard then
+    re-runs its checks fresh. If the workspace regressed since that
+    reservation (the DAG went dirty here) and a check now fails, the
+    refusal must terminalize THAT existing record and release its lock —
+    `store.record_admission_rejection` alone would find the existing
+    fingerprint-matching record and return it UNCHANGED (no rejection
+    written, lock still held), breaking §8.2 replay for this request_id
+    and leaking the repo lock onto every other launch."""
+    name = "leak-fix"
+    root, head = _ready(tmp_path, name, "w1")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run=None)
+    config = _config(tmp_path, cli)
+    store = RunStore(config.run_state_dir)  # type: ignore[arg-type]
+    key = _key(name)
+    store.reserve(
+        _REQ,
+        key,
+        known_runs=[],
+        window_start="t",
+        work_id="w1",
+        revision=head,
+        repository=name,
+    )
+    assert store.holds_lock(key) == _REQ
+
+    # Dirty the DAG WITHOUT recommitting — the item that was ready when
+    # `_REQ` was reserved is now `dag_dirty`.
+    (root / "dags" / "w1.yaml").write_text(
+        f"repo_url: {_remote(name)}\ntasks: []\n# edited, uncommitted\n"
+    )
+
+    controller = RunController(config)
+    body = _body(repo_key=key.as_text(), work_id="w1", revision=head)
+    with pytest.raises(AdmissionRefused) as exc:
+        controller.submit_v2(body)
+    assert exc.value.status == 409
+    assert exc.value.code == "dag_dirty"
+
+    record = store.get(_REQ)
+    assert record is not None
+    assert record.state == "terminal"
+    assert record.response_class == "admission_rejected"
+    assert record.admission_code == "dag_dirty"
+    assert store.holds_lock(key) is None, "the lock must not leak"
+
+    # A DIFFERENT request_id against the same repo is no longer
+    # launch_busy — the leaked lock is gone.
+    other = _body(
+        repo_key=key.as_text(),
+        work_id="w-ghost",
+        revision=head,
+        request_id="22222222-2222-4222-8222-222222222222",
+    )
+    with pytest.raises(AdmissionRefused) as other_exc:
+        controller.submit_v2(other)
+    assert other_exc.value.code == "item_unregistered"  # not launch_busy
+
+    # Replay: repeat `_REQ` after the workspace is CLEAN again — the
+    # persisted refusal is immutable, and zero calls prove no re-check.
+    (root / "dags" / "w1.yaml").write_text(f"repo_url: {_remote(name)}\ntasks: []\n")
+    import dispatcher.core.run_controller as rc
+
+    calls = {"inventory": 0, "repo": 0}
+    real_inventory = rc.classify_inventory
+    real_repo = rc.classify_repo
+
+    def _counting_inventory(*a: object, **k: object) -> object:
+        calls["inventory"] += 1
+        return real_inventory(*a, **k)  # type: ignore[arg-type]
+
+    def _counting_repo(*a: object, **k: object) -> object:
+        calls["repo"] += 1
+        return real_repo(*a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rc, "classify_inventory", _counting_inventory)
+    monkeypatch.setattr(rc, "classify_repo", _counting_repo)
+    with pytest.raises(AdmissionRefused) as replay_exc:
+        controller.submit_v2(body)
+
+    assert calls == {"inventory": 0, "repo": 0}
+    assert replay_exc.value.status == exc.value.status
+    assert replay_exc.value.code == exc.value.code
+    assert replay_exc.value.detail == exc.value.detail
+    assert replay_exc.value.current == exc.value.current
 
 
 def test_admission_rejected_replay_is_409_with_persisted_fields_zero_calls(
@@ -504,6 +644,64 @@ def test_repo_blocker_refuses_an_otherwise_ready_item(tmp_path: Path) -> None:
     assert exc.value.status == 409
     assert exc.value.code == "launch_busy"
     assert "blockers" in (exc.value.current or {})
+
+
+def test_capture_level_oserror_is_repo_unresolved_not_persisted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An `OSError` raised while capturing (never an admission decision)
+    must not be mistaken for one — 409 `repo_unresolved`, and nothing
+    written to the store."""
+    import dispatcher.core.run_controller as rc
+
+    name = "capture-oserror"
+    root, head = _ready(tmp_path, name, "w1")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run=None)
+    config = _config(tmp_path, cli)
+    controller = RunController(config)
+
+    def _boom(checkout: Path) -> object:
+        raise OSError("simulated capture failure")
+
+    monkeypatch.setattr(rc, "capture_inventory", _boom)
+    body = _body(repo_key=_key(name).as_text(), work_id="w1", revision=head)
+    with pytest.raises(AdmissionRefused) as exc:
+        controller.submit_v2(body)
+    assert exc.value.status == 409
+    assert exc.value.code == "repo_unresolved"
+
+    store = RunStore(config.run_state_dir)  # type: ignore[arg-type]
+    assert store.get(_REQ) is None, "a capture-level OSError must not persist"
+
+
+def test_validate_request_failure_inside_the_gate_is_422_not_persisted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `validate_request` failure on the internally-recovered
+    `RunRequest` (git-level checks reading the checkout) is a decidable
+    422 `invalid_request` — and, like every other row-6 gate failure,
+    never persisted (an environment/attempt-shape fact, not an admission
+    decision the caller could usefully replay)."""
+    import dispatcher.core.run_controller as rc
+
+    name = "validate-request-fails"
+    root, head = _ready(tmp_path, name, "w1")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run=None)
+    config = _config(tmp_path, cli)
+    controller = RunController(config)
+
+    def _boom(request: object, dispatcher_config: object) -> object:
+        raise RunRejectedError("simulated validate_request failure")
+
+    monkeypatch.setattr(rc, "validate_request", _boom)
+    body = _body(repo_key=_key(name).as_text(), work_id="w1", revision=head)
+    with pytest.raises(AdmissionRefused) as exc:
+        controller.submit_v2(body)
+    assert exc.value.status == 422
+    assert exc.value.code == "invalid_request"
+
+    store = RunStore(config.run_state_dir)  # type: ignore[arg-type]
+    assert store.get(_REQ) is None, "a validate_request failure must not persist"
 
 
 # --- row 6: clean submit --------------------------------------------------
