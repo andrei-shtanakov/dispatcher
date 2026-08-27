@@ -9,6 +9,7 @@ from typing import Annotated, Any
 
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi import Path as FastapiPath
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -32,6 +33,7 @@ from dispatcher.core.epics import (
     build_view,
 )
 from dispatcher.core.governance import BundleGovernance
+from dispatcher.core.launchpad import LaunchpadSnapshot, assemble_snapshot
 from dispatcher.core.models import (
     ContractStatus,
     ErrorEvent,
@@ -258,6 +260,53 @@ def create_app(
     # CSRF-токен на процесс: SOP не даст чужой странице его прочитать,
     # значит POST с токеном мог отправить только наш UI (DESIGN-204)
     action_token = secrets.token_hex(16)
+
+    def _structured(
+        status: int, code: str, detail: str, current: dict[str, Any] | None = None
+    ) -> JSONResponse:
+        """The spec §4.2 structured error shape — `{code, detail, current}` —
+        shared by every route that answers something other than its
+        `response_model` on failure. Introduced here for `/api/launchpad`;
+        Task 4 reuses it as-is."""
+        return JSONResponse(
+            status_code=status,
+            content={"code": code, "detail": detail, "current": current},
+        )
+
+    _RECENT_LIMIT_DEFAULT = 20
+    _RECENT_LIMIT_MAX = 100
+
+    @app.get("/api/launchpad", response_model=LaunchpadSnapshot)
+    def launchpad(
+        cursor: str | None = Query(default=None),
+        recent_limit: str | None = Query(default=None),
+    ) -> LaunchpadSnapshot | JSONResponse:
+        """One internally-consistent read of the whole fleet (spec §4.1,
+        §4.2). `recent_limit` is parsed by hand — not `Query(ge=1, le=100)`
+        — so an out-of-range or non-integer value gets OUR structured 422,
+        not FastAPI's default validation-error body."""
+        limit = _RECENT_LIMIT_DEFAULT
+        if recent_limit is not None:
+            try:
+                limit = int(recent_limit)
+            except ValueError:
+                return _structured(
+                    422,
+                    "invalid_request",
+                    f"recent_limit must be an integer, got {recent_limit!r}",
+                )
+        if not (1 <= limit <= _RECENT_LIMIT_MAX):
+            return _structured(
+                422,
+                "invalid_request",
+                f"recent_limit must be between 1 and {_RECENT_LIMIT_MAX}, got {limit}",
+            )
+        try:
+            return assemble_snapshot(runs, recent_limit=limit, cursor=cursor)
+        except ValueError as err:
+            return _structured(422, "invalid_request", str(err))
+        except ControlPlaneOff as err:
+            return _structured(409, "control_plane_off", str(err))
 
     @app.get("/api/overview", response_model=OverviewResponse)
     def overview() -> OverviewResponse:
