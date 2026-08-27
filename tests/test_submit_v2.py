@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.run_controller import AdmissionRefused, RunController
@@ -861,3 +862,28 @@ def test_guard_busy_is_409_not_persisted(tmp_path: Path) -> None:
 
     store = RunStore(config.run_state_dir)
     assert store.get(_REQ) is None, "guard_busy must not persist a record"
+
+
+def test_malformed_seen_revision_is_schema_invalid_not_persisted():
+    """seen_revision='HEAD' must die at the schema (422), never persist.
+
+    Without the 40-hex pattern the string sails through, the missing-item
+    branch persists a terminal admission_rejected with revision='HEAD', and
+    the request_id replays that 409 forever (local gate pass-1 finding).
+    """
+    with pytest.raises(ValidationError):
+        SubmitV2(
+            snapshot_id="s1",
+            repo_key="github.com/o/r",
+            work_id="w1",
+            request_id="rq-schema-rev",
+            seen_revision="HEAD",
+        )
+    with pytest.raises(ValidationError):
+        SubmitV2(
+            snapshot_id="s1",
+            repo_key="github.com/o/r",
+            work_id="w1",
+            request_id="rq-schema-rev2",
+            seen_revision="abc123",  # short form — display-only per spec
+        )

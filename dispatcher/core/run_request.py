@@ -80,7 +80,11 @@ class SubmitV2(BaseModel):
     repo_key: str
     work_id: str
     request_id: str = Field(pattern=_REQUEST_ID_RE.pattern)
-    seen_revision: str
+    # Full 40-hex only (spec §4.1: short forms are display-only). A looser
+    # string like "HEAD" would sail past the schema, lose to the missing-
+    # item branch and PERSIST as a terminal admission_rejected replayed
+    # forever — schema-invalid input must die as 422 before any decision.
+    seen_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
 
 
 @dataclass(frozen=True)
