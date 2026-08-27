@@ -226,3 +226,19 @@ def test_port_gate_refuses_when_our_job_has_no_pid(tmp_path: Path) -> None:
     # and the gate refused BEFORE any bootstrap was attempted
     logged = calls.read_text(encoding="utf-8") if calls.exists() else ""
     assert "bootstrap" not in logged
+
+
+def test_main_service_path_includes_the_claude_bin_dir(tmp_path: Path) -> None:
+    """Live acceptance, run 01M11…: the panel's first real launch died in
+    6ms — maestro, spawned by the launchd service, inherited launchd's
+    bare PATH and could not find the `claude` binary (~/.local/bin).
+    The generated plist must carry an explicit PATH with the invoking
+    user's ~/.local/bin ahead of the system dirs."""
+    checkout, env, config, _ = _fixture(tmp_path)
+    _install(checkout, env, config)
+    plist = Path(env["HOME"]) / "Library/LaunchAgents/dev.atp.dispatcher.plist"
+    with plist.open("rb") as stream:
+        loaded = plistlib.load(stream)
+    path_value = loaded["EnvironmentVariables"]["PATH"]
+    assert path_value.startswith(env["HOME"] + "/.local/bin:")
+    assert "/usr/local/bin" in path_value
