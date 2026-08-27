@@ -1,0 +1,25 @@
+{
+  "contract_version": 3,
+  "diagnostics": [
+    {
+      "code": "PF-ID-MISSING",
+      "message": "actionable item in repo demo has no @id (line 3)",
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "warning",
+      "subject_uri": null
+    }
+  ],
+  "edges": [],
+  "generated_at": "2026-07-28T00:00:00Z",
+  "nodes": [],
+  "references": [],
+  "schema_version": 3
+}

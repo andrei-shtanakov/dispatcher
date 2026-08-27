@@ -3,7 +3,7 @@ title: "plan-fields contract v3"
 type: contract
 status: proposed
 owner: Andrei
-updated: 2026-08-25
+updated: 2026-08-26
 ---
 
 # plan-fields contract — v3
@@ -33,6 +33,22 @@ pinned copy inward; nothing reads this directory at run time.
 They are intentionally separate: the envelope shape can rev without changing contract
 semantics, and vice versa.
 
+### Revisions within v3 (mutable only while proposed)
+
+**v3 mutable only while proposed; acceptance freezes this revision.** While the
+frontmatter says `status: proposed`, v3 may take editorial and strictly additive
+revisions in place. Once v3 is accepted, further changes go only through a new
+version directory (v4) or a procedure this canon explicitly adopts — never by
+editing an accepted surface, or the same `contract_version: 3` would come to mean
+incompatible rule sets. Any consumer pin taken before a revision remains an
+immutable snapshot of that revision; the manifest `tree_sha256` is the revision's
+identity.
+
+| Revision | tree_sha256 | Change |
+|---|---|---|
+| r1 (pre-`@dag`) | `63d04f195d4d69084a301c805bff68c1a6188d1e73e828a2ca868edbf0fe86cb` | stream axis (`@epic`/`@defect`), epics/v1 delegation |
+| r2 (current) | `manifest.json` `tree_sha256` — the README is itself part of the surface, so the current revision's hash cannot be written here without self-reference | adds the optional `@dag` launch-registration tag (additive; documents without `@dag` produce byte-identical canonical output) |
+
 ## Files
 
 | File | Role |
@@ -59,7 +75,8 @@ nodes, references, edges, diagnostics}`:
   (`todo://<repo>/<id>`), `id`, `repo`, `title`, `declared_status` (from the checkbox),
   `tombstone`, `provenance`, nullable `owner_ref`, and — new in v3 — `epic`, `defect`,
   `epic_classification`. Optional: transitional
-  `owner_role` (DEC-007 slug), `trigger`, `freshness`,
+  `owner_role` (DEC-007 slug), `trigger`, `freshness`, `dag` (r2 — present only
+  when `@dag` is valid, see "Launch registration"),
   and `raw` (the open map of tag values exactly as written). `raw` **MAY** be omitted; when an
   item carries tags a parser **SHOULD** include it so grammar diagnostics keep the original.
   Fixtures include `raw` illustratively on at least one node per case, not on every node.
@@ -113,6 +130,45 @@ frozen workspace manifest's non-member repository entries; a miss emits
 
 Ownership and movement are orthogonal. A trigger or blocker never changes the
 owner classification; consumers report both axes (and preferably their matrix).
+
+### Launch registration (`@dag`) — v3 r2
+
+`@dag:<value>` asserts that an executable DAG has been **prepared and registered**
+for this plan item. It is deliberately explicit even though the path is derivable
+from `@id`: a stray `dags/<id>.yaml` appearing on disk must not make an item
+launchable — only the plan line says so.
+
+- **Optional extension, never an obligation.** No item is required to carry
+  `@dag`, and its absence is not a diagnostic — unlike `@epic` (EP-MISSING),
+  an open item without `@dag` is simply not registered for launch. Consumers
+  MUST NOT harden absence into a defect.
+- **Tag grammar** (line-local, checked before any filesystem):
+  `^dags/[a-z0-9][a-z0-9._-]*\.yaml$` — a bare token, relative, normalized,
+  no `..`, no quotes, no spaces. Traversal dies in the grammar. A violation is
+  `PF-DAG-GRAMMAR`; `raw` keeps the spelling as written.
+- **Co-occurrence and equality.** `@dag` is meaningful only on a line that also
+  carries `@id`, and its value MUST equal `dags/<id>.yaml`. Both live on one
+  line, so this is checkable line-locally. A well-formed value that names a
+  different stem is `PF-DAG-MISMATCH` — the tag registers a link to THIS item's
+  artifact, never to another item's. On a line with no `@id` the item yields no
+  node at all and `PF-ID-MISSING` already covers it; following the `@epic`
+  precedent it gets no additional `@dag` diagnostic it has no identity to attach
+  to (pinned by `fixtures/invalid/dag-without-id`).
+- **Stem grammar = ItemId grammar.** The filename stem is the `@id` grammar
+  (`^[a-z0-9][a-z0-9._-]{0,63}$`); the equality rule is only well-defined while
+  the two agree, and `fixtures/valid/dag-id-stem-agreement` pins the agreement at
+  the 64-character boundary. `schema.json`'s `dag` pattern is derived from
+  `ItemId`, not restated independently.
+- **The line-based parser reads no continuations**: an `@dag` on a continuation
+  line is invisible — no `dag` field, no diagnostic
+  (pinned by `fixtures/valid/dag-continuation-invisible`).
+- **What this contract does NOT say.** Ready semantics, ledger-wide uniqueness
+  of a DAG path (including `## Shipped`), and whether the artifact exists or is
+  dirty are **consumer semantics** (dispatcher's admission codes `dag_invalid`,
+  `dag_duplicate`, `dag_dirty`, `item_unregistered`). The contract says what the
+  tag is; the consumer decides what follows. Whether the DAG's tasks actually
+  implement the backlog item cannot be proven automatically and is not masked
+  with metadata: it remains the responsibility of the DAG's author and review.
 - **references** — *every* extracted `@blocked_by`, resolved or not (raw / legacy /
   unresolved). Each keeps `raw_ref`, and either `resolved_target` (a canonical URI) or
   `legacy_blocker_ref` (`<repo>#<slug>`).

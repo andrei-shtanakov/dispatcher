@@ -3,11 +3,11 @@
   "contract_version": 3,
   "schema_id": "urn:ecosystem:plan-fields:v3:schema",
   "surface_note": "sha256 of every frozen contract file consumers vendor; excludes drift-control meta (manifest.json, drift-control.md) and vendor-only PINNED.txt. depends.json is part of the surface: it pins the epics/v1 delegation. See drift-control.md.",
-  "tree_sha256": "63d04f195d4d69084a301c805bff68c1a6188d1e73e828a2ca868edbf0fe86cb",
+  "tree_sha256": "6f8b23066fd0bbad4e5c6b5cd3cce3ab8b3a3f81302f3e83adcaf565e609ea2c",
   "surface": [
     {
       "path": "README.md",
-      "sha256": "d1dd5f0ee817234602f49274cc228eeca3e633920bf1c35ce4e4625bb9ec656e"
+      "sha256": "509964a074942255e17d6037fb743e83bd8354a094b87b21e048026e6c67caa3"
     },
     {
       "path": "depends.json",
@@ -15,11 +15,11 @@
     },
     {
       "path": "diagnostics.yaml",
-      "sha256": "04f6cc732058fa9a3692a1a77b8cf8014732242506eb38318a1e85bab636ef96"
+      "sha256": "6b05ab296ad7443f9e9e367541efcf81358966ad3ea2ee5b095512382cfe4111"
     },
     {
       "path": "fixtures/README.md",
-      "sha256": "090ec47d0acf141ced86a54ded87935a26b8227c96a60319757c0eb48c3b332f"
+      "sha256": "9e21ca8f62b7ece16d64d402add5cebdbdea2daf4f5fa3027d3fb3ff629c7c40"
     },
     {
       "path": "fixtures/invalid/ambiguous-legacy-ref.expected.json",
@@ -28,6 +28,38 @@
     {
       "path": "fixtures/invalid/ambiguous-legacy-ref.md",
       "sha256": "7242d452124abf07ec658be0ef87eae61f3c40ebdb67d1b98ed5907dbe292470"
+    },
+    {
+      "path": "fixtures/invalid/dag-name-mismatch.expected.json",
+      "sha256": "f9464b2589656da8e09cea760aa4659a1ae6a661eb13cf8b9b0a7445f0abfe82"
+    },
+    {
+      "path": "fixtures/invalid/dag-name-mismatch.md",
+      "sha256": "b0310667bede779638f7143fce21158978556497266be5ccf744af486d5d5dd4"
+    },
+    {
+      "path": "fixtures/invalid/dag-quoted.expected.json",
+      "sha256": "dd26d02f2ff49933afbccb9073010e4ba16922de747f0e847280963b2368e75d"
+    },
+    {
+      "path": "fixtures/invalid/dag-quoted.md",
+      "sha256": "45702fb515e18388ff9b0e4c2985f5399a4b07b7ea260e72474556354f9eb292"
+    },
+    {
+      "path": "fixtures/invalid/dag-traversal.expected.json",
+      "sha256": "2e7da52755fc3b749a0e3ff41a2952336a854c05f4564ece253f943a21779648"
+    },
+    {
+      "path": "fixtures/invalid/dag-traversal.md",
+      "sha256": "917624e7f40a0e1dd46a690dcd762c6c6fac3686a49e7167045cae521c7380fa"
+    },
+    {
+      "path": "fixtures/invalid/dag-without-id.expected.json",
+      "sha256": "1915b085c5617c61de66f7a82150d3fa3f7d0b3639e1709866fefab435708f11"
+    },
+    {
+      "path": "fixtures/invalid/dag-without-id.md",
+      "sha256": "7b83fbc1fade10136999643cc86201e8fceef15aa0dc1d229f9a06935759ad88"
     },
     {
       "path": "fixtures/invalid/dangling-id.expected.json",
@@ -94,6 +126,30 @@
       "sha256": "bf559c99100a6e734c815e2c3ae822acc6855cbe9719b8dc8edb71890c1501e8"
     },
     {
+      "path": "fixtures/valid/dag-continuation-invisible.expected.json",
+      "sha256": "16140a81ae30c5be3e9b493ccfebe99f1a1c50e834168bfec464dc1ba9228dc3"
+    },
+    {
+      "path": "fixtures/valid/dag-continuation-invisible.md",
+      "sha256": "34dc30ed27086f39c116005161d7b22af070da2db462ae4a242c4753afdc7fca"
+    },
+    {
+      "path": "fixtures/valid/dag-id-stem-agreement.expected.json",
+      "sha256": "b74e082ebd99c2ff9cb9412c754c2b8aa156236473f5f37484641d3459abf967"
+    },
+    {
+      "path": "fixtures/valid/dag-id-stem-agreement.md",
+      "sha256": "71e86ef264e4d3200939ffaf5321339762e7885d9f69d390c70ed23920ab8550"
+    },
+    {
+      "path": "fixtures/valid/dag-registered.expected.json",
+      "sha256": "cd0fa5b25413f42fd80a13851b17c5a32c750059ad932c08ea2c89fd72d65444"
+    },
+    {
+      "path": "fixtures/valid/dag-registered.md",
+      "sha256": "223c98bdcb9cc069aedcf2c5f163f38420b2a4af9301a9e6313fbf212ce5c832"
+    },
+    {
       "path": "fixtures/valid/epic-tagged.expected.json",
       "sha256": "2480325a28963faf2546f4e84da13f1bf74f508d4eee20a0f11782ad0ffa86a2"
     },
@@ -123,7 +179,7 @@
     },
     {
       "path": "schema.json",
-      "sha256": "bfa8ac4eae1aace252eba26621c5f54b118597dd9a86ddd7618dc4b71f078ec1"
+      "sha256": "5a7ce25bbb7ff40368851993e5454ffc5a3aabf92d9ea2f97093ed987c084bfd"
     }
   ]
 }

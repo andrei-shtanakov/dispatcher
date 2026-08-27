@@ -1,0 +1,73 @@
+{
+  "contract_version": 3,
+  "diagnostics": [
+    {
+      "code": "EP-MISSING",
+      "message": "item todo://demo/alpha carries no @epic",
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "warning",
+      "subject_uri": "todo://demo/alpha"
+    },
+    {
+      "code": "PF-DAG-MISMATCH",
+      "message": "@dag dags/beta.yaml on item todo://demo/alpha does not equal dags/alpha.yaml",
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "warning",
+      "subject_uri": "todo://demo/alpha"
+    }
+  ],
+  "edges": [],
+  "generated_at": "2026-07-28T00:00:00Z",
+  "nodes": [
+    {
+      "declared_status": "open",
+      "defect": null,
+      "epic": null,
+      "epic_classification": "missing",
+      "freshness": null,
+      "id": "alpha",
+      "kind": "operational_item",
+      "node_id": "todo://demo/alpha",
+      "owner_ref": {
+        "id": "andrei-shtanakov",
+        "kind": "github_user",
+        "raw": "github:andrei-shtanakov"
+      },
+      "owner_role": null,
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "raw": {
+        "dag": "dags/beta.yaml",
+        "id": "alpha",
+        "owner": "github:andrei-shtanakov"
+      },
+      "repo": "demo",
+      "title": "Mismatched artifact name",
+      "tombstone": false,
+      "trigger": null
+    }
+  ],
+  "references": [],
+  "schema_version": 3
+}

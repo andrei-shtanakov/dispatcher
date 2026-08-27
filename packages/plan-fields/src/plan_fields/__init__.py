@@ -25,12 +25,12 @@ from plan_fields.fleet_api import (
     check_legacy_fleet,
     parse_fleet,
 )
-from plan_fields.parser import parse_owner, parse_todo
+from plan_fields.parser import parse_dag, parse_owner, parse_todo
 from plan_fields.registry import EpicsRegistry, apply_registry, load_registry
-from plan_fields.scrape import ScrapedItem, scrape_items
+from plan_fields.scrape import ScrapedItem, last_tag_is_quoted, scrape_items
 from plan_fields.validator import load_schema, run_conformance, validate_document
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
 
 __all__ = [
     "AmbiguousIdentityError",
@@ -46,9 +46,11 @@ __all__ = [
     "check_fleet",
     "check_legacy_fleet",
     "checkout_map",
+    "last_tag_is_quoted",
     "load_registry",
     "load_schema",
     "manifest_index",
+    "parse_dag",
     "parse_defect",
     "parse_epic",
     "parse_fleet",

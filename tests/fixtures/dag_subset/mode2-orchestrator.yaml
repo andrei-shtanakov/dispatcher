@@ -1,0 +1,7 @@
+# Fleet-derived fixture: Mode-2 OrchestratorConfig shape modeled on
+# proctor-a-*.yaml (spec §6.1, corrected by the recorded ruling above:
+# workstreams is the marker; repo_url alone is legal Mode-1).
+repo_url: git@github.com:andrei-shtanakov/demo.git
+workstreams:
+  - name: ws1
+tasks: []

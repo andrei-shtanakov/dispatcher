@@ -10,8 +10,8 @@ def test_all_fixtures_conform():
     results = run_conformance()
     failures = [f"{r.name}: {r.detail}" for r in results if not r.ok]
     assert not failures, "non-conforming fixtures:\n" + "\n".join(failures)
-    # 10 simple pairs (3 of them the v3 stream-axis cases) + 1 history bundle
-    assert len(results) == 11
+    # 17 simple pairs + 1 history bundle
+    assert len(results) == 18
 
 
 def test_schema_is_valid():

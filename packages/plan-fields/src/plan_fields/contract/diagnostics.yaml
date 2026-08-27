@@ -110,6 +110,18 @@ codes:
     escalation: second_independent_snapshot
     summary: "a syntactically valid repo:<key> owner does not resolve to a non-member repository in the frozen workspace manifest"
 
+  PF-DAG-GRAMMAR:
+    default_severity: warning
+    scope: intra_repo
+    escalation: second_independent_snapshot
+    summary: "@dag value fails the grammar — it must be a bare, normalized dags/<name>.yaml token: relative, no '..', no quotes, no spaces"
+
+  PF-DAG-MISMATCH:
+    default_severity: warning
+    scope: intra_repo
+    escalation: second_independent_snapshot
+    summary: "@dag value is well-formed but does not equal dags/<id>.yaml for the item's own @id — the tag registers a link to THIS item's artifact, never to another item's"
+
   PF-TOMBSTONE-REMOVED:
     default_severity: warning
     scope: cross_repo

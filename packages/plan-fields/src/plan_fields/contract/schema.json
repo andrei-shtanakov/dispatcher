@@ -255,6 +255,11 @@
             "unavailable"
           ],
           "description": "epics/v1 four-state, at THIS layer's confidence: a single-repo parser can prove the tag is well-formed and present (`tagged`) but cannot prove the epic exists in the registry — the fleet layer, which holds epics.toml, may downgrade it to `invalid` (EP-UNKNOWN / EP-MOVED). Same split as `repo:<manifest-key>` owner validation in v2. `unavailable` never occurs on this plane: a TODO item that could not be read yields no node."
+        },
+        "dag": {
+          "type": "string",
+          "pattern": "^dags/[a-z0-9][a-z0-9._-]{0,63}\\.yaml$",
+          "description": "the @dag value, present ONLY when the tag passed its grammar AND equals dags/<id>.yaml for this node's @id (a registered link plan item → executable artifact). Absent — not null — when the tag is missing or invalid; `raw` keeps the original spelling for diagnostics. OPTIONAL BY CONTRACT: no item is required to carry @dag, and its absence is never a diagnostic. The filename stem grammar here is the ItemId grammar — this pattern MUST stay equal to '^dags/' + ItemId.pattern + '\\.yaml$' (the equality rule is only well-defined while the two agree; fixtures/valid/dag-id-stem-agreement pins it). Ready semantics and ledger-wide uniqueness are consumer (dispatcher) concerns, not stated here."
         }
       }
     },

@@ -1,0 +1,73 @@
+{
+  "contract_version": 3,
+  "diagnostics": [
+    {
+      "code": "EP-MISSING",
+      "message": "item todo://demo/esc carries no @epic",
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "warning",
+      "subject_uri": "todo://demo/esc"
+    },
+    {
+      "code": "PF-DAG-GRAMMAR",
+      "message": "@dag value dags/../../etc/owned.yaml on item todo://demo/esc fails the grammar",
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "related_uri": null,
+      "rule_id": null,
+      "severity": "warning",
+      "subject_uri": "todo://demo/esc"
+    }
+  ],
+  "edges": [],
+  "generated_at": "2026-07-28T00:00:00Z",
+  "nodes": [
+    {
+      "declared_status": "open",
+      "defect": null,
+      "epic": null,
+      "epic_classification": "missing",
+      "freshness": null,
+      "id": "esc",
+      "kind": "operational_item",
+      "node_id": "todo://demo/esc",
+      "owner_ref": {
+        "id": "andrei-shtanakov",
+        "kind": "github_user",
+        "raw": "github:andrei-shtanakov"
+      },
+      "owner_role": null,
+      "provenance": {
+        "commit": null,
+        "line": 3,
+        "path": "TODO.md",
+        "remote_origin": null,
+        "repo": "demo"
+      },
+      "raw": {
+        "dag": "dags/../../etc/owned.yaml",
+        "id": "esc",
+        "owner": "github:andrei-shtanakov"
+      },
+      "repo": "demo",
+      "title": "Traversal dies in the grammar",
+      "tombstone": false,
+      "trigger": null
+    }
+  ],
+  "references": [],
+  "schema_version": 3
+}
