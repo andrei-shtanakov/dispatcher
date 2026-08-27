@@ -275,8 +275,15 @@ def classify_inventory(captured: CapturedInputs) -> InventoryDecision:
     dag_by_path = {d.rel_path: d for d in inv.dag_files}
     claims: dict[str, list[PlanItem]] = {}
     for claim_item in inv.plan_items:
-        if claim_item.dag_tag is not None:
-            claims.setdefault(claim_item.dag_tag, []).append(claim_item)
+        # Spec §5.1(3): ANY ledger line naming the DAG claims it. A validated
+        # tag names it, and so does a PF-DAG-MISMATCH raw value — by
+        # parse_dag's construction that raw is a grammar-valid path naming
+        # someone else's artifact; only PF-DAG-GRAMMAR raws name nothing.
+        named = claim_item.dag_tag
+        if named is None and claim_item.dag_diag == "PF-DAG-MISMATCH":
+            named = claim_item.dag_raw
+        if named is not None:
+            claims.setdefault(named, []).append(claim_item)
 
     ready: list[ItemDecision] = []
     blocked: list[ItemDecision] = []

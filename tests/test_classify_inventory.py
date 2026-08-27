@@ -430,3 +430,57 @@ def test_rule14_repo_blocked_blocks_otherwise_ready_items():
     assert decision.ready == ()
     assert len(decision.blocked) == 1
     assert decision.blocked[0].reason_code == first_code
+
+
+def test_shipped_mismatch_claim_still_blocks_the_open_owner():
+    """A Shipped line naming dags/a.yaml under ITS OWN wrong id still claims it.
+
+    parse_dag yields dag_tag=None + PF-DAG-MISMATCH for that line, but spec
+    §5.1(3) counts ANY ledger line naming the same DAG — the open owner of
+    dags/a.yaml must be dag_duplicate, not ready.
+    """
+    key = RepoKey(host="github.com", owner="o", repo="r")
+    dag = DagFileInfo(
+        rel_path="dags/a.yaml",
+        is_regular=True,
+        text="repo: /x\ntasks: []\n",
+        blob_sha="s1",
+        head_blob_sha="s1",
+        subset=Accepted(repo_path="/x", repo_url=None),
+        named_repo=key,
+        named_repo_error=None,
+        error=None,
+    )
+    inv = InventorySurface(
+        plan_items=(
+            PlanItem(
+                item_id="a",
+                line=3,
+                open=True,
+                shipped=False,
+                dag_raw="dags/a.yaml",
+                dag_tag="dags/a.yaml",
+                dag_diag=None,
+            ),
+            PlanItem(
+                item_id="old",
+                line=9,
+                open=False,
+                shipped=True,
+                dag_raw="dags/a.yaml",
+                dag_tag=None,
+                dag_diag="PF-DAG-MISMATCH",
+            ),
+        ),
+        dag_files=(dag,),
+        head_revision="c" * 40,
+        repo_key=key,
+        plan_error=None,
+        dag_dir_error=None,
+        capture_error=None,
+    )
+    decision = classify_inventory(_captured(inv))
+    assert decision.ready == ()
+    (item,) = decision.blocked
+    assert item.reason_code == DAG_DUPLICATE
+    assert "line 9" in item.reason
