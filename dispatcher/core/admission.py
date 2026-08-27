@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from dispatcher.core.dag_subset import Rejected
+from dispatcher.core.dag_subset import Accepted, Rejected
 from dispatcher.core.inventory import DagFileInfo, InventorySurface, PlanItem
 from dispatcher.core.run_identity import RepoKey
 from dispatcher.core.run_store import LockInfo, Malformed
@@ -307,7 +307,18 @@ def classify_inventory(captured: CapturedInputs) -> InventoryDecision:
         if item.open and item.dag_tag is not None
     }
     orphan_dags = tuple(
-        sorted(d.rel_path for d in inv.dag_files if d.rel_path not in open_claims)
+        sorted(
+            d.rel_path
+            for d in inv.dag_files
+            # Spec §5.1: an orphan is a VALID artifact nobody registered —
+            # readable, regular, subset-accepted. A broken unclaimed file is
+            # not reported as orphan: the list would assert a validity it
+            # never checked.
+            if d.rel_path not in open_claims
+            and d.is_regular
+            and d.error is None
+            and isinstance(d.subset, Accepted)
+        )
     )
 
     return InventoryDecision(

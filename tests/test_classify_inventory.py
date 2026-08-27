@@ -484,3 +484,56 @@ def test_shipped_mismatch_claim_still_blocks_the_open_owner():
     (item,) = decision.blocked
     assert item.reason_code == DAG_DUPLICATE
     assert "line 9" in item.reason
+
+
+def test_broken_unclaimed_candidates_are_not_orphans():
+    """orphan_dags carries only readable, subset-Accepted files (spec §5.1).
+
+    An unclaimed file that is a symlink, unreadable, or subset-rejected is
+    not a launchable artifact anyone forgot — reporting it as orphan would
+    make the diagnostics list assert a validity it never checked.
+    """
+    key = RepoKey(host="github.com", owner="o", repo="r")
+    base = dict(
+        blob_sha=None,
+        head_blob_sha=None,
+        named_repo=None,
+        named_repo_error=None,
+    )
+    broken = (
+        DagFileInfo(
+            rel_path="dags/link.yaml",
+            is_regular=False,
+            text=None,
+            subset=None,
+            error="dags/link.yaml refused: not a regular file",
+            **base,
+        ),
+        DagFileInfo(
+            rel_path="dags/mode2.yaml",
+            is_regular=True,
+            text="workstreams: []\n",
+            subset=Rejected(reason="'workstreams:' present"),
+            error=None,
+            **base,
+        ),
+    )
+    ok = DagFileInfo(
+        rel_path="dags/free.yaml",
+        is_regular=True,
+        text="repo: /x\ntasks: []\n",
+        subset=Accepted(repo_path="/x", repo_url=None),
+        error=None,
+        **base,
+    )
+    inv = InventorySurface(
+        plan_items=(),
+        dag_files=broken + (ok,),
+        head_revision="c" * 40,
+        repo_key=key,
+        plan_error=None,
+        dag_dir_error=None,
+        capture_error=None,
+    )
+    decision = classify_inventory(_captured(inv))
+    assert decision.orphan_dags == ("dags/free.yaml",)
