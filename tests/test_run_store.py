@@ -808,3 +808,46 @@ def test_racing_reserves_on_one_request_id_cannot_both_write(tmp_path):
     assert survived.work_id == winner.work_id == "wa"
     assert store.holds_lock(key_a) is not None  # winner's lock intact
     assert store.holds_lock(key_b) is None  # loser released its own
+
+
+def test_racing_rejection_cannot_clobber_another_attempts_record(tmp_path):
+    """Same family as the reserve race: record_admission_rejection's
+    get-then-write window. B's rejection persist, racing A's reserve on
+    one request_id, must conflict — never os.replace A's live record.
+    """
+    store = RunStore(tmp_path / "state")
+    key_a = RepoKey(host="github.com", owner="o", repo="rj-a")
+    key_b = RepoKey(host="github.com", owner="o", repo="rj-b")
+    req = "44444444-4444-4444-8444-444444444444"
+
+    with store.guard(key_a):
+        store._reserve_locked(  # noqa: SLF001 — guarded caller
+            req,
+            key_a,
+            known_runs=[],
+            window_start="2026-08-27T00:00:00+00:00",
+            work_id="wa",
+            revision="a" * 40,
+        )
+
+    real_get = store.get
+    store.get = lambda rid: None  # type: ignore[method-assign]
+    try:
+        with pytest.raises(FingerprintMismatch):
+            store.record_admission_rejection(
+                req,
+                key_b,
+                work_id="wb",
+                revision="b" * 40,
+                code="dag_invalid",
+                detail="x",
+                current={},
+            )
+    finally:
+        store.get = real_get  # type: ignore[method-assign]
+
+    survived = store.get(req)
+    assert survived is not None
+    assert survived.repo_key == key_a.as_text()
+    assert survived.state == "reserved"
+    assert store.holds_lock(key_a) is not None

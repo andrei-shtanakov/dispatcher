@@ -742,10 +742,12 @@ class RunStore:
         would re-classify — and launch — once the blocking lock frees,
         breaking immutable replay (spec §8.2).
 
-        Caller holds `guard(key)`. The write itself is atomic per
-        request_id (`_write` → `os.replace`). A repeated call replays
-        the existing record under the same fingerprint semantics as
-        `_reserve_locked`.
+        Caller holds `guard(key)`. The first write is create-EXCLUSIVE
+        per request_id (`_write_new` → `os.link`): the get-then-write
+        window here raced `_reserve_locked` in ANOTHER repo sharing the
+        request_id, and `os.replace` would have clobbered that live
+        record (review on #209). A repeated call replays the existing
+        record under the same fingerprint semantics as `_reserve_locked`.
         """
         fp = fingerprint_of(key.as_text(), work_id, revision)
         existing = self.get(request_id)
@@ -777,7 +779,21 @@ class RunStore:
             admission_current=current,
             rejected_at=datetime.now(UTC).isoformat(),
         )
-        self._write(record)
+        try:
+            self._write_new(record)
+        except FileExistsError:
+            # Lost the same-id race: re-read and apply the same replay-or-
+            # conflict semantics the front of this method already defines.
+            raced = self.get(request_id)
+            if raced is not None:
+                stored = raced.fingerprint or fingerprint_of(
+                    raced.repo_key, raced.work_id, raced.revision
+                )
+                if stored == fp:
+                    return raced
+            raise FingerprintMismatch(
+                f"{request_id} was already claimed by a concurrent attempt"
+            ) from None
         return record
 
     def mark_admission_rejected(
