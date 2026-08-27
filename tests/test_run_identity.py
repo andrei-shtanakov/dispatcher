@@ -289,3 +289,34 @@ def test_unreadable_candidate_identity_is_a_note_not_a_skip(tmp_path):
     )
     assert [m.name for m in matches] == ["good"]
     assert any("broken" in n for n in notes)
+
+
+def test_checkout_without_origin_is_skipped_silently(tmp_path):
+    """A repo with NO origin remote is a DETERMINATE non-candidate — it has
+    no canonical identity, so it cannot be the duplicate of any
+    remote-derived repo_key. It must NOT become a scan note: live
+    acceptance found two такие в реальном воркспейсе (spec-runner-tasks —
+    задуман без remote), и note блокировал каждый submit флота."""
+    ws = tmp_path / "ws"
+    good = ws / "good"
+    (good / ".git").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(good)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(good),
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:o/good.git",
+        ],
+        check=True,
+    )
+    local_only = ws / "local-only"
+    subprocess.run(["git", "init", "-q", str(local_only)], check=True)
+    matches, notes = find_checkouts_by_identity(
+        ws, RepoKey(host="github.com", owner="o", repo="good")
+    )
+    assert [m.name for m in matches] == ["good"]
+    assert notes == []
