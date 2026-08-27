@@ -9,7 +9,9 @@ import pytest
 from dispatcher.core.run_identity import (
     IdentityError,
     RepoKey,
+    find_checkout_by_identity,
     identity_from_checkout,
+    list_workspace_checkouts,
     parse_remote_url,
     safe_path_parts,
 )
@@ -104,3 +106,96 @@ def test_identity_from_checkout_without_origin_refuses(tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     with pytest.raises(IdentityError):
         identity_from_checkout(tmp_path)
+
+
+# --- list_workspace_checkouts / find_checkout_by_identity (review fix
+# wave C, C1) — the ONE enumeration the launchpad assembler and submit
+# v2's checkout resolver both use, so they can never walk a workspace
+# differently. ------------------------------------------------------------
+
+
+def _init_checkout(root: Path, remote: str) -> None:
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "remote", "add", "origin", remote], check=True
+    )
+
+
+def test_list_workspace_checkouts_skips_hidden_and_sorts(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "b-repo").mkdir()
+    (ws / "a-repo").mkdir()
+    (ws / "_scratch").mkdir()
+    (ws / ".git-like").mkdir()
+
+    entries, notes = list_workspace_checkouts(ws)
+
+    assert notes == []
+    assert [name for name, _ in entries] == ["a-repo", "b-repo"]
+    assert entries[0][1] == ws / "a-repo"
+
+
+def test_list_workspace_checkouts_reports_an_unscannable_root_as_a_note(
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "does-not-exist"
+
+    entries, notes = list_workspace_checkouts(missing)
+
+    assert entries == []
+    assert len(notes) == 1
+    assert str(missing) in notes[0]
+
+
+def test_find_checkout_by_identity_resolves_a_directory_name_mismatch(
+    tmp_path: Path,
+) -> None:
+    """The real fleet case (C1): a checkout's workspace directory name
+    (`open-prose/`) need not match its origin remote's `repo` segment
+    (`libretto`). `list_workspace_checkouts` — the SAME enumeration the
+    launchpad assembler uses to classify this checkout in the first
+    place — and `find_checkout_by_identity` must agree on exactly which
+    checkout that repo_key names, so the assembler and submit v2 can
+    never resolve one repo_key to two different checkouts."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    root = ws / "open-prose"
+    _init_checkout(root, "git@github.com:andrei-shtanakov/libretto.git")
+    target = RepoKey(host="github.com", owner="andrei-shtanakov", repo="libretto")
+
+    entries, notes = list_workspace_checkouts(ws)
+    assert notes == []
+    assert [name for name, _ in entries] == ["open-prose"]
+
+    found = find_checkout_by_identity(ws, target)
+    assert found == root.resolve()
+
+
+def test_find_checkout_by_identity_returns_none_when_nothing_matches(
+    tmp_path: Path,
+) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    root = ws / "some-repo"
+    _init_checkout(root, "git@github.com:andrei-shtanakov/some-repo.git")
+    target = RepoKey(host="github.com", owner="andrei-shtanakov", repo="nope")
+
+    assert find_checkout_by_identity(ws, target) is None
+
+
+def test_find_checkout_by_identity_skips_non_git_and_unresolvable_entries(
+    tmp_path: Path,
+) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "not-a-checkout").mkdir()  # no .git at all
+    no_origin = ws / "no-origin"
+    no_origin.mkdir()
+    subprocess.run(["git", "init", "-q", str(no_origin)], check=True)  # .git, no origin
+    root = ws / "the-target"
+    _init_checkout(root, "git@github.com:andrei-shtanakov/the-target.git")
+    target = RepoKey(host="github.com", owner="andrei-shtanakov", repo="the-target")
+
+    assert find_checkout_by_identity(ws, target) == root.resolve()

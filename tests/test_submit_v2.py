@@ -102,6 +102,37 @@ def _fake_maestro(path: Path, *, creates_run: str | None) -> Path:
     return path
 
 
+def _fake_maestro_by_identity(path: Path, *, creates_run: str | None) -> Path:
+    """Like `_fake_maestro`, but derives the project directory from the
+    checkout's ORIGIN REMOTE (as real maestro does,
+    `maestro/maestro/repo_identity.py`) instead of from the checkout
+    directory's own name — needed once a test's checkout directory name
+    diverges from its remote's `repo` segment (review fix wave C, C1)."""
+    body = (
+        "#!/usr/bin/env python3\n"
+        "import os, pathlib, subprocess, sys\n"
+        f"run_id = {creates_run!r}\n"
+        "if run_id:\n"
+        '    home = pathlib.Path(os.environ["MAESTRO_HOME"])\n'
+        "    cwd = pathlib.Path.cwd()\n"
+        "    remote = subprocess.run(\n"
+        "        ['git', 'remote', 'get-url', 'origin'], cwd=str(cwd),\n"
+        "        capture_output=True, text=True, check=True,\n"
+        "    ).stdout.strip()\n"
+        "    path_part = remote.split(':', 1)[-1]\n"
+        "    if path_part.endswith('.git'):\n"
+        "        path_part = path_part[:-4]\n"
+        "    owner, repo = path_part.rsplit('/', 1)\n"
+        '    d = home / "projects" / "github.com" / owner / repo / "runs" / run_id\n'
+        "    d.mkdir(parents=True, exist_ok=True)\n"
+        '    (d / "state.db").write_text("")\n'
+        "sys.exit(0)\n"
+    )
+    path.write_text(body)
+    path.chmod(0o755)
+    return path
+
+
 def _catalog(tmp_path: Path) -> Path:
     path = tmp_path / "agents-catalog.toml"
     path.write_text('[[agents]]\nharness = "claude_code"\n')
@@ -485,6 +516,61 @@ def test_checkout_identity_mismatch_is_422(tmp_path: Path) -> None:
         controller.submit_v2(body)
     assert exc.value.status == 422
     assert exc.value.code == "identity_mismatch"
+
+
+def test_directory_name_differing_from_repo_key_still_resolves_and_launches(
+    tmp_path: Path,
+) -> None:
+    """C1: the real fleet case — a checkout's WORKSPACE DIRECTORY name
+    need not match its origin remote's `repo` segment (`open-prose/`
+    cloned from `.../libretto.git`). The launchpad assembler
+    (`launchpad.py::assemble_snapshot`) classifies this repo by its
+    checkout's IDENTITY, never by directory name, so it shows Ready under
+    `github.com/andrei-shtanakov/libretto` — submit_v2 must resolve the
+    SAME checkout by that identity too, or the Ready row is unlaunchable:
+    a 409 the UI can never recover from by refetching (an unbreakable
+    loop, since the row stays Ready forever)."""
+    from dispatcher.core.launchpad import assemble_snapshot
+
+    dir_name = "open-prose"
+    remote_name = "libretto"
+    remote = _remote(remote_name)
+    (tmp_path / "ws").mkdir(exist_ok=True)
+    root = make_repo(
+        tmp_path / "ws",
+        "- [ ] Ready item @id:w1 @dag:dags/w1.yaml\n",
+        {"dags/w1.yaml": f"repo_url: {remote}\ntasks: []\n"},
+        remote=remote,
+        name=dir_name,
+    )
+    head = _head(root)
+    key = _key(remote_name)
+
+    cli = _fake_maestro_by_identity(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    controller = RunController(config, materialize_timeout=10.0)
+
+    # The assembler resolves this checkout's TRUE identity (its remote,
+    # not its directory name) and classifies it Ready.
+    snap = assemble_snapshot(controller)
+    repo_row = next(r for r in snap.repositories if r.repo_key == key.as_text())
+    assert repo_row.admission == "ready"
+    ready_row = next(r for r in snap.ready if r.repo_key == key.as_text())
+    assert ready_row.work_id == "w1"
+
+    # submit_v2, given the SAME repo_key the assembler derived, must
+    # resolve the SAME checkout and actually launch — not 409.
+    body = _body(repo_key=key.as_text(), work_id="w1", revision=head)
+    receipt = controller.submit_v2(body)
+    assert receipt.accepted is True
+    assert receipt.run_id == "01AAA"
+
+    store = RunStore(config.run_state_dir)  # type: ignore[arg-type]
+    record = store.get(_REQ)
+    assert record is not None
+    # The assembler and submit resolved the SAME checkout on disk.
+    assert Path(record.checkout).resolve() == root.resolve()
+    assert record.repository == dir_name
 
 
 # --- row 5: the in-guard item gate ---------------------------------------

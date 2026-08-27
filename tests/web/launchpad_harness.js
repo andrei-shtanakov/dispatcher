@@ -720,7 +720,8 @@ testCase('behaviour 2: a whole-snapshot refetch alone does not resolve an '
 // ---- behaviour 3: structured errors ------------------------------------------
 
 testCase('behaviour 3: a structured {code,detail} error renders "code: '
-  + 'detail" text, then ONE whole-snapshot refetch; current is never spliced',
+  + 'detail" text with `current` shown INSIDE that message (plan §3), then '
+  + 'ONE whole-snapshot refetch',
   async () => {
   await withPage(async page => {
     page.routes.unshift([u => u === '/api/runs/submit', () => resp(409, {
@@ -733,8 +734,8 @@ testCase('behaviour 3: a structured {code,detail} error renders "code: '
     const html = htmlOf(page, '#lp-ready');
     check(html.includes('revision_moved: HEAD moved since the operator saw it'),
       `renders "code: detail" (got: ${html})`);
-    check(!html.includes('z'.repeat(40)),
-      '`current` is never spliced into the rendered snapshot');
+    check(html.includes('current') && html.includes('z'.repeat(40)),
+      `\`current\` is shown INSIDE the message text, not dropped (got: ${html})`);
     check(!maybeEl(page, '#lp-ready .lp-confirm') && !maybeEl(page, '#lp-ready .lp-retry'),
       'the pending entry is cleared — a structured error is a settled answer');
     check(callsTo(page, '/api/launchpad') === before + 1,

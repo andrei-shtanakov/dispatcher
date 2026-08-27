@@ -17,6 +17,7 @@ by the producer itself. Do not "fix" a mismatch by editing the rule here.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ _URL_LIKE = re.compile(
 )
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 _GIT_TIMEOUT = 15
+_HIDDEN_PREFIXES = ("_", ".")
 
 
 def _segment_is_safe(segment: str) -> bool:
@@ -136,3 +138,73 @@ def identity_from_checkout(repo_root: Path) -> RepoKey:
             f"{proc.stderr.strip() or 'git exited ' + str(proc.returncode)}"
         )
     return parse_remote_url(proc.stdout)
+
+
+def list_workspace_checkouts(
+    workspace: Path,
+) -> tuple[list[tuple[str, Path]], list[str]]:
+    """`(name, checkout)` pairs for every visible directory directly under
+    `workspace` — the ONE enumeration shared by the launchpad assembler's
+    manifest scan (`dispatcher/core/launchpad.py::_manifest_repos`) and
+    submit v2's identity-based checkout resolver
+    (`RunController._resolve_v2_checkout`), so the two adapters can never
+    walk a workspace differently (review fix wave C, C1).
+
+    `os.scandir`, not `iterdir`/`glob`: a single bad entry (a broken
+    symlink, a permission-denied child) must degrade that ONE entry, not
+    abort a whole comprehension via a blanket `except OSError` around it
+    — an earlier version of the launchpad scan did exactly that and
+    silently emptied the entire manifest (fail-open, review fix round 1).
+    `os.scandir` makes each entry's stat a separate call this loop can
+    catch and skip.
+
+    Returns `(entries, notes)`; a failure to scan `workspace` itself is a
+    different class of problem (nothing was listed at all) and is
+    reported as a note too, rather than a silent `[]`.
+    """
+    try:
+        with os.scandir(workspace) as scanned:
+            raw_entries = list(scanned)
+    except OSError as err:
+        return [], [f"cannot list workspace {workspace}: {err}"]
+    entries: list[tuple[str, Path]] = []
+    notes: list[str] = []
+    for entry in raw_entries:
+        if entry.name.startswith(_HIDDEN_PREFIXES):
+            continue
+        try:
+            is_dir = entry.is_dir()
+        except OSError as err:
+            notes.append(f"cannot stat {workspace / entry.name}: {err}")
+            continue
+        if is_dir:
+            entries.append((entry.name, workspace / entry.name))
+    entries.sort(key=lambda pair: pair[0])
+    return entries, notes
+
+
+def find_checkout_by_identity(workspace: Path, target: RepoKey) -> Path | None:
+    """The checkout directly under `workspace` whose `origin` remote
+    resolves to `target`, or `None` if none does.
+
+    submit v2's fallback when the fast path `workspace / target.repo` is
+    absent or names a different repository: a checkout's workspace
+    directory name need not match its remote's `repo` segment (real fleet
+    case: a directory named `open-prose/` cloned from `.../libretto.git`)
+    — resolving by directory name alone made such a repo's Ready row
+    unlaunchable (review fix wave C, C1). Uses `list_workspace_checkouts`,
+    the SAME enumeration the launchpad assembler uses to derive each row's
+    `repo_key` in the first place, so the two can never resolve a
+    `repo_key` to two different checkouts.
+    """
+    entries, _notes = list_workspace_checkouts(workspace)
+    for _name, checkout in entries:
+        if not (checkout / ".git").exists():
+            continue
+        try:
+            found = identity_from_checkout(checkout)
+        except IdentityError:
+            continue
+        if found.as_text() == target.as_text():
+            return checkout.resolve()
+    return None

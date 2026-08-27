@@ -304,6 +304,17 @@ def create_app(
             )
         try:
             return assemble_snapshot(runs, recent_limit=limit, cursor=cursor)
+        except ValidationError:
+            # `ValidationError` is a `ValueError` SUBCLASS — without this
+            # clause ahead of the one below, a server-side model bug
+            # (bad data reaching a pydantic model somewhere inside the
+            # assembler) would be caught by `except ValueError` and
+            # answered as a 422 blaming the client's `cursor`/
+            # `recent_limit`, when it is actually a 500. Only
+            # `_decode_cursor`'s own plain `ValueError` — an actually
+            # invalid cursor — belongs in the branch below; a
+            # `ValidationError` must propagate.
+            raise
         except ValueError as err:
             return _structured(422, "invalid_request", str(err))
         except ControlPlaneOff as err:

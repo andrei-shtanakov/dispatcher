@@ -3627,7 +3627,7 @@ const LP_REFRESH_MS = 30000;
 // below) is Task 7's seam: state lives OUTSIDE the DOM so a wholesale
 // rerender here can never lose an attempt in progress.
 const lpState = {
-  seq: 0, applied: 0, inflight: 0, snapshot: null,
+  seq: 0, inflight: 0, snapshot: null,
   pending: Object.create(null),
   // Task 7: one-shot text left behind by a SETTLED submit (a 2xx receipt or
   // a structured error) — rule 3/§9's "code: detail" message. Deliberately
@@ -3979,7 +3979,6 @@ function lpRenderFetchError(err) {
 // in-flight requests resolves first can still lose.
 function lpApplySnapshot(seq, snapshot) {
   if (seq !== lpState.seq) return;
-  lpState.applied = seq;
   lpState.snapshot = snapshot;
   lpRender(snapshot);
 }
@@ -4128,9 +4127,25 @@ async function lpConfirmLaunch(rowKey) {
   // ambiguous — that is a fact for the run view/resolve flow, not for this
   // row's transport-uncertainty tracking).
   delete lpState.pending[rowKey];
-  lpState.rowMessages[rowKey] = resp.ok
-    ? renderReceipt(data, data.accepted === null)
-    : `${esc(data.code ?? "error")}: ${esc(data.detail ?? `HTTP ${resp.status}`)}`;
+  if (resp.ok) {
+    lpState.rowMessages[rowKey] = renderReceipt(data, data.accepted === null);
+  } else {
+    // `current` is shown INSIDE this message text only (plan §3) — it is
+    // never spliced into `lpState.snapshot`, only appended to a text
+    // string nothing else reads.
+    let msg = `${esc(data.code ?? "error")}: ${esc(data.detail ?? `HTTP ${resp.status}`)}`;
+    if (data.current !== undefined && data.current !== null) {
+      let currentText;
+      try {
+        currentText = JSON.stringify(data.current);
+      } catch (err) {
+        currentText = String(data.current);
+      }
+      if (currentText.length > 200) currentText = currentText.slice(0, 200) + "…";
+      msg += ` (current: ${esc(currentText)})`;
+    }
+    lpState.rowMessages[rowKey] = msg;
+  }
   lpRerenderReady();
   lpRefetchAfterAction();
 }
@@ -4157,8 +4172,12 @@ async function lpReadBack(rowKey) {
   }
   if (!resp.ok) return; // any other non-ok: leave unknown, do not guess
   delete lpState.pending[rowKey];
+  // `data.record?.state`, not `data.record.state`: a shape surprise here
+  // must not throw inside this async handler and leave the row stuck
+  // "unknown" with no feedback at all — a fallback text beats a silent hang.
+  const recordState = data.record?.state ?? "unknown (unexpected response shape)";
   lpState.rowMessages[rowKey] =
-    `read-back found the record: state ${esc(data.record.state)}`;
+    `read-back found the record: state ${esc(recordState)}`;
   lpRerenderReady();
   lpRefetchAfterAction();
 }

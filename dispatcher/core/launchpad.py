@@ -12,7 +12,6 @@ docstring there promises.
 from __future__ import annotations
 
 import base64
-import os
 import subprocess
 import uuid
 from datetime import UTC, datetime
@@ -37,6 +36,7 @@ from dispatcher.core.run_controller import (
     logs_dir,
     read_lock_state,
 )
+from dispatcher.core.run_identity import list_workspace_checkouts
 from dispatcher.core.run_request import RunRejectedError
 from dispatcher.core.run_store import LaunchRecord
 
@@ -53,7 +53,6 @@ _ATTENTION_RUN_STATUSES = frozenset({"NEEDS_REVIEW", "AWAITING_APPROVAL"})
 #: `active`'s hard cap (spec §4.1): the endpoint must never become unbounded.
 _ACTIVE_CAP = 200
 
-_HIDDEN_PREFIXES = ("_", ".")
 _GIT_TIMEOUT = 15
 
 
@@ -143,53 +142,25 @@ class LaunchpadSnapshot(BaseModel):
 def _manifest_repos(
     config: DispatcherConfig,
 ) -> tuple[list[tuple[str, Path]], list[str]]:
-    """`(name, checkout)` pairs — the workspace `run_request._checkout`
-    resolves a bare `repository` name against, enumerated instead of
-    looked up by name. Same workspace (first existing root), same
-    hidden/underscore-prefixed skip as `discover()`/`sync_service.
-    fetch_workspace` — a directory need not carry `.git` to be listed
-    here; that is exactly what makes `repo_unresolved` observable below
-    rather than the entry simply not existing.
+    """`(name, checkout)` pairs — every visible directory of the workspace
+    (first existing root), enumerated instead of looked up by name; a
+    directory need not carry `.git` to be listed here, that is exactly
+    what makes `repo_unresolved` observable below rather than the entry
+    simply not existing. `list_workspace_checkouts` (`run_identity.py`) is
+    the shared enumeration submit v2's checkout resolver also scans — the
+    review fix wave C, C1 fix that keeps this list and submit's own
+    identity-based lookup from ever walking the workspace differently.
 
-    Returns `(entries, notes)`. `os.scandir`, not `iterdir`/`glob`: both
-    of those raise OSError from INSIDE the generator the moment a bad
-    entry's `is_dir()` stat fails (a broken symlink, a permission-denied
-    child) — an earlier version of this function built `children` with
-    `sorted(d for d in workspace.iterdir() if d.is_dir() ...)`, and one
-    bad entry ANYWHERE under the workspace root aborted that whole
-    comprehension, caught by a blanket `except OSError: return []` that
-    silently emptied the ENTIRE manifest (fail-open: the snapshot would
-    render "no repositories" as if the fleet were empty, review fix
-    round 1). `os.scandir` makes each entry's stat a SEPARATE call this
-    loop can catch and skip — mirrors `RunStore.list_with_mtime`'s
-    per-record degradation. A failure to scan the workspace root itself
-    is a different class of problem (nothing was listed at all) and is
-    reported as a note too, rather than a silent `[]`, so the caller can
-    surface it in the snapshot instead of it reading as an empty, healthy
-    fleet.
+    Returns `(entries, notes)`. When NO configured root is even a
+    directory, that is reported as a note too (review fix wave C, I2)
+    rather than a silent `([], [])` that would render as an empty, healthy
+    fleet with no explanation.
     """
     workspace = next((r for r in config.roots if r.is_dir()), None)
     if workspace is None:
-        return [], []
-    try:
-        with os.scandir(workspace) as scanned:
-            raw_entries = list(scanned)
-    except OSError as err:
-        return [], [f"cannot list workspace {workspace}: {err}"]
-    entries: list[tuple[str, Path]] = []
-    notes: list[str] = []
-    for entry in raw_entries:
-        if entry.name.startswith(_HIDDEN_PREFIXES):
-            continue
-        try:
-            is_dir = entry.is_dir()
-        except OSError as err:
-            notes.append(f"cannot stat {workspace / entry.name}: {err}")
-            continue
-        if is_dir:
-            entries.append((entry.name, workspace / entry.name))
-    entries.sort(key=lambda pair: pair[0])
-    return entries, notes
+        roots = ", ".join(str(r) for r in config.roots) or "none configured"
+        return [], [f"no configured workspace root is a directory: {roots}"]
+    return list_workspace_checkouts(workspace)
 
 
 def _default_branch(checkout: Path) -> str:
@@ -342,6 +313,28 @@ def assemble_snapshot(
             runs_unreadable=runs_unreadable,
         )
         decision = classify_inventory(captured)
+        if decision.unreadable is not None:
+            # Parity with submit_v2 (`run_controller.py`'s own
+            # `decision.unreadable is not None` check maps this to 409
+            # `repo_unresolved`): degraded captured facts must read as
+            # unreadable here too, never fall through to `decision.repo`'s
+            # admission — that field only reflects lock/run state and
+            # knows nothing about a broken inventory capture, so leaving
+            # it unchecked rendered a broken repo as a clean, empty,
+            # "ready" one (fail-open, review fix wave C, I1).
+            repositories.append(
+                RepoRow(
+                    repo_key=key.as_text(),
+                    repository=repository,
+                    default_branch=_default_branch(checkout),
+                    seen_revision=inv.head_revision,
+                    admission="unreadable",
+                    blockers=[
+                        BlockerView(code=REPO_UNRESOLVED, detail=decision.unreadable)
+                    ],
+                )
+            )
+            continue
         repositories.append(
             RepoRow(
                 repo_key=key.as_text(),

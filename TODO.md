@@ -450,22 +450,28 @@
 - [x] PR-B1: store + admission + single-live-run гейт + оба escape — ветка `feat/launchpad-b1` смержена (8 задач SDD, финальное ревью + fix-волна чисты) (PR #200) @owner:github:andrei-shtanakov @id:launchpad-b1
 - [x] PR-B2: ре-вендор plan-fields с `@dag` + inventory reader — план `docs/superpowers/plans/2026-08-26-launchpad-b2-inventory.md` (PR #204) @owner:github:andrei-shtanakov @id:launchpad-b2
 - [ ] PR-C: `/api/launchpad` + структурные 409 + UI (в работе — ветка `feat/launchpad-c`, план `docs/superpowers/plans/2026-08-27-launchpad-c-api-ui.md`) @owner:github:andrei-shtanakov @id:launchpad-c
-      Наследует записанные хвосты B1: персистентность отказов lock-семьи
-      (launch_busy/lock_malformed/lock_io_unreadable сейчас эфемерны by design);
+      Наследует записанные хвосты B1: ~~персистентность отказов lock-семьи
+      (launch_busy/lock_malformed/lock_io_unreadable сейчас эфемерны by
+      design)~~ (неверно — уже персистятся: PR #200 добавил
+      `mark_admission_rejected`/`record_admission_rejection` для
+      lock-семьи, строка устарела на момент написания);
       perf — `_capture_run_facts` сканирует весь request store на каждый submit;
       escape/reconciliation для crash-окна terminal-перехода (здоровый лок,
       которым владеет терминальная запись, — см. TODO в докстринге
       `mark_admission_rejected`); ~~message-split capture-phase отказов
-      submit~~ (вытеснено v2 структурной таксономией 409 — задача 4 этого
-      плана, PR #204).
+      submit~~ (вытеснено v2 структурной таксономией 409 — задача 4 этой
+      ветки, feat/launchpad-c).
       ~~Хвосты B2: спека §5.1 «on both items» → «on both open items» (ruling
       задачи 4); §6.1 `repo_url` — НЕ Mode-2 маркер, shipped/test-pinned
       семантика submit принимает его как remote-URL именование репо,
       дискриминатор — только `workstreams` (ревью PR #202, code-over-spec);
       §7 нужен проход под НОВОЙ семантикой — linked-unreadable теперь
       `run_state_unreadable` (owner override на ревью B1), а не
-      предполагавшееся in-flight.~~ (все три поправлены в спеке этим планом,
-      задача 1, PR #204).
+      предполагавшееся in-flight.~~ (все три поправлены в спеке этой веткой,
+      задача 1, feat/launchpad-c).
+- [ ] `snapshot_id` в submit v2 нигде не эхоится (спека зовёт его audit
+      echo) — либо поле в `LaunchRecord`, либо правка спеки
+      @owner:github:andrei-shtanakov @id:launchpad-snapshot-id-echo
 - [ ] Capture укладывается в ≤3 git-подпроцесса на файл `dags/` за submit и
       на репо за assembly (B2 M8); оптимизация — только когда замер покажет
       вред, риды ассемблера уже once-per-assembly @owner:github:andrei-shtanakov

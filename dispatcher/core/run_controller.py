@@ -48,6 +48,7 @@ from dispatcher.core.models import OrchestrationRunInfo, ProjectSnapshot
 from dispatcher.core.run_identity import (
     IdentityError,
     RepoKey,
+    find_checkout_by_identity,
     identity_from_checkout,
     safe_path_parts,
 )
@@ -224,18 +225,16 @@ def capture_run_facts(
     never disagree.
 
     A run whose `state.db` failed to read (`OrchestrationRunInfo`
-    status `"unreadable"`) stays an ordinary non-terminal `RunFact`
-    when THIS store has a `request_id` on file for it: that is a
-    freshly materialized run of dispatcher's OWN launch whose db
-    content can transiently lag its directory's appearance, not
-    external corruption, so it stays inside the same fail-closed
-    RUN_IN_FLIGHT/RUN_VANISHED handling as any other non-terminal
-    status. An unreadable run this store cannot attribute to any
-    request is escalated instead, into `runs_unreadable`:
-    `classify_repo` cannot even name who is responsible for it, so it
-    surfaces as its own `RUN_STATE_UNREADABLE` blocker rather than
-    folding silently into "some run is busy" (spec §7's unreadable
-    split, mirrored from `RunStore.read_lock`).
+    status `"unreadable"`) is ALWAYS escalated into `runs_unreadable`,
+    linked to a `request_id` in this store or not (owner override on
+    #200's review): linkage does not make a broken `state.db` readable
+    — `RUN_IN_FLIGHT` promises a KNOWN non-terminal state, and here the
+    reading itself must be fixed, not assumed. The `request_id`, when
+    there is one, travels only as metadata in the detail string; the
+    code stays `RUN_STATE_UNREADABLE`. `classify_repo` surfaces it as
+    its own blocker rather than folding silently into "some run is
+    busy" (spec §7's unreadable split, mirrored from
+    `RunStore.read_lock`).
 
     `classified_runs` only walks directories that currently EXIST —
     it can never itself report a run that vanished. Spec §7's vanished
@@ -655,7 +654,13 @@ class RunController:
     # -- submit -------------------------------------------------------------
 
     def submit(self, request: RunRequest) -> LaunchReceipt:
-        """Start one run; return what is known, never more (spec §5.3)."""
+        """Start one run; return what is known, never more (spec §5.3).
+
+        The v1 engine. No route serves it any more — `submit_v2` is the
+        production launch path (PR-C, spec §4.2) — so this stays wired
+        only to the controller's own test suite and as internal reference
+        for the shape `submit_v2` recovers canon into.
+        """
         try:
             self._require_on()
         except ControlPlaneOff as err:
@@ -895,20 +900,69 @@ class RunController:
         run_facts, runs_unreadable = self._capture_run_facts(store, key)
         return classify_repo(lock_state, lock_err, run_facts, runs_unreadable)
 
-    def _resolve_v2_checkout(self, repo: str) -> Path | None:
-        """The workspace checkout `SubmitV2.repo_key`'s own `repo` segment
-        names, or `None` if there is none — mirrors `run_request._checkout`
-        (same workspace-root convention `v1`'s `repository` field uses),
-        minus its raising: absence here is `repo_unresolved` (409, a
-        workspace fact), never `invalid_request`.
+    def _resolve_v2_checkout(self, repo_key: RepoKey) -> Path:
+        """The workspace checkout matching `repo_key` by IDENTITY, not by
+        directory name (review fix wave C, C1).
+
+        A checkout's workspace directory name need not match its origin
+        remote's `repo` segment (real fleet case: a directory named
+        `open-prose/` cloned from `.../libretto.git`) — the assembler
+        (`launchpad.py::assemble_snapshot`) derives every row's `repo_key`
+        from each checkout's ORIGIN REMOTE, so resolving here by
+        `workspace / repo_key.repo` alone could show a repo as Ready while
+        submit could never find its checkout: a 409 the UI cannot recover
+        from by refetching, since the row stays Ready forever.
+
+        `workspace / repo_key.repo` is tried FIRST (the common case, no
+        scan needed); only when that directory is absent or names a
+        DIFFERENT repository does this fall back to
+        `find_checkout_by_identity`, which scans the SAME enumeration the
+        launchpad assembler uses (`list_workspace_checkouts`) — so the two
+        adapters can never resolve one `repo_key` to two different
+        checkouts.
+
+        Raises `AdmissionRefused` directly rather than returning `None`:
+        409 `repo_unresolved` when nothing in the workspace names this
+        `repo_key` at all, 422 `identity_mismatch` when the fast-path
+        directory exists but names something else AND no other checkout
+        in the workspace matches either.
         """
         workspace = next((r for r in self._config.roots if r.is_dir()), None)
         if workspace is None:
-            return None
-        target = workspace / repo
-        if not (target / ".git").exists():
-            return None
-        return target.resolve()
+            raise AdmissionRefused(
+                409,
+                "repo_unresolved",
+                f"no checkout for {repo_key.as_text()!r} in the workspace",
+            )
+        fast_path = workspace / repo_key.repo
+        fast_path_identity: RepoKey | None = None
+        if (fast_path / ".git").exists():
+            try:
+                fast_path_identity = identity_from_checkout(fast_path)
+            except IdentityError:
+                fast_path_identity = None
+            if (
+                fast_path_identity is not None
+                and fast_path_identity.as_text() == repo_key.as_text()
+            ):
+                return fast_path.resolve()
+
+        found = find_checkout_by_identity(workspace, repo_key)
+        if found is not None:
+            return found
+
+        if fast_path_identity is not None:
+            raise AdmissionRefused(
+                422,
+                "identity_mismatch",
+                f"{fast_path} names {fast_path_identity.as_text()!r}, not "
+                f"the requested {repo_key.as_text()!r}",
+            )
+        raise AdmissionRefused(
+            409,
+            "repo_unresolved",
+            f"no checkout for {repo_key.as_text()!r} in the workspace",
+        )
 
     def submit_v2(self, body: SubmitV2) -> LaunchReceipt:
         """Start one run from the recovered-canon v2 body (spec §4.2, PR-C
@@ -948,24 +1002,12 @@ class RunController:
         except RunRejectedError as err:
             raise AdmissionRefused(422, "invalid_request", str(err)) from err
 
-        checkout = self._resolve_v2_checkout(repo_key.repo)
-        if checkout is None:
-            raise AdmissionRefused(
-                409,
-                "repo_unresolved",
-                f"no checkout for {body.repo_key!r} in the workspace",
-            )
-        try:
-            found_key = identity_from_checkout(checkout)
-        except IdentityError as err:
-            raise AdmissionRefused(409, "repo_unresolved", str(err)) from err
-        if found_key.as_text() != repo_key.as_text():
-            raise AdmissionRefused(
-                422,
-                "identity_mismatch",
-                f"{checkout} names {found_key.as_text()!r}, not the "
-                f"requested {body.repo_key!r}",
-            )
+        # Resolves by IDENTITY, not by directory name (review fix wave C,
+        # C1) — raises `AdmissionRefused` itself on every failure shape,
+        # so a success here guarantees `checkout`'s origin remote IS
+        # `repo_key`: no separate re-verification needed.
+        checkout = self._resolve_v2_checkout(repo_key)
+        found_key = repo_key
 
         runs = self.runs_dir(found_key)
 
@@ -997,7 +1039,10 @@ class RunController:
                 work_id=body.work_id,
                 revision=body.seen_revision,
                 tasks=tasks,
-                repository=repo_key.repo,
+                # The checkout's actual workspace DIRECTORY name, not
+                # `repo_key.repo` — they can differ (C1), and this field
+                # is a raw workspace-relative name, not an identity.
+                repository=checkout.name,
                 checkout=str(checkout),
                 code=code,
                 detail=detail,
@@ -1130,7 +1175,13 @@ class RunController:
                 internal_request = RunRequest(
                     request_id=body.request_id,
                     work_id=body.work_id,
-                    repository=repo_key.repo,
+                    # `checkout.name`, not `repo_key.repo`: `validate_request`
+                    # re-resolves this by directory name via its own
+                    # `_checkout()` (`run_request.py`), which knows nothing
+                    # about identity — passing the identity's `repo` segment
+                    # here would reopen C1 one call deeper whenever the
+                    # workspace directory name and the repo_key disagree.
+                    repository=checkout.name,
                     revision=body.seen_revision,
                     tasks=resolved.dag_path,
                 )
@@ -1147,7 +1198,7 @@ class RunController:
                     work_id=body.work_id,
                     revision=body.seen_revision,
                     tasks=resolved.dag_path,
-                    repository=repo_key.repo,
+                    repository=checkout.name,
                     spec_commit=validated.spec_commit,
                     plan_commit=validated.plan_commit,
                     checkout=str(validated.checkout),

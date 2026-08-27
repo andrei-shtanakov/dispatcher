@@ -11,6 +11,7 @@ import pytest
 from conftest import make_maestro_run
 
 import dispatcher.core.launchpad as launchpad_module
+import dispatcher.core.run_identity as run_identity_module
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.launchpad import REPO_UNRESOLVED, assemble_snapshot
 from dispatcher.core.run_controller import RunController
@@ -130,6 +131,60 @@ def test_missing_checkout_is_unreadable_others_unaffected(tmp_path: Path) -> Non
     assert row_c.admission == "ready"
 
 
+def test_unreadable_repo_surfaces_as_unreadable_not_fail_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I1: `classify_inventory` sets `decision.unreadable` for a repo
+    whose TODO.md could not even be read (spec §10) — an injected reader
+    error, never `chmod` (platform/root-dependent). The assembler must
+    not fall through to `decision.repo.admission` in that case: that
+    field only reflects lock/run state and knows nothing about a broken
+    inventory capture, so leaving it unchecked rendered a broken repo as
+    a clean, empty, "ready" one (fail-open) — indistinguishable from a
+    healthy empty repo, and diverging from submit_v2, which refuses the
+    same state as 409 `repo_unresolved` (`run_controller.py`'s own
+    `decision.unreadable is not None` check)."""
+    root = _ready_repo(tmp_path, "repo-a", "a1")
+    todo_path = root / "TODO.md"
+    real_read_text = Path.read_text
+
+    def flaky_read_text(self: Path, *args: object, **kwargs: object) -> str:
+        if self == todo_path:
+            raise OSError("permission denied (injected)")
+        return real_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+
+    snap = assemble_snapshot(RunController(_config(tmp_path)))
+
+    row = next(r for r in snap.repositories if r.repository == "repo-a")
+    assert row.admission == "unreadable"
+    assert len(row.blockers) == 1
+    assert row.blockers[0].code == REPO_UNRESOLVED
+    assert row.blockers[0].detail is not None
+    assert "TODO.md" in row.blockers[0].detail
+    assert snap.ready == []
+
+
+def test_no_configured_root_is_a_directory_surfaces_a_note(tmp_path: Path) -> None:
+    """I2: `_manifest_repos` must not silently return `([], [])` when NO
+    configured root exists as a directory — same channel fix round 1
+    used for a workspace scan failure: a named note in `store_unreadable`,
+    not a silent empty fleet with no explanation."""
+    missing_root = tmp_path / "does-not-exist"
+    config = DispatcherConfig(
+        roots=(missing_root,),
+        maestro_home=tmp_path / "mhome",
+        run_state_dir=tmp_path / "state",
+        maestro_cli=tmp_path / "fake-maestro",
+    )
+
+    snap = assemble_snapshot(RunController(config))
+
+    assert snap.repositories == []
+    assert any(str(missing_root) in note for note in snap.store_unreadable)
+
+
 def _matches_workspace(path: object, ws: Path) -> bool:
     """`capture_inventory` also calls `os.scandir` with an int dir-fd
     (`dags/` opened via `O_DIRECTORY`, `inventory.py`) — a `Path(...)`
@@ -153,7 +208,7 @@ def test_workspace_scan_failure_surfaces_not_a_silent_empty_fleet(
             raise OSError("permission denied")
         return real_scandir(path)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(launchpad_module.os, "scandir", flaky_scandir)
+    monkeypatch.setattr(run_identity_module.os, "scandir", flaky_scandir)
 
     snap = assemble_snapshot(RunController(config))
 
@@ -209,7 +264,7 @@ def test_one_bad_manifest_entry_does_not_empty_the_whole_listing(
             )
         return real_scandir(path)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(launchpad_module.os, "scandir", flaky_scandir)
+    monkeypatch.setattr(run_identity_module.os, "scandir", flaky_scandir)
 
     snap = assemble_snapshot(RunController(config))
 
