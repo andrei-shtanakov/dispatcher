@@ -846,10 +846,20 @@ function renderWaits(view) {
     `<tr><td colspan="2">нет</td></tr>`;
 }
 
+// refresh() fires every 10s without awaiting this poll, so a slow response
+// can outlive its successor. The generation token lets ONLY the newest
+// request render: a late answer repainting the panel would show a closed
+// wait as waiting — precisely the lie this section exists to remove.
+let waitsGeneration = 0;
+
 async function refreshWaits() {
+  const generation = ++waitsGeneration;
   try {
-    renderWaits(await get("/api/waits"));
+    const view = await get("/api/waits");
+    if (generation !== waitsGeneration) return; // a newer poll owns the panel
+    renderWaits(view);
   } catch (err) {
+    if (generation !== waitsGeneration) return;
     // named, not silent — an empty graph would read as "no obligations"
     const disc = document.getElementById("waits-disclaimer");
     disc.className = "err";
