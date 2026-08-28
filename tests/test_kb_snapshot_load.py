@@ -5,8 +5,9 @@
 из remote-tracking ref; отсутствие ref — source_warning, не фиктивный хост.
 """
 
-import subprocess
 from pathlib import Path
+
+from conftest import seed_snapshot_branch
 
 from dispatcher.core.sync import (
     SNAPSHOT_BRANCH,
@@ -17,36 +18,6 @@ from dispatcher.core.sync import (
 from tests.test_publish import _git, make_snapshot, make_vault
 
 
-def _seed_branch(root: Path, vault: Path, files: dict[str, str]) -> Path:
-    """bare-origin + ветка derived-snapshots с *files*; vault её отфетчил."""
-    origin = root / "origin.git"
-    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True, text=True)
-    _git(vault, "remote", "add", "origin", str(origin))
-    _git(vault, "push", "-q", "origin", "master")
-    writer = root / "writer"
-    subprocess.run(
-        ["git", "clone", "-q", str(origin), str(writer)], check=True, text=True
-    )
-    _git(writer, "config", "user.email", "t@example.com")
-    _git(writer, "config", "user.name", "t")
-    _git(writer, "switch", "-q", "-c", SNAPSHOT_BRANCH)
-    for rel, text in files.items():
-        target = writer / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
-        _git(writer, "add", "--", rel)
-    _git(writer, "commit", "-q", "-m", "seed snapshots")
-    _git(writer, "push", "-q", "origin", SNAPSHOT_BRANCH)
-    _git(
-        vault,
-        "fetch",
-        "-q",
-        "origin",
-        f"+refs/heads/{SNAPSHOT_BRANCH}:refs/remotes/origin/{SNAPSHOT_BRANCH}",
-    )
-    return origin
-
-
 def _snapshot_json(host: str) -> str:
     return make_snapshot(host).model_dump_json(indent=2) + "\n"
 
@@ -54,7 +25,7 @@ def _snapshot_json(host: str) -> str:
 def test_reads_ref_while_checkout_dirty_on_feature_branch(tmp_path: Path) -> None:
     """Пин владельца: чекаут на своей ветке с правками — Sync видит ветку."""
     vault = make_vault(tmp_path)
-    _seed_branch(
+    seed_snapshot_branch(
         tmp_path, vault, {"derived/snapshots/mac-a.json": _snapshot_json("mac-a")}
     )
     _git(vault, "switch", "-q", "-c", "feature/wip")
@@ -88,7 +59,7 @@ def test_missing_vault_is_source_warning(tmp_path: Path) -> None:
 
 def test_per_file_errors_and_nested_junk(tmp_path: Path) -> None:
     vault = make_vault(tmp_path)
-    _seed_branch(
+    seed_snapshot_branch(
         tmp_path,
         vault,
         {

@@ -117,15 +117,31 @@ def make_origin(root: Path, vault: Path) -> Path:
     return origin
 
 
-def test_publish_pushes_to_snapshot_branch(tmp_path: Path) -> None:
+def test_publish_pushes_to_snapshot_branch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dispatcher.core.publish as publish_module
+
     vault = make_vault(tmp_path)
     origin = make_origin(tmp_path, vault)
+    created: list[str] = []
+    real_mkdtemp = publish_module.tempfile.mkdtemp
+
+    def tracking_mkdtemp(**kwargs: object) -> str:
+        path = real_mkdtemp(**kwargs)  # type: ignore[arg-type]
+        created.append(path)
+        return path
+
+    monkeypatch.setattr(publish_module.tempfile, "mkdtemp", tracking_mkdtemp)
     out = publish(tmp_path, push=True, snapshot=make_snapshot("mac-a"))
     assert "committed and pushed" in out and SNAPSHOT_BRANCH in out
     payload = _out(origin, "show", f"{SNAPSHOT_BRANCH}:derived/snapshots/mac-a.json")
     assert parse_snapshot(payload).host == "mac-a"
     # master на origin не двигался
     assert _out(origin, "rev-parse", "master") == _out(vault, "rev-parse", "master")
+    # временный worktree убран, а не забыт после успешного паблиша
+    assert created and all(not Path(p).exists() for p in created)
+    assert _out(vault, "worktree", "list", "--porcelain").count("worktree ") == 1
 
 
 def test_main_checkout_untouched_even_dirty_feature_branch(tmp_path: Path) -> None:
