@@ -166,7 +166,11 @@ def build_server(
             )
         load = load_kb_snapshots(config.roots)
         return build_view(
-            config, load.snapshots, kind=kind, snapshot_errors=load.errors
+            config,
+            load.snapshots,
+            kind=kind,
+            snapshot_errors=load.errors,
+            snapshot_source_warning=load.source_warning,
         ).model_dump()
 
     @mcp.tool
@@ -181,7 +185,12 @@ def build_server(
         from dispatcher.core.sync import load_kb_snapshots
 
         load = load_kb_snapshots(config.roots)
-        detail = build_detail(config, epic_id, load.snapshots)
+        detail = build_detail(
+            config,
+            epic_id,
+            load.snapshots,
+            snapshot_source_warning=load.source_warning,
+        )
         if detail is None:
             raise ValueError(f"unknown epic {epic_id!r}")
         return detail.model_dump()

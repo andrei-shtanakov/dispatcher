@@ -310,6 +310,7 @@ def _github_planes(
     registry: Any = None,
     load_errors: list[tuple[str, str]] | None = None,
     now: datetime | None = None,
+    source_warning: str | None = None,
 ) -> tuple[list[PlaneState], _Counted, list[dict[str, Any]]]:
     """Issues and pull requests, from published snapshots only.
 
@@ -328,12 +329,15 @@ def _github_planes(
         # different facts about the fleet, and an operator acts on them differently.
         # Collapsing both into "no published snapshot" is the same silent-degradation
         # the four-state classification exists to prevent, one level up.
-        detail = (
-            "published snapshots unreadable: "
-            + "; ".join(f"{host}: {reason}" for host, reason in sorted(load_errors))
-            if load_errors
-            else "no published snapshot"
-        )
+        parts: list[str] = []
+        if source_warning:
+            parts.append(f"snapshot source unavailable: {source_warning}")
+        if load_errors:
+            parts.append(
+                "published snapshots unreadable: "
+                + "; ".join(f"{host}: {reason}" for host, reason in sorted(load_errors))
+            )
+        detail = "; ".join(parts) if parts else "no published snapshot"
         return (
             [
                 PlaneState(plane=p, state="unavailable", detail=detail)
@@ -557,6 +561,7 @@ def build_view(
     generated_at: str | None = None,
     snapshot_errors: list[tuple[str, str]] | None = None,
     now: datetime | None = None,
+    snapshot_source_warning: str | None = None,
 ) -> EpicsView:
     """Assemble the epics view over every plane this dispatcher can honestly read."""
     from plan_fields import load_registry
@@ -583,7 +588,11 @@ def build_view(
     registry = load_registry(path)
     todo_plane, todo_counted, todo_findings = _todo_plane(config, registry)
     gh_planes, gh_counted, gh_findings = _github_planes(
-        snapshots or [], registry, snapshot_errors, now
+        snapshots or [],
+        registry,
+        snapshot_errors,
+        now,
+        source_warning=snapshot_source_warning,
     )
     counted = _merge(todo_counted, gh_counted)
     planes = [todo_plane, *gh_planes]
@@ -678,9 +687,13 @@ def build_detail(
     config: DispatcherConfig,
     epic_id: str,
     snapshots: list[Snapshot] | None = None,
+    *,
+    snapshot_source_warning: str | None = None,
 ) -> EpicDetail | None:
     """One epic's row plus every artifact behind it, across planes."""
-    view = build_view(config, snapshots)
+    view = build_view(
+        config, snapshots, snapshot_source_warning=snapshot_source_warning
+    )
     row = next((r for r in view.rows if r.id == epic_id), None)
     if row is None:
         return None
@@ -691,7 +704,9 @@ def build_detail(
     todo_counted = (
         _todo_plane(config, registry)[1] if registry else _Counted({}, {}, {}, {})
     )
-    _, gh_counted, _ = _github_planes(snapshots or [], registry)
+    _, gh_counted, _ = _github_planes(
+        snapshots or [], registry, source_warning=snapshot_source_warning
+    )
     counted = _merge(todo_counted, gh_counted)
     artifacts = sorted(
         counted.artifacts.get(epic_id, []), key=lambda a: (a.plane, a.repo, a.ref)

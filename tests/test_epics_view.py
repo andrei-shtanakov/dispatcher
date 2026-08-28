@@ -360,3 +360,49 @@ def test_mcp_rejects_a_kind_the_http_surface_would_refuse(tmp_path: Path) -> Non
     tools = asyncio.run(build_server(config).get_tools())
     with pytest.raises(Exception, match="unknown kind"):
         asyncio.run(tools["epics"].run({"kind": "nonsense"}))
+
+
+def test_github_planes_carry_snapshot_source_warning(tmp_path: Path) -> None:
+    """Недоступный ref — точная причина в detail, не общее 'no published
+    snapshot': Epics обязан отличать «источник недоступен» от «пусто»."""
+    config = _workspace(tmp_path, {})
+    view = build_view(
+        config,
+        [],
+        snapshot_source_warning="ref origin/derived-snapshots unavailable",
+        now=_NOW,
+    )
+    gh = [p for p in view.planes if p.plane in ("issues", "pull_requests")]
+    assert len(gh) == 2
+    for plane in gh:
+        assert plane.state == "unavailable"
+        assert plane.detail is not None
+        assert "snapshot source unavailable" in plane.detail
+        assert "origin/derived-snapshots" in plane.detail
+
+
+def test_epics_surfaces_source_warning_on_web_and_mcp(tmp_path: Path) -> None:
+    """Тест 9а спеки: при недоступном ref обе поверхности отдают точную
+    причину в detail GitHub-плоскостей, не общее 'no published snapshot'."""
+    import asyncio
+
+    from fastapi.testclient import TestClient
+    from fastmcp import Client
+
+    from dispatcher.mcp_server import build_server
+    from dispatcher.server.app import create_app
+
+    config = _workspace(tmp_path, {"demo": "- [ ] work @id:a @epic:eco.ops\n"})
+
+    api = TestClient(create_app(config)).get("/api/epics").json()
+
+    async def _mcp() -> dict:
+        async with Client(build_server(config)) as client:
+            result = await client.call_tool("epics", {})
+            return result.data
+
+    mcp = asyncio.run(_mcp())
+    for payload in (api, mcp):
+        issues = next(p for p in payload["planes"] if p["plane"] == "issues")
+        assert issues["state"] == "unavailable"
+        assert "snapshot source unavailable" in issues["detail"]

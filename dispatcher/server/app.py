@@ -434,9 +434,10 @@ def create_app(
 
         Dispatcher does not talk to the GitHub API (ADR-ECO-004 D1). If nothing is
         published, the planes come back `unavailable`, which is the honest answer and
-        deliberately not zero. The load ERRORS travel with the snapshots: "nothing was
-        published" and "what was published could not be read" are different facts, and
-        dropping the second one would leave `unavailable` without its reason.
+        deliberately not zero. Three self-named facts travel with the snapshots:
+        "nothing was published", "what was published could not be read", and "the
+        snapshot source itself is unreachable" — dropping any one of them would leave
+        `unavailable` without its reason.
         """
         return load_kb_snapshots(config.roots)
 
@@ -452,7 +453,11 @@ def create_app(
         """
         load = _epic_snapshots()
         return build_view(
-            config, load.snapshots, kind=kind, snapshot_errors=load.errors
+            config,
+            load.snapshots,
+            kind=kind,
+            snapshot_errors=load.errors,
+            snapshot_source_warning=load.source_warning,
         )
 
     @app.get("/api/waits", response_model=WaitsView)
@@ -468,7 +473,12 @@ def create_app(
     @app.get("/api/epics/{epic_id}", response_model=EpicDetail)
     def epic_detail(epic_id: str) -> EpicDetail:
         load = _epic_snapshots()
-        detail = build_detail(config, epic_id, load.snapshots)
+        detail = build_detail(
+            config,
+            epic_id,
+            load.snapshots,
+            snapshot_source_warning=load.source_warning,
+        )
         if detail is None:
             raise HTTPException(status_code=404, detail=f"unknown epic {epic_id!r}")
         return detail
@@ -477,7 +487,12 @@ def create_app(
     def defects() -> list[DefectRow]:
         """The reverse cut: defect class × epic — where the fleet breaks most."""
         load = _epic_snapshots()
-        return build_view(config, load.snapshots, snapshot_errors=load.errors).defects
+        return build_view(
+            config,
+            load.snapshots,
+            snapshot_errors=load.errors,
+            snapshot_source_warning=load.source_warning,
+        ).defects
 
     @app.get("/api/sync", response_model=SyncStatus)
     def sync() -> SyncStatus:
