@@ -9,7 +9,6 @@ every failure exits non-zero so a dead cron is visible, not silent (RK-03).
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -19,7 +18,7 @@ from dispatcher.core.snapshot_contract import (
     SnapshotContractError,
     parse_snapshot,
 )
-from dispatcher.core.sync import KB_REPO
+from dispatcher.core.sync import KB_REPO, SAFE_HOST_RE
 
 _SNAPSHOT_TIMEOUT = 300
 _GIT_TIMEOUT = 120
@@ -43,11 +42,6 @@ def _run(argv: list[str], *, timeout: int, cwd: Path | None = None) -> str:
     return proc.stdout
 
 
-# hostnames: letters/digits/dot/hyphen/underscore — anything else could
-# escape snapshots_dir when used as a filename component
-_SAFE_HOST_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")  # без ведущего дефиса
-
-
 def take_snapshot(
     workspace: Path, *, command: tuple[str, ...] = ("github-checker",)
 ) -> Snapshot:
@@ -67,7 +61,7 @@ def take_snapshot(
 def write_snapshot(snapshot: Snapshot, snapshots_dir: Path) -> Path:
     """Atomically (re)place `<host>.json`; the filename IS the host identity."""
     host = snapshot.host
-    if not _SAFE_HOST_RE.fullmatch(host) or host in (".", ".."):
+    if not SAFE_HOST_RE.fullmatch(host) or host in (".", ".."):
         raise PublishError(f"unsafe host name for a filename: {host!r}")
     snapshots_dir.mkdir(parents=True, exist_ok=True)
     target = snapshots_dir / f"{host}.json"

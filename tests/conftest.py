@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+import subprocess
 import sys
 import time
 import warnings
@@ -323,6 +324,46 @@ def make_proctor(root: Path) -> Path:
         "2026-07-01 INFO started\n2026-07-02 ERROR trigger failed: boom\n"
     )
     return p
+
+
+def seed_snapshot_branch(root: Path, vault: Path, files: dict[str, str]) -> Path:
+    """Bare origin + a `derived-snapshots` branch with *files*, fetched into *vault*.
+
+    `KbSnapshotLoad` (spec 2026-08-28-snapshot-publish-branch) reads
+    `origin/derived-snapshots`, never the vault's working tree — a fixture
+    needs a real bare remote for that ref to exist. Shared by test_sync.py
+    and test_api.py; *vault* must already be a git repo (`test_publish.
+    make_vault`).
+    """
+    from dispatcher.core.sync import SNAPSHOT_BRANCH
+    from tests.test_publish import _git
+
+    origin = root / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True, text=True)
+    _git(vault, "remote", "add", "origin", str(origin))
+    _git(vault, "push", "-q", "origin", "master")
+    writer = root / "writer"
+    subprocess.run(
+        ["git", "clone", "-q", str(origin), str(writer)], check=True, text=True
+    )
+    _git(writer, "config", "user.email", "t@example.com")
+    _git(writer, "config", "user.name", "t")
+    _git(writer, "switch", "-q", "-c", SNAPSHOT_BRANCH)
+    for rel, text in files.items():
+        target = writer / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        _git(writer, "add", "--", rel)
+    _git(writer, "commit", "-q", "-m", "seed snapshots")
+    _git(writer, "push", "-q", "origin", SNAPSHOT_BRANCH)
+    _git(
+        vault,
+        "fetch",
+        "-q",
+        "origin",
+        f"+refs/heads/{SNAPSHOT_BRANCH}:refs/remotes/origin/{SNAPSHOT_BRANCH}",
+    )
+    return origin
 
 
 def assert_no_secret_reachable(

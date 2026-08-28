@@ -4,6 +4,8 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from conftest import seed_snapshot_branch
+
 from dispatcher.core import sync as sync_module
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.snapshot_contract import WorkspaceSnapshotV1
@@ -11,9 +13,9 @@ from dispatcher.core.sync import (
     KB_REPO,
     build_report,
     collect_sync,
-    kb_snapshot_dirs,
     load_kb_snapshots,
 )
+from tests.test_publish import make_vault
 
 NOW = datetime(2026, 7, 14, 12, 0, 0, tzinfo=UTC)
 
@@ -246,29 +248,41 @@ def test_no_snapshot_for_current_host_is_honest_unknown() -> None:
 
 
 def test_load_kb_snapshots_reads_and_rejects(tmp_path: Path) -> None:
-    d = tmp_path / "prograph-vault" / "derived" / "snapshots"
-    d.mkdir(parents=True)
+    vault = make_vault(tmp_path)
     good = snap("mac-b", [{"dir": "a"}])
-    (d / "mac-b.json").write_text(good.model_dump_json())
     bad = json.loads(good.model_dump_json())
     bad["schema_version"] = 2
-    (d / "mac-c.json").write_text(json.dumps(bad))
+    seed_snapshot_branch(
+        tmp_path,
+        vault,
+        {
+            "derived/snapshots/mac-b.json": good.model_dump_json(),
+            "derived/snapshots/mac-c.json": json.dumps(bad),
+        },
+    )
 
-    snapshots, errors = load_kb_snapshots(kb_snapshot_dirs((tmp_path,)))
-    assert [s.host for s in snapshots] == ["mac-b"]
-    assert errors and errors[0][0] == "mac-c"
+    load = load_kb_snapshots((tmp_path,))
+    assert [s.host for s in load.snapshots] == ["mac-b"]
+    assert load.errors and load.errors[0][0] == "mac-c"
 
 
 def test_load_kb_snapshots_rejects_host_filename_mismatch(tmp_path: Path) -> None:
-    d = tmp_path / "prograph-vault" / "derived" / "snapshots"
-    d.mkdir(parents=True)
+    vault = make_vault(tmp_path)
     # payload заявляет mac-b, файл назван mac-z — мисатрибуция панели запрещена
-    (d / "mac-z.json").write_text(snap("mac-b", [{"dir": "a"}]).model_dump_json())
+    seed_snapshot_branch(
+        tmp_path,
+        vault,
+        {
+            "derived/snapshots/mac-z.json": snap(
+                "mac-b", [{"dir": "a"}]
+            ).model_dump_json()
+        },
+    )
 
-    snapshots, errors = load_kb_snapshots(kb_snapshot_dirs((tmp_path,)))
-    assert snapshots == []
-    assert errors and errors[0][0] == "mac-z"
-    assert "does not match filename" in errors[0][1]
+    load = load_kb_snapshots((tmp_path,))
+    assert load.snapshots == []
+    assert load.errors and load.errors[0][0] == "mac-z"
+    assert "does not match filename" in load.errors[0][1]
 
 
 def test_collect_sync_survives_missing_github_checker(

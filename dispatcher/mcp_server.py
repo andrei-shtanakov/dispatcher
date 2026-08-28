@@ -154,7 +154,7 @@ def build_server(
         `unavailable` was not read, which is not the same as zero.
         """
         from dispatcher.core.epics import build_view
-        from dispatcher.core.sync import kb_snapshot_dirs, load_kb_snapshots
+        from dispatcher.core.sync import load_kb_snapshots
 
         # The HTTP surface constrains `kind` with a pattern; without the same check
         # here an unknown value would filter every epic out and return just the
@@ -164,9 +164,9 @@ def build_server(
             raise ValueError(
                 f"unknown kind {kind!r}; expected 'ecosystem' or 'external'"
             )
-        snapshots, errors = load_kb_snapshots(kb_snapshot_dirs(config.roots))
+        load = load_kb_snapshots(config.roots)
         return build_view(
-            config, snapshots, kind=kind, snapshot_errors=errors
+            config, load.snapshots, kind=kind, snapshot_errors=load.errors
         ).model_dump()
 
     @mcp.tool
@@ -178,10 +178,10 @@ def build_server(
     ) -> dict[str, Any]:
         """One epic with every artifact behind it, across the planes that were read."""
         from dispatcher.core.epics import build_detail
-        from dispatcher.core.sync import kb_snapshot_dirs, load_kb_snapshots
+        from dispatcher.core.sync import load_kb_snapshots
 
-        snapshots, _ = load_kb_snapshots(kb_snapshot_dirs(config.roots))
-        detail = build_detail(config, epic_id, snapshots)
+        load = load_kb_snapshots(config.roots)
+        detail = build_detail(config, epic_id, load.snapshots)
         if detail is None:
             raise ValueError(f"unknown epic {epic_id!r}")
         return detail.model_dump()
