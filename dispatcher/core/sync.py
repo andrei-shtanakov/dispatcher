@@ -325,7 +325,8 @@ def load_kb_snapshots(roots: tuple[Path, ...]) -> KbSnapshotLoad:
             listing = _git_read(
                 vault,
                 "ls-tree",
-                "-rz",
+                "-r",
+                "-z",
                 "--name-only",
                 SNAPSHOT_REF,
                 "--",
