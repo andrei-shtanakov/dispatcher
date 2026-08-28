@@ -447,7 +447,7 @@
 
 ## KB snapshots: доставка через ветку derived-snapshots (резолюция ecosystem-kb#98)
 
-- [ ] `publish-snapshot` → ветка `derived-snapshots`: publisher и читатели уходят с master @owner:github:andrei-shtanakov @id:snapshot-publish-branch
+- [ ] `publish-snapshot` → ветка `derived-snapshots`: publisher и читатели уходят с master @owner:github:andrei-shtanakov @id:snapshot-publish-branch @epic:eco.ops
       Принятие inbox-issue #199 от prograph-vault (ADR-ECO-006, резолюция
       ecosystem-kb#98 от 2026-08-26). `derived/snapshots` — регенерируемая
       проекция, не authority: её машинный writer не получает bypass
@@ -468,7 +468,7 @@
       панели. Если коллизии машин на одной ветке станут регулярными —
       следующий шаг per-host refs или отдельный snapshot-репо, но не bypass
       master.
-- [ ] Перевести паблишер на EPGETBIW050F на новую доставку — остановить дрейф локального master vault-чекаута @owner:github:andrei-shtanakov @blocked_by:todo://dispatcher/snapshot-publish-branch @id:publish-snapshot-master-drift
+- [ ] Перевести паблишер на EPGETBIW050F на новую доставку — остановить дрейф локального master vault-чекаута @owner:github:andrei-shtanakov @blocked_by:todo://dispatcher/snapshot-publish-branch @id:publish-snapshot-master-drift @epic:eco.ops
       Принятие inbox-issue #213 от prograph-vault (эскалация #199). Пока
       `snapshot-publish-branch` не доехал до хоста, каждый плановый прогон
       снова коммитит `chore(snapshots): EPGETBIW050F sync snapshot` в
