@@ -381,6 +381,40 @@ def test_github_planes_carry_snapshot_source_warning(tmp_path: Path) -> None:
         assert "origin/derived-snapshots" in plane.detail
 
 
+def test_github_planes_degrade_to_partial_with_mixed_source_warning(
+    tmp_path: Path,
+) -> None:
+    """Один vault отдал реальный снапшот, другой — недоступен: смесь не
+    вправе выглядеть зелёной `read`. Обе GitHub-плоскости обязаны стать
+    `partial` с точной причиной, счётчики читаемого снапшота сохраняются."""
+    config = _workspace(tmp_path, {"demo": "- [ ] work @id:a @epic:eco.ops\n"})
+    view = build_view(
+        config,
+        [
+            _snapshot(
+                2,
+                issue_epic={
+                    "epic": "eco.ops",
+                    "defect": None,
+                    "classification": "tagged",
+                    "diagnostics": [],
+                },
+            )
+        ],
+        snapshot_source_warning="ref origin/derived-snapshots unavailable",
+        now=_NOW,
+    )
+    gh = [p for p in view.planes if p.plane in ("issues", "pull_requests")]
+    assert len(gh) == 2
+    for plane in gh:
+        assert plane.state == "partial"
+        assert plane.detail is not None
+        assert "snapshot source unavailable" in plane.detail
+        assert "origin/derived-snapshots" in plane.detail
+    issues = next(p for p in view.planes if p.plane == "issues")
+    assert issues.count == 1
+
+
 def test_epics_surfaces_source_warning_on_web_and_mcp(tmp_path: Path) -> None:
     """Тест 9а спеки: при недоступном ref обе поверхности отдают точную
     причину в detail GitHub-плоскостей, не общее 'no published snapshot'."""

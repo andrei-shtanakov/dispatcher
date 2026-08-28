@@ -493,6 +493,11 @@ def _github_planes(
                     counted.activity[final] = pr.merged_at
 
     reasons = []
+    if source_warning:
+        # A vault this fleet could not read from is a gap in the picture even when
+        # another vault contributed real snapshots — the same distinction the
+        # `not snapshots` branch above draws, just with something to also count.
+        reasons.append(f"snapshot source unavailable: {source_warning}")
     if load_errors:
         # A host whose snapshot would not parse is an UNOBSERVED host, exactly like a
         # host still on v1. These errors used to count only when nothing at all

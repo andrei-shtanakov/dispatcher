@@ -76,6 +76,28 @@ def test_per_file_errors_and_nested_junk(tmp_path: Path) -> None:
     assert load.source_warning is None
 
 
+def test_mixed_roots_snapshot_and_warning_both_survive(tmp_path: Path) -> None:
+    """Два workspace root: root A читаем, root B — vault без ref. Reader
+    обязан вернуть И снапшот из A, И warning про B — ни один факт не должен
+    молча вытеснить другой."""
+    root_a = tmp_path / "a"
+    root_b = tmp_path / "b"
+    root_a.mkdir()
+    root_b.mkdir()
+    vault_a = make_vault(root_a)
+    seed_snapshot_branch(
+        root_a, vault_a, {"derived/snapshots/mac-a.json": _snapshot_json("mac-a")}
+    )
+    make_vault(root_b)  # vault есть, ref origin/derived-snapshots — нет
+
+    load = load_kb_snapshots((root_a, root_b))
+
+    assert [s.host for s in load.snapshots] == ["mac-a"]
+    assert load.errors == []  # НЕ (host, error) — иначе Sync нарисует машину
+    assert load.source_warning is not None
+    assert SNAPSHOT_BRANCH in load.source_warning
+
+
 def test_build_report_carries_source_warning(tmp_path: Path) -> None:
     report = build_report(
         current_host="mac-a",
