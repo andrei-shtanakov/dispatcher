@@ -171,3 +171,51 @@ def test_fetch_workspace_updates_refs_and_reports_failures(tmp_path: Path) -> No
         text=True,
     ).stdout.strip()
     assert counts == "1", "fetch не обновил remote-tracking refs"
+
+
+def test_fetch_workspace_updates_snapshot_ref_on_single_branch_clone(
+    tmp_path: Path,
+) -> None:
+    """Дефолтному refspec доверять нельзя: single-branch clone видит только
+    master — ветку снапшотов обязан приносить явный refspec."""
+    from dispatcher.core.sync import KB_REPO, SNAPSHOT_BRANCH
+    from dispatcher.core.sync_service import fetch_workspace
+    from tests.test_publish import _git, make_vault
+
+    seed = make_vault(tmp_path / "seed-root")
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    _git(seed, "remote", "add", "origin", str(origin))
+    _git(seed, "push", "-q", "origin", "master")
+    _git(seed, "push", "-q", "origin", f"master:{SNAPSHOT_BRANCH}")
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    vault = workspace / KB_REPO
+    subprocess.run(
+        [
+            "git",
+            "clone",
+            "-q",
+            "--single-branch",
+            "--branch",
+            "master",
+            str(origin),
+            str(vault),
+        ],
+        check=True,
+    )
+    probe = [
+        "git",
+        "-C",
+        str(vault),
+        "rev-parse",
+        "--verify",
+        f"origin/{SNAPSHOT_BRANCH}",
+    ]
+    assert subprocess.run(probe, capture_output=True).returncode != 0
+
+    errors = fetch_workspace(workspace)
+
+    assert errors == []
+    assert subprocess.run(probe, capture_output=True).returncode == 0
