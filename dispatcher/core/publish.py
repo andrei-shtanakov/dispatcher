@@ -2,16 +2,24 @@
 
 The one write path of the sync feature (DESIGN-203), and it writes only into
 the KB zone the constitution assigns to tools (prograph-vault#24) — never into
-observed repos. Scheduling stays with the user (cron/launchd ≤ 1 h, README);
-every failure exits non-zero so a dead cron is visible, not silent (RK-03).
+observed repos. The write target is the `derived-snapshots` branch, delivered
+through an ephemeral `git worktree` rather than the vault's own checkout: the
+vault may sit on any branch with any local changes, and this publisher must
+never touch it (spec 2026-08-28-snapshot-publish-branch). Scheduling stays
+with the user (cron/launchd ≤ 1 h, README); every failure exits non-zero so a
+dead cron is visible, not silent (RK-03).
 """
 
 from __future__ import annotations
 
 import os
-import re
+import random
+import shutil
 import subprocess
+import sys
 import tempfile
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 from dispatcher.core.snapshot_contract import (
@@ -19,7 +27,7 @@ from dispatcher.core.snapshot_contract import (
     SnapshotContractError,
     parse_snapshot,
 )
-from dispatcher.core.sync import KB_REPO
+from dispatcher.core.sync import KB_REPO, SAFE_HOST_RE, SNAPSHOT_BRANCH
 
 _SNAPSHOT_TIMEOUT = 300
 _GIT_TIMEOUT = 120
@@ -43,11 +51,6 @@ def _run(argv: list[str], *, timeout: int, cwd: Path | None = None) -> str:
     return proc.stdout
 
 
-# hostnames: letters/digits/dot/hyphen/underscore — anything else could
-# escape snapshots_dir when used as a filename component
-_SAFE_HOST_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")  # без ведущего дефиса
-
-
 def take_snapshot(
     workspace: Path, *, command: tuple[str, ...] = ("github-checker",)
 ) -> Snapshot:
@@ -67,7 +70,7 @@ def take_snapshot(
 def write_snapshot(snapshot: Snapshot, snapshots_dir: Path) -> Path:
     """Atomically (re)place `<host>.json`; the filename IS the host identity."""
     host = snapshot.host
-    if not _SAFE_HOST_RE.fullmatch(host) or host in (".", ".."):
+    if not SAFE_HOST_RE.fullmatch(host) or host in (".", ".."):
         raise PublishError(f"unsafe host name for a filename: {host!r}")
     snapshots_dir.mkdir(parents=True, exist_ok=True)
     target = snapshots_dir / f"{host}.json"
@@ -83,44 +86,191 @@ def write_snapshot(snapshot: Snapshot, snapshots_dir: Path) -> Path:
     return target
 
 
-def commit_and_push(vault_repo: Path, target: Path, *, push: bool = True) -> str:
-    """Commit the snapshot into the KB repo; rebase-and-push unless *push* is off.
+_SNAPSHOT_REFSPEC = (
+    f"+refs/heads/{SNAPSHOT_BRANCH}:refs/remotes/origin/{SNAPSHOT_BRANCH}"
+)
+_SNAPSHOT_REF = f"origin/{SNAPSHOT_BRANCH}"
+_PUSH_ATTEMPTS = 3
+_RETRY = "__retry__"  # внутренний маркер: non-fast-forward, цикл повторяется
 
-    Per-host files never conflict with each other, so `pull --rebase` only
-    reconciles the branch pointer when several machines publish concurrently.
+
+def _classify_push(proc: subprocess.CompletedProcess[str]) -> str:
+    """'ok' | 'non_fast_forward' | 'fatal' — по porcelain, не по stderr.
+
+    Локализованный stderr нестабилен; `--porcelain` даёт машинный формат
+    `!\t<src>:<dst>\t[rejected] (<reason>)`. Retryable — только настоящий
+    non-fast-forward; hook/auth/protected-branch не лечатся повтором.
     """
-    try:
-        rel = target.relative_to(vault_repo)
-    except ValueError as err:
-        raise PublishError(
-            f"snapshot {target} is outside the KB repo {vault_repo}"
-        ) from err
-    _run(["git", "-C", str(vault_repo), "add", "--", str(rel)], timeout=_GIT_TIMEOUT)
-    status = _run(
-        ["git", "-C", str(vault_repo), "status", "--porcelain", "--", str(rel)],
-        timeout=_GIT_TIMEOUT,
-    )
-    if not status.strip():
-        return "no changes"
+    if proc.returncode == 0:
+        return "ok"
+    for line in proc.stdout.splitlines():
+        if (
+            line.startswith("!")
+            and "[rejected]" in line
+            and ("non-fast-forward" in line or "fetch first" in line)
+        ):
+            return "non_fast_forward"
+    return "fatal"
+
+
+def _attempt_publish(
+    vault_repo: Path,
+    snapshot: Snapshot,
+    *,
+    push: bool,
+    attempt: int,
+    before_push: Callable[[int], None] | None,
+) -> str:
+    """Один полный цикл: fetch → worktree → write → commit → push."""
     _run(
-        [
-            "git",
-            "-C",
-            str(vault_repo),
-            "commit",
-            "-q",
-            "-m",
-            f"chore(snapshots): {target.stem} sync snapshot",
-            "--",
-            str(rel),
-        ],
+        ["git", "-C", str(vault_repo), "fetch", "--quiet", "origin", _SNAPSHOT_REFSPEC],
         timeout=_GIT_TIMEOUT,
     )
-    if not push:
-        return "committed (push skipped)"
-    _run(["git", "-C", str(vault_repo), "pull", "--rebase", "-q"], timeout=_GIT_TIMEOUT)
-    _run(["git", "-C", str(vault_repo), "push", "-q"], timeout=_GIT_TIMEOUT)
-    return "committed and pushed"
+    # git worktree add требует несуществующий целевой путь: сам
+    # mkdtemp-каталог не годится, worktree живёт в его подпути
+    tmp_root = Path(tempfile.mkdtemp(prefix="dispatcher-snapshot-publish-"))
+    worktree = tmp_root / "worktree"
+    registered = False
+    try:
+        _run(
+            [
+                "git",
+                "-C",
+                str(vault_repo),
+                "worktree",
+                "add",
+                "--detach",
+                str(worktree),
+                _SNAPSHOT_REF,
+            ],
+            timeout=_GIT_TIMEOUT,
+        )
+        registered = True
+        target = write_snapshot(snapshot, worktree / "derived" / "snapshots")
+        rel = str(target.relative_to(worktree))
+        _run(["git", "-C", str(worktree), "add", "--", rel], timeout=_GIT_TIMEOUT)
+        status = _run(
+            ["git", "-C", str(worktree), "status", "--porcelain", "--", rel],
+            timeout=_GIT_TIMEOUT,
+        )
+        if not status.strip():
+            return "no changes"
+        if not push:
+            # коммит не создаётся: после удаления worktree он был бы
+            # недостижим, а "committed" вводил бы в заблуждение
+            return "validated; push skipped"
+        _run(
+            [
+                "git",
+                "-C",
+                str(worktree),
+                "commit",
+                "-q",
+                "-m",
+                f"chore(snapshots): {snapshot.host} sync snapshot",
+                "--",
+                rel,
+            ],
+            timeout=_GIT_TIMEOUT,
+        )
+        if before_push is not None:
+            before_push(attempt)
+        try:
+            proc = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(worktree),
+                    "push",
+                    "--porcelain",
+                    "origin",
+                    f"HEAD:refs/heads/{SNAPSHOT_BRANCH}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=_GIT_TIMEOUT,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as err:
+            raise PublishError(f"git push: {err}") from err
+        kind = _classify_push(proc)
+        if kind == "ok":
+            return "committed and pushed"
+        if kind == "non_fast_forward":
+            return _RETRY
+        raise PublishError(
+            f"push to {SNAPSHOT_BRANCH} rejected: "
+            f"{(proc.stderr or proc.stdout).strip()}"
+        )
+    finally:
+        _cleanup_worktree(vault_repo, worktree if registered else None, tmp_root)
+
+
+def _cleanup_worktree(vault_repo: Path, worktree: Path | None, tmp_root: Path) -> None:
+    """Строго адресный cleanup: свой worktree и свой tmp_root, ничего чужого.
+
+    `git worktree prune` не используется: глобальная операция могла бы
+    подчистить чужое состояние. Сбой remove не маскирует основной результат —
+    логируется, затем удаляется только собственный temp-каталог.
+    """
+    if worktree is not None:
+        try:
+            proc = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(vault_repo),
+                    "worktree",
+                    "remove",
+                    "--force",
+                    str(worktree),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=_GIT_TIMEOUT,
+            )
+            if proc.returncode != 0:
+                print(
+                    f"warning: snapshot worktree cleanup failed: {proc.stderr.strip()}",
+                    file=sys.stderr,
+                )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as err:
+            print(
+                f"warning: snapshot worktree cleanup failed: {err}",
+                file=sys.stderr,
+            )
+    shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+def publish_to_branch(
+    vault_repo: Path,
+    snapshot: Snapshot,
+    *,
+    push: bool = True,
+    attempts: int = _PUSH_ATTEMPTS,
+    sleeper: Callable[[float], None] = time.sleep,
+    before_push: Callable[[int], None] | None = None,
+) -> str:
+    """Публикация `<host>.json` в ветку derived-snapshots (спека 2026-08-28).
+
+    Retry — только на non-fast-forward, полным новым циклом от свежего
+    fetch; любой другой отказ — немедленный PublishError. *before_push* —
+    тестовый шов (вызывается с номером попытки перед push).
+    """
+    for attempt in range(1, attempts + 1):
+        outcome = _attempt_publish(
+            vault_repo,
+            snapshot,
+            push=push,
+            attempt=attempt,
+            before_push=before_push,
+        )
+        if outcome != _RETRY:
+            return outcome
+        if attempt < attempts:
+            sleeper(random.uniform(0.5, 2.0))
+    raise PublishError(
+        f"push to {SNAPSHOT_BRANCH} was not fast-forward after {attempts} attempts"
+    )
 
 
 def publish(
@@ -130,13 +280,12 @@ def publish(
     push: bool = True,
     snapshot: Snapshot | None = None,
 ) -> str:
-    """Full pipeline: snapshot → atomic write → KB commit (+push)."""
+    """Full pipeline: snapshot → atomic write → `derived-snapshots` branch (+push)."""
     vault_repo = workspace / KB_REPO
     if not (vault_repo / ".git").exists():
         raise PublishError(f"KB repo not found at {vault_repo}")
     snap = (
         snapshot if snapshot is not None else take_snapshot(workspace, command=command)
     )
-    target = write_snapshot(snap, vault_repo / "derived" / "snapshots")
-    outcome = commit_and_push(vault_repo, target, push=push)
-    return f"{target}: {outcome}"
+    outcome = publish_to_branch(vault_repo, snap, push=push)
+    return f"{SNAPSHOT_BRANCH}:derived/snapshots/{snap.host}.json: {outcome}"

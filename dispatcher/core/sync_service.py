@@ -24,7 +24,7 @@ from typing import Callable
 from pydantic import BaseModel
 
 from dispatcher.core.discovery import DispatcherConfig
-from dispatcher.core.sync import SyncReport, collect_sync
+from dispatcher.core.sync import KB_REPO, SNAPSHOT_BRANCH, SyncReport, collect_sync
 
 _REPORT_TTL_SECONDS = 5.0
 _FETCH_MIN_INTERVAL_SECONDS = 60.0
@@ -49,6 +49,8 @@ def fetch_workspace(workspace: Path) -> list[str]:
 
     Hidden and underscore-prefixed dirs are skipped (same rule as discovery:
     `_cowork_output` must never be read).  gov:allow-cowork — doc mention, not a resolve.
+    Explicit refspec fetch for snapshot branch ensures single-branch clones
+    also receive the derived-snapshots ref.
     """
     errors: list[str] = []
     for git_dir in sorted(workspace.glob("*/.git")):
@@ -67,6 +69,27 @@ def fetch_workspace(workspace: Path) -> list[str]:
             continue
         if proc.returncode != 0:
             errors.append(f"{repo.name}: {proc.stderr.strip() or 'fetch failed'}")
+
+    vault = workspace / KB_REPO
+    if (vault / ".git").exists():
+        # дефолтный refspec может быть single-branch (только master) —
+        # ветку снапшотов приносит только явный refspec (спека 2026-08-28)
+        refspec = f"+refs/heads/{SNAPSHOT_BRANCH}:refs/remotes/origin/{SNAPSHOT_BRANCH}"
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(vault), "fetch", "--quiet", "origin", refspec],
+                capture_output=True,
+                text=True,
+                timeout=_FETCH_TIMEOUT_PER_REPO,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as err:
+            errors.append(f"{KB_REPO} ({SNAPSHOT_BRANCH}): {err}")
+        else:
+            if proc.returncode != 0:
+                errors.append(
+                    f"{KB_REPO} ({SNAPSHOT_BRANCH}): "
+                    f"{proc.stderr.strip() or 'fetch failed'}"
+                )
     return errors
 
 

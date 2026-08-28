@@ -24,7 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     mcp.add_argument("--config", type=Path, default=None)
     publish = sub.add_parser(
         "publish-snapshot",
-        help="publish this host's sync snapshot to the KB (derived/snapshots/)",
+        help=("publish this host's sync snapshot to the KB branch derived-snapshots"),
     )
     publish.add_argument("--config", type=Path, default=None)
     publish.add_argument(
@@ -36,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     publish.add_argument(
         "--no-push",
         action="store_true",
-        help="commit to the KB repo without pushing (local testing)",
+        help="validate the pipeline without publishing (no commit is created)",
     )
     return parser
 

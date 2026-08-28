@@ -14,11 +14,13 @@ from conftest import (
     make_maestro,
     make_maestro_home,
     make_spec_runner,
+    seed_snapshot_branch,
 )
 
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.suggest_cli import SuggestRunner
 from dispatcher.server.app import create_app
+from tests.test_publish import make_vault
 
 pytestmark = pytest.mark.anyio
 
@@ -361,10 +363,12 @@ async def test_sync_hosts_endpoint_shape(tmp_path: Path) -> None:
 
 
 async def test_sync_hosts_reads_published_kb_snapshot(tmp_path: Path) -> None:
-    snapshots_dir = tmp_path / "prograph-vault" / "derived" / "snapshots"
-    snapshots_dir.mkdir(parents=True)
-    snapshots_dir.joinpath("mac-remote.json").write_text(
-        """
+    vault = make_vault(tmp_path)
+    seed_snapshot_branch(
+        tmp_path,
+        vault,
+        {
+            "derived/snapshots/mac-remote.json": """
 {"schema_version": 1, "workspace": "/ws", "host": "mac-remote",
  "generated_at": "2026-07-14T12:00:00Z", "gh_error": null,
  "repos": [{"dir": "alpha", "remote": null,
@@ -372,6 +376,7 @@ async def test_sync_hosts_reads_published_kb_snapshot(tmp_path: Path) -> None:
                       "dirty": false, "error": null},
             "github": null}]}
 """
+        },
     )
     async with _client(tmp_path) as client:
         resp = await client.get("/api/sync/hosts")

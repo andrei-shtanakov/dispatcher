@@ -2,7 +2,10 @@
 
 Inputs (DESIGN-202): a live git-only snapshot of this host's workspace
 (`github-checker snapshot --local-only`, requires github-checker on PATH) plus
-per-host snapshots published to the KB (`prograph-vault/derived/snapshots/`).
+per-host snapshots published to the KB's `derived-snapshots` branch (read via
+the `origin/derived-snapshots` remote-tracking ref — never the vault's
+working tree, which may sit on any branch with any local changes; spec
+2026-08-28-snapshot-publish-branch).
 Output: a verdict per (repo, host) — ``ok | sync-first | no-data | unknown`` —
 and a worst-case top line for the current host. Degradation is honest by
 construction: absence, staleness, schema drift and local git errors all render
@@ -17,6 +20,7 @@ name intentionally does not prescribe which of the three to fix.
 
 from __future__ import annotations
 
+import re
 import socket
 import subprocess
 from datetime import UTC, datetime
@@ -37,6 +41,14 @@ KB_REPO = "prograph-vault"
 STALE_AFTER_SECONDS = 3600.0  # brief AP-02: publication freshness ≤ 1 h
 _SNAPSHOT_TIMEOUT = 120
 
+SNAPSHOT_BRANCH = "derived-snapshots"
+SNAPSHOT_REF = f"origin/{SNAPSHOT_BRANCH}"
+_SNAPSHOTS_PREFIX = "derived/snapshots/"
+
+# hostnames: буквы/цифры/точка/дефис/подчёркивание — иное могло бы выйти за
+# пределы derived/snapshots как компонент имени файла (без ведущего дефиса)
+SAFE_HOST_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")
+
 VERDICT_OK = "ok"
 VERDICT_SYNC_FIRST = "sync-first"
 VERDICT_NO_DATA = "no-data"
@@ -50,6 +62,19 @@ _SEVERITY = {
     VERDICT_UNKNOWN: 2,
     VERDICT_SYNC_FIRST: 3,
 }
+
+
+class KbSnapshotLoad(BaseModel):
+    """Результат чтения опубликованных снапшотов из ветки KB.
+
+    Три раздельных канала: снапшоты, per-file ошибки (host, причина) и
+    warning уровня ИСТОЧНИКА — недоступный vault/ref не превращается в
+    фиктивную машину в списке хостов.
+    """
+
+    snapshots: list[Snapshot] = Field(default_factory=list)
+    errors: list[tuple[str, str]] = Field(default_factory=list)
+    source_warning: str | None = None
 
 
 class RepoVerdict(BaseModel):
@@ -172,6 +197,7 @@ def build_report(
     live_error: str | None,
     kb_snapshots: list[Snapshot],
     kb_errors: list[tuple[str, str]] | None = None,
+    kb_source_warning: str | None = None,
     tracking: TrackingState | None = None,
     now: datetime | None = None,
 ) -> SyncReport:
@@ -201,6 +227,8 @@ def build_report(
             f"KB snapshot {name!r} rejected: {err} "
             "(contract pin: contracts/github-checker-snapshot/v1/)"
         )
+    if kb_source_warning is not None:
+        warnings.append(kb_source_warning)
 
     proposals: list[str] = []
     if tracking is not None:
@@ -267,39 +295,93 @@ def run_live_snapshot(
         raise SyncSourceError(str(err)) from err
 
 
-def kb_snapshot_dirs(roots: tuple[Path, ...]) -> tuple[Path, ...]:
-    """Published-snapshot locations derived from workspace roots (AP-02)."""
-    return tuple(root / KB_REPO / "derived" / "snapshots" for root in roots)
+def _git_read(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """Read-only git у vault; сбои процесса — предмет source_warning."""
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+        timeout=_SNAPSHOT_TIMEOUT,
+    )
 
 
-def load_kb_snapshots(
-    dirs: tuple[Path, ...],
-) -> tuple[list[Snapshot], list[tuple[str, str]]]:
-    """Read every published `<host>.json`; contract failures become errors, not crashes."""
+def load_kb_snapshots(roots: tuple[Path, ...]) -> KbSnapshotLoad:
+    """Опубликованные `<host>.json` из `origin/derived-snapshots` (AP-02).
+
+    Читает remote-tracking ref, никогда — рабочее дерево vault: локальный
+    master намеренно больше не несёт машинный read-model (ecosystem-kb#98).
+    Сеть не используется; свежесть ref даёт фоновый fetch.
+    """
     snapshots: list[Snapshot] = []
     errors: list[tuple[str, str]] = []
-    for directory in dirs:
-        if not directory.is_dir():
+    warnings: list[str] = []
+    vaults = [r / KB_REPO for r in roots if (r / KB_REPO / ".git").exists()]
+    if not vaults:
+        return KbSnapshotLoad(
+            source_warning=f"KB repo {KB_REPO!r} not found in any workspace root"
+        )
+    for vault in vaults:
+        try:
+            listing = _git_read(
+                vault,
+                "ls-tree",
+                "-r",
+                "-z",
+                "--name-only",
+                SNAPSHOT_REF,
+                "--",
+                _SNAPSHOTS_PREFIX,
+            )
+        except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError) as err:
+            warnings.append(f"{vault}: git ls-tree failed: {err}")
             continue
-        for path in sorted(directory.glob("*.json")):
-            try:
-                snapshot = parse_snapshot(path.read_text(encoding="utf-8"))
-            except (OSError, SnapshotContractError) as err:
-                errors.append((path.stem, str(err)))
+        if listing.returncode != 0:
+            warnings.append(
+                f"{vault}: ref {SNAPSHOT_REF} unavailable "
+                f"(fetch pending?): {listing.stderr.strip() or 'ls-tree failed'}"
+            )
+            continue
+        for path in listing.stdout.split("\0"):
+            if not path.startswith(_SNAPSHOTS_PREFIX):
                 continue
-            if snapshot.host != path.stem:
-                # `<host>.json` convention (prograph-vault#24): a mismatched
-                # payload would misattribute the panel — contract error
+            name = path[len(_SNAPSHOTS_PREFIX) :]
+            if "/" in name or not name.endswith(".json"):
+                continue  # только непосредственные *.json
+            host = name[: -len(".json")]
+            if not SAFE_HOST_RE.fullmatch(host) or host in (".", ".."):
+                continue
+            try:
+                blob = _git_read(vault, "cat-file", "blob", f"{SNAPSHOT_REF}:{path}")
+            except UnicodeDecodeError as err:
+                errors.append((host, f"snapshot is not valid UTF-8: {err}"))
+                continue
+            except (OSError, subprocess.TimeoutExpired) as err:
+                errors.append((host, f"git cat-file failed: {err}"))
+                continue
+            if blob.returncode != 0:
+                errors.append((host, blob.stderr.strip() or "cat-file failed"))
+                continue
+            try:
+                snapshot = parse_snapshot(blob.stdout)
+            except SnapshotContractError as err:
+                errors.append((host, str(err)))
+                continue
+            if snapshot.host != host:
+                # `<host>.json` convention (prograph-vault#24)
                 errors.append(
                     (
-                        path.stem,
+                        host,
                         f"payload host {snapshot.host!r} does not match "
-                        f"filename {path.name!r}",
+                        f"filename {name!r}",
                     )
                 )
                 continue
             snapshots.append(snapshot)
-    return snapshots, errors
+    return KbSnapshotLoad(
+        snapshots=snapshots,
+        errors=errors,
+        source_warning="; ".join(warnings) or None,
+    )
 
 
 def collect_sync(config: DispatcherConfig, now: datetime | None = None) -> SyncReport:
@@ -314,7 +396,7 @@ def collect_sync(config: DispatcherConfig, now: datetime | None = None) -> SyncR
             live = run_live_snapshot(workspace)
         except SyncSourceError as err:
             live_error = str(err)
-    kb_snapshots, kb_errors = load_kb_snapshots(kb_snapshot_dirs(config.roots))
+    kb_load = load_kb_snapshots(config.roots)
 
     tracking: TrackingState | None = None
     seeded = False
@@ -332,8 +414,9 @@ def collect_sync(config: DispatcherConfig, now: datetime | None = None) -> SyncR
         current_host=socket.gethostname(),
         live=live,
         live_error=live_error,
-        kb_snapshots=kb_snapshots,
-        kb_errors=kb_errors,
+        kb_snapshots=kb_load.snapshots,
+        kb_errors=kb_load.errors,
+        kb_source_warning=kb_load.source_warning,
         tracking=tracking,
         now=now,
     )
