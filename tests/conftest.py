@@ -326,14 +326,17 @@ def make_proctor(root: Path) -> Path:
     return p
 
 
-def seed_snapshot_branch(root: Path, vault: Path, files: dict[str, str]) -> Path:
+def seed_snapshot_branch(
+    root: Path, vault: Path, files: dict[str, str | bytes]
+) -> Path:
     """Bare origin + a `derived-snapshots` branch with *files*, fetched into *vault*.
 
     `KbSnapshotLoad` (spec 2026-08-28-snapshot-publish-branch) reads
     `origin/derived-snapshots`, never the vault's working tree — a fixture
     needs a real bare remote for that ref to exist. Shared by test_sync.py
     and test_api.py; *vault* must already be a git repo (`test_publish.
-    make_vault`).
+    make_vault`). A `bytes` value is written raw (e.g. invalid UTF-8 for
+    decode-failure fixtures); `str` values are written as UTF-8 text.
     """
     from dispatcher.core.sync import SNAPSHOT_BRANCH
     from tests.test_publish import _git
@@ -349,10 +352,13 @@ def seed_snapshot_branch(root: Path, vault: Path, files: dict[str, str]) -> Path
     _git(writer, "config", "user.email", "t@example.com")
     _git(writer, "config", "user.name", "t")
     _git(writer, "switch", "-q", "-c", SNAPSHOT_BRANCH)
-    for rel, text in files.items():
+    for rel, content in files.items():
         target = writer / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
+        if isinstance(content, bytes):
+            target.write_bytes(content)
+        else:
+            target.write_text(content, encoding="utf-8")
         _git(writer, "add", "--", rel)
     _git(writer, "commit", "-q", "-m", "seed snapshots")
     _git(writer, "push", "-q", "origin", SNAPSHOT_BRANCH)

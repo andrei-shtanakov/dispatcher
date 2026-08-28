@@ -98,6 +98,26 @@ def test_mixed_roots_snapshot_and_warning_both_survive(tmp_path: Path) -> None:
     assert SNAPSHOT_BRANCH in load.source_warning
 
 
+def test_invalid_utf8_blob_is_per_file_error_not_crash(tmp_path: Path) -> None:
+    """Ревью PR #217: невалидный UTF-8 в одном снапшоте не должен ронять
+    reader целиком — остальные снапшоты обязаны загрузиться."""
+    vault = make_vault(tmp_path)
+    seed_snapshot_branch(
+        tmp_path,
+        vault,
+        {
+            "derived/snapshots/mac-a.json": _snapshot_json("mac-a"),
+            "derived/snapshots/mac-bad.json": b"\xff\xfe not valid utf-8 \x80",
+        },
+    )
+    load = load_kb_snapshots((tmp_path,))
+    assert [s.host for s in load.snapshots] == ["mac-a"]
+    errors = dict(load.errors)
+    assert "mac-bad" in errors
+    assert "utf-8" in errors["mac-bad"].lower() or "decode" in errors["mac-bad"].lower()
+    assert load.source_warning is None
+
+
 def test_build_report_carries_source_warning(tmp_path: Path) -> None:
     report = build_report(
         current_host="mac-a",

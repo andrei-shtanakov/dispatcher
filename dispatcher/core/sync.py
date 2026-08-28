@@ -332,7 +332,7 @@ def load_kb_snapshots(roots: tuple[Path, ...]) -> KbSnapshotLoad:
                 "--",
                 _SNAPSHOTS_PREFIX,
             )
-        except (OSError, subprocess.TimeoutExpired) as err:
+        except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError) as err:
             warnings.append(f"{vault}: git ls-tree failed: {err}")
             continue
         if listing.returncode != 0:
@@ -352,6 +352,9 @@ def load_kb_snapshots(roots: tuple[Path, ...]) -> KbSnapshotLoad:
                 continue
             try:
                 blob = _git_read(vault, "cat-file", "blob", f"{SNAPSHOT_REF}:{path}")
+            except UnicodeDecodeError as err:
+                errors.append((host, f"snapshot is not valid UTF-8: {err}"))
+                continue
             except (OSError, subprocess.TimeoutExpired) as err:
                 errors.append((host, f"git cat-file failed: {err}"))
                 continue
