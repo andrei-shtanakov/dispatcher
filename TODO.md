@@ -468,7 +468,14 @@
       панели. Если коллизии машин на одной ветке станут регулярными —
       следующий шаг per-host refs или отдельный snapshot-репо, но не bypass
       master.
-- [ ] Перевести паблишер на EPGETBIW050F на новую доставку — остановить дрейф локального master vault-чекаута @owner:github:andrei-shtanakov @blocked_by:todo://dispatcher/snapshot-publish-branch @id:publish-snapshot-master-drift @epic:eco.ops
+- [x] Перевести паблишер на EPGETBIW050F на новую доставку — остановить дрейф локального master vault-чекаута — PR #217 (код) + деплой хоста 2026-08-28 @owner:github:andrei-shtanakov @blocked_by:todo://dispatcher/snapshot-publish-branch @id:publish-snapshot-master-drift @epic:eco.ops
+      Деплой = `git pull` этого чекаута (launchd-джоб `dev.atp.dispatcher.snapshot`
+      гоняет `uv run dispatcher publish-snapshot` из него, plist не менялся).
+      Накопленный с утреннего сброса дрейф (4 снапшот-коммита старого паблишера,
+      только `derived/snapshots/EPGETBIW050F.json`) снят повторным
+      `reset --hard origin/master`. Done-признак подтверждён: плановый прогон
+      17:19 и kickstart 17:29 (2026-08-28) легли в `origin/derived-snapshots`
+      (`87f9acc`, `42d3809`), локальный master vault = origin, лишних worktree нет.
       Принятие inbox-issue #213 от prograph-vault (эскалация #199). Пока
       `snapshot-publish-branch` не доехал до хоста, каждый плановый прогон
       снова коммитит `chore(snapshots): EPGETBIW050F sync snapshot` в
