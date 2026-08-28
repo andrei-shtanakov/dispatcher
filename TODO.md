@@ -447,7 +447,7 @@
 
 ## KB snapshots: доставка через ветку derived-snapshots (резолюция ecosystem-kb#98)
 
-- [ ] `publish-snapshot` → ветка `derived-snapshots`: publisher и читатели уходят с master @owner:github:andrei-shtanakov @id:snapshot-publish-branch @epic:eco.ops
+- [x] `publish-snapshot` → ветка `derived-snapshots`: publisher и читатели уходят с master — PR #217 @owner:github:andrei-shtanakov @id:snapshot-publish-branch @epic:eco.ops
       Принятие inbox-issue #199 от prograph-vault (ADR-ECO-006, резолюция
       ecosystem-kb#98 от 2026-08-26). `derived/snapshots` — регенерируемая
       проекция, не authority: её машинный writer не получает bypass
