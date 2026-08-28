@@ -316,14 +316,20 @@ defect to fix but a consequence of checkout-as-deployment; the standing rule
 
 ## Sync snapshots (per-machine cron)
 
-    uv run dispatcher publish-snapshot               # snapshot → KB → commit+push
-    uv run dispatcher publish-snapshot --no-push     # local commit only (testing)
+    uv run dispatcher publish-snapshot               # snapshot → derived-snapshots
+    uv run dispatcher publish-snapshot --no-push     # validate only, no commit
 
 Publishes this host's workspace state (via `github-checker snapshot`,
-must be on PATH) to `prograph-vault/derived/snapshots/<host>.json` —
-the KB tool zone (prograph-vault#24). Cross-machine sync verdicts need
-this running on **every** machine at most an hour apart; any failure
-exits non-zero so a dead job is visible in cron mail / launchd logs.
+must be on PATH) as `derived/snapshots/<host>.json` on the **`derived-snapshots`
+branch** of the KB repo (prograph-vault#24), resolving ecosystem-kb#98: the
+publisher delivers it through an ephemeral `git worktree` and never touches the
+vault's own checkout, which may sit on any branch with any local changes.
+`--no-push` runs the same pipeline but stops short of pushing, printing
+`validated; push skipped` with no commit created anywhere. Cross-machine sync
+verdicts need this running on **every** machine at most an hour apart; any
+failure exits non-zero so a dead job is visible in cron mail / launchd logs.
+Readers (Sync, Epics) read `origin/derived-snapshots` — the background fetch
+(§ above) is what keeps that ref fresh; there is no separate polling.
 
 crontab (every 30 min):
 
@@ -341,12 +347,6 @@ skips the agent rather than installing one that fails every half hour;
 `status` reports whether the publisher is loaded and its last line.
 Staleness beyond 1 h renders the host's panel as `stale` on the Sync screen
 rather than failing anything.
-
-Known limit at the time of writing: prograph-vault's `master` now requires
-the `governance / gate` check, which rejects the direct push this command
-performs — the snapshot then exists as a local KB commit (this machine's own
-Sync screen is fed), but other machines cannot see it until the vault-side
-policy question is settled. Tracked in prograph-vault's inbox.
 
 ## Two contract guarantees, never one verdict
 
