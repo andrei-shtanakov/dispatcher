@@ -1,7 +1,8 @@
 # Доставка снапшотов через ветку `derived-snapshots` (snapshot-publish-branch)
 
 - Дата: 2026-08-28
-- Статус: одобрен владельцем (брейншторм в сессии, четыре правки внесены)
+- Статус: одобрен владельцем 2026-08-28 (брейншторм в сессии; два раунда
+  правок ревью внесены: 4 + 3)
 - Входящие: inbox #199 (`snapshot-publish-branch`), inbox #213
   (`publish-snapshot-master-drift`), резолюция ecosystem-kb#98 (2026-08-26)
 - TODO: `@id:snapshot-publish-branch`; хост-деплой — `@id:publish-snapshot-master-drift`
@@ -63,7 +64,10 @@ authority; её машинный writer не получает bypass `master`. �
 1. `git -C <vault> fetch origin <явный refspec>`; ветки нет на origin →
    `PublishError` сразу (fail loud: ветка засеяна владельцем, её отсутствие —
    признак не той конфигурации, не повод автосоздать).
-2. `tempfile.mkdtemp` → `git -C <vault> worktree add --detach <tmp>
+2. `tmp_root = tempfile.mkdtemp(...)`; `worktree_path = tmp_root /
+   "worktree"` — путь **ещё не существует** (`git worktree add` требует
+   несуществующий целевой путь; сам mkdtemp-каталог для этого не годится) →
+   `git -C <vault> worktree add --detach <worktree_path>
    origin/derived-snapshots`.
 3. В worktree записывается только `derived/snapshots/<host>.json` —
    существующие `write_snapshot` (атомарная запись) и safe-host-валидация
@@ -84,8 +88,12 @@ stderr:
 - всего ≤ 3 попыток, между ними sleep с jitter (~0.5–2 с); исчерпание →
   `PublishError` (exit 1 — мёртвый прогон виден, RK-03).
 
-Cleanup в `finally` каждой попытки: `git worktree remove --force <tmp>` +
-удаление **только явно созданного** tmp-пути (best-effort `worktree prune`).
+Cleanup в `finally` каждой попытки — строго адресный: `git worktree remove
+--force <worktree_path>`, затем удаление **только собственного** `tmp_root`.
+Никакого `git worktree prune`: это глобальная операция над всеми worktree
+репозитория и может подчистить чужое состояние. Если `worktree remove` не
+удался — удалить только собственный temp-каталог и вернуть/залогировать
+cleanup failure (в stderr/исключение, не молча); чужие worktree не трогать.
 Между часовыми запусками не остаётся никакого состояния: ни rebase-state, ни
 lock-файлов, ни протухшего worktree.
 
@@ -122,6 +130,19 @@ class KbSnapshotLoad(BaseModel):
 `source_warning`, **не** фиктивная запись `(host, error)`: иначе Sync
 нарисует несуществующую машину. Warning поднимается в
 `SyncReport.warnings`; вердикты штатно уезжают в `no-data`/`unknown`.
+
+`source_warning` обязан доходить до **всех** потребителей снапшотов, не
+только до Sync. `server/app.py` (`_epic_snapshots` → `/api/epics`,
+`/api/epics/{id}`) и `mcp_server.py` (тулзы `epics`/`epic`) используют эти же
+снапшоты для Epics: при недоступном ref экран Epics обязан получить точную
+причину и показать GitHub-плоскости (`issues`, `pull_requests`) как
+`unavailable` с этой причиной в `detail`, а не терять warning и говорить
+общее `no published snapshot`. Механика: `build_view`/`build_detail` (и
+`_github_planes`) принимают `source_warning` рядом с существующим
+`snapshot_errors`; оба потребителя передают поля `KbSnapshotLoad` целиком.
+Существующее различение «ничего не опубликовано» ≠ «опубликованное не
+читается» расширяется третьим самоименованным фактом: «источник снапшотов
+недоступен: <причина>».
 
 Потребители (`collect_sync`, `server/app.py`, `mcp_server.py`) переводятся
 на новый вход в этом же PR; `kb_snapshot_dirs` удаляется.
@@ -160,6 +181,9 @@ single-branch clone её не получит. Это остаётся фонов
 9. Reader: отсутствующий ref → `source_warning`, пустые snapshots, ноль
    фиктивных хостов; mismatch host↔filename и битый JSON — per-file errors,
    как раньше.
+9а. Epics при недоступном ref: web (`/api/epics`) и MCP (`epics`) отдают
+    GitHub-плоскости `unavailable` с точной причиной из `source_warning` в
+    `detail` — не общее `no published snapshot`.
 10. Reader-листинг: вложенный мусор под `derived/snapshots/подкаталог/…` и
     не-JSON игнорируются; имена с NUL-безопасным парсингом.
 11. Фоновый fetch: vault-клон с ограниченным (single-branch) refspec — после
