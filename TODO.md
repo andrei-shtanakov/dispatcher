@@ -445,6 +445,42 @@
       сутки утверждала обратное про продюсера, и перепин случился потому, что человек
       заметил мерж, а не потому, что прибор доложил. Один раз — совпадение.
 
+## KB snapshots: доставка через ветку derived-snapshots (резолюция ecosystem-kb#98)
+
+- [ ] `publish-snapshot` → ветка `derived-snapshots`: publisher и читатели уходят с master @owner:github:andrei-shtanakov @id:snapshot-publish-branch
+      Принятие inbox-issue #199 от prograph-vault (ADR-ECO-006, резолюция
+      ecosystem-kb#98 от 2026-08-26). `derived/snapshots` — регенерируемая
+      проекция, не authority: её машинный writer не получает bypass
+      защищённого master. Ветка `derived-snapshots` уже создана владельцем и
+      засеяна (`b01f390`), не защищена — прямой пуш проходит. Scope:
+      (1) publisher (`dispatcher publish-snapshot` / launchd-джоб) пушит
+      только в `derived-snapshots`, меняет только собственный `<host>.json`,
+      при non-fast-forward — fetch → rebase → повтор (ветку обновляют
+      несколько машин); (2) публикация — через выделенный служебный
+      checkout/worktree, никогда не коммит в текущую checked-out ветку
+      основного KB-чекаута (прецедент: снапшот уехал в постороннюю
+      feature-ветку, бывший `84a1132`); (3) читатели (`kb_snapshot_dirs` в
+      `dispatcher/core/sync.py` и далее) читают снапшоты явно из
+      `origin/derived-snapshots` (fetch + `git show` либо служебный worktree),
+      не переключая основной KB-чекаут — локальный master намеренно больше не
+      несёт актуальный машинный read-model; (4) деградация: ветка
+      отсутствует/недоступна → существующие `unknown`/`stale`, не поломка
+      панели. Если коллизии машин на одной ветке станут регулярными —
+      следующий шаг per-host refs или отдельный snapshot-репо, но не bypass
+      master.
+- [ ] Перевести паблишер на EPGETBIW050F на новую доставку — остановить дрейф локального master vault-чекаута @owner:github:andrei-shtanakov @blocked_by:todo://dispatcher/snapshot-publish-branch @id:publish-snapshot-master-drift
+      Принятие inbox-issue #213 от prograph-vault (эскалация #199). Пока
+      `snapshot-publish-branch` не доехал до хоста, каждый плановый прогон
+      снова коммитит `chore(snapshots): EPGETBIW050F sync snapshot` в
+      локальный master рабочего checkout prograph-vault: 26–28.08 — ~89
+      коммитов, расхождение с origin на 93, сломанный `git pull --ff-only`
+      для людей и инструментов. Vault уже подчистил у себя (спасение журнала
+      PR prograph-vault#108, ручная доставка `8ffaff6` в `derived-snapshots`,
+      reset локального master), но дрейф возобновляется на каждом прогоне по
+      расписанию. Done-признак: плановый прогон на EPGETBIW050F кладёт снапшот
+      в `derived-snapshots` через служебный worktree, локальный master
+      vault-чекаута новых снапшот-коммитов не получает.
+
 ## Launchpad (спека docs/superpowers/specs/2026-08-26-launchpad-design.md)
 
 - [x] PR-B1: store + admission + single-live-run гейт + оба escape — ветка `feat/launchpad-b1` смержена (8 задач SDD, финальное ревью + fix-волна чисты) (PR #200) @owner:github:andrei-shtanakov @id:launchpad-b1
