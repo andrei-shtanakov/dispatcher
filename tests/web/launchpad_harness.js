@@ -1319,6 +1319,34 @@ testCase('a SUPERSEDED failure never paints over a fresher success', async () =>
 
 // ---- gate pass-3: outcomes survive the row's disappearance -------------------
 
+// The fifth of this group: what the panel actually SAYS. `detail` is the
+// server's own words (FastAPI's `{detail: …}`), so it goes through `esc`
+// like every other server string on this page; and a 5xx whose body
+// carries no `detail` must still name what happened rather than fall
+// back to a bare "unavailable".
+testCase('the Launchpad error escapes server text and names a bare HTTP '
+  + 'status', async () => {
+  // `detail` is the server's own words (FastAPI's `{detail: …}`), so it goes
+  // through `esc` like every other server string on this page.
+  await withPage(async page => {
+    overrideRoute(page, '/api/launchpad', () => resp(500, {detail: '<b>boom</b>'}));
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+    check(/&lt;b&gt;boom&lt;\/b&gt;/.test(unreadPanel(page).innerHTML),
+      `the server's text is escaped, got "${unreadPanel(page).innerHTML}"`);
+    check(!/<b>/.test(unreadPanel(page).innerHTML),
+      'and no live markup reaches the panel');
+  });
+  // A 5xx whose body carries no `detail` must still say what happened.
+  await withPage(async page => {
+    overrideRoute(page, '/api/launchpad', () => resp(503, {}));
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+    check(/HTTP 503/.test(unreadPanel(page).innerHTML),
+      `a bodyless failure names its status, got "${unreadPanel(page).innerHTML}"`);
+  });
+});
+
 testCase('gate-3a: a settled receipt stays visible after the Ready row '
   + 'vanishes on refetch', async () => {
   let servedFirst = false;
