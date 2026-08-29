@@ -91,6 +91,9 @@ run view, опрашивается только активный экран.
   экспортируемый из `tests/web/dom.js`. Все последующие задачи и все девять
   существующих harness'ов кладут `window`, `location`, `history` из него в
   свой VM-контекст.
+- Produces: `dispatch(el, type, {force?, init?})` — `init` подмешивается в
+  объект события, чтобы тест мог послать `{key: "ArrowRight"}`. Без этого
+  клавиатурное требование спеки §4 непроверяемо (Задача 2).
 
 **Design notes for the implementer:**
 
@@ -179,7 +182,17 @@ const check = (cond, msg) => {
   check(seen.length === 4, `two moves + back + forward = 4, got ${seen.length}`);
 }
 
-// 6. removeEventListener actually detaches
+// 6. dispatch() carries an init payload onto the event
+{
+  const {Document, dispatch} = require(path.join(__dirname, 'dom.js'));
+  const doc = new Document('<button id="b"></button>');
+  const seen = [];
+  doc.getElementById('b').addEventListener('keydown', e => seen.push(e.key));
+  dispatch(doc.getElementById('b'), 'keydown', {init: {key: 'ArrowRight'}});
+  check(seen[0] === 'ArrowRight', `init reached the event, got ${seen[0]}`);
+}
+
+// 7. removeEventListener actually detaches
 {
   const b = makeBrowser();
   let n = 0;
@@ -310,6 +323,21 @@ function hashOfUrl(url, fallback) {
 }
 ```
 
+В `dispatch()` — необязательный `init`, подмешиваемый в событие (нужен, чтобы
+тест мог послать `key`; существующие вызовы не меняются):
+
+```js
+function dispatch(el, type, {force = false, init = null} = {}) {
+  if (!force && (el.disabled || !el.visible)) return [];
+  const event = {
+    type, target: el, currentTarget: null,
+    preventDefault() {}, stopPropagation() {},
+    ...(init || {}),
+  };
+  // …unchanged body…
+}
+```
+
 и в экспорт:
 
 ```js
@@ -407,7 +435,23 @@ module.exports = {browserGlobals, openScreen};
 (шапка, счётчики, `boot`, `withPage`, `testCase`, печать сводки). Скопируй
 скелет из `tests/web/launchpad_harness.js` (строки 32–230): загрузка `<body>`,
 единственный `<script>`, `defaultRoutes`, `makeIntervalRecorder`, `drain`,
-`check`. В `ctx` добавь `...browserGlobals(initialHash)`. Случаи:
+`check`. В `ctx` добавь `...browserGlobals(opts.hash)`.
+
+**Форма `withPage`.** Ровно один объект опций на все задачи плана:
+`withPage(fn, opts)`, где `opts = {hash?: string, routes?: Array<[test, make]>}`.
+Маршруты из `opts.routes` **добавляются в начало** списка `defaultRoutes(...)`,
+чтобы переопределять его. Там же — хелпер переопределения маршрута уже
+загруженной страницы (список маршрутов во всех девяти harness'ах — массив пар,
+а не Map, и таким остаётся):
+
+```js
+/** Overrides a route on an already-booted page. */
+function overrideRoute(page, url, make) {
+  page.routes.unshift([u => u === url, make]);
+}
+```
+
+Случаи:
 
 ```js
 testCase('boots on Launchpad when no hash is given', async () => {
@@ -457,6 +501,20 @@ testCase('back and forward walk the screens', async () => {
     page.ctx.history.forward();
     await drain();
     check(!el(page, '#screen-contracts').hidden, 'forward returned to contracts');
+  });
+});
+
+testCase('arrow keys move between screens, Enter opens one', async () => {
+  await withPage(async page => {
+    dispatch(el(page, '#tab-launchpad'), 'keydown', {init: {key: 'ArrowRight'}});
+    await drain();
+    check(!el(page, '#screen-sync').hidden, 'ArrowRight moved to sync');
+    dispatch(el(page, '#tab-sync'), 'keydown', {init: {key: 'ArrowLeft'}});
+    await drain();
+    check(!el(page, '#screen-launchpad').hidden, 'ArrowLeft moved back');
+    dispatch(el(page, '#tab-epics'), 'keydown', {init: {key: 'Enter'}});
+    await drain();
+    check(!el(page, '#screen-epics').hidden, 'Enter opened the focused tab');
   });
 });
 
@@ -717,8 +775,10 @@ testCase('the manual form sits collapsed inside the Launchpad screen', async () 
     const rc = el(page, '#run-console');
     check(!!rc.closest('#screen-launchpad'),
       'run console must live inside the launchpad panel');
-    check(rc.tagName === 'DETAILS' || !!rc.closest('details'),
-      'the manual form must be collapsed (a <details>)');
+    const details = rc.querySelector('details');
+    check(!!details, 'the manual form must be collapsed (a <details>)');
+    check(!!details && !!details.querySelector('#rc-repo-key'),
+      'the repo_key input must sit inside the collapsed block');
   });
 });
 
@@ -784,7 +844,8 @@ function lpOpenRun(requestId) {
 ```
 
 4. В `onScreenShown` открыть прогон, когда маршрут пришёл с вложенным
-   сегментом:
+   сегментом. **`onScreenShown` накапливает ветки, а не заменяется:** Задачи 4
+   и 5 дописывают в неё своё и обязаны сохранить эту:
 
 ```js
 function onScreenShown(r) {
@@ -836,6 +897,18 @@ DOM и уже переживает: переключение вкладки то
 refetch. Полная перерисовка стёрла бы открытые формы escape вместе с введённой
 причиной.
 
+**`onScreenShown` дописывается, а не переписывается:** ветка
+`if (r.sub) rcOpenView(r.sub)` из Задачи 3 обязана остаться.
+
+**Хелперы, которых в `launchpad_harness.js` ещё нет** — их пишет эта задача,
+рядом с существующими `click`/`htmlOf`/`callsTo`: `READY_ROW` (фикстура строки
+`ready` для `REPO_READY`), `openReadyRow(page, repo)` (клик по строке,
+раскрывающий подтверждение), `openReadyRowAndConfirm(page, repo)` (то же плюс
+Confirm), `failTheSubmitTransport(page)` (переопределяет `/api/runs/submit` на
+`Promise.reject`, чтобы получить состояние «launch outcome unknown»), и
+`overrideRoute(page, url, make)` из Задачи 2 — перенеси его в
+`tests/web/screens.js`, если он нужен обоим harness'ам.
+
 - [ ] **Шаг 1: написать падающие случаи**
 
 В `tests/web/launchpad_harness.js`:
@@ -871,7 +944,7 @@ testCase('an open confirmation is disabled when the row changed', async () => {
   await withPage(async page => {
     await openReadyRow(page, 'deployer');
     await openScreen(page, 'sync');
-    page.routes.set('/api/launchpad', () => ok(snapshot({
+    overrideRoute(page, '/api/launchpad', () => ok(snapshot({
       repositories: [{...REPO_READY, seen_revision: 'c'.repeat(40)}],
       ready: [READY_ROW],
     })));
@@ -980,7 +1053,7 @@ testCase('the periodic timer only refreshes the active screen', async () => {
 
 testCase('a broken endpoint on one screen leaves its neighbour alone', async () => {
   await withPage(async page => {
-    page.routes.set('/api/models', () => resp(500, {}));
+    overrideRoute(page, '/api/models', () => resp(500, {}));
     await openScreen(page, 'models');
     await openScreen(page, 'contracts');
     check(/in sync|drift|n\/a/.test(htmlOf(page, '#contracts')),
@@ -1068,8 +1141,9 @@ function restartScreenTimer() {
 }
 ```
 
-`onScreenShown` дополняется вызовом `loadActiveScreen()` и
-`restartScreenTimer()`. Старая строка `refresh(); setInterval(refresh, 10000);`
+`onScreenShown` **дополняется** вызовом `loadActiveScreen()` и
+`restartScreenTimer()` — ветки Задач 3 и 4 (`rcOpenView(r.sub)`,
+`lpRefetchAfterAction()`) остаются на месте. Старая строка `refresh(); setInterval(refresh, 10000);`
 удаляется целиком; сама `refresh()` удаляется после того, как её последний
 вызов исчез — оставленная «на всякий случай», она снова начнёт тянуть всё.
 
@@ -1112,6 +1186,9 @@ unknown» замирает, пока оператор смотрит друго�
 
 Второго таймера не заводить — у Launchpad уже свой на 30 с; меняется только
 условие, при котором его тик делает запрос.
+
+`SCREEN_REFRESH_MS` в harness'е — литерал `10000` рядом с существующим
+`LP_REFRESH_MS`; таймеры различаются периодом, а не порядком регистрации.
 
 - [ ] **Шаг 1: написать падающие случаи**
 
@@ -1228,18 +1305,24 @@ git commit -m "feat(ui): скрытый Launchpad опрашивается, по
 - [ ] **Шаг 1: написать падающие случаи**
 
 ```js
+// The tab button stays in the static markup and is toggled with `hidden`:
+// a hidden button is out of the a11y tree and `dispatch()` refuses to click
+// it, so "present in the tablist" is measured over VISIBLE tabs.
+const visibleTabs = page =>
+  page.document.querySelectorAll('#tablist button').filter(b => !b.hidden);
+
 testCase('no Benchmarks tab when the profile is unconfigured', async () => {
   await withPage(page => {
-    check(!maybeEl(page, '#tab-benchmarks'), 'no benchmarks tab');
-    const tabs = page.document.querySelectorAll('#tablist button');
-    check(tabs.length === 9, `nine tabs, got ${tabs.length}`);
+    check(el(page, '#tab-benchmarks').hidden, 'the benchmarks tab is hidden');
+    check(visibleTabs(page).length === 9,
+      `nine visible tabs, got ${visibleTabs(page).length}`);
   });
 });
 
 testCase('a configured profile adds the Benchmarks tab last', async () => {
   await withPage(async page => {
-    const tabs = page.document.querySelectorAll('#tablist button');
-    check(tabs.length === 10, `ten tabs, got ${tabs.length}`);
+    const tabs = visibleTabs(page);
+    check(tabs.length === 10, `ten visible tabs, got ${tabs.length}`);
     check(tabs[tabs.length - 1].attributes.id === 'tab-benchmarks',
       'benchmarks is last');
     await openScreen(page, 'benchmarks');
@@ -1251,14 +1334,14 @@ testCase('losing the profile drops the active Benchmarks screen to Launchpad',
   async () => {
     await withPage(async page => {
       await openScreen(page, 'benchmarks');
-      page.routes.set('/api/benchmarks', () => ok({
+      overrideRoute(page, '/api/benchmarks', () => ok({
         fetch_in_flight: false, report: {status: 'unconfigured', url: null,
           fetched_at: null, error: null, benchmarks: [], leaderboards: {}},
       }));
       page.timers.byPeriod(SCREEN_REFRESH_MS).cb();
       await drain();
       check(!el(page, '#screen-launchpad').hidden, 'fell back to launchpad');
-      check(!maybeEl(page, '#tab-benchmarks'), 'the tab is gone');
+      check(el(page, '#tab-benchmarks').hidden, 'the tab is hidden again');
     }, configuredBenchmarksRoutes);
   });
 ```
