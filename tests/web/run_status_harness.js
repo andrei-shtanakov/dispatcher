@@ -2,7 +2,10 @@
 // 2026-08-16 §7) by running the REAL, WHOLE <script> of
 // dispatcher/server/static/index.html inside a VM over the page's own
 // parsed markup (tests/web/dom.js) — same discipline as the other
-// harnesses: nothing is sliced and no handler is simulated.
+// harnesses: nothing is sliced and no handler is simulated. Since Task 7
+// (tabbed-ui) the row lives inside the CONDITIONAL `#screen-benchmarks`
+// panel, so boot() opens that screen by clicking its tab — the fixture
+// profile is configured, and dispatch() refuses a control nobody can see.
 //
 // Asserted here, client-side:
 //   1. an ok report renders the producer's status word VERBATIM, the
@@ -25,7 +28,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const {Document, dispatch} = require(path.join(__dirname, 'dom.js'));
-const {browserGlobals} = require(path.join(__dirname, 'screens.js'));
+const {browserGlobals, openScreen} = require(path.join(__dirname, 'screens.js'));
 
 const HTML_PATH = process.argv[2];
 if (!HTML_PATH) {
@@ -165,7 +168,11 @@ async function boot(runRoute) {
   vm.createContext(ctx);
   vm.runInContext(PAGE_SCRIPT, ctx);
   await drain();
-  return {ctx, document, calls};
+  const env = {ctx, document, calls};
+  // `calls` only records `/api/benchmarks/runs/…`, so opening the screen
+  // (which reloads `/api/benchmarks`) cannot disturb the request counts.
+  await openScreen(env, 'benchmarks');
+  return env;
 }
 
 async function check_run(env, runId) {

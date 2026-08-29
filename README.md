@@ -17,6 +17,26 @@ merges without an explicit human click).
 Port precedence: the CLI `--port` flag overrides the config file's `port`,
 which overrides the default 8787.
 
+### Web panel
+
+The dashboard is a tab strip over nine screens, in this order: `Launchpad` ·
+`Sync` · `Projects` · `Errors` · `Models` · `Contracts` · `Epics` ·
+`Waits (partial)` · `Roadmap`. `Launchpad` is the default — the screen the
+panel opens on, and where an unknown address falls back to.
+
+Only the screen in front of you is loaded and refreshed (10 s); the others
+are not polled. Each screen has its own address (`#sync`, `#roadmap`, …), so
+Back/Forward and bookmarks work, and `Left`/`Right` move along the strip with
+`Enter`/`Space` opening the focused tab.
+
+The run console has no tab of its own: a run is opened from inside
+`Launchpad` by clicking an active or pending row, which addresses it as
+`#launchpad/<request_id>`.
+
+A tenth tab, `Benchmarks`, appears only when the eco-profile is configured
+(the `[benchmarks]` section's `url`); on a stand without one the strip has
+exactly nine tabs.
+
 ### Terminal UI
 
     uv run dispatcher tui                     # tabs: Sync / Projects / Errors / Models / Contracts / Roadmap / Config

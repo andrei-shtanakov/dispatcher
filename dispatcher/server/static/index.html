@@ -173,6 +173,12 @@
   <button id="tab-epics" role="tab" type="button" aria-controls="screen-epics" aria-selected="false">Epics</button>
   <button id="tab-waits" role="tab" type="button" aria-controls="screen-waits" aria-selected="false">Waits (partial)</button>
   <button id="tab-roadmap" role="tab" type="button" aria-controls="screen-roadmap" aria-selected="false">Roadmap</button>
+  <!-- The CONDITIONAL tenth tab (design §3.1): present in the strip exactly
+       when the eco-profile is configured. It stays in the static markup and
+       is toggled with `hidden` by setBenchmarksAvailable() — a hidden button
+       is out of the accessibility tree, and nothing else on this page builds
+       navigation dynamically. -->
+  <button id="tab-benchmarks" role="tab" type="button" aria-controls="screen-benchmarks" aria-selected="false" hidden>Benchmarks</button>
 </nav>
 
 <!-- I-A: outcomes of MUTATIONS outlive the panel that started them. This
@@ -401,9 +407,7 @@
     <tbody></tbody></table></div></section>
 </div>
 
-<!-- Benchmarks is a CONDITIONAL tab (design §3.1) and is still outside
-     the panels until Task 7 gives it one; leaving it here keeps it
-     visible and its harnesses honest in the meantime. -->
+<div id="screen-benchmarks" class="screen" role="tabpanel" aria-labelledby="tab-benchmarks" hidden>
 <section id="benchmarks-section" hidden><h2>Benchmarks
   <span id="benchmarks-status" class="fresh"></span></h2>
   <div id="benchmarks-list"></div>
@@ -412,6 +416,7 @@
     <input id="run-status-input" type="number" min="1" inputmode="numeric"></label>
     <button id="run-status-check" type="button">Check status</button></div>
   <div id="run-status-result"></div></section>
+</div>
 
 <script>
 const esc = s => String(s ?? "").replace(/[&<>"']/g,
@@ -446,6 +451,9 @@ const SCREENS = [
   {id: "epics", label: "Epics"},
   {id: "waits", label: "Waits (partial)"},
   {id: "roadmap", label: "Roadmap"},
+  // The conditional tenth (design §3.1): last in the strip, and offered only
+  // while `benchmarksAvailable` — see setBenchmarksAvailable() below.
+  {id: "benchmarks", label: "Benchmarks"},
 ];
 const DEFAULT_SCREEN = "launchpad";
 const HASH_RE = /^#([a-z][a-z-]*)(?:\/([A-Za-z0-9._-]{1,200}))?$/;
@@ -471,8 +479,44 @@ let route = {screen: DEFAULT_SCREEN, sub: null};
 // has shipped that exact shape of bug once already (Task 3).
 let lpLastScreenShown = null;
 
-/** Screens currently offered — Task 7 makes this conditional. */
-function screenIds() { return SCREENS.map(s => s.id); }
+// Whether the eco-profile is configured, i.e. whether `Benchmarks` is a
+// screen at all. Decided by the one `/api/benchmarks` request at page load
+// and re-decided by that screen's own loader while it is active; `false`
+// until an answer arrives, so an unconfigured stand shows exactly nine tabs
+// and never flashes a tenth.
+let benchmarksAvailable = false;
+
+/** Screens currently offered — the tenth is conditional (design §3.1). */
+function screenIds() {
+  return SCREENS.map(s => s.id)
+    .filter(id => id !== "benchmarks" || benchmarksAvailable);
+}
+
+/**
+ * The tab exists exactly when `#benchmarks-section` used to un-hide itself:
+ * one visibility rule, lifted to the navigation level.
+ */
+function setBenchmarksAvailable(available) {
+  if (available === benchmarksAvailable) return;
+  benchmarksAvailable = available;
+  const tab = document.getElementById("tab-benchmarks");
+  if (tab) tab.hidden = !available;
+  if (!available) {
+    // An operator standing on a screen whose tab just vanished has nothing
+    // to click back from.
+    if (route.screen === "benchmarks") navigate(DEFAULT_SCREEN, null);
+    return;
+  }
+  // The answer that creates the tab arrives AFTER the boot hash was parsed,
+  // so a direct `#benchmarks` link has already fallen back to Launchpad
+  // (screenIds() did not offer it yet). Re-resolve the address bar now that
+  // the screen exists — otherwise the conditional screen would be the one
+  // screen nobody can bookmark. `location.hash` itself was never rewritten
+  // by the fallback, so it still carries what the owner opened.
+  if (hasLocation && parseHash(location.hash).screen === "benchmarks") {
+    applyRoute();
+  }
+}
 
 function parseHash(raw) {
   const m = HASH_RE.exec(String(raw || ""));
@@ -2344,13 +2388,22 @@ async function loadRoadmap() {
   }
 }
 
-// Benchmarks is a CONDITIONAL section with no panel of its own until Task 7
-// gives it a tab, so it is NOT in LOADERS and the screen timer never touches
-// it: it loads once at boot and again on an explicit selection. One section,
-// one writer, one caller at a time — no generation counter needed here.
+// The CONDITIONAL screen's loader, and the single reader of the answer that
+// decides whether its tab is offered at all. Called once at boot (that one
+// request decides the tab — no other screen pays for `/api/benchmarks`),
+// then by the screen timer while Benchmarks is the active screen, and on an
+// explicit benchmark selection. One section, one writer, one caller at a
+// time — no generation counter needed here.
+//
+// A FAILED read is not an answer about configuration: the catch leaves the
+// tab exactly as it is (fail-loud on the panel instead), because dropping an
+// operator off the screen on a transport blip is worse than a panel that
+// names its own failure.
 async function loadBenchmarks() {
   try {
-    renderBenchmarks(await get("/api/benchmarks"));
+    const status = await get("/api/benchmarks");
+    renderBenchmarks(status);
+    setBenchmarksAvailable(status.report.status !== "unconfigured");
   } catch (err) {
     document.getElementById("benchmarks-status").textContent =
       "benchmarks unavailable: " + err;
@@ -2370,6 +2423,9 @@ const LOADERS = {
   epics: refreshEpics,       // already self-contained, with its own catch
   waits: refreshWaits,       // already self-contained, with its own guard
   roadmap: loadRoadmap,
+  // Reached only while the conditional tab is offered, so `/api/benchmarks`
+  // stays off every other screen's path.
+  benchmarks: loadBenchmarks,
 };
 
 // `#updated` is one global element for the whole page, with exactly two
@@ -4123,8 +4179,10 @@ document.getElementById('ta-open-panel').addEventListener('click', () => {
 // eight endpoints, every 10s, whatever was on screen — used to sit.
 loadActiveScreen();
 restartScreenTimer();
-// Benchmarks has no panel of its own until Task 7, so it is not on the
-// screen timer: one load at boot, and a reload on an explicit selection.
+// The one request that decides whether the conditional tenth tab exists
+// (design §3.1). It runs whatever screen the hash opened on — the tab strip
+// cannot be drawn without an answer — and from then on the Benchmarks screen
+// is refreshed by its own LOADERS entry, only while it is the active screen.
 loadBenchmarks();
 
 // ---- Launchpad root panel (spec §9, PR-C Task 6) ---------------------------

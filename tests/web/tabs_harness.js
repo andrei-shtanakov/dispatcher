@@ -25,6 +25,10 @@
 //      screen's endpoints, the 10s timer refreshes only the active screen,
 //      a screen whose endpoint is broken does not blank its neighbour, and
 //      Roadmap still folds its `Contract` column out of /api/contracts.
+//   8. Task 7's CONDITIONAL tenth tab: `Benchmarks` is in the strip when and
+//      only when the eco-profile is configured, one boot request decides it,
+//      no other screen pays for it, and losing the profile takes the operator
+//      off a screen whose tab has just gone.
 //
 // Usage: node tabs_harness.js <path-to-index.html>
 'use strict';
@@ -41,13 +45,19 @@ if (!HTML_PATH) {
   process.exit(2);
 }
 
-// The nine screens of Task 2, in registry order (`benchmarks` is Task 7's
-// conditional tenth). Literal on purpose: the order of the tab strip is a
-// contract of design §3.1, and a list derived from the page could not fail.
+// The nine UNCONDITIONAL screens, in registry order. Literal on purpose: the
+// order of the tab strip is a contract of design §3.1, and a list derived
+// from the page could not fail. `benchmarks` is Task 7's conditional tenth
+// and is deliberately NOT here: this list is what an unconfigured stand
+// shows, so the count assertions below stay meaningful.
 const SCREEN_IDS = [
   'launchpad', 'sync', 'projects', 'errors', 'models',
   'contracts', 'epics', 'waits', 'roadmap',
 ];
+// Every panel the page ships, conditional one included: structural
+// assertions (ARIA wiring, one-visible-panel, `#ta-outcomes` placement) hold
+// for the tenth screen whether or not its tab is currently offered.
+const ALL_SCREEN_IDS = [...SCREEN_IDS, 'benchmarks'];
 
 let caseFailures = 0;
 let asyncErrors = 0;
@@ -274,7 +284,7 @@ testCase('boots on Launchpad when no hash is given', async () => {
 testCase('exactly one panel is visible at a time', async () => {
   await withPage(async page => {
     await openScreen(page, 'epics');
-    const visible = SCREEN_IDS.filter(
+    const visible = ALL_SCREEN_IDS.filter(
       id => !page.document.getElementById(`screen-${id}`).hidden);
     check(visible.length === 1 && visible[0] === 'epics',
       `one visible panel, got ${visible.join(',') || 'none'}`);
@@ -328,7 +338,7 @@ testCase('arrow keys move between screens, Enter opens one', async () => {
 
 testCase('every tab carries its ARIA wiring', async () => {
   await withPage(page => {
-    for (const id of SCREEN_IDS) {
+    for (const id of ALL_SCREEN_IDS) {
       const tab = el(page, `#tab-${id}`);
       const panel = el(page, `#screen-${id}`);
       check(tab.attributes.role === 'tab', `${id}: role=tab`);
@@ -344,7 +354,7 @@ testCase('every tab carries its ARIA wiring', async () => {
 testCase('the unresolved-requests band lives outside every panel', async () => {
   await withPage(page => {
     const band = el(page, '#ta-outcomes');
-    for (const id of SCREEN_IDS) {
+    for (const id of ALL_SCREEN_IDS) {
       check(!band.closest(`#screen-${id}`),
         `#ta-outcomes must not sit inside screen-${id}`);
     }
@@ -689,6 +699,138 @@ testCase('a project card records the Errors filter without fetching the '
     check(errorCalls.length === 1 && errorCalls[0].includes('project=widget'),
       `opening Errors fetches once, carrying the recorded filter, saw ${errorCalls.join(',') || 'nothing'}`);
   }, projectsRoute);
+});
+
+// ---- Task 7: the conditional tenth tab -----------------------------------
+//
+// The tab BUTTON stays in the static markup and is toggled with `hidden` —
+// nothing else on this page renders navigation dynamically. A hidden button
+// is out of the accessibility tree and dispatch() refuses to click it, so
+// "present in the tablist" is measured over VISIBLE tabs, not over the DOM.
+
+const visibleTabs = page =>
+  page.document.querySelectorAll('#tablist button').filter(b => !b.hidden);
+
+/** A configured eco-profile: exactly the report shape whose `status` used to
+ * un-hide `#benchmarks-section` on its own (renderBenchmarks). */
+const BENCH_CONFIGURED = {
+  fetch_in_flight: false,
+  report: {status: 'ok', url: 'https://bench.example/api',
+    fetched_at: '2026-08-29T00:00:00Z', error: null,
+    benchmarks: [], leaderboards: {}},
+};
+const BENCH_UNCONFIGURED = {
+  fetch_in_flight: false,
+  report: {status: 'unconfigured', url: null, fetched_at: null, error: null,
+    benchmarks: [], leaderboards: {}},
+};
+/** Matched EXACTLY so it cannot also swallow `/api/benchmarks/runs/<id>`. */
+const configuredBenchmarksRoutes = {routes: [
+  [u => u === '/api/benchmarks', () => ok(BENCH_CONFIGURED)],
+]};
+
+testCase('no Benchmarks tab when the profile is unconfigured', async () => {
+  await withPage(page => {
+    check(el(page, '#tab-benchmarks').hidden, 'the benchmarks tab is hidden');
+    check(visibleTabs(page).length === 9,
+      `nine visible tabs, got ${visibleTabs(page).length}`);
+    check(el(page, '#screen-benchmarks').hidden, 'and its panel stays closed');
+  });
+});
+
+testCase('an unconfigured stand cannot be routed onto Benchmarks at all',
+  async () => {
+  // The closed grammar of §4.1 covers the conditional screen too: a stale
+  // bookmark to a tab that is not offered is an unknown screen.
+  await withPage(page => {
+    check(!el(page, '#screen-launchpad').hidden, 'fell back to launchpad');
+    check(el(page, '#screen-benchmarks').hidden, 'the panel did not open');
+  }, {hash: '#benchmarks'});
+});
+
+testCase('a configured profile adds the Benchmarks tab last', async () => {
+  await withPage(async page => {
+    const tabs = visibleTabs(page);
+    check(tabs.length === 10, `ten visible tabs, got ${tabs.length}`);
+    check(tabs.length === 10 && tabs[tabs.length - 1].attributes.id === 'tab-benchmarks',
+      'benchmarks is last');
+    await openScreen(page, 'benchmarks');
+    check(!el(page, '#screen-benchmarks').hidden, 'the benchmarks panel opened');
+    check(el(page, '#screen-launchpad').hidden,
+      'and it is the only panel — launchpad closed behind it');
+  }, configuredBenchmarksRoutes);
+});
+
+testCase('one boot request decides the tab, and no other screen pays for it',
+  async () => {
+  await withPage(async page => {
+    check(callsTo(page, '/api/benchmarks') === 1,
+      `exactly one boot request decides the tab, got ${callsTo(page, '/api/benchmarks')}`);
+    const before = page.calls.length;
+    await openScreen(page, 'models');
+    await openScreen(page, 'roadmap');
+    page.timers.byPeriod(10000).cb();
+    await drain();
+    check(!urlsSince(page, before).includes('/api/benchmarks'),
+      `no other screen fetches /api/benchmarks, saw ${urlsSince(page, before).join(',')}`);
+  }, configuredBenchmarksRoutes);
+});
+
+testCase('the active Benchmarks screen refreshes on its own loader', async () => {
+  await withPage(async page => {
+    await openScreen(page, 'benchmarks');
+    const before = page.calls.length;
+    page.timers.byPeriod(10000).cb();
+    await drain();
+    const urls = urlsSince(page, before);
+    check(urls.length === 1 && urls[0] === '/api/benchmarks',
+      `only benchmarks refreshed, saw ${urls.join(',') || 'nothing'}`);
+  }, configuredBenchmarksRoutes);
+});
+
+testCase('a direct #benchmarks hash opens the screen once the answer arrives',
+  async () => {
+  // The boot answer that creates the tab arrives AFTER the hash is parsed,
+  // so the address bar has to be re-resolved — otherwise a bookmark to the
+  // conditional screen could never open it.
+  await withPage(page => {
+    check(!el(page, '#screen-benchmarks').hidden,
+      'the bookmarked screen opened');
+    check(el(page, '#tab-benchmarks').attributes['aria-selected'] === 'true',
+      'and its tab is the selected one');
+  }, {...configuredBenchmarksRoutes, hash: '#benchmarks'});
+});
+
+testCase('losing the profile drops the active Benchmarks screen to Launchpad',
+  async () => {
+  await withPage(async page => {
+    await openScreen(page, 'benchmarks');
+    overrideRoute(page, '/api/benchmarks', () => ok(BENCH_UNCONFIGURED));
+    page.timers.byPeriod(10000).cb();
+    await drain();
+    check(!el(page, '#screen-launchpad').hidden, 'fell back to launchpad');
+    check(el(page, '#screen-benchmarks').hidden, 'the panel closed behind it');
+    check(el(page, '#tab-benchmarks').hidden, 'the tab is hidden again');
+    check(visibleTabs(page).length === 9,
+      `back to nine visible tabs, got ${visibleTabs(page).length}`);
+  }, configuredBenchmarksRoutes);
+});
+
+testCase('a failed benchmarks read leaves the tab the operator is standing on',
+  async () => {
+  // A transport failure is not an answer about configuration: yanking the
+  // screen out from under the operator on a blip would be worse than a
+  // panel that names its own failure (which loadBenchmarks already does).
+  await withPage(async page => {
+    await openScreen(page, 'benchmarks');
+    overrideRoute(page, '/api/benchmarks', () => { throw new Error('transport down'); });
+    page.timers.byPeriod(10000).cb();
+    await drain();
+    check(!el(page, '#screen-benchmarks').hidden, 'the screen is still open');
+    check(!el(page, '#tab-benchmarks').hidden, 'and its tab is still offered');
+    check(/benchmarks unavailable/.test(el(page, '#benchmarks-status').textContent),
+      `the failure itself is named, got "${el(page, '#benchmarks-status').textContent}"`);
+  }, configuredBenchmarksRoutes);
 });
 
 // ---- main -------------------------------------------------------------------
