@@ -904,13 +904,20 @@ testCase('gate-3b: an active row with a request_id links to the run view',
   async () => {
   await withPage(async page => {
     // Task 3 (tabbed-ui): the drill-down is a whole-row `data-lp-request-id`
-    // attribute, not a per-cell `<a class="lp-open-run">` — see index.html's
-    // lpActiveRowHtml.
+    // attribute (mouse convenience) PLUS a real, keyboard-reachable
+    // `.lp-open-run-btn` control inside it (fix round 1, finding 2) — not a
+    // per-cell `<a class="lp-open-run">` — see index.html's lpActiveRowHtml.
     check(!!page.document.querySelector('#lp-active [data-lp-request-id="rq-act1"]'),
       'active rows with a request_id carry the run-view opener');
-    const linked = page.document.querySelectorAll('#lp-active [data-lp-request-id]');
-    check(linked.length === 1,
-      `only the linked row carries the drill-down attribute (got ${linked.length})`);
+    check(!!page.document.querySelector(
+        '#lp-active button.lp-open-run-btn[data-lp-request-id="rq-act1"]'),
+      'the linked row carries a real, focusable drill-down control');
+    // Scoped to `<tr>` (the row) rather than every `[data-lp-request-id]`
+    // node — the linked row's own control carries the SAME attribute, so a
+    // blanket count would (correctly) be 2, not 1.
+    const linkedRows = page.document.querySelectorAll('#lp-active tr[data-lp-request-id]');
+    check(linkedRows.length === 1,
+      `only the linked row carries the drill-down attribute (got ${linkedRows.length})`);
   }, () => ok(snapshot({active: [
     {request_id: 'rq-act1', repo_key: 'github.com/o/r', work_id: 'w1',
      state: 'materialized', run_id: '01LINKED', run_status: 'RUNNING',

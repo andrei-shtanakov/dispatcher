@@ -82,5 +82,32 @@ const check = (cond, msg) => {
   check(n === 0, `detached listener silent, got ${n}`);
 }
 
+// 8. matches(): a comma-separated selector LIST matches if ANY branch does
+{
+  const {Document} = require(path.join(__dirname, 'dom.js'));
+  const doc = new Document('<button id="b"></button>');
+  const b = doc.getElementById('b');
+  check(b.matches('button, input, a'), 'a normal selector list still matches its own branch');
+  check(!b.matches('input, a'), 'a selector list matches only if some branch does');
+}
+
+// 9. matches(): a comma INSIDE an attribute value is not a list separator
+// (fix round 1, finding 3 — a naive `.split(',')` broke this).
+{
+  const {Document} = require(path.join(__dirname, 'dom.js'));
+  const doc = new Document('<div id="d" data-x="a,b"></div>');
+  const d = doc.getElementById('d');
+  check(d.matches('[data-x="a,b"]'), 'a comma inside an attribute value still matches');
+}
+
+// 10. matches(): a trailing comma must not match EVERYTHING (an empty
+// branch, dropped rather than handed to matchesCompound('') to match on).
+{
+  const {Document} = require(path.join(__dirname, 'dom.js'));
+  const doc = new Document('<div id="d"></div>');
+  const d = doc.getElementById('d');
+  check(!d.matches('button,'), 'a trailing comma must not match every element');
+}
+
 console.log(failures ? `\nFAILED: ${failures}` : '\nOK: browser model');
 process.exit(failures ? 1 : 0);

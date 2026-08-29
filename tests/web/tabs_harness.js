@@ -247,6 +247,7 @@ async function click(page, selector) {
   await Promise.all(dispatch(el(page, selector), 'click'));
   await drain();
 }
+function callsTo(page, url) { return page.calls.filter(c => c.url === url).length; }
 
 // ---- case runner -----------------------------------------------------------
 
@@ -371,8 +372,29 @@ testCase('clicking an active run opens the run view and sets the hash', async ()
     await drain();
     check(page.ctx.location.hash === '#launchpad/rc-active-1',
       `hash is the drill-down, got ${page.ctx.location.hash}`);
-    check(page.calls.some(c => c.url === '/api/runs/rc-active-1'),
-      'the run view fetched the run');
+    // Exact count, not `.some()` (fix round 1, finding 1): navigate()'s own
+    // synchronous hashchange already opens the run via onScreenShown — a
+    // direct call from lpOpenRun on top of that would double-fetch and a
+    // `.some()` assertion is exactly what let that regression through.
+    check(callsTo(page, '/api/runs/rc-active-1') === 1,
+      `the run view fetched the run exactly once (got ${callsTo(page, '/api/runs/rc-active-1')})`);
+  }, snapshotRoute({active: [ACTIVE_LINKED]}));
+});
+
+testCase('the drill-down control is reachable by keyboard and activating it opens the run',
+  async () => {
+  await withPage(async page => {
+    const btn = el(page, '#lp-active button.lp-open-run-btn[data-lp-request-id="rc-active-1"]');
+    check(!btn.disabled && btn.tagName === 'BUTTON',
+      'a real, focusable <button> carries the drill-down, not a bare row');
+    check(!!btn.attributes['aria-label'] && btn.attributes['aria-label'].length > 0,
+      'the control names which run it opens');
+    await Promise.all(dispatch(btn, 'click'));
+    await drain();
+    check(page.ctx.location.hash === '#launchpad/rc-active-1',
+      `hash is the drill-down, got ${page.ctx.location.hash}`);
+    check(callsTo(page, '/api/runs/rc-active-1') === 1,
+      'activating the control opened the run view exactly once');
   }, snapshotRoute({active: [ACTIVE_LINKED]}));
 });
 
@@ -385,9 +407,24 @@ testCase('an unlinked active run offers no drill-down', async () => {
 
 testCase('a direct drill-down hash opens the run view on load', async () => {
   await withPage(page => {
-    check(page.calls.some(c => c.url === '/api/runs/rc-deep'),
-      'the drill-down hash fetched the run on boot');
+    check(callsTo(page, '/api/runs/rc-deep') === 1,
+      `the drill-down hash fetched the run on boot exactly once (got ${callsTo(page, '/api/runs/rc-deep')})`);
   }, {hash: '#launchpad/rc-deep'});
+});
+
+testCase('a request_id that cannot survive the hash grammar opens directly, '
+  + 'without writing the hash', async () => {
+  const UNROUTABLE_ID = 'weird id';   // a space fails HASH_RE's sub-segment
+  await withPage(async page => {
+    const before = page.ctx.location.hash;
+    const row = el(page, `#lp-active [data-lp-request-id="${UNROUTABLE_ID}"]`);
+    await Promise.all(dispatch(row, 'click'));
+    await drain();
+    check(page.ctx.location.hash === before,
+      `an unroutable request_id must not write the hash, got ${page.ctx.location.hash}`);
+    check(callsTo(page, `/api/runs/${encodeURIComponent(UNROUTABLE_ID)}`) === 1,
+      'the run view still opened directly, exactly once');
+  }, snapshotRoute({active: [{...ACTIVE_LINKED, request_id: UNROUTABLE_ID}]}));
 });
 
 // ---- Task 3 ruling: #lp-pending gets drill-down too (spec §5.3), guarded --
@@ -435,8 +472,27 @@ testCase('clicking a pending row with a request_id opens the run view and sets t
     await click(page, `#lp-pending [data-lp-request-id="${requestId}"]`);
     check(page.ctx.location.hash === `#launchpad/${requestId}`,
       `hash is the drill-down, got ${page.ctx.location.hash}`);
-    check(page.calls.some(c => c.url === `/api/runs/${requestId}`),
-      'the run view fetched the run');
+    check(callsTo(page, `/api/runs/${requestId}`) === 1,
+      `the run view fetched the run exactly once (got ${callsTo(page, `/api/runs/${requestId}`)})`);
+  }, pendingOrphanRoutes());
+});
+
+testCase('the pending row\'s own drill-down button is reachable by keyboard '
+  + 'and activating it opens the run', async () => {
+  await withPage(async page => {
+    await openUnknownPendingRow(page);
+    const btn = maybeEl(page, '#lp-pending button.lp-open-run-btn[data-lp-request-id]');
+    check(!!btn, 'the pending entry carries a real, focusable drill-down button');
+    if (!btn) return;
+    check(!btn.disabled && btn.tagName === 'BUTTON',
+      'a real <button>, not a bare row, is the keyboard-reachable control');
+    const requestId = btn.dataset.lpRequestId;
+    await Promise.all(dispatch(btn, 'click'));
+    await drain();
+    check(page.ctx.location.hash === `#launchpad/${requestId}`,
+      `hash is the drill-down, got ${page.ctx.location.hash}`);
+    check(callsTo(page, `/api/runs/${requestId}`) === 1,
+      'activating the control opened the run view exactly once');
   }, pendingOrphanRoutes());
 });
 

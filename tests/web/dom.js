@@ -172,8 +172,19 @@ class El {
   // branch does — the same semantics as the real `Element.matches()`, and
   // needed for a delegated handler's own "did this click land on ANY
   // interactive control" guard (index.html's launchpad click handlers).
+  // Bracket-aware split (fix round 1, finding 3): a bare `.split(',')` broke
+  // `matchesCompound`'s own `[attr="a,b"]` support (a comma inside an
+  // attribute value used to work and would now throw "unsupported
+  // selector"), and a trailing comma produced an empty branch that
+  // `matchesCompound('')` matches against ANY element — so `closest("x,")`
+  // would match everything. `querySelectorAll` already splits this way for
+  // its (whitespace) combinator; empty branches are dropped rather than
+  // trusted to fail matchesCompound on their own.
   matches(selector) {
-    return selector.split(',').some(part => matchesCompound(this, part.trim()));
+    return selector.split(/,(?![^[]*\])/)
+      .map(part => part.trim())
+      .filter(part => part !== '')
+      .some(part => matchesCompound(this, part));
   }
   closest(selector) {
     for (let n = this; n; n = n.parentNode) if (n.matches(selector)) return n;
