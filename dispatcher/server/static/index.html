@@ -444,7 +444,7 @@ let rcLogsGen = 0;
 // прошлого там, где они могут менять общий DOM". The per-screen loaders
 // (LOADERS, below) were split out of one `refresh()` that could not race
 // itself; split, they can. Leaving a screen and returning fires
-// onScreenShown → loadActiveScreen a SECOND time while the first read is
+// onScreenShown → runLoader a SECOND time while the first read is
 // still airborne, and an entry overlaps the 10s screen timer the same way.
 // Whichever answered LAST used to paint — so a stale Sync verdict could
 // overwrite a fresh one, and with it stale proposals re-created as live
@@ -457,12 +457,12 @@ let rcLogsGen = 0;
 // supersede a Contracts one.
 //
 // WHERE the check lives: inside each loader, between its own await and its
-// own render — not in loadActiveScreen around the awaited call. By the time
+// own render — not in runLoader around the awaited call. By the time
 // that await returns the loader has already painted, so a check there could
 // only undo a render, not prevent it; and the bump inside the loader also
-// covers the callers that never go through loadActiveScreen at all (the
+// covers the callers that never go through the screen timer at all (the
 // Errors filter controls, the post-track loadSync, the benchmark selector).
-// `loadActiveScreen`'s own screen-id re-check around stampUpdated stays as
+// `applyOutcome`'s own screen-id re-check around stampUpdated stays as
 // it is — that guards a different node (#updated) against a different
 // mistake (stamping onto the screen the operator moved to).
 const screenGen = Object.create(null);
@@ -654,10 +654,10 @@ function onScreenShown(r) {
   // the launchpad refetch above is: applyRoute() runs at the TOP of this
   // script, where `LOADERS` (a `const` declared with the loaders, further
   // down) is still in the temporal dead zone. The boot load is the explicit
-  // `loadActiveScreen(); restartScreenTimer();` pair further down, where the
+  // `runLoader(activeScreen()); restartScreenTimer();` pair further down, where
   // old `refresh(); setInterval(refresh, 10000);` used to sit.
   if (previousScreen !== null) {
-    loadActiveScreen();
+    runLoader(activeScreen());
     // Restarted per switch, not left free-running: an operator who has just
     // arrived on a screen gets a whole period before the next repaint,
     // instead of a tick left over from the screen they came from.
@@ -805,10 +805,12 @@ document.getElementById("errors-filter").addEventListener("click", e => {
   e.stopPropagation();  // don't collapse the <details>
   errorsProject = null;
   renderErrorsFilter();
-  // `.then`, not `await` in an async handler: these handlers stay
-  // SYNCHRONOUS so the click's timing is exactly what it was — only the
-  // outcome, which used to be dropped on the floor, now reaches `#updated`.
-  loadErrors().then(o => applyOutcome("errors", o));
+  // runLoader, never `loadErrors()` by hand: the loader and the screen id
+  // it reports under come from one argument, so no call site can pair them
+  // wrongly or forget the second half (see runLoader). These handlers stay
+  // SYNCHRONOUS — the returned promise is deliberately not awaited here, so
+  // the click's timing is exactly what it was.
+  runLoader("errors");
 });
 
 document.getElementById("errors-toggle").addEventListener("click", e => {
@@ -817,14 +819,14 @@ document.getElementById("errors-toggle").addEventListener("click", e => {
   errorsDays = errorsDays === null ? ERRORS_DAYS_DEFAULT : null;
   e.target.textContent =
     errorsDays === null ? `last ${ERRORS_DAYS_DEFAULT} days` : "show all";
-  loadErrors().then(o => applyOutcome("errors", o));
+  runLoader("errors");
 });
 
 const serviceSelect = document.getElementById("errors-service");
 serviceSelect.addEventListener("click", e => e.stopPropagation());
 serviceSelect.addEventListener("change", e => {
   errorsService = e.target.value || null;
-  loadErrors().then(o => applyOutcome("errors", o));
+  runLoader("errors");
 });
 
 // Long messages render truncated; click a message cell to expand/collapse.
@@ -972,7 +974,7 @@ document.getElementById("benchmarks-list").addEventListener("click", (ev) => {
   const btn = ev.target.closest("button[data-bench]");
   if (!btn) return;
   benchSelected = btn.dataset.bench;
-  loadBenchmarks().then(o => applyOutcome("benchmarks", o));
+  runLoader("benchmarks");
 });
 
 // Phase-2 run-status (spec 2026-08-16 §7): click-driven; the token is
@@ -1127,7 +1129,7 @@ function renderEpics(view) {
 // "loader OUTCOMES" block above `loadSync`. The constants are declared
 // further down in this same script scope; nothing calls this before the
 // script has run to the bottom (the boot `applyRoute()` deliberately skips
-// `loadActiveScreen`, and the `kind` buttons need a click).
+// `runLoader`, and the `kind` buttons need a click).
 async function refreshEpics() {
   // The `kind` filter makes the race concrete: a click here while a screen
   // tick is airborne must not have the tick's UNFILTERED answer land last.
@@ -1321,7 +1323,7 @@ async function refreshWaits() {
 document.querySelectorAll("button[data-epic-kind]").forEach(btn => {
   btn.addEventListener("click", () => {
     epicsKind = btn.dataset.epicKind;
-    refreshEpics().then(o => applyOutcome("epics", o));
+    runLoader("epics");
   });
 });
 
@@ -1351,7 +1353,7 @@ document.getElementById("sync-proposals").addEventListener("click", async e => {
     // Deliberately NOT awaited inside this try: the try owns the POST, and
     // awaiting the reload here would route a reload failure into the catch
     // that re-enables a button renderSync may have just removed.
-    loadSync().then(o => applyOutcome("sync", o));
+    runLoader("sync");
   } catch (err) {
     btn.disabled = false;  // ошибка не должна оставить кнопку мёртвой
     btn.closest(".proposal").insertAdjacentHTML("beforeend",
@@ -1388,7 +1390,7 @@ document.getElementById("sync-hosts").addEventListener("click", async e => {
     // Only reachable from the Sync screen's own host table, so the Sync
     // loader is the whole repaint this needs.
     if (data.ok) {
-      setTimeout(() => loadSync().then(o => applyOutcome("sync", o)), 800);
+      setTimeout(() => runLoader("sync"), 800);
     }
   } catch (err) {
     out.textContent = "✗ " + err;
@@ -2369,7 +2371,7 @@ const SCREEN_REFRESH_MS = 10000;
 //
 // A loader used to swallow its own outcome: it caught its failure, painted
 // "<screen> unavailable", and returned normally — indistinguishable, to
-// `loadActiveScreen`, from a successful paint. So `#updated` read
+// the caller, from a successful paint. So `#updated` read
 // "updated <now>" beside a panel that had read nothing. Same for a load
 // whose render was DROPPED by the generation guard above: it returns
 // without painting, and the caller stamped anyway — a freshness claim over
@@ -2377,7 +2379,7 @@ const SCREEN_REFRESH_MS = 10000;
 // Both are exactly what NFR-02 forbids ("показ устаревшего состояния как
 // актуального недопустим") and what criterion 11 of this spec forbids.
 //
-// So every loader RETURNS what happened, and `loadActiveScreen` decides
+// So every loader RETURNS what happened, and `applyOutcome` decides
 // what `#updated` may say. Three outcomes, because three are what the
 // caller must tell apart:
 //
@@ -2472,7 +2474,7 @@ async function loadProjects() {
 }
 
 async function loadErrors() {
-  // Bumped here rather than in loadActiveScreen so the filter controls
+  // Bumped here rather than in runLoader so the filter controls
   // (project / days / service) supersede an older, differently-filtered
   // read they overlap — they call this loader directly.
   const gen = nextScreenGen("errors");
@@ -2713,7 +2715,7 @@ function markUpdatedUnread() {
 // The screen id is the one the load was ISSUED for, captured before its
 // await — see the two checks below.
 //
-// Extracted from `loadActiveScreen` (fix round 1): the screen timer and
+// Extracted from the screen-timer path (fix round 1): the timer and
 // tab entry are not the only callers that reach a loader. When adding one,
 // grep for the loader's NAME, not for `loadSync(` — the site missed twice
 // was `setTimeout(loadSync, 800)`, passed by name, and Task 5 lost a
@@ -2757,13 +2759,37 @@ function applyOutcome(screen, outcome) {
   }
 }
 
-// After the split, `#updated` is written by the ACTIVE screen's loader — not
-// by whichever endpoint happened to answer last.
-async function loadActiveScreen() {
-  const screen = activeScreen();
+// The ONE way to run a loader. After the split, `#updated` is written by the
+// ACTIVE screen's loader — not by whichever endpoint happened to answer last
+// — and this is the only place that pairs a loader with the report of what
+// it did.
+//
+// Why a function and not a convention: the SAME defect — a caller that
+// discarded the outcome, so an unread screen wore a freshness marker — was
+// found and patched four times running (the failure path, then eight direct
+// calls, then a ninth passed BY NAME to setTimeout, then the Launchpad).
+// Each fix was right and each left the next instance alive, because the
+// pairing was hand-written at every call site. Worse, the screen id was
+// retyped as a string literal beside it, and getting THAT wrong fails
+// silently: `applyOutcome`'s id guard simply never matches, so the stamp
+// quietly stops working instead of erroring.
+//
+// Both problems go away for the same reason: the id arrives as one argument
+// and is used for BOTH the registry lookup and the outcome, so the two
+// cannot disagree, and there is no way to reach a loader here without also
+// reporting its outcome. Note that no loader is NAMED in this body —
+// `LOADERS[screen]` is the only path to one — which is what lets
+// tabs_harness.js's 'no call site reaches a loader except through
+// runLoader' case forbid every by-name mention outside the registry and the
+// definitions themselves, with no exemption for this function.
+//
+// Returns the promise so callers can still chain (and so the harness can
+// await a click). A screen with no loader — `launchpad`, which drives
+// itself — resolves immediately, having done nothing.
+function runLoader(screen) {
   const load = LOADERS[screen];
-  if (!load) return;
-  applyOutcome(screen, await load());
+  if (!load) return Promise.resolve();
+  return load().then(outcome => { applyOutcome(screen, outcome); });
 }
 
 let screenTimer = null;
@@ -2771,7 +2797,7 @@ let screenTimer = null;
 function restartScreenTimer() {
   if (typeof setInterval !== "function") return;
   if (screenTimer !== null) clearInterval(screenTimer);
-  screenTimer = setInterval(loadActiveScreen, SCREEN_REFRESH_MS);
+  screenTimer = setInterval(() => runLoader(activeScreen()), SCREEN_REFRESH_MS);
 }
 
 let currentSpecRunnerConfig = null;
@@ -4498,7 +4524,7 @@ document.getElementById('ta-open-panel').addEventListener('click', () => {
 // every later screen change reloads and restarts the timer itself. This is
 // where the old `refresh(); setInterval(refresh, 10000);` — one fan-out over
 // eight endpoints, every 10s, whatever was on screen — used to sit.
-loadActiveScreen();
+runLoader(activeScreen());
 restartScreenTimer();
 // The request that decides whether the conditional tenth tab exists (design
 // §3.1). It runs whatever screen the hash opened on — the tab strip cannot be
@@ -4508,13 +4534,16 @@ restartScreenTimer();
 // screen's loader then reads the endpoint a second time: the same two reads
 // clicking the tab would produce, not a poll anyone else pays for.
 //
-// The ONE loader call that keeps discarding its outcome (fix round 1): this
-// is a configuration probe, not a screen load — the operator is usually on
-// Launchpad when it answers, and `#updated` must not report on a screen
-// they are not looking at. (`applyOutcome`'s screen-id check would suppress
-// it in that case anyway; leaving the call bare states the intent instead
-// of relying on that.) The Benchmarks screen stamps from its own loader.
-loadBenchmarks();
+// This was documented as the ONE call that must discard its outcome — a
+// configuration probe, not a screen load, answering while the operator is
+// usually on Launchpad, where `#updated` must not report on a screen they
+// are not looking at. It turns out no bypass is needed, and that is what
+// makes runLoader mandatory rather than merely conventional: `applyOutcome`
+// already returns early when `activeScreen() !== screen`, so on a Launchpad
+// boot this stamps nothing on its own. On a direct `#benchmarks` boot it
+// DOES stamp — correctly: that is a real read of the screen in front of the
+// operator, and the screen's own loader stamps again right after.
+runLoader("benchmarks");
 
 // ---- Launchpad root panel (spec §9, PR-C Task 6) ---------------------------
 //
@@ -4533,7 +4562,7 @@ const LP_RUN_VANISHED = "run_vanished";
 const LP_LOCK_MALFORMED = "lock_malformed";
 
 // The panel's own refresh period (spec §9: "30 s auto-refresh") — distinct
-// from the dashboard's per-screen `setInterval(loadActiveScreen, 10000)`
+// from the dashboard's per-screen 10s `runLoader(activeScreen())` tick
 // above; the two timers are independent, each guarding only its own section.
 const LP_REFRESH_MS = 30000;
 
@@ -4931,12 +4960,14 @@ function lpRerenderRepos() {
 // What to call the failure on screen. An HTTP error hands us the parsed
 // body (FastAPI's `{detail: …}`); a transport error hands us an Error. Both
 // are server/runtime text, so the caller escapes whatever comes back.
-function lpFetchErrorDetail(err) {
+// `fallback` is the HTTP path's `HTTP <status>` — a 500 with a body that
+// carries no `detail` should still say what happened, not "unavailable".
+function lpFetchErrorDetail(err, fallback) {
   if (err && typeof err === "object") {
     if (typeof err.detail === "string") return err.detail;
     if (typeof err.message === "string") return err.message;
   }
-  return "unavailable";
+  return fallback || "unavailable";
 }
 
 // Terminal review, PR #220: this used to be a bare console.error. Spec §340
@@ -4959,11 +4990,23 @@ function lpFetchErrorDetail(err) {
 // reason to blank a panel someone is reading. Row-level transport
 // uncertainty (retry with the same request_id, read-back) is still Task 7's
 // separate, per-row concern.
-function lpRenderFetchError(err) {
+function lpRenderFetchError(err, fallback) {
   console.error("launchpad snapshot fetch failed:", err);
+  // The PANEL's own element, written whether or not the panel is showing.
+  // It is not a claim about the screen in front of the operator — it is
+  // inside `#screen-launchpad`, invisible while that panel is hidden — and
+  // writing it now is what makes the failure already on screen when the
+  // operator arrives, instead of stale rows with nothing said about them.
+  // (Arriving also refetches, via onScreenShown; whichever answer comes
+  // back then rewrites or clears this.) Server text, so `esc`.
   const banner = document.getElementById("lp-fetch-error");
   banner.hidden = false;
-  banner.innerHTML = `не прочитано: ${esc(lpFetchErrorDetail(err))}`;
+  banner.innerHTML = `не прочитано: ${esc(lpFetchErrorDetail(err, fallback))}`;
+  // `#updated` is the GLOBAL half, and a hidden panel must not touch it:
+  // the operator is looking at another screen, and marking that screen
+  // unread because a background Launchpad poll (spec §9.1) failed would be
+  // a false claim about a screen that read fine. Same gate lpApplySnapshot
+  // uses for the mirror-image reason.
   if (activeScreen() === "launchpad") markUpdatedUnread();
 }
 
@@ -4982,7 +5025,7 @@ function lpClearFetchError() {
 // in-flight requests resolves first can still lose.
 //
 // Task 6 also makes this the ONE writer of `#updated` while Launchpad is
-// active (a deferred Task 5 finding: `loadActiveScreen` never reaches here,
+// active (a deferred Task 5 finding: `runLoader` never reaches here,
 // since `LOADERS.launchpad` is null). Gated on `activeScreen() ===
 // "launchpad"` — Task 6 makes a HIDDEN panel keep polling, and a background
 // apply writing `#updated` would claim the visible screen had just
@@ -5010,7 +5053,10 @@ function lpIssueFetch() {
     .then(r => r.json().then(data => [r, data]))
     .then(([r, data]) => {
       lpState.inflight--;
-      if (!r.ok) { if (seq === lpState.seq) lpRenderFetchError(data); return; }
+      if (!r.ok) {
+        if (seq === lpState.seq) lpRenderFetchError(data, `HTTP ${r.status}`);
+        return;
+      }
       lpApplySnapshot(seq, data);
     })
     .catch(err => {

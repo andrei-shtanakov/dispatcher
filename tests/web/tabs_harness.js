@@ -1022,11 +1022,20 @@ testCase('a failed sync read stops every node renderSync owns from asserting '
  * point here. `pending.length` doubles as "how many reads were issued". */
 function deferrable() {
   const pending = [];
+  const rejecters = [];
   return {
     pending,
-    route: () => new Promise(resolve => pending.push(resolve)),
+    route: () => new Promise((resolve, reject) => {
+      pending.push(resolve);
+      rejecters.push(reject);
+    }),
     /** Answers the i-th request (0-based) with `body`, 200 OK. */
     settle(i, body) { pending[i](ok(body)); },
+    /** REJECTS the i-th request — the transport-failure half, needed by the
+     * Launchpad cases: `lpIssueFetch` is not an `async function`, so a
+     * throwing route escapes the timer callback instead of reaching its
+     * `.catch`. `pending.length` still counts reads issued. */
+    fail(i, err) { rejecters[i](err); },
   };
 }
 
@@ -2204,6 +2213,420 @@ testCase('a failed benchmarks read leaves the tab the operator is standing on',
     check(/benchmarks unavailable/.test(el(page, '#benchmarks-status').textContent),
       `the failure itself is named, got "${el(page, '#benchmarks-status').textContent}"`);
   }, configuredBenchmarksRoutes);
+});
+
+/** One Launchpad repository row (dispatcher/core/launchpad.py's RepoRow),
+ * so the Launchpad cases below have real rows to leave standing under a
+ * failed refresh. Same shape as launchpad_harness.js's REPO_READY. */
+const REPO_READY = {
+  repo_key: 'github.com/andrei-shtanakov/deployer', repository: 'deployer',
+  default_branch: 'master', seen_revision: 'a'.repeat(40),
+  admission: 'ready', blockers: [],
+};
+
+// ---- terminal review, PR #220 [major]: the Launchpad's own error --------
+//
+// The Launchpad is the one screen the loader machinery above cannot cover:
+// `LOADERS.launchpad` is null on purpose (it drives itself on a 30s cycle
+// with its own `lpState.seq` and §9.1's hidden-polling exception), so the
+// outcome discipline every other screen got had to reach it by hand. Until
+// it did, `lpRenderFetchError` was a bare `console.error`: a visible panel
+// whose refresh failed kept the PREVIOUS snapshot's rows under an unchanged
+// "updated <time>" and said nothing — the same unread-state-wearing-a-
+// freshness-marker defect, on the boot screen. Spec §340 requires every
+// screen to catch AND SHOW its own error.
+//
+// The four things that had to be true, one case each below, plus the two
+// halves of what the operator actually reads.
+//
+// A rejected PROMISE, not `FAILS`: the loaders are `async function`s, so a
+// synchronous throw inside one becomes a rejection, but `lpIssueFetch` is
+// not async — a throwing route would blow out of the timer callback and
+// past the catch this is meant to exercise.
+const REJECTS = () => Promise.reject(new Error('transport down'));
+const LP_TICK = 30000;
+const lpError = page => el(page, '#lp-fetch-error');
+
+testCase('a VISIBLE Launchpad refresh failure says so in its own panel and '
+  + 'stops #updated claiming freshness', async () => {
+  await withPage(async page => {
+    check(/^updated /.test(updatedText(page)),
+      `precondition: the boot snapshot stamped, got "${updatedText(page)}"`);
+    check(lpError(page).hidden, 'precondition: no error is showing');
+    parkUpdated(page);
+
+    overrideRoute(page, '/api/launchpad', REJECTS);
+    page.timers.byPeriod(LP_TICK).cb();
+    await drain();
+
+    check(!lpError(page).hidden, 'the panel shows the failure');
+    check(/не прочитано/.test(htmlOf(page, '#lp-fetch-error')),
+      `in the page's own unread vocabulary, got "${htmlOf(page, '#lp-fetch-error')}"`);
+    check(/transport down/.test(htmlOf(page, '#lp-fetch-error')),
+      `naming what went wrong, got "${htmlOf(page, '#lp-fetch-error')}"`);
+    // The half that was missing: the stamp above the stale rows.
+    check(updatedText(page) === UNREAD,
+      `#updated stops claiming freshness, got "${updatedText(page)}"`);
+    check(el(page, '#updated').className === 'err',
+      `and carries the failure class, got "${el(page, '#updated').className}"`);
+  });
+});
+
+testCase('a failed refresh keeps the previous snapshot\'s rows underneath',
+  async () => {
+  // A refresh that failed is not a reason to blank a panel someone is
+  // reading — the rows are stale, and the banner above them now says so.
+  await withPage(async page => {
+    const before = htmlOf(page, '#lp-repos');
+    check(/deployer/.test(before),
+      `precondition: the boot snapshot painted a row, got "${before}"`);
+    overrideRoute(page, '/api/launchpad', REJECTS);
+    page.timers.byPeriod(LP_TICK).cb();
+    await drain();
+    check(htmlOf(page, '#lp-repos') === before,
+      `the rows are exactly as they were, got "${htmlOf(page, '#lp-repos')}"`);
+  }, snapshotRoute({repositories: [REPO_READY]}));
+});
+
+testCase('a HIDDEN Launchpad failure touches nothing global', async () => {
+  // Spec §9.1 keeps the Launchpad polling while it is hidden. A background
+  // failure that wrote `#updated` would make a false claim about whatever
+  // screen the operator IS looking at — which read fine. Driven as the real
+  // race: the fetch is issued while Launchpad is up and answers after the
+  // operator has moved on.
+  await withPage(async page => {
+    const lp = deferrable();
+    overrideRoute(page, '/api/launchpad', lp.route);
+    page.timers.byPeriod(LP_TICK).cb();
+    await drain();
+    check(lp.pending.length === 1,
+      `precondition: one Launchpad read is airborne, got ${lp.pending.length}`);
+
+    await openScreen(page, 'models');
+    // SENTINEL, never a stamp-vs-stamp comparison: both stamps are
+    // `toLocaleTimeString()` and land in the same second.
+    parkUpdated(page);
+    lp.fail(0, new Error('transport down'));
+    await drain();
+
+    check(updatedText(page) === SENTINEL,
+      `#updated is untouched, got "${updatedText(page)}"`);
+    check(el(page, '#updated').className === '',
+      `and unclassed, got "${el(page, '#updated').className}"`);
+    check(!el(page, '#screen-models').hidden,
+      'the operator is still on the screen they moved to');
+    // The panel's OWN element is not global — it is inside the hidden
+    // panel, and writing it is what puts the failure in front of the
+    // operator when they come back rather than stale rows saying nothing.
+    check(!lpError(page).hidden,
+      'the hidden panel still records its own failure for the operator\'s return');
+  });
+});
+
+testCase('a later good snapshot clears BOTH the panel error and the unread '
+  + 'marker', async () => {
+  // The mirror image of the bug: a marker that outlives the problem.
+  await withPage(async page => {
+    overrideRoute(page, '/api/launchpad', REJECTS);
+    page.timers.byPeriod(LP_TICK).cb();
+    await drain();
+    check(!lpError(page).hidden && updatedText(page) === UNREAD,
+      `precondition: the failure is showing, got "${updatedText(page)}"`);
+
+    overrideRoute(page, '/api/launchpad', () => ok(snapshot()));
+    page.timers.byPeriod(LP_TICK).cb();
+    await drain();
+
+    check(lpError(page).hidden, 'the panel error is gone');
+    check(htmlOf(page, '#lp-fetch-error') === '',
+      `and emptied, got "${htmlOf(page, '#lp-fetch-error')}"`);
+    check(/^updated /.test(updatedText(page)),
+      `the recovered read stamps, got "${updatedText(page)}"`);
+    check(el(page, '#updated').className === '',
+      `and takes the red off, got "${el(page, '#updated').className}"`);
+  });
+});
+
+testCase('a SUPERSEDED Launchpad failure changes nothing', async () => {
+  // `lpState.seq` supersession, on the error path: the failure of a read
+  // that a newer read has already replaced must not raise an alarm about
+  // the newer one. Driven through real navigation — leaving and returning
+  // is what makes onScreenShown issue the superseding refetch.
+  await withPage(async page => {
+    const lp = deferrable();
+    overrideRoute(page, '/api/launchpad', lp.route);
+    page.timers.byPeriod(LP_TICK).cb();
+    await drain();
+    await openScreen(page, 'models');
+    await openScreen(page, 'launchpad');
+    await drain();
+    check(lp.pending.length === 2,
+      `precondition: the return issued a superseding read, got ${lp.pending.length}`);
+    parkUpdated(page);
+
+    lp.fail(0, new Error('the superseded read'));   // the OLDER one lands last
+    await drain();
+
+    check(lpError(page).hidden,
+      `the superseded failure writes no panel error, got `
+      + `"${htmlOf(page, '#lp-fetch-error')}"`);
+    check(updatedText(page) === SENTINEL,
+      `and leaves #updated exactly as it found it, got "${updatedText(page)}"`);
+  });
+});
+
+testCase('the Launchpad error escapes server text and names a bare HTTP '
+  + 'status', async () => {
+  // `detail` is the server's own words (FastAPI's `{detail: …}`), so it goes
+  // through `esc` like every other server string on this page.
+  await withPage(async page => {
+    overrideRoute(page, '/api/launchpad', () => resp(500, {detail: '<b>boom</b>'}));
+    page.timers.byPeriod(LP_TICK).cb();
+    await drain();
+    check(/&lt;b&gt;boom&lt;\/b&gt;/.test(htmlOf(page, '#lp-fetch-error')),
+      `the server's text is escaped, got "${htmlOf(page, '#lp-fetch-error')}"`);
+    check(!/<b>/.test(htmlOf(page, '#lp-fetch-error')),
+      'and no live markup reaches the panel');
+  });
+  // A 5xx whose body carries no `detail` must still say what happened.
+  await withPage(async page => {
+    overrideRoute(page, '/api/launchpad', () => resp(503, {}));
+    page.timers.byPeriod(LP_TICK).cb();
+    await drain();
+    check(/HTTP 503/.test(htmlOf(page, '#lp-fetch-error')),
+      `a bodyless failure names its status, got "${htmlOf(page, '#lp-fetch-error')}"`);
+  });
+});
+
+// ---- ENFORCEMENT: there is exactly ONE way to run a loader ----------------
+//
+// Why a case and not a convention. The same defect — a call site that runs a
+// loader and drops its outcome, leaving an unread screen under a "updated
+// <time>" freshness marker — was found and fixed FOUR times running: the
+// failure path, then eight direct calls, then a ninth passed BY NAME to
+// `setTimeout` (invisible to a grep for `loadSync(`), then the Launchpad.
+// Every fix was correct and every one left the next instance alive, because
+// a reviewer noticing was the only thing between a new call site and the old
+// mistake. The page's shape now makes the mistake unavailable — `runLoader`
+// takes the screen id ONCE and uses it for both the registry lookup and the
+// outcome — and this case makes writing the old way go RED IN CI instead of
+// surviving until someone notices.
+//
+// It reads the SHIPPED script: the same `PAGE_SCRIPT` every other case in
+// this file executes, not a copy that could drift out from under it.
+
+/**
+ * Blanks comments (to spaces, newlines kept so line numbers survive) and
+ * marks every character that sits inside a string, template or regex
+ * literal. Both halves are load-bearing: without comment blanking this
+ * file's own prose — which names `loadSync(` a dozen times — would be
+ * findings, and without literal marking the `"` inside the page's
+ * `/[&<>"']/g` would open a phantom string and derail everything after it.
+ *
+ * Template `${…}` holes are scanned as CODE, not swallowed as literal, so a
+ * loader called from inside an interpolation is still visible.
+ */
+function scanScript(src) {
+  const chars = src.split('');
+  const literal = new Array(src.length).fill(false);
+  const REGEX_PREV = new Set([...'(,=:[!&|?{};+-*%~^<>']);
+  const REGEX_WORD = new Set(['return', 'typeof', 'case', 'in', 'of', 'delete',
+    'void', 'instanceof', 'new', 'do', 'else', 'yield', 'await', 'throw']);
+  // A stack of frames so a template's `${…}` returns to code and back:
+  // {k:'code', depth} | {k:'tpl'}.
+  const stack = [{k: 'code', depth: 0}];
+  let prev = '';   // last significant char seen in code — regex-vs-divide
+  let word = '';   // identifier just closed in code — same decision
+  let i = 0;
+  const mark = (a, b) => { for (let k = a; k < b; k++) literal[k] = true; };
+
+  while (i < src.length) {
+    const top = stack[stack.length - 1];
+    const c = src[i];
+    const d = src[i + 1];
+
+    if (top.k === 'tpl') {
+      if (c === '\\') { mark(i, i + 2); i += 2; continue; }
+      if (c === '`') { mark(i, i + 1); stack.pop(); prev = '`'; word = ''; i++; continue; }
+      if (c === '$' && d === '{') {
+        mark(i, i + 2);
+        stack.push({k: 'code', depth: 0});
+        prev = '{'; word = ''; i += 2; continue;
+      }
+      mark(i, i + 1); i++; continue;
+    }
+
+    // -- code frame
+    if (c === '/' && d === '/') {
+      while (i < src.length && src[i] !== '\n') { chars[i] = ' '; i++; }
+      continue;
+    }
+    if (c === '/' && d === '*') {
+      const end = src.indexOf('*/', i + 2);
+      const stop = end === -1 ? src.length : end + 2;
+      for (; i < stop; i++) if (src[i] !== '\n') chars[i] = ' ';
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      const start = i;
+      i++;
+      while (i < src.length && src[i] !== c) { i += src[i] === '\\' ? 2 : 1; }
+      i++;
+      mark(start, Math.min(i, src.length));
+      prev = c; word = ''; continue;
+    }
+    if (c === '`') { mark(i, i + 1); stack.push({k: 'tpl'}); i++; continue; }
+    if (c === '/' && (prev === '' || REGEX_PREV.has(prev) || REGEX_WORD.has(word))) {
+      const start = i;
+      i++;
+      let inClass = false;
+      while (i < src.length) {
+        const r = src[i];
+        if (r === '\\') { i += 2; continue; }
+        if (r === '[') inClass = true;
+        else if (r === ']') inClass = false;
+        else if (r === '/' && !inClass) break;
+        else if (r === '\n') break;   // not a regex after all; bail out
+        i++;
+      }
+      i++;
+      while (i < src.length && /[a-z]/.test(src[i])) i++;   // flags
+      mark(start, Math.min(i, src.length));
+      prev = '/'; word = ''; continue;
+    }
+    if (c === '{') { top.depth++; prev = c; word = ''; i++; continue; }
+    if (c === '}') {
+      if (top.depth === 0 && stack.length > 1) { stack.pop(); prev = '}'; word = ''; i++; continue; }
+      top.depth--; prev = c; word = ''; i++; continue;
+    }
+    if (/[A-Za-z0-9_$]/.test(c)) {
+      const start = i;
+      while (i < src.length && /[A-Za-z0-9_$]/.test(src[i])) i++;
+      word = src.slice(start, i);
+      prev = src[i - 1];
+      continue;
+    }
+    if (!/\s/.test(c)) { prev = c; word = ''; }
+    i++;
+  }
+  if (stack.length !== 1 || stack[0].k !== 'code') {
+    throw new Error('scanScript: the page script did not close every literal '
+      + '— the scan is unreliable, so this case must not pass');
+  }
+  return {code: chars.join(''), literal};
+}
+
+// The page script's first line, in index.html's own numbering, so a finding
+// names a line the reader can open rather than a script-relative offset.
+const SCRIPT_LINE0 = html.slice(0, html.indexOf(PAGE_SCRIPT)).split('\n').length;
+const fileLine = idx => SCRIPT_LINE0 + PAGE_SCRIPT.slice(0, idx).split('\n').length - 1;
+const sourceLine = idx => {
+  const start = PAGE_SCRIPT.lastIndexOf('\n', idx) + 1;
+  const end = PAGE_SCRIPT.indexOf('\n', idx);
+  return PAGE_SCRIPT.slice(start, end === -1 ? undefined : end).trim();
+};
+
+/** The `{ … }` span of `<kind> <name>`, by brace matching over scanned code
+ * (so braces inside comments and literals cannot throw the count off), or
+ * `null` when the page has no such declaration. Null rather than a throw
+ * because a page that has LOST the entry point must produce a readable list
+ * of findings — that is exactly the state this case is meant to describe. */
+function bodySpan(scan, kind, name) {
+  const at = new RegExp(`${kind}\\s+${name}\\s*[=({]`).exec(scan.code);
+  if (!at) return null;
+  const open = scan.code.indexOf('{', at.index);
+  if (open === -1) return null;
+  let depth = 0;
+  for (let i = open; i < scan.code.length; i++) {
+    if (scan.literal[i]) continue;
+    if (scan.code[i] === '{') depth++;
+    else if (scan.code[i] === '}' && --depth === 0) return [at.index, i + 1];
+  }
+  return null;
+}
+
+/** Every identifier this case governs: the loaders the registry names, plus
+ * anything DECLARED in loader shape, so a new `loadFoo` that was never
+ * registered is governed from the moment it is written. */
+function governedNames(scan, registry) {
+  const names = new Set();
+  for (const m of scan.code.slice(...registry).matchAll(/(\w+)\s*:\s*([A-Za-z_$][\w$]*)/g)) {
+    if (m[2] !== 'null') names.add(m[2]);
+  }
+  for (const m of scan.code.matchAll(/\bfunction\s+((?:load|refresh)[A-Z][\w$]*)\s*\(/g)) {
+    names.add(m[1]);
+  }
+  return [...names].sort();
+}
+
+// Scanned inside the case, not at module load: a page missing `runLoader`
+// (or with an unbalanced literal) must fail THIS case with a list of call
+// sites, not abort the whole harness before any case runs.
+testCase('no call site reaches a loader except through runLoader', () => {
+  const SCAN = scanScript(PAGE_SCRIPT);
+  const within = (i, span) => span !== null && i >= span[0] && i < span[1];
+  const REGISTRY = bodySpan(SCAN, 'const', 'LOADERS');
+  const RUN_LOADER = bodySpan(SCAN, 'function', 'runLoader');
+  const LP_ISSUE_FETCH = bodySpan(SCAN, 'function', 'lpIssueFetch');
+  check(REGISTRY !== null, 'precondition: the LOADERS registry is in the page');
+  check(RUN_LOADER !== null,
+    'the single entry point `runLoader` is gone from the page — without it '
+    + 'every call site is back to pairing a loader with applyOutcome by hand, '
+    + 'which is the bug this case exists to prevent');
+  if (REGISTRY === null) return;
+  const names = governedNames(SCAN, REGISTRY);
+  // A scan that found nothing would pass silently — the one way this case
+  // could go vacuous.
+  check(names.length >= 9,
+    `precondition: the scan found the loaders (got ${names.length}: ${names})`);
+
+  const findings = [];
+  for (const name of names) {
+    // The definition's own `function <name>` occurrence is the one mention
+    // outside the registry that is not a call.
+    const def = new RegExp(`\\bfunction\\s+${name}\\s*\\(`).exec(SCAN.code);
+    const defAt = def ? def.index : -1;
+    for (const m of SCAN.code.matchAll(new RegExp(`\\b${name}\\b`, 'g'))) {
+      const i = m.index;
+      if (SCAN.literal[i]) continue;                  // inside a literal
+      if (defAt !== -1 && i >= defAt && i < defAt + def[0].length) continue;
+      if (within(i, REGISTRY)) continue;              // the registry entry
+      findings.push(`${name} at index.html:${fileLine(i)} — ${sourceLine(i)}`);
+    }
+  }
+  // The other half of the pairing: `applyOutcome` is what a call site used
+  // to have to remember, so it may be reached from exactly one place.
+  const applyDef = /\bfunction\s+applyOutcome\s*\(/.exec(SCAN.code);
+  for (const m of SCAN.code.matchAll(/\bapplyOutcome\b/g)) {
+    const i = m.index;
+    if (SCAN.literal[i]) continue;
+    if (i >= applyDef.index && i < applyDef.index + applyDef[0].length) continue;
+    if (within(i, RUN_LOADER)) continue;
+    findings.push(`applyOutcome at index.html:${fileLine(i)} — ${sourceLine(i)}`);
+  }
+  // And the Launchpad's own entry point, which the registry deliberately
+  // does NOT hold (`launchpad: null` — its 30s cycle, its own `lpState.seq`
+  // and the §9.1 hidden-polling exception are not the screen timer's).
+  // `lpIssueFetch` is its single funnel, so the snapshot URL may be spelt
+  // in exactly one place; a second `fetch("/api/launchpad")` elsewhere would
+  // be a second cycle with its own supersession, which is the same class of
+  // defect one screen over.
+  for (const m of SCAN.code.matchAll(/\/api\/launchpad/g)) {
+    if (within(m.index, LP_ISSUE_FETCH)) continue;
+    findings.push(`/api/launchpad at index.html:${fileLine(m.index)} — `
+      + sourceLine(m.index));
+  }
+
+  check(findings.length === 0,
+    'a loader must be run ONLY as runLoader("<screen>"), and the Launchpad '
+    + 'snapshot fetched ONLY in lpIssueFetch — the pairing of a loader with '
+    + 'applyOutcome was hand-written at every call site for four rounds of '
+    + 'the same bug, and a call site that forgets the second half leaves an '
+    + 'unread screen wearing a freshness stamp. The ONLY exemptions are the '
+    + 'LOADERS registry, each function\'s own declaration, and runLoader\'s '
+    + 'body for applyOutcome. Widening this allowlist means accepting a '
+    + 'second way to run a loader, so say why in the code. Found:\n    '
+    + findings.join('\n    '));
 });
 
 // ---- main -------------------------------------------------------------------
