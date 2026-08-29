@@ -29,7 +29,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const {Document, dispatch} = require(path.join(__dirname, 'dom.js'));
-const {browserGlobals, openScreen} = require(path.join(__dirname, 'screens.js'));
+const {browserGlobals, openScreen, overrideRoute} = require(path.join(__dirname, 'screens.js'));
 
 const HTML_PATH = process.argv[2];
 if (!HTML_PATH) {
@@ -230,11 +230,6 @@ async function boot(opts = {}) {
 
 /** Boots a fresh page and hands it to `fn`. */
 async function withPage(fn, opts = {}) { await fn(await boot(opts)); }
-
-/** Overrides a route on an already-booted page. */
-function overrideRoute(page, url, make) {
-  page.routes.unshift([u => u === url, make]);
-}
 
 function el(page, selector) {
   const node = page.document.querySelector(selector);

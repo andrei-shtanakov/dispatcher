@@ -24,4 +24,15 @@ async function openScreen(page, id) {
   if (!panel || panel.hidden) throw new Error(`screen "${id}" did not open`);
 }
 
-module.exports = {browserGlobals, openScreen};
+/**
+ * Overrides a route on an already-booted page (`page.routes`, a `[test,
+ * make]` array every whole-script harness's `fetch` mock walks in order).
+ * Shared here (Task 4, tabbed-ui) because both tabs_harness.js and
+ * launchpad_harness.js need it and their `boot()`s produce the same
+ * `{routes, ...}` shape.
+ */
+function overrideRoute(page, url, make) {
+  page.routes.unshift([u => u === url, make]);
+}
+
+module.exports = {browserGlobals, openScreen, overrideRoute};

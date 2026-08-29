@@ -34,7 +34,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const {Document, dispatch} = require(path.join(__dirname, 'dom.js'));
-const {browserGlobals} = require(path.join(__dirname, 'screens.js'));
+const {browserGlobals, openScreen, overrideRoute} = require(path.join(__dirname, 'screens.js'));
 
 const HTML_PATH = process.argv[2];
 if (!HTML_PATH) {
@@ -225,6 +225,39 @@ async function click(page, selector) {
 }
 function callsTo(page, url) { return page.calls.filter(c => c.url === url).length; }
 
+// ---- Task 4 (tabbed-ui) helpers: driving the two-step confirm through the --
+// ---- real controls, never by poking lpState directly ------------------------
+
+/** The Ready row for `repo` (matched against its rendered text — repo_key
+ * and work_id both include it for the fixtures these helpers use). */
+function readyRowFor(page, repo) {
+  const rows = page.document.querySelectorAll('#lp-ready tr.lp-ready-row');
+  const row = rows.find(tr => tr.textContent.includes(repo));
+  if (!row) throw new Error(`no Ready row for repo "${repo}" (found ${rows.length} rows)`);
+  return row;
+}
+
+/** Clicks a Ready row open — the two-step confirm's first step. */
+async function openReadyRow(page, repo) {
+  await Promise.all(dispatch(readyRowFor(page, repo), 'click'));
+  await drain();
+}
+
+/** Opens the row AND clicks Confirm — the two-step confirm's second step. */
+async function openReadyRowAndConfirm(page, repo) {
+  await openReadyRow(page, repo);
+  await click(page, '#lp-ready .lp-confirm');
+}
+
+/** Overrides `/api/runs/submit` so the NEXT attempt hits a dropped
+ * connection — the same shape the existing §10 scenario-1 case uses — so a
+ * Confirm click lands the row in "launch outcome unknown" rather than
+ * settling. */
+function failTheSubmitTransport(page) {
+  overrideRoute(page, '/api/runs/submit',
+    () => Promise.reject(new Error('connection reset')));
+}
+
 // ---- case runner -----------------------------------------------------------
 
 const cases = [];
@@ -255,6 +288,14 @@ const REPO_UNREADABLE = {
   admission: 'unreadable',
   blockers: [{code: 'repo_unresolved', request_id: null, run_id: null,
     detail: 'not a checkout'}],
+};
+
+// Task 4 (tabbed-ui): a `ready[]` row for REPO_READY — the pair the
+// tab-round-trip cases below need already sitting in the Ready list at
+// boot, so `openReadyRow`/`openReadyRowAndConfirm` have a real row to click.
+const READY_ROW = {
+  repo_key: REPO_READY.repo_key, work_id: 'todo://deployer/some-work-item',
+  dag_path: 'tasks/dag.yaml', seen_revision: REPO_READY.seen_revision,
 };
 
 // ---- case 1: wholesale rendering of a fixture snapshot ----------------------
@@ -846,6 +887,84 @@ testCase('behaviour 5: release-malformed — a structured error keeps the '
 
 // Behaviour 6 (the manual/advanced form) lives in run_console_harness.js —
 // #run-console is that harness's page, not this one's.
+
+// ---- Task 4 (tabbed-ui): lpState survives a tab round trip, permission to --
+// ---- act does not (spec §5.5) ------------------------------------------------
+//
+// `lpState` itself already survives a tab switch untouched — switching tabs
+// only sets `hidden`, and behaviour 4 / §10 scenario 3 above already prove
+// the re-validation predicate (lpValidateOpenConfirm) fires on ANY applied
+// snapshot. What was missing is the trigger: a return to Launchpad must
+// itself provoke a refetch, not just sit on the last-applied snapshot. All
+// three cases here drive that trigger through the real tabs (openScreen),
+// never by calling lpRefetchAfterAction() by hand — that path was already
+// covered by behaviour 4 / scenario 3.
+
+/** A boot route with REPO_READY and its matching READY_ROW already Ready —
+ * what every case below needs sitting in the Ready list before it can open
+ * a row through the real control. */
+function readyRowRoute(overrides = {}) {
+  return () => ok(snapshot({repositories: [REPO_READY], ready: [READY_ROW], ...overrides}));
+}
+
+testCase('leaving and returning keeps an unresolved attempt', async () => {
+  await withPage(async page => {
+    failTheSubmitTransport(page);
+    await openReadyRowAndConfirm(page, 'deployer');
+    check(/launch outcome unknown/.test(htmlOf(page, '#lp-ready')),
+      'sanity: the attempt is unknown before leaving');
+
+    await openScreen(page, 'sync');
+    await openScreen(page, 'launchpad');
+
+    check(/launch outcome unknown/.test(htmlOf(page, '#lp-ready')),
+      `the unknown-outcome row survived the round trip (got: ${htmlOf(page, '#lp-ready')})`);
+
+    const firstBody = submitBodies(page)[0];
+    check(!!(firstBody && firstBody.request_id), 'the attempt minted a request_id');
+    if (!firstBody) return;
+
+    await click(page, '#lp-ready .lp-retry');
+    const bodies = submitBodies(page);
+    check(bodies.length === 2, `retry hit the wire again (got ${bodies.length})`);
+    const ids = new Set(bodies.map(b => b.request_id));
+    check(ids.size === 1, `retry reuses the SAME request_id, saw ${ids.size} distinct`);
+  }, readyRowRoute());
+});
+
+testCase('an open confirmation survives an unchanged snapshot', async () => {
+  await withPage(async page => {
+    await openReadyRow(page, 'deployer');
+    check(el(page, '#lp-ready .lp-confirm').disabled === false, 'starts enabled');
+
+    await openScreen(page, 'sync');
+    await openScreen(page, 'launchpad');
+
+    const confirm = el(page, '#lp-ready .lp-confirm');
+    check(!confirm.disabled, 'Confirm stays enabled over an unchanged row');
+  }, readyRowRoute());
+});
+
+testCase('an open confirmation is disabled when the row changed', async () => {
+  await withPage(async page => {
+    await openReadyRow(page, 'deployer');
+    await openScreen(page, 'sync');
+
+    // Changes while the operator is away: the SAME row (repo_key/work_id),
+    // now at a moved seen_revision — the exact fact lpValidateOpenConfirm
+    // checks (it reads the ready-list item, not the repositories list).
+    overrideRoute(page, '/api/launchpad', () => ok(snapshot({
+      repositories: [REPO_READY],
+      ready: [{...READY_ROW, seen_revision: 'c'.repeat(40)}],
+    })));
+    await openScreen(page, 'launchpad');
+
+    const confirm = el(page, '#lp-ready .lp-confirm');
+    check(confirm.disabled, 'Confirm is disabled after seen_revision moved');
+    check(/revision/i.test(htmlOf(page, '#lp-ready')),
+      `the cause is shown, not just the disabled state (got: ${htmlOf(page, '#lp-ready')})`);
+  }, readyRowRoute());
+});
 
 // ---- main -------------------------------------------------------------------
 

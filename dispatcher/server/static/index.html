@@ -455,6 +455,16 @@ const hasWindow = typeof window !== "undefined" && window !== null
 
 let route = {screen: DEFAULT_SCREEN, sub: null};
 
+// The last screen onScreenShown actually ran for — `null` until the very
+// first applyRoute() call (Task 4, tabbed-ui, spec §5.5). Distinguishes
+// "just booted into Launchpad" (lpFetchSnapshot() below already covers that
+// fetch; refetching here too would double it) from "returned to Launchpad
+// after being on another screen" (needs a refetch so the SAME post-refetch
+// predicate that already gates every applied snapshot — lpValidateOpenConfirm,
+// invoked from lpRender via lpRenderReady/lpRenderPending — gets a chance to
+// re-validate whatever confirmation is still open).
+let lpLastScreenShown = null;
+
 /** Screens currently offered — Task 7 makes this conditional. */
 function screenIds() { return SCREENS.map(s => s.id); }
 
@@ -491,10 +501,25 @@ function applyRoute() {
   onScreenShown(route);
 }
 
-/** Extended by Task 5 (loaders) and Task 3 (drill-down). ACCRETES: each
- * task adds its own branch here, never replaces the function outright. */
+/** Extended by Task 5 (loaders) and Task 3 (drill-down), Task 4 (revalidate
+ * on return). ACCRETES: each task adds its own branch here, never replaces
+ * the function outright. */
 function onScreenShown(r) {
-  if (r.screen === "launchpad" && r.sub) openRunView(r.sub);
+  if (r.screen === "launchpad") {
+    // A return must not preserve a stale permission to act (spec §5.5):
+    // state (lpState.pending/rowMessages/escapes) already survives a tab
+    // switch untouched — only `hidden` changed. What must NOT survive
+    // unchecked is an open confirmation's validity, so refetch and let the
+    // existing post-refetch predicate re-run, same as any other applied
+    // snapshot. Skipped on the very first paint (`lpLastScreenShown ===
+    // null`) — that fetch is lpFetchSnapshot()'s job; doing it here too
+    // would fetch twice at boot.
+    if (lpLastScreenShown !== null && lpLastScreenShown !== "launchpad") {
+      lpRefetchAfterAction();
+    }
+    if (r.sub) openRunView(r.sub);
+  }
+  lpLastScreenShown = r.screen;
 }
 
 function activeScreen() { return route.screen; }
