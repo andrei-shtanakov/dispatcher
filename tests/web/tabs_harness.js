@@ -13,8 +13,9 @@
 //      Launchpad (the closed grammar of design §4.1);
 //   3. Back/Forward walk the screens with no second code path, because a tab
 //      click only assigns `location.hash`;
-//   4. the keyboard contract of design §4: Left/Right move between screens,
-//      Enter opens the focused one;
+//   4. the keyboard contract of design §4: Left/Right move FOCUS along the
+//      strip without opening anything (manual activation, roving tabindex),
+//      Enter/Space opens the focused one;
 //   5. the ARIA wiring of every tab/panel pair, and the tab ORDER — SCREEN_IDS
 //      below is a literal list precisely so the order is pinned by a test and
 //      not only by the page's own registry;
@@ -325,19 +326,147 @@ testCase('back and forward walk the screens', async () => {
   });
 });
 
-testCase('arrow keys move between screens, Enter opens one', async () => {
+// ---- keyboard: design §4's MANUAL activation --------------------------------
+//
+// "Left/Right перемещают фокус, Enter/Space открывают экран". The shipped
+// handler used to navigate() on arrow, and to compute the neighbour from
+// `route.screen` rather than the focused tab — two separate breaches, each
+// pinned by its own case below. `page.document.activeElement` is real only
+// because dom.js models focus (dom_selftest.js cases 11-13); before that it
+// was a no-op and every one of these assertions would have been vacuous.
+
+/** Sends `key` to the tab that currently has focus, as a person would. */
+async function press(page, key) {
+  dispatch(page.document.activeElement, 'keydown', {init: {key}});
+  await drain();
+}
+/** The id of the focused tab, or null when focus is not on one. */
+function focusedTab(page) {
+  const active = page.document.activeElement;
+  const id = active && active.attributes && active.attributes.id;
+  return id && id.startsWith('tab-') ? id.slice(4) : null;
+}
+/** The ids of every tab carrying `tabindex="0"` — a roving tabindex keeps
+ * this at exactly one, so a list is what makes "exactly one" checkable. */
+function tabStops(page) {
+  return ALL_SCREEN_IDS.filter(
+    id => page.document.getElementById(`tab-${id}`).attributes.tabindex === '0');
+}
+/** The screen whose panel is showing. */
+function openScreenId(page) {
+  return ALL_SCREEN_IDS.find(
+    id => !page.document.getElementById(`screen-${id}`).hidden) || null;
+}
+
+testCase('arrow keys move FOCUS along the strip and open nothing', async () => {
   await withPage(async page => {
-    dispatch(el(page, '#tab-launchpad'), 'keydown', {init: {key: 'ArrowRight'}});
-    await drain();
-    check(!el(page, '#screen-sync').hidden, 'ArrowRight moved to sync');
-    dispatch(el(page, '#tab-sync'), 'keydown', {init: {key: 'ArrowLeft'}});
-    await drain();
-    check(!el(page, '#screen-launchpad').hidden, 'ArrowLeft moved back');
-    dispatch(el(page, '#tab-epics'), 'keydown', {init: {key: 'Enter'}});
-    await drain();
-    check(!el(page, '#screen-epics').hidden, 'Enter opened the focused tab');
+    el(page, '#tab-launchpad').focus();
+    await press(page, 'ArrowRight');
+    check(focusedTab(page) === 'sync', `ArrowRight focused sync, got ${focusedTab(page)}`);
+    check(openScreenId(page) === 'launchpad',
+      `launchpad is still the open screen, got ${openScreenId(page)}`);
+    await press(page, 'ArrowLeft');
+    check(focusedTab(page) === 'launchpad',
+      `ArrowLeft focused launchpad, got ${focusedTab(page)}`);
+    check(openScreenId(page) === 'launchpad', 'still on launchpad');
   });
 });
+
+// The terminal review's exact scenario: Tab to `Epics` WITHOUT activating it,
+// then ArrowRight. The old handler read `route.screen` (launchpad) and opened
+// `Sync`; the neighbour must be `Waits`, right of the FOCUSED tab.
+testCase('arrows move relative to the focused tab, not the active screen',
+  async () => {
+    await withPage(async page => {
+      el(page, '#tab-epics').focus();
+      await press(page, 'ArrowRight');
+      check(focusedTab(page) === 'waits',
+        `focus went right of epics, got ${focusedTab(page)}`);
+      check(openScreenId(page) === 'launchpad',
+        `launchpad is still open, got ${openScreenId(page)}`);
+    });
+  });
+
+testCase('arrowing across the strip fires no loader', async () => {
+  await withPage(async page => {
+    const before = page.calls.length;
+    el(page, '#tab-launchpad').focus();
+    for (let i = 0; i < 5; i++) await press(page, 'ArrowRight');
+    check(focusedTab(page) === 'contracts',
+      `five ArrowRights reached contracts, got ${focusedTab(page)}`);
+    check(page.calls.length === before,
+      `no fetch while arrowing, got ${page.calls.length - before}`);
+    check(openScreenId(page) === 'launchpad', 'and no screen opened');
+  });
+});
+
+testCase('Enter on the focused tab opens it, Space too', async () => {
+  await withPage(async page => {
+    el(page, '#tab-epics').focus();
+    await press(page, 'Enter');
+    check(openScreenId(page) === 'epics',
+      `Enter opened epics, got ${openScreenId(page)}`);
+    el(page, '#tab-models').focus();
+    await press(page, ' ');
+    check(openScreenId(page) === 'models',
+      `Space opened models, got ${openScreenId(page)}`);
+  });
+});
+
+testCase('the roving tabindex follows focus, and activation resets it to the '
+  + 'selected tab', async () => {
+  await withPage(async page => {
+    check(tabStops(page).join(',') === 'launchpad',
+      `one tab stop at boot, got [${tabStops(page).join(',')}]`);
+    el(page, '#tab-launchpad').focus();
+    await press(page, 'ArrowRight');
+    check(tabStops(page).join(',') === 'sync',
+      `the tab stop moved with focus, got [${tabStops(page).join(',')}]`);
+    check(el(page, '#tab-launchpad').attributes.tabindex === '-1',
+      'the screen that is still open is out of the tab order while unfocused');
+    await press(page, 'Enter');
+    check(tabStops(page).join(',') === 'sync',
+      `after activation only the selected tab stops, got [${tabStops(page).join(',')}]`);
+    // The selected tab and the tab stop are set in one loop, so they cannot
+    // drift: open a third screen by CLICK and the stop follows the selection.
+    await openScreen(page, 'roadmap');
+    check(tabStops(page).join(',') === 'roadmap',
+      `a click moved the tab stop too, got [${tabStops(page).join(',')}]`);
+  });
+});
+
+// The static markup, BEFORE the script runs — a fresh Document over
+// BODY_HTML with no PAGE_SCRIPT. Every other case here boots the page, and
+// applyRoute() rewrites tabindex on its first call, so the shipped file's own
+// values are unfalsifiable from a booted page: without this case the initial
+// markup could say anything and the suite would stay green.
+testCase('the shipped markup already carries the roving tabindex', () => {
+  const raw = new Document(BODY_HTML);
+  const stops = ALL_SCREEN_IDS.filter(
+    id => raw.getElementById(`tab-${id}`).attributes.tabindex === '0');
+  check(stops.join(',') === 'launchpad',
+    `only the default screen's tab is a tab stop in markup, got [${stops.join(',')}]`);
+  const wrong = ALL_SCREEN_IDS.filter(
+    id => !['0', '-1'].includes(raw.getElementById(`tab-${id}`).attributes.tabindex));
+  check(wrong.length === 0,
+    `every tab declares a tabindex in markup, missing on [${wrong.join(',')}]`);
+});
+
+testCase('focus wraps at both ends of the strip', async () => {
+  await withPage(async page => {
+    el(page, '#tab-launchpad').focus();
+    await press(page, 'ArrowLeft');
+    check(focusedTab(page) === 'roadmap',
+      `ArrowLeft off the first tab wraps to the last, got ${focusedTab(page)}`);
+    await press(page, 'ArrowRight');
+    check(focusedTab(page) === 'launchpad',
+      `ArrowRight off the last wraps to the first, got ${focusedTab(page)}`);
+    check(openScreenId(page) === 'launchpad', 'wrapping opened nothing');
+  });
+});
+
+// Wrap-around WITH the conditional tenth tab lives in the Task 7 block below,
+// next to the `configuredBenchmarksRoutes` fixture it needs.
 
 testCase('every tab carries its ARIA wiring', async () => {
   await withPage(page => {
@@ -905,6 +1034,29 @@ testCase('a configured profile adds the Benchmarks tab last', async () => {
       'and it is the only panel — launchpad closed behind it');
   }, configuredBenchmarksRoutes);
 });
+
+// The conditional tenth tab changes what "the last tab" means for the
+// keyboard: wrapping is computed over screenIds(), not SCREENS, so it must
+// skip `benchmarks` on an unconfigured stand (the wrap case in the keyboard
+// block above) and include it here.
+testCase('focus wrap-around includes Benchmarks when the profile is configured',
+  async () => {
+    await withPage(async page => {
+      check(!el(page, '#tab-benchmarks').hidden, 'the tenth tab is offered');
+      el(page, '#tab-launchpad').focus();
+      await press(page, 'ArrowLeft');
+      check(focusedTab(page) === 'benchmarks',
+        `ArrowLeft wraps to benchmarks, got ${focusedTab(page)}`);
+      await press(page, 'ArrowRight');
+      check(focusedTab(page) === 'launchpad',
+        `and back off the end to launchpad, got ${focusedTab(page)}`);
+      el(page, '#tab-roadmap').focus();
+      await press(page, 'ArrowRight');
+      check(focusedTab(page) === 'benchmarks',
+        `roadmap's right neighbour is now benchmarks, got ${focusedTab(page)}`);
+      check(openScreenId(page) === 'launchpad', 'and still nothing opened');
+    }, configuredBenchmarksRoutes);
+  });
 
 testCase('one boot request decides the tab, and no other screen pays for it',
   async () => {

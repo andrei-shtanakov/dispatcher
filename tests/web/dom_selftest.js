@@ -109,5 +109,46 @@ const check = (cond, msg) => {
   check(!d.matches('button,'), 'a trailing comma must not match every element');
 }
 
+// 11. focus() moves the owning document's activeElement (it used to be a
+// no-op, which made every focus assertion vacuous).
+{
+  const {Document} = require(path.join(__dirname, 'dom.js'));
+  const doc = new Document('<button id="a"></button><button id="b"></button>');
+  check(doc.activeElement === doc.body, 'activeElement defaults to body');
+  doc.getElementById('a').focus();
+  check(doc.activeElement === doc.getElementById('a'), 'focus() moved it to #a');
+  doc.getElementById('b').focus();
+  check(doc.activeElement === doc.getElementById('b'), 'focus() moved it to #b');
+}
+
+// 12. a node nobody can see is not focusable, and neither is a detached one
+{
+  const {Document} = require(path.join(__dirname, 'dom.js'));
+  const doc = new Document('<button id="a"></button>'
+    + '<button id="h" hidden></button>'
+    + '<div hidden><button id="d"></button></div>');
+  doc.getElementById('a').focus();
+  doc.getElementById('h').focus();
+  check(doc.activeElement === doc.getElementById('a'),
+    'a hidden button does not take focus');
+  doc.getElementById('d').focus();
+  check(doc.activeElement === doc.getElementById('a'),
+    'a button under a hidden ancestor does not take focus');
+  doc.createElement('button').focus();
+  check(doc.activeElement === doc.getElementById('a'),
+    'a detached element does not take focus');
+}
+
+// 13. two documents have independent activeElement (ownerDocument, not a
+// module-level global)
+{
+  const {Document} = require(path.join(__dirname, 'dom.js'));
+  const one = new Document('<button id="a"></button>');
+  const two = new Document('<button id="a"></button>');
+  one.getElementById('a').focus();
+  check(one.activeElement === one.getElementById('a'), 'doc one focused its own button');
+  check(two.activeElement === two.body, 'doc two is untouched');
+}
+
 console.log(failures ? `\nFAILED: ${failures}` : '\nOK: browser model');
 process.exit(failures ? 1 : 0);

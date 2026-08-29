@@ -164,21 +164,21 @@
      hash is the only writer of the active screen (see the router at
      the top of the page script below). -->
 <nav id="tablist" role="tablist" aria-label="Разделы">
-  <button id="tab-launchpad" role="tab" type="button" aria-controls="screen-launchpad" aria-selected="true">Launchpad</button>
-  <button id="tab-sync" role="tab" type="button" aria-controls="screen-sync" aria-selected="false">Sync</button>
-  <button id="tab-projects" role="tab" type="button" aria-controls="screen-projects" aria-selected="false">Projects</button>
-  <button id="tab-errors" role="tab" type="button" aria-controls="screen-errors" aria-selected="false">Errors</button>
-  <button id="tab-models" role="tab" type="button" aria-controls="screen-models" aria-selected="false">Models</button>
-  <button id="tab-contracts" role="tab" type="button" aria-controls="screen-contracts" aria-selected="false">Contracts</button>
-  <button id="tab-epics" role="tab" type="button" aria-controls="screen-epics" aria-selected="false">Epics</button>
-  <button id="tab-waits" role="tab" type="button" aria-controls="screen-waits" aria-selected="false">Waits (partial)</button>
-  <button id="tab-roadmap" role="tab" type="button" aria-controls="screen-roadmap" aria-selected="false">Roadmap</button>
+  <button id="tab-launchpad" role="tab" type="button" tabindex="0" aria-controls="screen-launchpad" aria-selected="true">Launchpad</button>
+  <button id="tab-sync" role="tab" type="button" tabindex="-1" aria-controls="screen-sync" aria-selected="false">Sync</button>
+  <button id="tab-projects" role="tab" type="button" tabindex="-1" aria-controls="screen-projects" aria-selected="false">Projects</button>
+  <button id="tab-errors" role="tab" type="button" tabindex="-1" aria-controls="screen-errors" aria-selected="false">Errors</button>
+  <button id="tab-models" role="tab" type="button" tabindex="-1" aria-controls="screen-models" aria-selected="false">Models</button>
+  <button id="tab-contracts" role="tab" type="button" tabindex="-1" aria-controls="screen-contracts" aria-selected="false">Contracts</button>
+  <button id="tab-epics" role="tab" type="button" tabindex="-1" aria-controls="screen-epics" aria-selected="false">Epics</button>
+  <button id="tab-waits" role="tab" type="button" tabindex="-1" aria-controls="screen-waits" aria-selected="false">Waits (partial)</button>
+  <button id="tab-roadmap" role="tab" type="button" tabindex="-1" aria-controls="screen-roadmap" aria-selected="false">Roadmap</button>
   <!-- The CONDITIONAL tenth tab (design §3.1): present in the strip exactly
        when the eco-profile is configured. It stays in the static markup and
        is toggled with `hidden` by setBenchmarksAvailable() — a hidden button
        is out of the accessibility tree, and nothing else on this page builds
        navigation dynamically. -->
-  <button id="tab-benchmarks" role="tab" type="button" aria-controls="screen-benchmarks" aria-selected="false" hidden>Benchmarks</button>
+  <button id="tab-benchmarks" role="tab" type="button" tabindex="-1" aria-controls="screen-benchmarks" aria-selected="false" hidden>Benchmarks</button>
 </nav>
 
 <!-- I-A: outcomes of MUTATIONS outlive the panel that started them. This
@@ -547,6 +547,11 @@ function applyRoute() {
     const active = id === route.screen;
     panel.hidden = !active;
     tab.setAttribute("aria-selected", active ? "true" : "false");
+    // Roving tabindex, set in THIS loop so `hidden`, `aria-selected` and the
+    // tab order can never disagree: exactly one tab is reachable by Tab, and
+    // it is the selected one. Arrow keys then move focus WITHIN the strip
+    // (focusTab below) without opening anything.
+    tab.setAttribute("tabindex", active ? "0" : "-1");
   }
   onScreenShown(route);
 }
@@ -619,23 +624,49 @@ document.getElementById("tablist").addEventListener("click", e => {
   navigate(button.id.replace(/^tab-/, ""), null);
 });
 
+/**
+ * Moves DOM focus to a tab and carries the roving `tabindex="0"` with it.
+ * Focus only — the screen does not change, so no loader runs. That is the
+ * point: every screen has its own loader, and arrowing from `Launchpad` to
+ * `Roadmap` under automatic activation would fire eight of them to reach
+ * one screen — exactly the waste that splitting the monolithic refresh()
+ * removed.
+ */
+function focusTab(id) {
+  const button = document.getElementById(`tab-${id}`);
+  if (!button) return;
+  for (const s of SCREENS) {
+    const tab = document.getElementById(`tab-${s.id}`);
+    if (tab) tab.setAttribute("tabindex", s.id === id ? "0" : "-1");
+  }
+  button.focus();
+}
+
+// Design §4: "Left/Right перемещают фокус, Enter/Space открывают экран" —
+// MANUAL activation. The neighbour is computed from the FOCUSED tab
+// (`e.target`), never from `route.screen`: those two differ the moment
+// someone Tabs into the strip and arrows without activating, and reading the
+// active screen there would move relative to a tab the person is not on.
 document.getElementById("tablist").addEventListener("keydown", e => {
   const key = e.key;
   if (key !== "ArrowLeft" && key !== "ArrowRight"
       && key !== "Enter" && key !== " ") return;
-  const ids = screenIds();
-  const at = ids.indexOf(route.screen);
+  const button = e.target.closest("button[role='tab']");
+  if (!button) return;
+  const from = button.id.replace(/^tab-/, "");
   if (key === "Enter" || key === " ") {
-    const button = e.target.closest("button[role='tab']");
-    if (button) { e.preventDefault(); navigate(button.id.replace(/^tab-/, ""), null); }
+    // preventDefault suppresses the click the browser would synthesize from
+    // Enter/Space on a <button>; without it navigate() would run twice.
+    e.preventDefault();
+    navigate(from, null);
     return;
   }
+  const ids = screenIds();
+  const at = ids.indexOf(from);
+  if (at === -1) return;   // a tab that is not currently offered
   e.preventDefault();
   const delta = key === "ArrowLeft" ? -1 : 1;
-  const next = ids[(at + delta + ids.length) % ids.length];
-  navigate(next, null);
-  const button = document.getElementById(`tab-${next}`);
-  if (button) button.focus();
+  focusTab(ids[(at + delta + ids.length) % ids.length]);
 });
 
 if (hasWindow) window.addEventListener("hashchange", applyRoute);

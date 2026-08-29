@@ -194,7 +194,29 @@ class El {
   querySelectorAll(selector) { return querySelectorAll(this, selector); }
 
   scrollIntoView() {}
-  focus() {}
+  /**
+   * Real focus, not a no-op: the owning document's `activeElement` becomes
+   * this node. Browser behaviour, so it lives here — a page that moves focus
+   * along a tab strip (roving tabindex) is otherwise untestable, the same
+   * gap `location`/`history` had before they were modelled below.
+   *
+   * Two browser rules come with it: a node that no person can see is not
+   * focusable (`hidden`, `aria-hidden`, `display:none`, `visibility:hidden`
+   * — the same four `visible` already walks), and a node outside any
+   * document has nowhere to be active, so both cases leave `activeElement`
+   * where it was rather than throwing.
+   */
+  focus() {
+    const doc = this.ownerDocument;
+    if (!doc || !this.visible) return;
+    doc.activeElement = this;
+  }
+  /** The Document this node is attached to, or null while detached. */
+  get ownerDocument() {
+    let n = this;
+    while (n.parentNode) n = n.parentNode;
+    return n._document || null;
+  }
   remove() {
     if (!this.parentNode) return;
     const siblings = this.parentNode.childNodes;
@@ -424,7 +446,15 @@ function querySelectorAll(root, selector) {
 class Document {
   constructor(bodyHtml) {
     this.body = new El('body');
+    // The back-reference `El.ownerDocument` walks up to: only nodes actually
+    // attached under this body belong to this document.
+    this.body._document = this;
     for (const n of parseFragment(bodyHtml)) this.body.appendChild(n);
+    // Defaults to `body`, as in a real document before anything is focused.
+    // Not null: `document.activeElement` in a browser is never null while a
+    // body exists, and a null default would let a test pass by accident
+    // whenever focus simply never moved.
+    this.activeElement = this.body;
   }
   getElementById(id) {
     return descendants(this.body).find(el => el.attributes.id === id) || null;

@@ -28,8 +28,9 @@ Only the screen in front of you is loaded and refreshed (10 s); the others
 are not polled. `Launchpad` is the exception: it is not on that timer at all
 — it runs its own 30 s cycle, and it keeps refreshing even while hidden for
 as long as a launch you started is still in flight. Each screen has its own
-address (`#sync`, `#roadmap`, …), so Back/Forward and bookmarks work, and
-`Left`/`Right` walk the strip, opening each screen as you land on it.
+address (`#sync`, `#roadmap`, …), so Back/Forward and bookmarks work. From
+the tab strip, `Left`/`Right` move the focus only — nothing opens as you
+pass over it — and `Enter`/`Space` opens the tab you are on.
 
 The run console has no tab of its own: a run is opened from inside
 `Launchpad` by clicking an active or pending row, which addresses it as
