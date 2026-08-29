@@ -229,7 +229,7 @@ async function boot(submitRoute) {
   vm.createContext(ctx);
   vm.runInContext(PAGE_SCRIPT, ctx);
   await drain();
-  // The page's own `setInterval(loadActiveScreen, 10000)` registers here too,
+  // The page's own 10s `runLoader(activeScreen())` tick registers here too,
   // on the SAME virtual clock as any per-run polling this harness starts. A
   // tick large enough to cross 10000ms will fire it — that is correct
   // behaviour, not a test failure; tests below stay under that threshold
@@ -695,7 +695,7 @@ testCase('unreadable is NOT absent: the collector warning reaches the screen',
 // once BOTH axes are settled.
 //
 // Every test below ticks by exactly 5000ms — under BOTH the page's own
-// `setInterval(loadActiveScreen, 10000)` and this view's own 5000ms poll
+// the 10s `runLoader(activeScreen())` tick and this view's own 5000ms poll
 // period (index.html rcPollView). That is a real coupling, not an arbitrary
 // number: it keeps the screen timer's fetches out
 // of `page.calls` while still crossing this view's own period exactly

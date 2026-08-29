@@ -714,7 +714,7 @@ testCase('Back/Forward restore a run view opened via #rc-open (Manual), '
 
 // ---- Whole-branch review, ITEM 2: `#updated` belongs to the ACTIVE screen -
 //
-// `loadActiveScreen` awaited a loader and stamped unconditionally, so a slow
+// the screen-timer path awaited a loader and stamped unconditionally, so a slow
 // screen's answer could stamp "updated <now>" onto the screen the operator
 // had already switched to, before that screen had painted anything.
 
@@ -1006,13 +1006,13 @@ testCase('a failed sync read stops every node renderSync owns from asserting '
 //
 // "переключение экрана инвалидирует поздние ответы прошлого там, где они
 // могут менять общий DOM". Re-entering a screen issues a SECOND request
-// while the first is still airborne (onScreenShown → loadActiveScreen), and
+// while the first is still airborne (onScreenShown → runLoader), and
 // a screen entry overlaps the 10s tick the same way. Whichever answered LAST
 // used to paint.
 //
 // The pre-existing slow-loader case above cannot see this: it LEAVES a
 // screen and never comes back, so it never has two responses of ONE loader
-// to order, and after a return `loadActiveScreen`'s screen-id re-check
+// to order, and after a return `applyOutcome`'s screen-id re-check
 // matches by construction (the active screen IS sync again). Every case
 // below returns to the origin screen, or overlaps entry with a tick, and
 // settles the OLDER response LAST — the only ordering that fails.
@@ -1284,7 +1284,7 @@ testCase('Waits keeps its in-flight gate: a return that issues no request of '
 // ---- terminal review, PR #220: `#updated` may only claim what was PAINTED
 //
 // The defect: a loader caught its own failure, painted "<screen>
-// unavailable", and returned normally, so `loadActiveScreen` could not tell
+// unavailable", and returned normally, so its caller could not tell
 // it from a success and stamped "updated <now>" beside it — an unread
 // source wearing a freshness marker (NFR-02; criterion 11 of this spec). A
 // load DROPPED by the generation guard did the same: it returns without
@@ -1572,11 +1572,11 @@ testCase('every LOADERS screen reports its own failure to #updated', async () =>
   }
 });
 
-// ---- fix round 1: the loaders reached DIRECTLY, not via loadActiveScreen
+// ---- fix round 1: the loaders reached DIRECTLY, not via the screen timer
 //
 // The Errors filters, the Epics `kind` buttons, the benchmark selector and
 // the post-track Sync reload call a loader without going through
-// `loadActiveScreen`, so they used to throw the outcome away — the same
+// the screen timer, so they used to throw the outcome away — the same
 // defect one path over, on the most-clicked control of the Errors screen.
 // Every case below drives a REAL control, never the loader by hand.
 
@@ -2237,6 +2237,15 @@ testCase('a failed benchmarks read leaves the tab the operator is standing on',
 function scanScript(src) {
   const chars = src.split('');
   const literal = new Array(src.length).fill(false);
+  const unterminated = [];   // starts of quoted literals that never closed
+  // KNOWN GAP, deliberately left: `+` and `-` are here so that `x = a +
+  // /re/.test(s)` lexes, which costs the postfix case — in `n++ / 2` the
+  // `+` before the `/` reads as "a regex may start here", so the division
+  // masks to end of line and anything after it on that line is invisible to
+  // this case. Dropping `+`/`-` would break real regex detection on the
+  // page as it stands, and no `++ /` or `-- /` appears in it; this comment
+  // is here so the next reader recognises the gap instead of rediscovering
+  // it as a surprise.
   const REGEX_PREV = new Set([...'(,=:[!&|?{};+-*%~^<>']);
   const REGEX_WORD = new Set(['return', 'typeof', 'case', 'in', 'of', 'delete',
     'void', 'instanceof', 'new', 'do', 'else', 'yield', 'await', 'throw']);
@@ -2278,8 +2287,17 @@ function scanScript(src) {
     if (c === '"' || c === "'") {
       const start = i;
       i++;
-      while (i < src.length && src[i] !== c) { i += src[i] === '\\' ? 2 : 1; }
-      i++;
+      // Bail at a raw newline. One inside a quoted literal is a SYNTAX ERROR
+      // in JS, so this loses nothing legal — a line continuation is `\` +
+      // newline and the escape branch eats it — and it is what keeps an
+      // UNTERMINATED quote from masking every remaining line of the page as
+      // string, which would sail this case through green while hiding
+      // whatever came after. The unterminated literal is recorded instead of
+      // swallowed, so the case can name the line.
+      while (i < src.length && src[i] !== c && src[i] !== '\n') {
+        i += src[i] === '\\' ? 2 : 1;
+      }
+      if (src[i] === c) i++; else unterminated.push(start);
       mark(start, Math.min(i, src.length));
       prev = c; word = ''; continue;
     }
@@ -2330,7 +2348,7 @@ function scanScript(src) {
     throw new Error('scanScript: the page script did not close every literal '
       + '— the scan is unreliable, so this case must not pass');
   }
-  return {code: chars.join(''), literal};
+  return {code: chars.join(''), literal, unterminated};
 }
 
 // The page script's first line, in index.html's own numbering, so a finding
@@ -2343,13 +2361,30 @@ const sourceLine = idx => {
   return PAGE_SCRIPT.slice(start, end === -1 ? undefined : end).trim();
 };
 
+/** The first match of `re` that is NOT inside a string/template/regex
+ * literal. Every declaration lookup goes through this: a page string that
+ * happens to contain `function loadErrors(` would otherwise move the
+ * exemption onto the literal and report the REAL declaration as a finding
+ * — a false positive, but a baffling one. */
+function firstRealMatch(scan, re) {
+  for (const m of scan.code.matchAll(re)) if (!scan.literal[m.index]) return m;
+  return null;
+}
+
+/** How a loader may be declared. `function load*()` and the arrow form both
+ * count: `const loadFoo = () => …` is a loader the moment it is written, and
+ * a governed-names list that only knew the `function` form would quietly not
+ * govern it. */
+const declRe = name =>
+  new RegExp(`\\b(?:function\\s+${name}\\s*\\(|(?:const|let|var)\\s+${name}\\s*=)`, 'g');
+
 /** The `{ … }` span of `<kind> <name>`, by brace matching over scanned code
  * (so braces inside comments and literals cannot throw the count off), or
  * `null` when the page has no such declaration. Null rather than a throw
  * because a page that has LOST the entry point must produce a readable list
  * of findings — that is exactly the state this case is meant to describe. */
 function bodySpan(scan, kind, name) {
-  const at = new RegExp(`${kind}\\s+${name}\\s*[=({]`).exec(scan.code);
+  const at = firstRealMatch(scan, new RegExp(`${kind}\\s+${name}\\s*[=({]`, 'g'));
   if (!at) return null;
   const open = scan.code.indexOf('{', at.index);
   if (open === -1) return null;
@@ -2363,15 +2398,19 @@ function bodySpan(scan, kind, name) {
 }
 
 /** Every identifier this case governs: the loaders the registry names, plus
- * anything DECLARED in loader shape, so a new `loadFoo` that was never
- * registered is governed from the moment it is written. */
+ * anything DECLARED in loader shape — in EITHER form, `function loadFoo()`
+ * or `const loadFoo = () => …` — so a new loader is governed the moment it
+ * is written, registered or not. */
 function governedNames(scan, registry) {
   const names = new Set();
   for (const m of scan.code.slice(...registry).matchAll(/(\w+)\s*:\s*([A-Za-z_$][\w$]*)/g)) {
     if (m[2] !== 'null') names.add(m[2]);
   }
-  for (const m of scan.code.matchAll(/\bfunction\s+((?:load|refresh)[A-Z][\w$]*)\s*\(/g)) {
-    names.add(m[1]);
+  const shape = '(?:load|refresh)[A-Z][\\w$]*';
+  const decls = new RegExp(
+    `\\b(?:function\\s+(${shape})\\s*\\(|(?:const|let|var)\\s+(${shape})\\s*=)`, 'g');
+  for (const m of scan.code.matchAll(decls)) {
+    if (!scan.literal[m.index]) names.add(m[1] || m[2]);
   }
   return [...names].sort();
 }
@@ -2407,10 +2446,44 @@ testCase('no call site reaches a loader except through runLoader', () => {
     `precondition: the scan found the loaders (got ${names.length}: ${names})`);
 
   const findings = [];
+  // ---- the scan's own preconditions, checked rather than asserted --------
+  //
+  // This case is only as good as the mask it builds, so it says out loud
+  // when it cannot vouch for one. Two checks, and between them they cover
+  // the whole "the page has an unterminated literal" family:
+  //
+  //   - the PARSER. A page with an unbalanced quote or backtick is not
+  //     legal JS, and no mask over it means anything. Delegating to
+  //     `vm.Script` costs one parse and catches every shape of the problem
+  //     — including two stray backticks that re-pair each other, which the
+  //     scanner's own bookkeeping cannot tell from a legitimate template.
+  //   - the SCANNER's own record of quoted literals that hit a newline
+  //     unclosed, which the parser check cannot localise: it gives the LINE.
+  //
+  // Written this way after getting it wrong: an earlier version of this
+  // file claimed in a comment that the scanner "refuses to pass on an
+  // unclosed literal". It did not — the string loop ran to EOF, the case
+  // passed GREEN, and the only thing that went red was 71 neighbouring
+  // cases, for reasons that looked unrelated. A stated safety property that
+  // does not hold by its stated mechanism is worse than no claim at all,
+  // because the next person changes the code around it and trusts it.
+  try {
+    new vm.Script(PAGE_SCRIPT);
+  } catch (err) {
+    findings.push('the shipped page does not parse, so the scan below means '
+      + `nothing: ${err.message}`);
+  }
+  for (const at of SCAN.unterminated) {
+    findings.push(`unterminated string literal at index.html:${fileLine(at)} — `
+      + sourceLine(at));
+  }
+
   for (const name of names) {
-    // The definition's own `function <name>` occurrence is the one mention
-    // outside the registry that is not a call.
-    const def = new RegExp(`\\bfunction\\s+${name}\\s*\\(`).exec(SCAN.code);
+    // The declaration's own occurrence is the one mention outside the
+    // registry that is not a call. Looked up literal-aware and in both
+    // declaration forms, so neither a string containing `function
+    // loadErrors(` nor an arrow-declared loader moves the exemption.
+    const def = firstRealMatch(SCAN, declRe(name));
     const defAt = def ? def.index : -1;
     for (const m of SCAN.code.matchAll(new RegExp(`\\b${name}\\b`, 'g'))) {
       const i = m.index;
@@ -2425,7 +2498,7 @@ testCase('no call site reaches a loader except through runLoader', () => {
   // `runLoader` for the nine registry screens, and the Launchpad's own two
   // report points, which exist because it has no registry entry to be run
   // through. Three, named; a fourth is a new way to report an outcome.
-  const applyDef = /\bfunction\s+applyOutcome\s*\(/.exec(SCAN.code);
+  const applyDef = firstRealMatch(SCAN, declRe('applyOutcome'));
   const APPLY_CALLERS = [RUN_LOADER, ...LP_SEATS];
   for (const m of SCAN.code.matchAll(/\bapplyOutcome\b/g)) {
     const i = m.index;
@@ -2441,7 +2514,7 @@ testCase('no call site reaches a loader except through runLoader', () => {
   // are written from ONE place, so the screen-id gate and the `err`-class
   // handling cannot be half-copied to a second site and drift.
   for (const writer of ['stampUpdated', 'markUpdatedUnread']) {
-    const def = new RegExp(`\\bfunction\\s+${writer}\\s*\\(`).exec(SCAN.code);
+    const def = firstRealMatch(SCAN, declRe(writer));
     for (const m of SCAN.code.matchAll(new RegExp(`\\b${writer}\\b`, 'g'))) {
       const i = m.index;
       if (SCAN.literal[i]) continue;

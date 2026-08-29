@@ -89,7 +89,7 @@ const PAGE_SCRIPT = between(BODY_HTML, /<script[^>]*>/i, '</script>', 'script');
 
 // The launchpad panel's own auto-refresh period (spec §9: "30s
 // auto-refresh"). The whole page script also registers the pre-existing
-// dashboard's `setInterval(loadActiveScreen, 10000)` — the per-screen timer
+// dashboard's 10s `runLoader(activeScreen())` tick — the per-screen timer
 // — on the SAME fake timer this harness installs; the two are told apart by
 // period, not by call order, since nothing here controls which runs first.
 const LP_REFRESH_MS = 30000;
@@ -1090,7 +1090,7 @@ testCase('booting on a non-launchpad hash fills Launchpad on first visit '
 // ---- Task 6 / Task 5 review finding: `#updated` must not lie -----------------
 //
 // A deferred Task 5 review finding: `#updated` has exactly one writer,
-// `loadActiveScreen`, which never reaches Launchpad (`LOADERS.launchpad` is
+// `runLoader`, which never reaches Launchpad (`LOADERS.launchpad` is
 // null) — so the default screen showed a permanently blank timestamp. The
 // fix moves the write into `lpApplySnapshot`, gated on the panel being
 // VISIBLE: a background apply (Task 6's new hidden-poll case) must not claim
