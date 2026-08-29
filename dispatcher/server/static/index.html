@@ -1114,16 +1114,22 @@ function renderEpics(view) {
     </tr>`).join("") || `<tr><td colspan="3">no defect-tagged items</td></tr>`;
 }
 
+// Returns a LOAD_* outcome like every other LOADERS entry — see the
+// "loader OUTCOMES" block above `loadSync`. The constants are declared
+// further down in this same script scope; nothing calls this before the
+// script has run to the bottom (the boot `applyRoute()` deliberately skips
+// `loadActiveScreen`, and the `kind` buttons need a click).
 async function refreshEpics() {
   // The `kind` filter makes the race concrete: a click here while a screen
   // tick is airborne must not have the tick's UNFILTERED answer land last.
   const gen = nextScreenGen("epics");
   try {
     const epics = await get("/api/epics" + (epicsKind ? `?kind=${epicsKind}` : ""));
-    if (screenGenStale("epics", gen)) return;
+    if (screenGenStale("epics", gen)) return LOAD_STALE;
     renderEpics(epics);
+    return LOAD_PAINTED;
   } catch (err) {
-    if (screenGenStale("epics", gen)) return;
+    if (screenGenStale("epics", gen)) return LOAD_STALE;
     // named, not silent: an empty table would read as "no epics", which is a
     // claim about the fleet rather than about this request
     const reg = document.getElementById("epics-registry");
@@ -1133,6 +1139,7 @@ async function refreshEpics() {
     }
     document.querySelector("#epics tbody").innerHTML =
       `<tr><td colspan="8" class="err">not read — see above</td></tr>`;
+    return LOAD_FAILED;
   }
 }
 
@@ -1268,7 +1275,13 @@ function renderWaits(view) {
 let waitsInFlight = false;
 
 async function refreshWaits() {
-  if (waitsInFlight) return; // the running poll will paint; a later tick retries
+  // LOAD_STALE, not a failure and certainly not a paint: this call rendered
+  // nothing, and the poll already in flight will stamp `#updated` when it
+  // paints. Marking the screen unread here would flash "не прочитано" over
+  // a panel that is a moment away from a good render; stamping would claim
+  // a freshness this call did not produce. Same reasoning as a superseded
+  // generation — see the "loader OUTCOMES" block above `loadSync`.
+  if (waitsInFlight) return LOAD_STALE; // the running poll will paint
   waitsInFlight = true;
   // AFTER the in-flight gate, deliberately: a call that returned early above
   // issued no request, and letting it bump would supersede the poll that is
@@ -1279,16 +1292,18 @@ async function refreshWaits() {
   const gen = nextScreenGen("waits");
   try {
     const waits = await get("/api/waits");
-    if (screenGenStale("waits", gen)) return;
+    if (screenGenStale("waits", gen)) return LOAD_STALE;
     renderWaits(waits);
+    return LOAD_PAINTED;
   } catch (err) {
-    if (screenGenStale("waits", gen)) return;
+    if (screenGenStale("waits", gen)) return LOAD_STALE;
     // named, not silent — an empty graph would read as "no obligations";
     // and the previous poll's tables must not survive under this disclaimer
     const disc = document.getElementById("waits-disclaimer");
     disc.className = "err";
     disc.textContent = `waits unavailable: ${err && err.message ? err.message : err}`;
     renderWaitsUnread();
+    return LOAD_FAILED;
   } finally {
     waitsInFlight = false;
   }
@@ -2336,6 +2351,44 @@ document.getElementById("rc-run-view").addEventListener("change", e => {
 
 const SCREEN_REFRESH_MS = 10000;
 
+// ---- loader OUTCOMES (terminal review, PR #220) ---------------------------
+//
+// A loader used to swallow its own outcome: it caught its failure, painted
+// "<screen> unavailable", and returned normally — indistinguishable, to
+// `loadActiveScreen`, from a successful paint. So `#updated` read
+// "updated <now>" beside a panel that had read nothing. Same for a load
+// whose render was DROPPED by the generation guard above: it returns
+// without painting, and the caller stamped anyway — a freshness claim over
+// a panel that painted nothing, or over an empty one on a first entry.
+// Both are exactly what NFR-02 forbids ("показ устаревшего состояния как
+// актуального недопустим") and what criterion 11 of this spec forbids.
+//
+// So every loader RETURNS what happened, and `loadActiveScreen` decides
+// what `#updated` may say. Three outcomes, because three are what the
+// caller must tell apart:
+//
+//   PAINTED — this load rendered fresh data. The only outcome that earns a
+//             timestamp.
+//   STALE   — a newer load for this screen superseded this one (or, on
+//             Waits, a poll already in flight will paint for it). The
+//             newer load stamps when IT paints; this one must leave
+//             `#updated` exactly as it found it. Not a failure: nothing is
+//             wrong, and marking it would flicker an error onto a screen
+//             that is about to render.
+//   FAILED  — the read did not happen. `#updated` says so in the page's
+//             existing vocabulary for an unread source ("не прочитано" +
+//             class `err`, which loadSync's own catch and the waits panel
+//             already use) rather than claiming a freshness it does not
+//             have.
+//
+// Strings rather than booleans: two booleans would need a convention about
+// which combination is impossible, and a new loader would have to guess it.
+// A returned name is readable at each `return` site, and every exit path of
+// every loader below carries one.
+const LOAD_PAINTED = "painted";
+const LOAD_STALE = "stale";
+const LOAD_FAILED = "failed";
+
 async function loadSync() {
   const gen = nextScreenGen("sync");
   try {
@@ -2343,12 +2396,13 @@ async function loadSync() {
     // A superseded read must not paint: the proposals renderSync draws are
     // live buttons over a mutating POST, so a late answer would not merely
     // look stale — it would be ACTIONABLE stale (spec §9).
-    if (screenGenStale("sync", gen)) return;
+    if (screenGenStale("sync", gen)) return LOAD_STALE;
     renderSync(sync);
+    return LOAD_PAINTED;
   } catch (err) {
     // A superseded FAILURE is not this screen's news either: it would erase
     // the verdict a newer, successful read has already painted.
-    if (screenGenStale("sync", gen)) return;
+    if (screenGenStale("sync", gen)) return LOAD_STALE;
     // NFR-02: nothing renderSync owns may keep asserting after a failed
     // read. Naming the failure only in #sync-hosts would leave the PREVIOUS
     // verdict standing in the topline and the PREVIOUS proposals still
@@ -2362,6 +2416,7 @@ async function loadSync() {
     document.getElementById("sync-fetch").hidden = true;
     document.getElementById("sync-proposals").innerHTML = "";
     document.getElementById("sync-hosts").textContent = "sync failed: " + err;
+    return LOAD_FAILED;
   }
 }
 
@@ -2370,7 +2425,7 @@ async function loadProjects() {
   const gen = nextScreenGen("projects");
   try {
     const ov = await get("/api/overview");
-    if (screenGenStale("projects", gen)) return;
+    if (screenGenStale("projects", gen)) return LOAD_STALE;
     grid.innerHTML = ov.projects.map(p => `
       <div class="card ${p.detected ? "" : "off"}"
            ${p.detected
@@ -2392,11 +2447,13 @@ async function loadProjects() {
         ${(p.warnings || []).map(w => `<div class="warn">⚠ ${esc(w)}</div>`)
           .join("")}
       </div>`).join("");
+    return LOAD_PAINTED;
   } catch (err) {
-    if (screenGenStale("projects", gen)) return;
+    if (screenGenStale("projects", gen)) return LOAD_STALE;
     // named, not an empty grid: no cards would read as "no projects", a
     // claim about the fleet rather than about this request
     grid.innerHTML = `<div class="err">projects unavailable: ${esc(String(err))}</div>`;
+    return LOAD_FAILED;
   }
 }
 
@@ -2413,7 +2470,7 @@ async function loadErrors() {
       + (errorsService === null
         ? "" : `&service=${encodeURIComponent(errorsService)}`);
     const errors = await get(errorsUrl);
-    if (screenGenStale("errors", gen)) return;
+    if (screenGenStale("errors", gen)) return LOAD_STALE;
     document.querySelector("#errors tbody").innerHTML = errors.map(e => {
       const full = e.body ?? "";
       const short = full.length > MSG_LIMIT
@@ -2429,12 +2486,14 @@ async function loadErrors() {
       `(${errors.length})`;
     errors.forEach(e => { if (e.service) knownServices.add(e.service); });
     renderServiceOptions();
+    return LOAD_PAINTED;
   } catch (err) {
-    if (screenGenStale("errors", gen)) return;
+    if (screenGenStale("errors", gen)) return LOAD_STALE;
     // «no errors 🎉» is a claim; an unread endpoint may not make it
     document.querySelector("#errors tbody").innerHTML =
       `<tr><td colspan="3" class="err">errors unavailable: ${esc(String(err))}</td></tr>`;
     document.getElementById("errors-count").textContent = "(—)";
+    return LOAD_FAILED;
   }
 }
 
@@ -2442,16 +2501,18 @@ async function loadModels() {
   const gen = nextScreenGen("models");
   try {
     const models = await get("/api/models");
-    if (screenGenStale("models", gen)) return;
+    if (screenGenStale("models", gen)) return LOAD_STALE;
     document.querySelector("#models tbody").innerHTML = models.map(m => `
       <tr><td>${esc(m.project)}</td><td>${esc(m.model_id)}</td>
       <td>${esc(m.harness ?? "—")}</td><td>${esc(m.role)}</td>
       <td>${esc(m.vendor ?? "—")}</td><td>${esc(m.status ?? "—")}</td></tr>`)
       .join("");
+    return LOAD_PAINTED;
   } catch (err) {
-    if (screenGenStale("models", gen)) return;
+    if (screenGenStale("models", gen)) return LOAD_STALE;
     document.querySelector("#models tbody").innerHTML =
       `<tr><td colspan="6" class="err">models unavailable: ${esc(String(err))}</td></tr>`;
+    return LOAD_FAILED;
   }
 }
 
@@ -2469,12 +2530,14 @@ async function loadContracts() {
   const gen = nextScreenGen("contracts");
   try {
     const contracts = await get("/api/contracts");
-    if (screenGenStale("contracts", gen)) return;
+    if (screenGenStale("contracts", gen)) return LOAD_STALE;
     renderContracts(contracts);
+    return LOAD_PAINTED;
   } catch (err) {
-    if (screenGenStale("contracts", gen)) return;
+    if (screenGenStale("contracts", gen)) return LOAD_STALE;
     document.querySelector("#contracts tbody").innerHTML =
       `<tr><td colspan="5" class="err">contracts unavailable: ${esc(String(err))}</td></tr>`;
+    return LOAD_FAILED;
   }
 }
 
@@ -2539,15 +2602,17 @@ async function loadRoadmap() {
     // check sits after `Promise.all` and before the FIRST render. Guarding
     // each fetch on its own would let a stale summary sit above a fresh
     // table — half a stale answer, which is worse than a whole one.
-    if (screenGenStale("roadmap", gen)) return;
+    if (screenGenStale("roadmap", gen)) return LOAD_STALE;
     renderSummary(summary);
     renderRoadmap(roadmap, contracts);
+    return LOAD_PAINTED;
   } catch (err) {
-    if (screenGenStale("roadmap", gen)) return;
+    if (screenGenStale("roadmap", gen)) return LOAD_STALE;
     document.getElementById("roadmap-names").textContent =
       "roadmap failed: " + err;
     document.querySelector("#roadmap tbody").innerHTML =
       `<tr><td colspan="8" class="err">not read — see above</td></tr>`;
+    return LOAD_FAILED;
   }
 }
 
@@ -2576,13 +2641,15 @@ async function loadBenchmarks() {
     // Also gates setBenchmarksAvailable: a superseded answer must not decide
     // whether the conditional tab is offered — that would take the operator
     // off a screen on the strength of an answer already overtaken.
-    if (screenGenStale("benchmarks", gen)) return;
+    if (screenGenStale("benchmarks", gen)) return LOAD_STALE;
     renderBenchmarks(status);
     setBenchmarksAvailable(status.report.status !== "unconfigured");
+    return LOAD_PAINTED;
   } catch (err) {
-    if (screenGenStale("benchmarks", gen)) return;
+    if (screenGenStale("benchmarks", gen)) return LOAD_STALE;
     document.getElementById("benchmarks-status").textContent =
       "benchmarks unavailable: " + err;
+    return LOAD_FAILED;
   }
 }
 
@@ -2608,8 +2675,24 @@ const LOADERS = {
 // writers (this loader, and Task 6's gated write in lpApplySnapshot) — both
 // funnel through here so the two can never drift apart in appearance.
 function stampUpdated() {
-  document.getElementById("updated").textContent =
-    "updated " + new Date().toLocaleTimeString();
+  const node = document.getElementById("updated");
+  node.textContent = "updated " + new Date().toLocaleTimeString();
+  // Clears a previous failure's `err` class: the field is one node reused
+  // by both states, so a good read must take the red off as well as put a
+  // time on.
+  node.className = "";
+}
+
+// The other half of the same field. Not a third vocabulary: "не прочитано"
+// with class `err` is what loadSync's topline and the waits panel already
+// say about a source they could not read, and this says it about the
+// screen's freshness itself. Blanking the field instead would be quieter
+// but wrong in the other direction — an empty field reads as "no answer
+// yet", not as "the last attempt failed".
+function markUpdatedUnread() {
+  const node = document.getElementById("updated");
+  node.textContent = "не прочитано";
+  node.className = "err";
 }
 
 // After the split, `#updated` is written by the ACTIVE screen's loader — not
@@ -2618,7 +2701,7 @@ async function loadActiveScreen() {
   const screen = activeScreen();
   const load = LOADERS[screen];
   if (!load) return;
-  await load();
+  const outcome = await load();
   // Whole-branch review, ITEM 2: the screen id is captured BEFORE the await
   // and re-checked after it. A slow loader that answers once the operator
   // has already switched tabs would otherwise stamp "updated <now>" onto the
@@ -2627,7 +2710,28 @@ async function loadActiveScreen() {
   // lpApplySnapshot already prevents, and what criterion 11 forbids. The
   // screen that came second stamps for itself when its own load returns.
   if (activeScreen() !== screen) return;
-  stampUpdated();
+  // Terminal review, PR #220: the screen id is necessary but not sufficient.
+  // It answers "is this still the screen in front of the operator?", not
+  // "did anything actually get painted?" — and a load that FAILED, or one
+  // whose render the generation guard dropped, satisfies the first while
+  // failing the second. Only a real paint earns a timestamp.
+  if (outcome === LOAD_PAINTED) {
+    stampUpdated();
+  } else if (outcome === LOAD_STALE) {
+    // Left EXACTLY as it was: a newer load for this screen is already in
+    // flight (or already painted) and stamps for itself. Writing anything
+    // here would either overwrite a fresher stamp or flash an error over a
+    // screen nothing is wrong with.
+    return;
+  } else {
+    // LOAD_FAILED — and anything a future loader returns that is not one of
+    // the three. Fail-closed AND fail-loud: an unrecognised outcome means
+    // this code does not know the screen is fresh, and NFR-02 forbids
+    // showing not-knowing as freshness. A new loader that forgets to return
+    // an outcome therefore shows "не прочитано" on every load, which is
+    // wrong in the direction that gets noticed and fixed.
+    markUpdatedUnread();
+  }
 }
 
 let screenTimer = null;

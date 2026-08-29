@@ -178,6 +178,11 @@ function defaultRoutes() {
       generated_at: null, registry_path: '/ws/epics.toml', registry_ok: true,
       registry_diagnostics: [], programs: {}, planes: [], rows: [], defects: [],
     })],
+    // Added with the loader-outcome cases: `/api/waits` was the one LOADERS
+    // endpoint this list missed, so every case that opened Waits without
+    // overriding the route was really exercising the FAILURE path (a
+    // missing route is a rejected fetch) while looking like a good read.
+    [u => u.startsWith('/api/waits'), () => ok(WAITS_VIEW)],
     [u => u.startsWith('/api/benchmarks'), () => ok({
       fetch_in_flight: false,
       report: {status: 'unconfigured', url: null, fetched_at: null,
@@ -1255,6 +1260,322 @@ testCase('Waits keeps its in-flight gate: a return that issues no request of '
       `and it is not left under a failure notice, got `
       + `"${el(page, '#waits-disclaimer').textContent}"`);
   });
+});
+
+// ---- terminal review, PR #220: `#updated` may only claim what was PAINTED
+//
+// The defect: a loader caught its own failure, painted "<screen>
+// unavailable", and returned normally, so `loadActiveScreen` could not tell
+// it from a success and stamped "updated <now>" beside it — an unread
+// source wearing a freshness marker (NFR-02; criterion 11 of this spec). A
+// load DROPPED by the generation guard did the same: it returns without
+// painting, and the caller stamped over a panel that rendered nothing.
+//
+// Why the existing cases could not see it: 'a broken endpoint on one screen
+// leaves its neighbour alone' asserts the error text and screen isolation
+// and never looks at `#updated`; 'a slow loader does not stamp #updated
+// onto the screen that replaced it' looks at `#updated` only for an answer
+// from a screen the operator has LEFT — the screen-id check, a different
+// guard. Every case below stays ON the screen, where the id check passes.
+//
+// SENTINEL, never a stamp-vs-stamp comparison: both stamps are
+// `toLocaleTimeString()` and land in the same second, so comparing two of
+// them passes with or without the fix (that is how one case on this branch
+// went vacuous).
+const SENTINEL = 'sentinel-not-a-stamp';
+const UNREAD = 'не прочитано';
+/** Parks `#updated` on a value no code path produces, so anything the page
+ * writes afterwards is visible as a change and anything it leaves alone is
+ * visible as the sentinel. */
+function parkUpdated(page) {
+  el(page, '#updated').textContent = SENTINEL;
+  el(page, '#updated').className = '';
+}
+const updatedText = page => el(page, '#updated').textContent;
+
+testCase('a FAILED load says so in #updated — no timestamp beside an unread '
+  + 'screen', async () => {
+  await withPage(async page => {
+    await openScreen(page, 'models');
+    check(/^updated /.test(updatedText(page)),
+      `precondition: the good read stamped, got "${updatedText(page)}"`);
+    parkUpdated(page);
+
+    overrideRoute(page, '/api/models', () => { throw new Error('transport down'); });
+    page.timers.byPeriod(10000).cb();
+    await drain();
+
+    check(/models unavailable/.test(htmlOf(page, '#models')),
+      `precondition: the panel names its own failure, got ${htmlOf(page, '#models')}`);
+    // The exact text, not merely "it changed": "changed" would also accept a
+    // fresh timestamp, which is the whole defect.
+    check(updatedText(page) === UNREAD,
+      `#updated says the screen was not read, got "${updatedText(page)}"`);
+    check(el(page, '#updated').className === 'err',
+      `and says it in the page's failure vocabulary, got `
+      + `"${el(page, '#updated').className}"`);
+  });
+});
+
+testCase('a load that RECOVERS clears the unread marker as well as stamping',
+  async () => {
+  // The field is one node with two states; a good read that put a time on
+  // it but left the `err` class would ship a red timestamp.
+  await withPage(async page => {
+    overrideRoute(page, '/api/models', () => { throw new Error('transport down'); });
+    await openScreen(page, 'models');
+    check(updatedText(page) === UNREAD,
+      `precondition: the failed entry marked it unread, got "${updatedText(page)}"`);
+
+    overrideRoute(page, '/api/models', () => ok([]));
+    page.timers.byPeriod(10000).cb();
+    await drain();
+
+    check(/^updated /.test(updatedText(page)),
+      `the recovered read stamps, got "${updatedText(page)}"`);
+    check(el(page, '#updated').className === '',
+      `and takes the red off, got "${el(page, '#updated').className}"`);
+  });
+});
+
+testCase('a DROPPED-as-stale load leaves #updated untouched; the newer load '
+  + 'stamps when it paints', async () => {
+  // The reviewer's ordering, on a FIRST entry so the panel really has
+  // painted nothing: entry read and 10s tick overlap, the OLDER answer
+  // lands first and is correctly dropped by the generation guard — and used
+  // to stamp anyway, putting "updated <now>" over an empty Sync panel.
+  await withPage(async page => {
+    const sync = deferrable();
+    overrideRoute(page, '/api/sync', sync.route);
+
+    await clickTab(page, 'sync');
+    check(sync.pending.length === 1,
+      `precondition: the entry read is in flight, got ${sync.pending.length}`);
+    page.timers.byPeriod(10000).cb();
+    await drain();
+    check(sync.pending.length === 2,
+      `precondition: the tick issued a second read over the first, got `
+      + `${sync.pending.length}`);
+    // The panel's static placeholder, untouched: this screen has never
+    // painted, so a stamp here would date a read that produced nothing.
+    check(el(page, '#sync-topline').textContent === '…',
+      `precondition: nothing has painted on this screen yet, got `
+      + `"${el(page, '#sync-topline').textContent}"`);
+    parkUpdated(page);
+
+    sync.settle(0, SYNC_STALE);   // the OLDER read answers first…
+    await drain();
+
+    check(el(page, '#sync-topline').textContent === '…',
+      `precondition: its render was dropped as stale, got `
+      + `"${el(page, '#sync-topline').textContent}"`);
+    check(updatedText(page) === SENTINEL,
+      `a load that painted nothing may not stamp, got "${updatedText(page)}"`);
+
+    sync.settle(1, SYNC_FRESH);   // …and the load still in flight paints
+    await drain();
+
+    check(el(page, '#sync-topline').textContent === 'ok',
+      `precondition: the newer read painted, got `
+      + `"${el(page, '#sync-topline').textContent}"`);
+    check(/^updated /.test(updatedText(page)),
+      `and the paint — not the drop — is what stamps, got `
+      + `"${updatedText(page)}"`);
+  });
+});
+
+testCase('a superseded load may not stamp AFTER the newer one already did',
+  async () => {
+  // The mirror ordering: newer first, older last. The stamp is already
+  // correct when the superseded answer lands, so a second stamp would
+  // re-date a paint that happened earlier — freshness claimed for a read
+  // that contributed nothing.
+  await withPage(async page => {
+    const sync = deferrable();
+    overrideRoute(page, '/api/sync', sync.route);
+
+    await clickTab(page, 'sync');
+    await clickTab(page, 'models');
+    await clickTab(page, 'sync');
+    check(sync.pending.length === 2,
+      `precondition: returning issued a SECOND read, got ${sync.pending.length}`);
+
+    sync.settle(1, SYNC_FRESH);
+    await drain();
+    check(/^updated /.test(updatedText(page)),
+      `precondition: the newer read stamped, got "${updatedText(page)}"`);
+    parkUpdated(page);
+
+    sync.settle(0, SYNC_STALE);
+    await drain();
+
+    check(updatedText(page) === SENTINEL,
+      `the superseded read leaves #updated exactly as it found it, got `
+      + `"${updatedText(page)}"`);
+  });
+});
+
+testCase('a SUCCESSFUL load still stamps, on every unconditional screen',
+  async () => {
+  // The other half of the contract: the outcome report must not make the
+  // ordinary path stop stamping. One entry per LOADERS screen, so a loader
+  // that forgets to return LOAD_PAINTED is caught by name.
+  await withPage(async page => {
+    for (const screen of ['sync', 'projects', 'errors', 'models',
+      'contracts', 'epics', 'waits', 'roadmap']) {
+      parkUpdated(page);
+      await openScreen(page, screen);
+      check(/^updated /.test(updatedText(page)),
+        `${screen} stamps on a good read, got "${updatedText(page)}"`);
+      check(el(page, '#updated').className === '',
+        `${screen} stamps without the failure class, got `
+        + `"${el(page, '#updated').className}"`);
+    }
+  });
+});
+
+testCase('a FAILED load on the screen the operator LEFT does not mark the '
+  + 'screen they moved to', async () => {
+  // The screen-id re-check still comes first: an unread marker belongs to
+  // the screen that could not be read, not to whatever is on screen when
+  // its failure finally lands.
+  await withPage(async page => {
+    let failSync = null;
+    overrideRoute(page, '/api/sync', () => new Promise((_, reject) => {
+      failSync = () => reject(new Error('transport down'));
+    }));
+    await clickTab(page, 'sync');
+    check(!!failSync, 'precondition: the sync read is in flight');
+
+    await clickTab(page, 'epics');
+    check(!el(page, '#screen-epics').hidden, 'precondition: epics is active');
+    parkUpdated(page);
+
+    failSync();
+    await drain();
+
+    check(updatedText(page) === SENTINEL,
+      `the screen the operator left may not mark the one they are on, got `
+      + `"${updatedText(page)}"`);
+  });
+});
+
+// -- the two screens that already carried their own guards ------------------
+//
+// Both are in LOADERS and both had a guard BEFORE this change (refreshEpics
+// its own catch, refreshWaits its in-flight gate on top of one), which is
+// exactly why they need their own cases: the outcome report had to be added
+// to them without changing what they do.
+
+testCase('Epics keeps its behaviour: a failed read marks #updated unread, a '
+  + 'superseded one leaves it alone', async () => {
+  await withPage(async page => {
+    await openScreen(page, 'epics');
+    parkUpdated(page);
+    overridePrefix(page, '/api/epics', () => { throw new Error('transport down'); });
+    page.timers.byPeriod(10000).cb();
+    await drain();
+    check(/epics unavailable/.test(el(page, '#epics-registry').textContent),
+      `precondition: the panel still names its own failure, got `
+      + `"${el(page, '#epics-registry').textContent}"`);
+    check(updatedText(page) === UNREAD,
+      `a failed epics read is not fresh, got "${updatedText(page)}"`);
+
+    // …and the `kind` filter's supersession still ends in exactly one stamp,
+    // from the answer that actually painted.
+    const epics = deferrable();
+    overridePrefix(page, '/api/epics', epics.route);
+    page.timers.byPeriod(10000).cb();
+    await drain();
+    await click(page, 'button[data-epic-kind="ecosystem"]');
+    check(epics.pending.length === 2,
+      `precondition: the filter click overlapped the tick, got ${epics.pending.length}`);
+    epics.settle(1, EPICS_VIEW([EPIC_ROW('E-ECO', 'ecosystem')]));
+    await drain();
+    parkUpdated(page);
+    epics.settle(0, EPICS_VIEW([EPIC_ROW('E-EXT', 'external')]));
+    await drain();
+    check(!/E-EXT/.test(htmlOf(page, '#epics')),
+      `precondition: the superseded answer was dropped, got ${htmlOf(page, '#epics')}`);
+    check(updatedText(page) === SENTINEL,
+      `and dropping it stamped nothing, got "${updatedText(page)}"`);
+  });
+});
+
+testCase('Waits keeps its behaviour: the in-flight gate stamps nothing, the '
+  + 'poll it deferred to stamps when it paints', async () => {
+  // `waitsInFlight` makes the second call return without issuing a request
+  // at all — the one loader that can report "nothing happened here" without
+  // a generation being superseded. It must land in the same bucket: no
+  // stamp (it painted nothing) and no unread marker (nothing failed, and a
+  // poll is a moment from painting).
+  await withPage(async page => {
+    const waits = deferrable();
+    overrideRoute(page, '/api/waits', waits.route);
+
+    await clickTab(page, 'waits');
+    check(waits.pending.length === 1,
+      `precondition: one waits read is in flight, got ${waits.pending.length}`);
+    parkUpdated(page);
+
+    await clickTab(page, 'models');
+    await clickTab(page, 'waits');
+    check(waits.pending.length === 1,
+      `precondition: the gate suppressed the second read, got ${waits.pending.length}`);
+    // models painted in between and stamped, so the sentinel is re-parked
+    // here rather than asserted through that switch.
+    parkUpdated(page);
+    await drain();
+    check(updatedText(page) === SENTINEL,
+      `the suppressed call neither stamps nor marks unread, got `
+      + `"${updatedText(page)}"`);
+
+    waits.settle(0, WAITS_VIEW);
+    await drain();
+    check(el(page, '#waits-plane').textContent === '0 рёбер · 3 репо',
+      `precondition: the surviving poll painted, got `
+      + `"${el(page, '#waits-plane').textContent}"`);
+    check(/^updated /.test(updatedText(page)),
+      `and the paint stamps, got "${updatedText(page)}"`);
+  });
+});
+
+testCase('a failed Waits read marks #updated unread', async () => {
+  await withPage(async page => {
+    await openScreen(page, 'waits');
+    parkUpdated(page);
+    overrideRoute(page, '/api/waits', () => { throw new Error('transport down'); });
+    page.timers.byPeriod(10000).cb();
+    await drain();
+    check(/waits unavailable/.test(el(page, '#waits-disclaimer').textContent),
+      `precondition: the panel names its own failure, got `
+      + `"${el(page, '#waits-disclaimer').textContent}"`);
+    check(updatedText(page) === UNREAD,
+      `a failed waits read is not fresh, got "${updatedText(page)}"`);
+  });
+});
+
+testCase('the conditional Benchmarks loader reports its outcome too', async () => {
+  // The tenth screen is in LOADERS like the rest, and its catch deliberately
+  // leaves the operator standing on the tab (a transport blip is not an
+  // answer about configuration) — which makes the timestamp the ONLY thing
+  // that can tell them the panel in front of them was not re-read.
+  await withPage(async page => {
+    await openScreen(page, 'benchmarks');
+    check(/^updated /.test(updatedText(page)),
+      `precondition: a good benchmarks read stamps, got "${updatedText(page)}"`);
+    parkUpdated(page);
+
+    overrideRoute(page, '/api/benchmarks', () => { throw new Error('transport down'); });
+    page.timers.byPeriod(10000).cb();
+    await drain();
+
+    check(!el(page, '#screen-benchmarks').hidden,
+      'precondition: the failure still leaves the operator on the screen');
+    check(updatedText(page) === UNREAD,
+      `and the screen is marked unread rather than freshly stamped, got `
+      + `"${updatedText(page)}"`);
+  }, configuredBenchmarksRoutes);
 });
 
 testCase('a project card records the Errors filter without fetching the '
