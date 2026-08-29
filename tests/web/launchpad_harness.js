@@ -313,10 +313,12 @@ testCase('recent rows: logs_available=false renders NO link, true renders one',
     }));
     const rows = page.document.querySelectorAll('#lp-recent tbody tr');
     check(rows.length === 2, `two recent rows render (got ${rows.length})`);
-    check(!rows[0].innerHTML.includes('<a'),
-      `logs_available:false row has no link (got: ${rows[0].innerHTML})`);
-    check(rows[1].innerHTML.includes('<a'),
-      `logs_available:true row has a link (got: ${rows[1].innerHTML})`);
+    // Task 3 (tabbed-ui): the drill-down is a whole-row `data-lp-request-id`
+    // attribute, not a per-cell `<a>` — see index.html's lpRecentRowHtml.
+    check(!rows[0].hasAttribute('data-lp-request-id'),
+      `logs_available:false row offers no drill-down (got: ${rows[0].innerHTML})`);
+    check(rows[1].getAttribute('data-lp-request-id') === 'r-haslog',
+      `logs_available:true row carries the drill-down (got: ${rows[1].innerHTML})`);
   });
 });
 
@@ -901,11 +903,14 @@ testCase('gate-3a: a settled receipt stays visible after the Ready row '
 testCase('gate-3b: an active row with a request_id links to the run view',
   async () => {
   await withPage(async page => {
-    const activeHtml = htmlOf(page, '#lp-active');
-    check(activeHtml.includes('lp-open-run'),
-      `active rows with a request_id carry the run-view opener (got: ${activeHtml})`);
-    check(!/lp-open-run[^>]*>[^<]*01UNLINKED/.test(activeHtml),
-      'an unlinked active row (request_id null) carries NO opener');
+    // Task 3 (tabbed-ui): the drill-down is a whole-row `data-lp-request-id`
+    // attribute, not a per-cell `<a class="lp-open-run">` — see index.html's
+    // lpActiveRowHtml.
+    check(!!page.document.querySelector('#lp-active [data-lp-request-id="rq-act1"]'),
+      'active rows with a request_id carry the run-view opener');
+    const linked = page.document.querySelectorAll('#lp-active [data-lp-request-id]');
+    check(linked.length === 1,
+      `only the linked row carries the drill-down attribute (got ${linked.length})`);
   }, () => ok(snapshot({active: [
     {request_id: 'rq-act1', repo_key: 'github.com/o/r', work_id: 'w1',
      state: 'materialized', run_id: '01LINKED', run_status: 'RUNNING',

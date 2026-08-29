@@ -119,6 +119,27 @@ function snapshot(overrides = {}) {
   };
 }
 
+/** Boot option that overrides `/api/launchpad` with `snapshot(overrides)` —
+ * a `withPage(fn, snapshotRoute({active: [...]}))` shorthand for cases that
+ * only care about one or two LaunchpadSnapshot arrays. */
+function snapshotRoute(overrides = {}) {
+  return {routes: [[u => u === '/api/launchpad', () => ok(snapshot(overrides))]]};
+}
+
+// Task 3 (tabbed-ui): an ActiveRow (dispatcher/core/launchpad.py) linked to a
+// real request — the drill-down case — versus an unlinked maestro run (bare
+// run_id, request_id: null) that offers none.
+const ACTIVE_LINKED = {
+  request_id: 'rc-active-1', repo_key: 'github.com/andrei-shtanakov/deployer',
+  work_id: 'wi-1', state: 'materialized', run_id: '01AAA',
+  run_status: 'running', attention: false, updated_at: '2026-08-29T00:00:00Z',
+};
+const ACTIVE_UNLINKED = {
+  request_id: null, repo_key: 'github.com/andrei-shtanakov/deployer',
+  work_id: null, state: 'unlinked-run', run_id: '01BBB',
+  run_status: 'running', attention: false, updated_at: '2026-08-29T00:00:00Z',
+};
+
 // refresh() (index.html) fans out to these endpoints on load, same set as
 // launchpad_harness.js's defaultRoutes — every whole-script harness needs all
 // of them fixture'd or the unrelated dashboard code throws during boot.
@@ -146,6 +167,11 @@ function defaultRoutes() {
     [u => u.startsWith('/api/actions/session'), () => ok({token: 'test-token'})],
     [u => u === '/api/runs/submit', () => ok({
       request_id: 'fixture-request-id', run_id: null, accepted: true, reason: null,
+    })],
+    // GET /api/runs/{request_id} (openRunView/rcPollView) — Task 3's
+    // drill-down cases hit this for whatever id the row/hash names.
+    [u => u.startsWith('/api/runs/') && u !== '/api/runs/submit', () => ok({
+      record: {state: 'materialized', run_id: '01AAA'}, run: null, warnings: [],
     })],
     [u => u === '/api/launchpad', () => ok(snapshot())],
   ];
@@ -215,6 +241,8 @@ function el(page, selector) {
   if (!node) throw new Error(`${selector} is not in the page markup`);
   return node;
 }
+function maybeEl(page, selector) { return page.document.querySelector(selector); }
+function htmlOf(page, selector) { return el(page, selector).innerHTML; }
 
 // ---- case runner -----------------------------------------------------------
 
@@ -316,6 +344,46 @@ testCase('the unresolved-requests band lives outside every panel', async () => {
         `#ta-outcomes must not sit inside screen-${id}`);
     }
   });
+});
+
+// ---- Task 3: Launchpad as the main screen, run view as drill-down ---------
+
+testCase('the manual form sits collapsed inside the Launchpad screen', async () => {
+  await withPage(page => {
+    const rc = el(page, '#run-console');
+    check(!!rc.closest('#screen-launchpad'),
+      'run console must live inside the launchpad panel');
+    const details = rc.querySelector('details');
+    check(!!details, 'the manual form must be collapsed (a <details>)');
+    check(!!details && !!details.querySelector('#rc-repo-key'),
+      'the repo_key input must sit inside the collapsed block');
+  });
+});
+
+testCase('clicking an active run opens the run view and sets the hash', async () => {
+  await withPage(async page => {
+    const row = el(page, '#lp-active [data-lp-request-id="rc-active-1"]');
+    await Promise.all(dispatch(row, 'click'));
+    await drain();
+    check(page.ctx.location.hash === '#launchpad/rc-active-1',
+      `hash is the drill-down, got ${page.ctx.location.hash}`);
+    check(page.calls.some(c => c.url === '/api/runs/rc-active-1'),
+      'the run view fetched the run');
+  }, snapshotRoute({active: [ACTIVE_LINKED]}));
+});
+
+testCase('an unlinked active run offers no drill-down', async () => {
+  await withPage(page => {
+    check(!maybeEl(page, '#lp-active [data-lp-request-id]'),
+      'an unlinked row must not be clickable into a run view');
+  }, snapshotRoute({active: [ACTIVE_UNLINKED]}));
+});
+
+testCase('a direct drill-down hash opens the run view on load', async () => {
+  await withPage(page => {
+    check(page.calls.some(c => c.url === '/api/runs/rc-deep'),
+      'the drill-down hash fetched the run on boot');
+  }, {hash: '#launchpad/rc-deep'});
 });
 
 // ---- main -------------------------------------------------------------------

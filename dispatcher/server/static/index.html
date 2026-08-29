@@ -57,6 +57,9 @@
     box-sizing: border-box; }
   .lp-ready-detail td { white-space: normal; }
   .lp-pending-list { margin: 0; padding-left: 18px; }
+  /* Task 3 (tabbed-ui): whole-row drill-down (data-lp-request-id) — the
+     row itself is the click target, not a nested <a>. */
+  tr.lp-run-row { cursor: pointer; }
   #ta-prose { margin: 10px 0; font: inherit; padding: 8px 10px;
     background: var(--card); color: var(--ink);
     border: 1px solid var(--line); border-radius: 8px; resize: vertical; }
@@ -193,34 +196,40 @@
   <div id="lp-active"></div>
   <h3>Recent completed</h3>
   <div id="lp-recent"></div>
+
+  <!-- Task 3 (tabbed-ui): the manual/advanced form is a servicing input, not
+       the operator's first stop — collapsed by default. request_id is
+       optional at submit (pin a known id for diagnostics) and doubles as
+       the "Open run" field below. The operator names WHAT to run (repo_key,
+       work_id); dispatcher recovers everything launch-time from canon
+       (spec §4.2) — snapshot_id/seen_revision are attached SILENTLY from
+       this panel's own snapshot once repo_key is recognized. `#rc-run-view`
+       sits OUTSIDE the collapsed form: a drill-down opened from a row below
+       (Active/Recent completed) or from a `#launchpad/<request_id>` hash
+       must be visible without also expanding "Manual (advanced)". -->
+  <section id="run-console">
+    <details><summary><h3>Manual (advanced)</h3></summary>
+      <label for="rc-repo-key">repo_key</label>
+      <input id="rc-repo-key" type="text" spellcheck="false">
+      <label for="rc-work-id">work_id</label>
+      <input id="rc-work-id" type="text" spellcheck="false">
+      <div id="rc-actions">
+        <button id="rc-submit" type="button">Submit run</button>
+      </div>
+      <div id="rc-receipt"></div>
+      <div id="rc-view-open">
+        <label for="rc-request-id">request_id (optional at submit; required to open a run)</label>
+        <input id="rc-request-id" type="text" spellcheck="false">
+        <button id="rc-open" type="button">Open run</button>
+      </div>
+    </details>
+    <div id="rc-run-view"></div>
+  </section>
+
   <details id="lp-diagnostics"><summary><h3>Diagnostics</h3></summary>
     <div id="lp-diagnostics-body"></div>
   </details>
 </section>
-
-<!-- Task 7 (spec §9 "Manual (advanced)"): the operator names WHAT to run
-     (repo_key, work_id) and dispatcher recovers everything launch-time from
-     canon (spec §4.2) — the legacy revision/tasks/spec_ref/plan_ref inputs
-     are gone. snapshot_id/seen_revision are attached SILENTLY from the
-     launchpad panel's own snapshot once repo_key is recognized; typing them
-     by hand would recreate the old API-console. request_id is optional
-     here for diagnostics (pin a known id) and doubles as the "Open run"
-     field below. -->
-<section id="run-console"><h2>Run console</h2>
-  <label for="rc-repo-key">repo_key</label>
-  <input id="rc-repo-key" type="text" spellcheck="false">
-  <label for="rc-work-id">work_id</label>
-  <input id="rc-work-id" type="text" spellcheck="false">
-  <div id="rc-actions">
-    <button id="rc-submit" type="button">Submit run</button>
-  </div>
-  <div id="rc-receipt"></div>
-  <div id="rc-view-open">
-    <label for="rc-request-id">request_id (optional at submit; required to open a run)</label>
-    <input id="rc-request-id" type="text" spellcheck="false">
-    <button id="rc-open" type="button">Open run</button>
-  </div>
-  <div id="rc-run-view"></div></section>
 </div>
 
 <div id="screen-sync" class="screen" role="tabpanel" aria-labelledby="tab-sync" hidden>
@@ -404,6 +413,15 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const get = async p => (await fetch(p)).json();
 
+// Run-view state (openRunView/rcPollView, below), hoisted ahead of the
+// routing section: applyRoute() runs synchronously at the bottom of this
+// block and, on a `#launchpad/<request_id>` boot hash, onScreenShown calls
+// openRunView() before the script would otherwise reach its own section —
+// a `let` declared there is still in the temporal dead zone at that point.
+let rcViewTimer = null;
+let rcViewRequestId = null;
+let rcLogsGen = 0;
+
 // ---- screens and routing --------------------------------------------------
 //
 // The hash is the ONLY writer of the current screen: a tab click assigns
@@ -468,8 +486,11 @@ function applyRoute() {
   onScreenShown(route);
 }
 
-/** Extended by Task 5 (loaders) and Task 3 (drill-down). */
-function onScreenShown(_route) {}
+/** Extended by Task 5 (loaders) and Task 3 (drill-down). ACCRETES: each
+ * task adds its own branch here, never replaces the function outright. */
+function onScreenShown(r) {
+  if (r.screen === "launchpad" && r.sub) openRunView(r.sub);
+}
 
 function activeScreen() { return route.screen; }
 
@@ -1612,8 +1633,8 @@ function renderRunView(view) {
     + `<div id="rc-logs"></div>`;
 }
 
-let rcViewTimer = null;
-let rcViewRequestId = null;
+// rcViewTimer/rcViewRequestId are declared near the top of this script
+// (with rcLogsGen below) — see the comment there for why.
 
 async function rcPollView() {
   const requestId = rcViewRequestId;
@@ -1736,7 +1757,7 @@ async function rcPollView() {
 // because a half-written last line is ordinary while a run is live and
 // hiding it would make this pane disagree with the file it claims to show.
 //: Monotonic per-click generation for the logs panel — see `settle`.
-let rcLogsGen = 0;
+// (rcLogsGen itself is declared near the top of this script.)
 
 function renderRunLogs(logs) {
   const rows = logs.events.map(e => e.event
@@ -4190,17 +4211,20 @@ function lpRenderPending(readyRows) {
 }
 
 function lpActiveRowHtml(row) {
-  // A linked row (request_id present) opens the run view — the same typed
-  // split as repo blockers: unlinked runs render text only (spec §2/§12.4).
-  const runCell = row.request_id
-    ? `<a href="#run-console" class="lp-open-run"
-         data-request-id="${esc(row.request_id)}">${esc(row.run_id ?? row.request_id)}</a>`
-    : esc(row.run_id ?? "—");
-  return `<tr class="${row.attention ? "warn" : ""}">
+  // A linked row (request_id present) opens the run view (Task 3's
+  // `data-lp-request-id` drill-down) — the same typed split as repo
+  // blockers: unlinked runs (bare run_id, no request_id) render text only,
+  // no drill-down, since GET /api/runs/{request_id} has no key for them
+  // (spec §2/§12.4).
+  const classes = [row.attention ? "warn" : "", row.request_id ? "lp-run-row" : ""]
+    .filter(Boolean).join(" ");
+  const attrs = (classes ? ` class="${classes}"` : "")
+    + (row.request_id ? ` data-lp-request-id="${esc(row.request_id)}"` : "");
+  return `<tr${attrs}>
     <td>${esc(row.repo_key)}</td>
     <td>${esc(row.work_id ?? "—")}</td>
     <td>${esc(row.state)}</td>
-    <td>${runCell}</td>
+    <td>${esc(row.run_id ?? row.request_id ?? "—")}</td>
     <td>${esc(row.run_status ?? "—")}</td>
     <td>${esc(row.updated_at || "—")}</td></tr>`;
 }
@@ -4220,11 +4244,12 @@ function lpRecentRowHtml(row) {
   const label = `${esc(row.work_id)} · ${esc(row.outcome)}`;
   // #191's lesson: a bare run_id is not enough to promise a link —
   // `logs_available` is computed server-side from the log directory's
-  // real presence.
-  const cell = row.logs_available
-    ? `<a href="#" class="lp-open-run" data-request-id="${esc(row.request_id)}">${label}</a>`
-    : `<span>${label}</span>`;
-  return `<tr><td>${esc(row.repo_key)}</td><td>${cell}</td>
+  // real presence. `request_id` is required on CompletedRow, so the only
+  // gate here is `logs_available` (Task 3's `data-lp-request-id`
+  // drill-down, same as Active).
+  const attrs = row.logs_available
+    ? ` class="lp-run-row" data-lp-request-id="${esc(row.request_id)}"` : "";
+  return `<tr${attrs}><td>${esc(row.repo_key)}</td><td>${label}</td>
     <td>${row.revision ? esc(row.revision.slice(0, 7)) : "—"}</td>
     <td>${esc(row.updated_at || "—")}</td></tr>`;
 }
@@ -4611,6 +4636,24 @@ document.getElementById("launchpad").addEventListener("click", async e => {
   const rowTr = e.target.closest("tr.lp-ready-row");
   if (rowTr) { lpToggleRow(rowTr.dataset.rowKey); return; }
 });
+
+// Task 3 (tabbed-ui) drill-down: an Active/Recent-completed row carrying
+// `data-lp-request-id` (lpActiveRowHtml/lpRecentRowHtml) opens the run view
+// IN PLACE and records it in the hash. A SEPARATE listener from the one
+// above — not a branch inside it — since neither row is a `.lp-open-run`
+// anchor: no `e.preventDefault()` is needed, and no double-open results.
+document.getElementById("launchpad").addEventListener("click", e => {
+  const row = e.target.closest("[data-lp-request-id]");
+  if (!row) return;
+  lpOpenRun(row.dataset.lpRequestId);
+});
+
+/** Opens the run view in place and records it in the hash. */
+function lpOpenRun(requestId) {
+  if (!requestId) return;
+  navigate("launchpad", requestId);
+  openRunView(requestId);      // the SAME entry point #rc-open already uses
+}
 
 // Delegated `input` handler: keeps `lpState.escapes` in sync as the
 // operator types, so a wholesale #lp-repos rerender landing mid-fill (the
