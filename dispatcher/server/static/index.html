@@ -58,8 +58,9 @@
   .lp-ready-detail td { white-space: normal; }
   .lp-pending-list { margin: 0; padding-left: 18px; }
   /* Task 3 (tabbed-ui): whole-row drill-down (data-lp-request-id) — the
-     row itself is the click target, not a nested <a>. */
-  tr.lp-run-row { cursor: pointer; }
+     row itself is the click target, not a nested <a>. Used on both <tr>
+     (Active/Recent) and <li> (Pending). */
+  .lp-run-row { cursor: pointer; }
   #ta-prose { margin: 10px 0; font: inherit; padding: 8px 10px;
     background: var(--card); color: var(--ink);
     border: 1px solid var(--line); border-radius: 8px; resize: vertical; }
@@ -4183,13 +4184,21 @@ function lpRenderReady(rows) {
 // function of its argument, same as `lpRenderReady`.
 function lpPendingItemHtml(rowKey, entry) {
   const label = `${esc(entry.repoKey)}: ${esc(entry.workId)}`;
+  // Task 3 (tabbed-ui) drill-down, spec §5.3: a pending entry with a real
+  // request_id (submitting/unknown — an "open" confirm's requestId is still
+  // null) opens the run view same as Active/Recent. The nested Confirm/
+  // Retry/Cancel/Check-status buttons stay reachable: the delegated click
+  // handler below skips any click that landed on an interactive control
+  // before it looks for this attribute.
+  const attrs = entry.requestId
+    ? ` class="lp-run-row" data-lp-request-id="${esc(entry.requestId)}"` : "";
   if (entry.status === "unknown") {
-    return `<li>${label} — ${lpUnknownFragment(rowKey, entry)}</li>`;
+    return `<li${attrs}>${label} — ${lpUnknownFragment(rowKey, entry)}</li>`;
   }
   if (entry.status === "open") {
-    return `<li>${label} — ${lpOpenConfirmFragment(rowKey, entry)}</li>`;
+    return `<li${attrs}>${label} — ${lpOpenConfirmFragment(rowKey, entry)}</li>`;
   }
-  return `<li>${label} — ${esc(entry.status)}</li>`;
+  return `<li${attrs}>${label} — ${esc(entry.status)}</li>`;
 }
 
 function lpRenderPending(readyRows) {
@@ -4637,12 +4646,17 @@ document.getElementById("launchpad").addEventListener("click", async e => {
   if (rowTr) { lpToggleRow(rowTr.dataset.rowKey); return; }
 });
 
-// Task 3 (tabbed-ui) drill-down: an Active/Recent-completed row carrying
-// `data-lp-request-id` (lpActiveRowHtml/lpRecentRowHtml) opens the run view
-// IN PLACE and records it in the hash. A SEPARATE listener from the one
-// above — not a branch inside it — since neither row is a `.lp-open-run`
-// anchor: no `e.preventDefault()` is needed, and no double-open results.
+// Task 3 (tabbed-ui) drill-down: an Active/Recent-completed/Pending row
+// carrying `data-lp-request-id` (lpActiveRowHtml/lpRecentRowHtml/
+// lpPendingItemHtml) opens the run view IN PLACE and records it in the
+// hash. A SEPARATE listener from the one above — not a branch inside it —
+// since neither row is a `.lp-open-run` anchor: no `e.preventDefault()` is
+// needed, and no double-open results. A Pending row nests its OWN
+// interactive controls (Confirm/Retry/Cancel/Check-status) — a click on any
+// of those must reach ONLY the listener above, so this one bails out before
+// even looking for the attribute whenever the click landed on a control.
 document.getElementById("launchpad").addEventListener("click", e => {
+  if (e.target.closest("button, input, select, textarea, a")) return;
   const row = e.target.closest("[data-lp-request-id]");
   if (!row) return;
   lpOpenRun(row.dataset.lpRequestId);

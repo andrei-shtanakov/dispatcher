@@ -168,7 +168,13 @@ class El {
     this.listeners[type] = (this.listeners[type] || []).filter(f => f !== fn);
   }
 
-  matches(selector) { return matchesCompound(this, selector.trim()); }
+  // A comma-separated selector LIST (`"button, input, a"`) matches if ANY
+  // branch does — the same semantics as the real `Element.matches()`, and
+  // needed for a delegated handler's own "did this click land on ANY
+  // interactive control" guard (index.html's launchpad click handlers).
+  matches(selector) {
+    return selector.split(',').some(part => matchesCompound(this, part.trim()));
+  }
   closest(selector) {
     for (let n = this; n; n = n.parentNode) if (n.matches(selector)) return n;
     return null;

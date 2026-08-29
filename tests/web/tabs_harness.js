@@ -243,6 +243,10 @@ function el(page, selector) {
 }
 function maybeEl(page, selector) { return page.document.querySelector(selector); }
 function htmlOf(page, selector) { return el(page, selector).innerHTML; }
+async function click(page, selector) {
+  await Promise.all(dispatch(el(page, selector), 'click'));
+  await drain();
+}
 
 // ---- case runner -----------------------------------------------------------
 
@@ -384,6 +388,84 @@ testCase('a direct drill-down hash opens the run view on load', async () => {
     check(page.calls.some(c => c.url === '/api/runs/rc-deep'),
       'the drill-down hash fetched the run on boot');
   }, {hash: '#launchpad/rc-deep'});
+});
+
+// ---- Task 3 ruling: #lp-pending gets drill-down too (spec §5.3), guarded --
+//
+// A pending row's own request_id only becomes known once a launch attempt
+// is actually sent (Confirm) — an "open", never-submitted confirmation
+// carries requestId: null. All three cases here drive the REAL flow
+// (toggle a Ready row open, click Confirm, force the post-action refetch
+// that drops the row out of ready[] so it renders as a #lp-pending orphan)
+// rather than reaching into lpState by hand.
+const PENDING_READY_ROW = {
+  repo_key: 'github.com/o/r', work_id: 'w1', dag_path: 'dag.yaml',
+  seen_revision: 'a'.repeat(40),
+};
+/** Boot route: Ready on the FIRST /api/launchpad fetch, gone on every one
+ * after — the shape every orphaned-pending case here needs. */
+function pendingOrphanRoutes() {
+  let servedFirst = false;
+  return {routes: [[u => u === '/api/launchpad', () => {
+    if (!servedFirst) { servedFirst = true; return ok(snapshot({ready: [PENDING_READY_ROW]})); }
+    return ok(snapshot());
+  }]]};
+}
+/** Confirms the Ready row with a submit that never reaches the server —
+ * lpConfirmLaunch's catch path — then forces the refetch that drops the row
+ * out of ready[], landing the resulting "unknown" entry in #lp-pending. */
+async function openUnknownPendingRow(page) {
+  overrideRoute(page, '/api/runs/submit', () => {
+    throw new Error('simulated transport failure');
+  });
+  await click(page, '#lp-ready tr.lp-ready-row');
+  await click(page, '#lp-ready .lp-confirm');
+  page.ctx.lpRefetchAfterAction();
+  await drain();
+}
+
+testCase('clicking a pending row with a request_id opens the run view and sets the hash',
+  async () => {
+  await withPage(async page => {
+    await openUnknownPendingRow(page);
+    const row = maybeEl(page, '#lp-pending [data-lp-request-id]');
+    check(!!row, 'the unknown pending entry carries the drill-down attribute');
+    if (!row) return;
+    const requestId = row.dataset.lpRequestId;
+    await click(page, `#lp-pending [data-lp-request-id="${requestId}"]`);
+    check(page.ctx.location.hash === `#launchpad/${requestId}`,
+      `hash is the drill-down, got ${page.ctx.location.hash}`);
+    check(page.calls.some(c => c.url === `/api/runs/${requestId}`),
+      'the run view fetched the run');
+  }, pendingOrphanRoutes());
+});
+
+testCase('clicking a button inside a pending row does not navigate — its own '
+  + 'action still fires', async () => {
+  await withPage(async page => {
+    await openUnknownPendingRow(page);
+    const before = page.ctx.location.hash;
+    const submitsBefore = page.calls.filter(c => c.url === '/api/runs/submit').length;
+    await click(page, '#lp-pending .lp-retry');
+    check(page.ctx.location.hash === before,
+      `a click on Retry must not navigate, got ${page.ctx.location.hash}`);
+    check(page.calls.filter(c => c.url === '/api/runs/submit').length > submitsBefore,
+      "Retry's own action (re-submit) still fired");
+  }, pendingOrphanRoutes());
+});
+
+testCase('an orphaned pending entry with no request_id yet offers no drill-down',
+  async () => {
+  await withPage(async page => {
+    await click(page, '#lp-ready tr.lp-ready-row');   // "open" confirm: requestId null
+    page.ctx.lpRefetchAfterAction();
+    await drain();
+    const pendingHtml = htmlOf(page, '#lp-pending');
+    check(pendingHtml.includes('github.com/o/r'),
+      `the open confirmation survives as a #lp-pending orphan (got: ${pendingHtml})`);
+    check(!maybeEl(page, '#lp-pending [data-lp-request-id]'),
+      'an open confirm with no request_id yet offers no drill-down');
+  }, pendingOrphanRoutes());
 });
 
 // ---- main -------------------------------------------------------------------
