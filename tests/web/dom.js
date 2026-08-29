@@ -423,7 +423,7 @@ class Document {
  * container expects. Returns the listeners' return values so the caller can
  * await async handlers instead of racing them.
  */
-function dispatch(el, type, {force = false} = {}) {
+function dispatch(el, type, {force = false, init = null} = {}) {
   // A real person can only act on a control that is BOTH visible and
   // enabled. `force` is the structural escape hatch: it exists so a test can
   // drive defence-in-depth code that the UI cannot reach, and every use of it
@@ -432,6 +432,7 @@ function dispatch(el, type, {force = false} = {}) {
   const event = {
     type, target: el, currentTarget: null,
     preventDefault() {}, stopPropagation() {},
+    ...(init || {}),
   };
   const results = [];
   for (let n = el; n; n = n.parentNode) {
@@ -443,4 +444,79 @@ function dispatch(el, type, {force = false} = {}) {
   return results;
 }
 
-module.exports = {Document, El, TextNode, dispatch, parseFragment};
+// ---- browser: location, history, hashchange -------------------------------
+//
+// The page routes screens through the hash and writes it exactly one way
+// (`location.hash = …`), so the model has to get three browser behaviours
+// right: assignment fires `hashchange`, a same-value assignment does not, and
+// pushState/replaceState move the hash silently while back()/forward() fire.
+
+/** A minimal same-document history + location pair. */
+function makeBrowser(initialHash = '') {
+  const listeners = Object.create(null);
+  const normalise = v => {
+    const s = String(v == null ? '' : v);
+    if (s === '') return '';
+    return s.startsWith('#') ? s : `#${s}`;
+  };
+  // History entries the page created, plus the one it started on.
+  const entries = [normalise(initialHash)];
+  let index = 0;
+  const fire = () => {
+    for (const fn of (listeners.hashchange || []).slice()) {
+      fn({type: 'hashchange'});
+    }
+  };
+  const window = {
+    open() {},
+    addEventListener(type, fn) {
+      (listeners[type] = listeners[type] || []).push(fn);
+    },
+    removeEventListener(type, fn) {
+      listeners[type] = (listeners[type] || []).filter(f => f !== fn);
+    },
+  };
+  const location = {
+    get hash() { return entries[index]; },
+    set hash(value) {
+      const next = normalise(value);
+      if (next === entries[index]) return;   // browsers stay silent here
+      entries.splice(index + 1);             // a new entry truncates forward
+      entries.push(next);
+      index = entries.length - 1;
+      fire();
+    },
+  };
+  const move = delta => {
+    const next = index + delta;
+    if (next < 0 || next >= entries.length) return;
+    index = next;
+    fire();
+  };
+  const history = {
+    // Same-document pushState/replaceState do NOT fire hashchange.
+    pushState(_state, _title, url) {
+      entries.splice(index + 1);
+      entries.push(normalise(hashOfUrl(url, entries[index])));
+      index = entries.length - 1;
+    },
+    replaceState(_state, _title, url) {
+      entries[index] = normalise(hashOfUrl(url, entries[index]));
+    },
+    back() { move(-1); },
+    forward() { move(1); },
+  };
+  window.location = location;
+  window.history = history;
+  return {window, location, history, setHash: v => { location.hash = v; }};
+}
+
+/** `url` is whatever the page passed to pushState: '#x', '/p#x' or null. */
+function hashOfUrl(url, fallback) {
+  if (url == null) return fallback;
+  const s = String(url);
+  const at = s.indexOf('#');
+  return at === -1 ? '' : s.slice(at);
+}
+
+module.exports = {Document, El, TextNode, dispatch, parseFragment, makeBrowser};
