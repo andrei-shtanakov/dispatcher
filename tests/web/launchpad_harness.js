@@ -1149,6 +1149,147 @@ testCase('a visible Launchpad poll writes #updated', async () => {
   });
 });
 
+// ---- terminal review PR #220: a failed refresh must SAY so ------------------
+//
+// Spec §340: every screen catches and SHOWS its own error. Launchpad caught
+// and showed nothing (`lpRenderFetchError` was a bare console.error), so a
+// visible panel whose refresh failed kept the previous rows under an
+// unchanged "updated <time>". The three cases below pin the whole shape:
+// visible failure speaks (in the panel AND in `#updated`), hidden failure
+// stays out of `#updated`, and a later success takes both marks off again.
+
+/** Makes the NEXT `/api/launchpad` fetch fail at the transport, the same
+ * shape `failTheSubmitTransport` uses for the submit endpoint. */
+function failTheSnapshotTransport(page, message = 'connection reset') {
+  overrideRoute(page, '/api/launchpad', () => Promise.reject(new Error(message)));
+}
+
+const unreadPanel = page => el(page, '#lp-fetch-error');
+
+testCase('a visible Launchpad SHOWS a failed refresh and stops claiming '
+  + 'freshness', async () => {
+  await withPage(async page => {
+    check(unreadPanel(page).hidden === true, 'sanity: nothing wrong before the failure');
+    check(htmlOf(page, '#lp-ready').includes('some-work-item'),
+      `sanity: the boot snapshot painted rows (got: ${htmlOf(page, '#lp-ready')})`);
+
+    failTheSnapshotTransport(page);
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+
+    check(unreadPanel(page).hidden === false,
+      'the panel surfaces the failed refresh instead of swallowing it');
+    check(unreadPanel(page).innerHTML.includes('не прочитано'),
+      `in the page's existing unread vocabulary (got: ${unreadPanel(page).innerHTML})`);
+    check(unreadPanel(page).className.split(/\s+/).includes('err'),
+      `carrying class err (got: ${unreadPanel(page).className})`);
+    check(unreadPanel(page).innerHTML.includes('connection reset'),
+      `naming the failure (got: ${unreadPanel(page).innerHTML})`);
+    check(el(page, '#lp-store-banner').hidden === true,
+      'a transport error does NOT get mirrored into the store banner, whose '
+      + 'contract is store_unreadable only');
+
+    check(htmlOf(page, '#updated') === 'не прочитано',
+      `#updated stops claiming freshness (got: ${htmlOf(page, '#updated')})`);
+    check(el(page, '#updated').className === 'err',
+      `marked with the same err class as every other failed load `
+      + `(got: ${el(page, '#updated').className})`);
+
+    check(htmlOf(page, '#lp-ready').includes('some-work-item'),
+      `the prior snapshot's rows stay on screen underneath `
+      + `(got: ${htmlOf(page, '#lp-ready')})`);
+  }, () => ok(readySnapshot()));
+});
+
+testCase('a HIDDEN Launchpad\'s failed background poll leaves #updated alone',
+  async () => {
+  await withPage(async page => {
+    // Same construction as the hidden-success case above: an unresolved
+    // attempt is what keeps a hidden panel polling at all (spec §9.1).
+    failTheSubmitTransport(page);
+    await openReadyRowAndConfirm(page, 'deployer');
+    await openScreen(page, 'sync');
+    // SENTINELs, not a before/after timestamp comparison: toLocaleTimeString()
+    // has second resolution and this case runs in milliseconds, so comparing
+    // stamps would pass whether or not the gate held. Both halves of the
+    // field are sentinelled — the failure path writes text AND class.
+    el(page, '#updated').textContent = 'SENTINEL';
+    el(page, '#updated').className = 'SENTINEL-CLASS';
+
+    failTheSnapshotTransport(page);
+    const before = callsTo(page, '/api/launchpad');
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+
+    check(callsTo(page, '/api/launchpad') === before + 1,
+      `sanity: the hidden panel did poll, and it did fail `
+      + `(got ${callsTo(page, '/api/launchpad')} vs before ${before})`);
+    check(htmlOf(page, '#updated') === 'SENTINEL',
+      `a hidden panel's failure must not write #updated — it would be a claim `
+      + `about the screen the operator IS on (got: ${htmlOf(page, '#updated')})`);
+    check(el(page, '#updated').className === 'SENTINEL-CLASS',
+      `nor mark that screen's freshness red (got: ${el(page, '#updated').className})`);
+    // The panel's own element is NOT global: it belongs to the hidden screen
+    // and is what the operator should find waiting when they come back (a
+    // successful return-refetch clears it before they see it).
+    check(unreadPanel(page).hidden === false,
+      'the hidden panel still records its own failure, in its own element');
+  }, readyRowRoute());
+});
+
+testCase('a later successful snapshot clears BOTH marks', async () => {
+  await withPage(async page => {
+    failTheSnapshotTransport(page);
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+    check(unreadPanel(page).hidden === false && htmlOf(page, '#updated') === 'не прочитано',
+      `sanity: the failure is on screen before the recovery `
+      + `(panel hidden=${unreadPanel(page).hidden}, `
+      + `#updated=${htmlOf(page, '#updated')})`);
+
+    overrideRoute(page, '/api/launchpad', () => ok(readySnapshot()));
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+
+    check(unreadPanel(page).hidden === true,
+      'a marker that outlives the problem is the same bug mirrored');
+    check(unreadPanel(page).innerHTML === '',
+      `and its text goes with it (got: ${unreadPanel(page).innerHTML})`);
+    check(/^updated /.test(htmlOf(page, '#updated')),
+      `#updated is a timestamp again (got: ${htmlOf(page, '#updated')})`);
+    check(el(page, '#updated').className === '',
+      `with the err class taken back off (got: ${el(page, '#updated').className})`);
+  }, () => ok(readySnapshot()));
+});
+
+testCase('a SUPERSEDED failure never paints over a fresher success', async () => {
+  await withPage(async page => {
+    // The failure path is now visible, so supersession has to hold on it too:
+    // a slow first fetch that fails after a newer one already rendered must
+    // stay silent (the `seq === lpState.seq` guard at the catch).
+    const releases = [];
+    page.routes.unshift([u => u === '/api/launchpad', () => new Promise(
+      (resolve, reject) => { releases.push({resolve, reject}); })]);
+
+    page.timers.byPeriod(LP_REFRESH_MS).cb();   // fetch A: will fail, slowly
+    await drain();
+    page.ctx.lpRefetchAfterAction();            // fetch B: supersedes A
+    await drain();
+
+    releases[1].resolve(ok(readySnapshot()));
+    await drain();
+    check(unreadPanel(page).hidden === true, 'sanity: B applied cleanly');
+
+    releases[0].reject(new Error('late failure'));
+    await drain();
+    check(unreadPanel(page).hidden === true,
+      `a superseded failure must not paint an error over the fresher render `
+      + `(got: ${unreadPanel(page).innerHTML})`);
+    check(/^updated /.test(htmlOf(page, '#updated')),
+      `nor take the fresh timestamp away (got: ${htmlOf(page, '#updated')})`);
+  }, () => ok(readySnapshot()));
+});
+
 // ---- main -------------------------------------------------------------------
 
 (async () => {

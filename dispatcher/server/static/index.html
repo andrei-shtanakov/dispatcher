@@ -194,9 +194,15 @@
      existing #run-console below stays as drill-down + manual form,
      rewired in Task 7. `#lp-store-banner` mirrors `store_unreadable`
      ONLY (never a transport error — spec §9's transport-uncertainty
-     handling is Task 7's). -->
+     handling is Task 7's); `#lp-fetch-error` is that deliberate second
+     element: the SNAPSHOT read itself failed, so the rows below are the
+     previous snapshot's. Two elements because the distinction is real —
+     a store note means "the server read this snapshot and one source in
+     it was unreadable"; a fetch error means "there is no new snapshot at
+     all". -->
 <section id="launchpad"><h2>Launchpad</h2>
   <div id="lp-store-banner" class="warn" hidden></div>
+  <div id="lp-fetch-error" class="err" hidden></div>
   <h3>Repositories</h3>
   <div id="lp-repos"></div>
   <h3>Ready</h3>
@@ -4922,14 +4928,52 @@ function lpRerenderRepos() {
   lpRenderRepos(lpState.snapshot ? (lpState.snapshot.repositories || []) : []);
 }
 
-// A failed fetch here is deliberately quiet in Task 6: spec §9's
-// transport-uncertainty handling (retry with the same request_id,
-// read-back, blocking a fresh Launch) is per-ROW and belongs to Task 7's
-// launch flow, not to this whole-snapshot refresh. Logged, not surfaced,
-// so a stale prior render simply stays on screen until the next refresh
-// succeeds.
+// What to call the failure on screen. An HTTP error hands us the parsed
+// body (FastAPI's `{detail: …}`); a transport error hands us an Error. Both
+// are server/runtime text, so the caller escapes whatever comes back.
+function lpFetchErrorDetail(err) {
+  if (err && typeof err === "object") {
+    if (typeof err.detail === "string") return err.detail;
+    if (typeof err.message === "string") return err.message;
+  }
+  return "unavailable";
+}
+
+// Terminal review, PR #220: this used to be a bare console.error. Spec §340
+// — every screen catches and SHOWS its own error — was met everywhere else
+// on this branch through the shared loader machinery, which never covers
+// Launchpad (`LOADERS.launchpad` is null). So a visible panel whose 30s
+// refresh failed kept the previous snapshot's rows under an unchanged
+// "updated <time>": unread state wearing a freshness marker.
+//
+// Two things happen now, and only these two:
+//   - the panel says so, in the page's existing unread vocabulary
+//     ("не прочитано" + class `err`, as loadSync's topline and the waits
+//     panel say it), in its OWN element — not `#lp-store-banner`, whose
+//     contract is `store_unreadable` only.
+//   - `#updated` stops claiming freshness — but ONLY when Launchpad is the
+//     visible screen, the same gate lpApplySnapshot uses. A hidden panel's
+//     background poll (spec §9.1) that wrote there would make a false claim
+//     about whatever screen the operator IS looking at.
+// The prior rows stay on screen underneath: a failed refresh is not a
+// reason to blank a panel someone is reading. Row-level transport
+// uncertainty (retry with the same request_id, read-back) is still Task 7's
+// separate, per-row concern.
 function lpRenderFetchError(err) {
   console.error("launchpad snapshot fetch failed:", err);
+  const banner = document.getElementById("lp-fetch-error");
+  banner.hidden = false;
+  banner.innerHTML = `не прочитано: ${esc(lpFetchErrorDetail(err))}`;
+  if (activeScreen() === "launchpad") markUpdatedUnread();
+}
+
+// The mirror image of the bug: a marker that outlives the problem. Called
+// from lpApplySnapshot, so only a snapshot that actually APPLIED clears it
+// (a superseded response clears nothing).
+function lpClearFetchError() {
+  const banner = document.getElementById("lp-fetch-error");
+  banner.hidden = true;
+  banner.innerHTML = "";
 }
 
 // One fetch in flight is applied; a superseded one is discarded, never
@@ -4947,7 +4991,10 @@ function lpRenderFetchError(err) {
 function lpApplySnapshot(seq, snapshot) {
   if (seq !== lpState.seq) return;
   lpState.snapshot = snapshot;
+  lpClearFetchError();
   lpRender(snapshot);
+  // stampUpdated() also takes the `err` class back off `#updated`, so a
+  // visible success clears BOTH halves of a previous failure's marking.
   if (activeScreen() === "launchpad") stampUpdated();
 }
 
