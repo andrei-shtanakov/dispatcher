@@ -79,7 +79,7 @@ run view, опрашивается только активный экран.
 
 ---
 
-## Задача 1: `location`, `history` и `hashchange` в модели браузера
+## Task 1: `location`, `history` и `hashchange` в модели браузера
 
 **Files:**
 - Modify: `tests/web/dom.js`
@@ -360,7 +360,7 @@ git commit -m "test(web): модель браузера — location, history, h
 
 ---
 
-## Задача 2: tab shell — разметка, роутер, перенос секций, починка harness'ов
+## Task 2: tab shell — разметка, роутер, перенос секций, починка harness'ов
 
 **Files:**
 - Modify: `dispatcher/server/static/index.html`
@@ -738,7 +738,7 @@ git commit -m "feat(ui): верхние вкладки и hash-роутинг �
 
 ---
 
-## Задача 3: главный экран Launchpad — run view внутри панели и drill-down
+## Task 3: главный экран Launchpad — run view внутри панели и drill-down
 
 **Files:**
 - Modify: `dispatcher/server/static/index.html`
@@ -869,7 +869,7 @@ git commit -m "feat(ui): Launchpad — главный экран, run view ка�
 
 ---
 
-## Задача 4: `lpState` переживает переключение вкладки, разрешение — нет
+## Task 4: `lpState` переживает переключение вкладки, разрешение — нет
 
 **Files:**
 - Modify: `dispatcher/server/static/index.html`
@@ -995,7 +995,7 @@ git commit -m "fix(ui): возврат на Launchpad перепроверяет
 
 ---
 
-## Задача 5: развязка `refresh()` — загрузчики экранов и опрос активного
+## Task 5: развязка `refresh()` — загрузчики экранов и опрос активного
 
 **Files:**
 - Modify: `dispatcher/server/static/index.html:1921-2052` (тело `refresh()`),
@@ -1163,7 +1163,7 @@ git commit -m "perf(ui): опрашивается только активный 
 
 ---
 
-## Задача 6: Launchpad опрашивается в фоне, пока есть незакрытая попытка
+## Task 6: Launchpad опрашивается в фоне, пока есть незакрытая попытка
 
 **Files:**
 - Modify: `dispatcher/server/static/index.html`
@@ -1273,7 +1273,7 @@ git commit -m "feat(ui): скрытый Launchpad опрашивается, по
 
 ---
 
-## Задача 7: условная вкладка Benchmarks, документация, полный прогон
+## Task 7: условная вкладка Benchmarks, документация, полный прогон
 
 **Files:**
 - Modify: `dispatcher/server/static/index.html`
