@@ -575,6 +575,26 @@ function onScreenShown(r) {
     }
     if (r.sub) openRunView(r.sub);
   }
+  // Whole-branch review, ITEM 1: the drill-down had an open branch and no
+  // close one. Without this, leaving Launchpad left `rcViewTimer` armed —
+  // a second, unnamed exception to §9.1's active-only polling, and one
+  // with no stop condition while the run is live — and coming back to a
+  // bare `#launchpad` left `#rc-run-view` still rendering the request the
+  // hash no longer names, so Back out of `#launchpad/<id>` did not close
+  // the drill-down (acceptance criterion 3).
+  //
+  // NOT an early return and NOT an `else` on the branch above: this
+  // function accretes, and the loader dispatch below must still run.
+  //
+  // KNOWN AND ACCEPTED: `#rc-open` (the diagnostic field inside Manual
+  // (advanced)) and lpOpenRun's non-grammar fallback (for a request_id
+  // that cannot survive HASH_RE) both open a view WITHOUT writing the
+  // hash, so the next navigation closes them. That is correct, not a bug
+  // to rediscover: the hash is the only writer of the screen, and a view
+  // the address bar cannot name cannot be restored by it either.
+  if (r.screen !== "launchpad" || !r.sub) {
+    closeRunView();
+  }
   // Task 5: the screen in front of the operator is the only one loaded and
   // the only one polled. Skipped on the very first call for the same reason
   // the launchpad refetch above is: applyRoute() runs at the TOP of this
@@ -1999,6 +2019,27 @@ async function openRunView(requestId) {
   await rcPollView();
 }
 
+// The counterpart to openRunView, called by onScreenShown whenever the route
+// no longer names a drill-down (see the comment there). Everything
+// openRunView arms is disarmed here, in the same order it matters:
+//   - the 5s poll, which otherwise keeps issuing GET /api/runs/{id} from
+//     behind another screen for as long as the run is unsettled;
+//   - `rcViewRequestId`, so an in-flight answer for the closed request
+//     cannot repaint a box nobody is looking at (every await in this
+//     section re-checks it);
+//   - `rcLogsGen`, for the same reason on the logs/task-log fetches, which
+//     carry their own generation;
+//   - the box itself, so `#launchpad` and `#launchpad/<id>` never render
+//     the same thing.
+// `#rc-request-id` is deliberately LEFT alone: it is the Manual form's own
+// input, and blanking what an operator typed is not part of closing a view.
+function closeRunView() {
+  if (rcViewTimer !== null) { clearInterval(rcViewTimer); rcViewTimer = null; }
+  rcViewRequestId = null;
+  rcLogsGen++;
+  document.getElementById("rc-run-view").innerHTML = "";
+}
+
 document.getElementById("rc-open").addEventListener("click", async () => {
   const requestId = document.getElementById("rc-request-id").value.trim();
   if (!requestId) {
@@ -2446,9 +2487,18 @@ function stampUpdated() {
 // After the split, `#updated` is written by the ACTIVE screen's loader — not
 // by whichever endpoint happened to answer last.
 async function loadActiveScreen() {
-  const load = LOADERS[activeScreen()];
+  const screen = activeScreen();
+  const load = LOADERS[screen];
   if (!load) return;
   await load();
+  // Whole-branch review, ITEM 2: the screen id is captured BEFORE the await
+  // and re-checked after it. A slow loader that answers once the operator
+  // has already switched tabs would otherwise stamp "updated <now>" onto the
+  // screen they moved to, before that screen has painted anything — the same
+  // false-freshness the `activeScreen() === "launchpad"` gate in
+  // lpApplySnapshot already prevents, and what criterion 11 forbids. The
+  // screen that came second stamps for itself when its own load returns.
+  if (activeScreen() !== screen) return;
   stampUpdated();
 }
 

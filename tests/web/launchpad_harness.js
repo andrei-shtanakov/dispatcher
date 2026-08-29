@@ -896,6 +896,29 @@ testCase('behaviour 5: release-malformed — a structured error keeps the '
   }, () => ok(snapshot({repositories: [REPO_LOCK_MALFORMED]})));
 });
 
+// Whole-branch review, ITEM 3: spec §5.5 promises typed state survives a TAB
+// ROUND TRIP, not merely a re-render. Behaviour 5 above proves the re-render
+// half (an error keeps the form filled); this proves the other half, over the
+// real tabs. The mechanism is the delegated `input` handler mirroring into
+// `lpState.escapes`, re-emitted by lpEscapeFormHtml when the return-refetch
+// re-renders #lp-repos — already correct, unpinned until now.
+testCase('a typed escape reason survives a tab round trip (§5.5)', async () => {
+  await withPage(async page => {
+    await click(page, '#lp-repos a.lp-blocker-anchor');
+    await typeInto(page, '.lp-escape-form input[data-escape-field="reason"]',
+      'checked the lock by hand');
+
+    await openScreen(page, 'sync');
+    await openScreen(page, 'launchpad');
+
+    check(el(page, '.lp-escape-form input[data-escape-field="reason"]').value
+      === 'checked the lock by hand',
+      `the typed reason survived the round trip (got: `
+      + `"${(maybeEl(page, '.lp-escape-form input[data-escape-field="reason"]')
+        || {}).value}")`);
+  }, () => ok(snapshot({repositories: [REPO_LOCK_MALFORMED]})));
+});
+
 // Behaviour 6 (the manual/advanced form) lives in run_console_harness.js —
 // #run-console is that harness's page, not this one's.
 

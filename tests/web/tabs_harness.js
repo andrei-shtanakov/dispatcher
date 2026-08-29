@@ -440,6 +440,130 @@ testCase('a request_id that cannot survive the hash grammar opens directly, '
   }, snapshotRoute({active: [{...ACTIVE_LINKED, request_id: UNROUTABLE_ID}]}));
 });
 
+// ---- Whole-branch review, ITEM 1: the drill-down must also CLOSE ----------
+//
+// The open half was covered above; nothing covered the close, and nothing
+// closed it. Two things follow from a view that stays open after the route
+// stopped naming it: the 5s run poll keeps firing from behind another screen
+// (a second, unnamed exception to §9.1's active-only polling, and unlike the
+// real one it has no stop condition while the run is live), and `#launchpad`
+// renders whatever `#launchpad/<id>` last opened — so Back does not close the
+// drill-down (acceptance criterion 3).
+//
+// The default `/api/runs/` fixture is deliberately UNSETTLED
+// (`state: 'materialized'`, `run: null`), which is exactly what arms the 5s
+// timer — a settled fixture would make these cases pass for the wrong reason.
+
+const RC_POLL_MS = 5000;
+
+testCase('leaving Launchpad stops the run poll', async () => {
+  await withPage(async page => {
+    const armed = page.timers.byPeriod(RC_POLL_MS);
+    check(!!armed, 'precondition: an unsettled drill-down armed the 5s poll');
+
+    await openScreen(page, 'sync');
+
+    check(page.timers.byPeriod(RC_POLL_MS) === null,
+      'leaving the screen unregisters the run poll');
+    // Belt and braces: even if a tick were somehow still delivered, the
+    // closed view must have nothing left to fetch. Ticking the CAPTURED
+    // callback is what a still-registered timer would do.
+    const before = callsTo(page, '/api/runs/rc-active-1');
+    if (armed) armed.cb();
+    await drain();
+    check(callsTo(page, '/api/runs/rc-active-1') === before,
+      `a tick from another screen fetches nothing, went ${before} -> `
+      + `${callsTo(page, '/api/runs/rc-active-1')}`);
+  }, {hash: '#launchpad/rc-active-1'});
+});
+
+testCase('Back out of the drill-down closes it', async () => {
+  await withPage(async page => {
+    const row = el(page, '#lp-active [data-lp-request-id="rc-active-1"]');
+    await Promise.all(dispatch(row, 'click'));
+    await drain();
+    check(htmlOf(page, '#rc-run-view') !== '',
+      'precondition: the drill-down painted the run view');
+
+    page.ctx.history.back();
+    await drain();
+
+    check(page.ctx.location.hash === '#launchpad',
+      `Back landed on the bare screen, got ${page.ctx.location.hash}`);
+    check(htmlOf(page, '#rc-run-view') === '',
+      `#launchpad and #launchpad/<id> must not render alike, got `
+      + `${htmlOf(page, '#rc-run-view')}`);
+    check(page.timers.byPeriod(RC_POLL_MS) === null,
+      'and the run poll went with it');
+  }, {hash: '#launchpad', ...snapshotRoute({active: [ACTIVE_LINKED]})});
+});
+
+testCase('re-entering the drill-down re-opens it', async () => {
+  await withPage(async page => {
+    const row = el(page, '#lp-active [data-lp-request-id="rc-active-1"]');
+    await Promise.all(dispatch(row, 'click'));
+    await drain();
+    page.ctx.history.back();
+    await drain();
+    check(htmlOf(page, '#rc-run-view') === '', 'precondition: Back closed it');
+
+    page.ctx.history.forward();
+    await drain();
+
+    check(page.ctx.location.hash === '#launchpad/rc-active-1',
+      `Forward returned to the drill-down, got ${page.ctx.location.hash}`);
+    check(htmlOf(page, '#rc-run-view') !== '',
+      'the run view is painted again');
+    // Exact count: one fetch per open, and the close in between must not
+    // have left a poll running that adds one of its own.
+    check(callsTo(page, '/api/runs/rc-active-1') === 2,
+      `two opens, two fetches (got ${callsTo(page, '/api/runs/rc-active-1')})`);
+  }, {hash: '#launchpad', ...snapshotRoute({active: [ACTIVE_LINKED]})});
+});
+
+// ---- Whole-branch review, ITEM 2: `#updated` belongs to the ACTIVE screen -
+//
+// `loadActiveScreen` awaited a loader and stamped unconditionally, so a slow
+// screen's answer could stamp "updated <now>" onto the screen the operator
+// had already switched to, before that screen had painted anything.
+
+testCase('a slow loader does not stamp #updated onto the screen that '
+  + 'replaced it', async () => {
+  await withPage(async page => {
+    let releaseSync = null;
+    overrideRoute(page, '/api/sync', () => new Promise(resolve => {
+      releaseSync = () => resolve(ok({
+        fetch_in_flight: false,
+        report: {top_line: 'ok', top_reason: null, proposals: [], hosts: []},
+      }));
+    }));
+    // Sync's loader is now stuck mid-flight; openScreen would hang on it, so
+    // the switch is driven through the same real tab buttons by hand.
+    await Promise.all(dispatch(el(page, '#tab-sync'), 'click'));
+    await drain();
+    check(!!releaseSync, 'precondition: the sync read is in flight');
+
+    await Promise.all(dispatch(el(page, '#tab-epics'), 'click'));
+    await drain();
+    check(!el(page, '#screen-epics').hidden, 'precondition: epics is active');
+    check(/^updated /.test(el(page, '#updated').textContent),
+      `precondition: the ACTIVE screen did stamp, got `
+      + `"${el(page, '#updated').textContent}"`);
+    // A SENTINEL, not the epics stamp itself: both stamps are
+    // `toLocaleTimeString()` and would land in the same second, so comparing
+    // the two strings would pass whether or not the guard exists.
+    const SENTINEL = 'sentinel-not-a-stamp';
+    el(page, '#updated').textContent = SENTINEL;
+
+    if (releaseSync) releaseSync();
+    await drain();
+
+    check(el(page, '#updated').textContent === SENTINEL,
+      `the screen the operator left must not restamp #updated, got `
+      + `"${el(page, '#updated').textContent}"`);
+  });
+});
+
 // ---- Task 3 ruling: #lp-pending gets drill-down too (spec §5.3), guarded --
 //
 // A pending row's own request_id only becomes known once a launch attempt
