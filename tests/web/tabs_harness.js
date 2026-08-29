@@ -638,6 +638,42 @@ testCase('the roadmap screen still fills its Contract column', async () => {
   }, roadmapWithContractRoute);
 });
 
+/** A sync report with something to go stale: a verdict in the topline, a
+ * reason, an in-flight indicator, and a CLICKABLE proposal. */
+const syncWithProposalRoute = {routes: [
+  [u => u === '/api/sync', () => ok({
+    fetch_in_flight: true,
+    report: {top_line: 'sync-first', top_reason: 'behind origin',
+      proposals: ['newcomer'], hosts: []},
+  })],
+]};
+
+testCase('a failed sync read stops every node renderSync owns from asserting '
+  + 'the old state', async () => {
+  await withPage(async page => {
+    await openScreen(page, 'sync');
+    check(/sync-first/.test(el(page, '#sync-topline').textContent),
+      'precondition: the good read painted a verdict');
+    check(!!maybeEl(page, '#sync-proposals button[data-track]'),
+      'precondition: the good read painted a clickable proposal');
+    overrideRoute(page, '/api/sync', () => { throw new Error('transport down'); });
+    page.timers.byPeriod(10000).cb();
+    await drain();
+    // NFR-02: no node may keep claiming the previous read's answer, and a
+    // stale proposal is worse than a stale label — it can be ACTED on.
+    check(!/sync-first/.test(el(page, '#sync-topline').textContent),
+      `no stale verdict survives, got "${el(page, '#sync-topline').textContent}"`);
+    check(el(page, '#sync-reason').textContent === '',
+      `the stale reason is cleared, got "${el(page, '#sync-reason').textContent}"`);
+    check(el(page, '#sync-fetch').hidden === true,
+      'the stale in-flight indicator is cleared');
+    check(!maybeEl(page, '#sync-proposals button[data-track]'),
+      `no clickable stale proposal survives, got ${htmlOf(page, '#sync-proposals')}`);
+    check(/sync failed/.test(el(page, '#sync-hosts').textContent),
+      `the failure itself is named, got "${el(page, '#sync-hosts').textContent}"`);
+  }, syncWithProposalRoute);
+});
+
 testCase('a project card records the Errors filter without fetching the '
   + 'hidden Errors screen', async () => {
   await withPage(async page => {

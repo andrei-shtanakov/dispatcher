@@ -2165,6 +2165,18 @@ async function loadSync() {
   try {
     renderSync(await get("/api/sync"));
   } catch (err) {
+    // NFR-02: nothing renderSync owns may keep asserting after a failed
+    // read. Naming the failure only in #sync-hosts would leave the PREVIOUS
+    // verdict standing in the topline and the PREVIOUS proposals still
+    // rendered and still clickable — stale state presented as current, and
+    // in the proposals' case stale state an operator can act on. Same
+    // reasoning as the errors count: a leftover verdict is a claim.
+    const top = document.getElementById("sync-topline");
+    top.textContent = "не прочитано";
+    top.className = "badge err";
+    document.getElementById("sync-reason").textContent = "";
+    document.getElementById("sync-fetch").hidden = true;
+    document.getElementById("sync-proposals").innerHTML = "";
     document.getElementById("sync-hosts").textContent = "sync failed: " + err;
   }
 }
@@ -4126,8 +4138,8 @@ const LP_RUN_VANISHED = "run_vanished";
 const LP_LOCK_MALFORMED = "lock_malformed";
 
 // The panel's own refresh period (spec §9: "30 s auto-refresh") — distinct
-// from the pre-existing dashboard's `setInterval(refresh, 10000)` above;
-// the two timers are independent, each guarding only its own section.
+// from the dashboard's per-screen `setInterval(loadActiveScreen, 10000)`
+// above; the two timers are independent, each guarding only its own section.
 const LP_REFRESH_MS = 30000;
 
 // `inflight` is a COUNTER, not a boolean (round-5 review finding): an
