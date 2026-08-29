@@ -20,7 +20,11 @@
 //      not only by the page's own registry;
 //   6. design §3.3's single exception: the global `Unresolved task requests`
 //      band lives outside every panel, so the outcome of a sent mutation is
-//      not destroyed by switching tabs.
+//      not destroyed by switching tabs;
+//   7. Task 5's per-screen loaders: opening a screen fetches ONLY that
+//      screen's endpoints, the 10s timer refreshes only the active screen,
+//      a screen whose endpoint is broken does not blank its neighbour, and
+//      Roadmap still folds its `Contract` column out of /api/contracts.
 //
 // Usage: node tabs_harness.js <path-to-index.html>
 'use strict';
@@ -140,9 +144,10 @@ const ACTIVE_UNLINKED = {
   run_status: 'running', attention: false, updated_at: '2026-08-29T00:00:00Z',
 };
 
-// refresh() (index.html) fans out to these endpoints on load, same set as
-// launchpad_harness.js's defaultRoutes — every whole-script harness needs all
-// of them fixture'd or the unrelated dashboard code throws during boot.
+// The per-screen loaders (index.html's LOADERS) reach these endpoints, one
+// screen at a time, same set as launchpad_harness.js's defaultRoutes — every
+// whole-script harness needs all of them fixture'd, because any case here may
+// open any tab and a missing route is a rejected fetch, not a skipped one.
 function defaultRoutes() {
   return [
     [u => u.startsWith('/api/overview'), () => ok({projects: []})],
@@ -517,6 +522,137 @@ testCase('an orphaned pending entry with no request_id yet offers no drill-down'
     check(!maybeEl(page, '#lp-pending [data-lp-request-id]'),
       'an open confirm with no request_id yet offers no drill-down');
   }, pendingOrphanRoutes());
+});
+
+// ---- Task 5: per-screen loaders — only the active screen is fetched ------
+//
+// The trap these cases exist for: the Roadmap table's `Contract` column is
+// folded from /api/contracts (renderRoadmap's syncByName), NOT from
+// /api/roadmap. A split along endpoint lines instead of screen lines empties
+// that column with every other assertion still green.
+
+/** A contract row the Roadmap column can actually fold: renderRoadmap
+ * ignores every `kind` but `upstream_drift`. */
+const CONTRACT_IN_SYNC = {
+  name: 'gate-catalog', kind: 'upstream_drift',
+  canonical_path: '/canon/gate-catalog.toml',
+  vendored_path: '/vendor/gate-catalog.toml',
+  in_sync: true, detail: null,
+};
+const ROADMAP_ITEM = {
+  phase: 'M1', id: 'R-1', title: 'a roadmap item', owner_project: 'dispatcher',
+  computed_status: 'implemented', status_label: 'implemented',
+  implementation_is_attested_only: false, target_contract: 'gate-catalog',
+  blockers: [], evidence: [], last_seen: '2026-08-29',
+};
+
+/** Boot opts whose roadmap item names a contract only /api/contracts can
+ * resolve — matched EXACTLY (`u === '/api/roadmap'`) so the prepended route
+ * cannot also swallow `/api/roadmap/summary`. */
+const roadmapWithContractRoute = {routes: [
+  [u => u === '/api/roadmap', () => ok({roadmaps: ['r'], items: [ROADMAP_ITEM]})],
+  [u => u === '/api/contracts', () => ok([CONTRACT_IN_SYNC])],
+]};
+const contractsRoute = {routes: [
+  [u => u === '/api/contracts', () => ok([CONTRACT_IN_SYNC])],
+]};
+/** One detected project, plus a blanket 404 for every per-project endpoint
+ * detail() reaches for — this suite is about the Errors filter, not the
+ * detail panel, and an unrouted fetch would surface as a rejection. */
+const projectsRoute = {routes: [
+  [u => u.startsWith('/api/overview'), () => ok({projects: [{
+    name: 'widget', detected: true, path: '/repos/widget',
+    counts: {tasks: 0, models: 0, test_results: 0, errors: 0},
+    freshness: 'fresh', warnings: [],
+  }]})],
+  [u => u.startsWith('/api/projects/'), () => resp(404, {detail: 'none'})],
+]};
+
+const urlsSince = (page, before) => page.calls.slice(before).map(c => c.url);
+
+testCase('opening a screen fetches only its own endpoints', async () => {
+  await withPage(async page => {
+    const before = page.calls.length;
+    await openScreen(page, 'models');
+    const after = urlsSince(page, before);
+    // Exact count, not `.some()`: `.some()` has already let a double-fetch
+    // defect through this branch once, and the whole point of this task is
+    // what is NOT fetched.
+    check(after.length === 1 && after[0].startsWith('/api/models'),
+      `only /api/models is fetched for the models screen, saw ${after.join(',') || 'nothing'}`);
+  });
+});
+
+testCase('the periodic timer only refreshes the active screen', async () => {
+  await withPage(async page => {
+    await openScreen(page, 'contracts');
+    const before = page.calls.length;
+    const timer = page.timers.byPeriod(10000);
+    check(!!timer, 'a 10000ms screen timer is registered');
+    if (!timer) return;
+    timer.cb();
+    await drain();
+    const urls = urlsSince(page, before);
+    check(urls.length === 1 && urls[0].startsWith('/api/contracts'),
+      `only contracts refreshed, saw ${urls.join(',') || 'nothing'}`);
+  });
+});
+
+testCase('a Launchpad tick fetches nothing — that screen owns its own timer',
+  async () => {
+  await withPage(async page => {
+    const timer = page.timers.byPeriod(10000);
+    check(!!timer, 'the screen timer is registered on the launchpad boot too');
+    if (!timer) return;
+    const before = page.calls.length;
+    timer.cb();
+    await drain();
+    check(page.calls.length === before,
+      `LOADERS.launchpad is null, so the screen timer fetches nothing, saw ${urlsSince(page, before).join(',')}`);
+  });
+});
+
+testCase('a broken endpoint on one screen leaves its neighbour alone', async () => {
+  await withPage(async page => {
+    overrideRoute(page, '/api/models', () => resp(500, {}));
+    await openScreen(page, 'models');
+    await openScreen(page, 'contracts');
+    check(/in sync|drift|n\/a/.test(htmlOf(page, '#contracts')),
+      `contracts rendered despite the models failure, got ${htmlOf(page, '#contracts')}`);
+    check(/models unavailable/.test(htmlOf(page, '#models')),
+      `the models screen names its own failure, got ${htmlOf(page, '#models')}`);
+  }, contractsRoute);
+});
+
+testCase('the roadmap screen still fills its Contract column', async () => {
+  await withPage(async page => {
+    const before = page.calls.length;
+    await openScreen(page, 'roadmap');
+    const urls = urlsSince(page, before);
+    check(urls.filter(u => u === '/api/contracts').length === 1,
+      `the roadmap loader fetches /api/contracts exactly once, saw ${urls.join(',')}`);
+    check(/✓ in sync/.test(htmlOf(page, '#roadmap')),
+      `the Contract column is not empty, got ${htmlOf(page, '#roadmap')}`);
+    check(urls.filter(u => u === '/api/roadmap/summary').length === 1,
+      `and its summary exactly once, saw ${urls.join(',')}`);
+  }, roadmapWithContractRoute);
+});
+
+testCase('a project card records the Errors filter without fetching the '
+  + 'hidden Errors screen', async () => {
+  await withPage(async page => {
+    await openScreen(page, 'projects');
+    const before = page.calls.length;
+    await click(page, '#projects .card[data-name]');
+    check(urlsSince(page, before).every(u => !u.startsWith('/api/errors')),
+      `nothing is fetched for a hidden screen, saw ${urlsSince(page, before).join(',')}`);
+    const beforeOpen = page.calls.length;
+    await openScreen(page, 'errors');
+    const errorCalls = urlsSince(page, beforeOpen)
+      .filter(u => u.startsWith('/api/errors'));
+    check(errorCalls.length === 1 && errorCalls[0].includes('project=widget'),
+      `opening Errors fetches once, carrying the recorded filter, saw ${errorCalls.join(',') || 'nothing'}`);
+  }, projectsRoute);
 });
 
 // ---- main -------------------------------------------------------------------

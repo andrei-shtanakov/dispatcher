@@ -2,9 +2,10 @@
 // running the REAL, WHOLE <script> of dispatcher/server/static/index.html
 // inside a VM over the page's own parsed markup (tests/web/dom.js) — the
 // same discipline as product_proposals_harness.js: nothing is sliced by
-// string markers and no handler is simulated. `refresh()` fires on load and
-// drives `renderBenchmarks(...)` from a stubbed `/api/benchmarks` response;
-// cases override that one route and assert DOM state.
+// string markers and no handler is simulated. `loadBenchmarks()` fires on
+// load (the section has no tab of its own yet, so it is not on the screen
+// timer) and drives `renderBenchmarks(...)` from a stubbed `/api/benchmarks`
+// response; cases override that one route and assert DOM state.
 //
 // Asserted here, client-side:
 //   1. `unconfigured` hides the whole section.

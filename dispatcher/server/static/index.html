@@ -463,11 +463,12 @@ let route = {screen: DEFAULT_SCREEN, sub: null};
 // predicate that already gates every applied snapshot — lpValidateOpenConfirm,
 // invoked from lpRender via lpRenderReady/lpRenderPending — gets a chance to
 // re-validate whatever confirmation is still open). The `null` case is load-
-// bearing beyond that double-fetch: `lpState`/`lpRefetchAfterAction` are not
-// declared until further down the script, so calling it here at the very
-// first boot call (before that point is reached) would throw a TDZ
-// ReferenceError out of applyRoute() itself — this branch has shipped that
-// exact shape of bug once already (Task 3).
+// bearing beyond that double-fetch: `lpRefetchAfterAction` is a hoisted
+// function declaration and IS callable from up here, but the `lpState` it
+// reads is a `const` declared only further down the script — so calling it
+// at the very first boot call (before that point is reached) would throw a
+// TDZ ReferenceError on `lpState`, out of applyRoute() itself. This branch
+// has shipped that exact shape of bug once already (Task 3).
 let lpLastScreenShown = null;
 
 /** Screens currently offered — Task 7 makes this conditional. */
@@ -529,6 +530,20 @@ function onScreenShown(r) {
       lpRefetchAfterAction();
     }
     if (r.sub) openRunView(r.sub);
+  }
+  // Task 5: the screen in front of the operator is the only one loaded and
+  // the only one polled. Skipped on the very first call for the same reason
+  // the launchpad refetch above is: applyRoute() runs at the TOP of this
+  // script, where `LOADERS` (a `const` declared with the loaders, further
+  // down) is still in the temporal dead zone. The boot load is the explicit
+  // `loadActiveScreen(); restartScreenTimer();` pair further down, where the
+  // old `refresh(); setInterval(refresh, 10000);` used to sit.
+  if (previousScreen !== null) {
+    loadActiveScreen();
+    // Restarted per switch, not left free-running: an operator who has just
+    // arrived on a screen gets a whole period before the next repaint,
+    // instead of a tick left over from the screen they came from.
+    restartScreenTimer();
   }
 }
 
@@ -632,7 +647,11 @@ document.getElementById("projects").addEventListener("click", e => {
   errorsProject = card.dataset.name;
   renderErrorsFilter();
   document.getElementById("errors-box").open = true;
-  refresh();
+  // Deliberately NO fetch here (Task 5 ruling): this click happens on the
+  // Projects screen, so the Errors screen is hidden. The filter is recorded
+  // in `errorsProject` and loadErrors() reads it when that tab is next
+  // opened. A hidden screen gets no eager fetch — that IS the active-only
+  // behaviour, not a gap in it.
   detail(card.dataset.name, card.dataset.dir || null);
 });
 
@@ -642,7 +661,7 @@ document.getElementById("errors-filter").addEventListener("click", e => {
   e.stopPropagation();  // don't collapse the <details>
   errorsProject = null;
   renderErrorsFilter();
-  refresh();
+  loadErrors();
 });
 
 document.getElementById("errors-toggle").addEventListener("click", e => {
@@ -651,14 +670,14 @@ document.getElementById("errors-toggle").addEventListener("click", e => {
   errorsDays = errorsDays === null ? ERRORS_DAYS_DEFAULT : null;
   e.target.textContent =
     errorsDays === null ? `last ${ERRORS_DAYS_DEFAULT} days` : "show all";
-  refresh();
+  loadErrors();
 });
 
 const serviceSelect = document.getElementById("errors-service");
 serviceSelect.addEventListener("click", e => e.stopPropagation());
 serviceSelect.addEventListener("change", e => {
   errorsService = e.target.value || null;
-  refresh();
+  loadErrors();
 });
 
 // Long messages render truncated; click a message cell to expand/collapse.
@@ -806,7 +825,7 @@ document.getElementById("benchmarks-list").addEventListener("click", (ev) => {
   const btn = ev.target.closest("button[data-bench]");
   if (!btn) return;
   benchSelected = btn.dataset.bench;
-  refresh();
+  loadBenchmarks();
 });
 
 // Phase-2 run-status (spec 2026-08-16 §7): click-driven; the token is
@@ -1095,8 +1114,8 @@ function renderWaits(view) {
     `<tr><td colspan="2">нет</td></tr>`;
 }
 
-// refresh() fires every 10s without awaiting this poll, so polls could
-// overlap. Serialize instead of racing: while one request is in flight, the
+// The screen timer fires this loader every 10s without awaiting the poll
+// already running, so polls could overlap. Serialize instead of racing: while one request is in flight, the
 // next tick simply skips — so responses can never arrive out of order (a
 // late answer repainting a newer one would show a closed wait as waiting),
 // and, unlike a newest-wins generation token, a poll that consistently
@@ -1151,7 +1170,7 @@ document.getElementById("sync-proposals").addEventListener("click", async e => {
                             action: btn.dataset.action}),
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    refresh();
+    loadSync();
   } catch (err) {
     btn.disabled = false;  // ошибка не должна оставить кнопку мёртвой
     btn.closest(".proposal").insertAdjacentHTML("beforeend",
@@ -1185,7 +1204,9 @@ document.getElementById("sync-hosts").addEventListener("click", async e => {
       ? "✓ " + (data.pr_url ?? data.detail ?? "done")
       : "✗ " + (data.error ?? "failed");
     out.className = "act-result " + (data.ok ? "ok" : "err");
-    if (data.ok) setTimeout(refresh, 800);
+    // Only reachable from the Sync screen's own host table, so the Sync
+    // loader is the whole repaint this needs.
+    if (data.ok) setTimeout(loadSync, 800);
   } catch (err) {
     out.textContent = "✗ " + err;
     out.className = "act-result err";
@@ -2119,37 +2140,40 @@ document.getElementById("rc-run-view").addEventListener("change", e => {
   btn.disabled = !(runId && outcome);
 });
 
-async function refresh() {
-  // Waits is fired BEFORE the shared Promise.all and outside its try: a
-  // failing /api/models must not stop a healthy /api/waits from painting,
-  // and refreshWaits carries its own catch + generation guard. Placing the
-  // call after the await (as Epics is) skips it whenever any unrelated
-  // endpoint rejects — the local.sh finding on this change.
-  refreshWaits();
+// ---- per-screen loaders ---------------------------------------------------
+//
+// One `refresh()` used to fetch eight endpoints in a single Promise.all every
+// 10 s, whatever the operator was actually looking at. Now every screen owns
+// a loader and ONLY the active screen's loader runs — once on entry
+// (onScreenShown) and then on the screen timer.
+//
+// Split by SCREEN, never by endpoint. The Roadmap table's `Contract` column
+// is folded from /api/contracts (`syncByName` in renderRoadmap), not from
+// /api/roadmap, so loadRoadmap fetches BOTH — cut along endpoint lines and
+// that column empties silently. Contracts keeps its own fetch of the same
+// endpoint on purpose: two cheap fetches of one endpoint from two screens
+// beat an implicit coupling through a shared cache.
+//
+// Each loader carries its OWN try/catch and writes only its own nodes: a
+// broken endpoint on one screen must never blank a neighbour. A hidden
+// screen is never cleared, so returning to it shows the last good paint
+// until the new response lands.
+
+const SCREEN_REFRESH_MS = 10000;
+
+async function loadSync() {
   try {
-    const errorsUrl = "/api/errors?limit=50"
-      + (errorsDays === null ? "" : `&days=${errorsDays}`)
-      + (errorsProject === null
-        ? "" : `&project=${encodeURIComponent(errorsProject)}`)
-      + (errorsService === null
-        ? "" : `&service=${encodeURIComponent(errorsService)}`);
-    const [ov, errors, models, contracts, roadmap, sync, summary, benchmarks] =
-      await Promise.all([
-      get("/api/overview"), get(errorsUrl),
-      get("/api/models"), get("/api/contracts"), get("/api/roadmap"),
-      get("/api/sync"), get("/api/roadmap/summary"), get("/api/benchmarks")]);
-    renderSync(sync);
-    // Epics is fetched OUTSIDE the Promise.all above, deliberately. Joining it
-    // there makes one panel's endpoint able to blank the whole dashboard — the
-    // rest of this page has nothing to do with the stream axis, and a reader
-    // looking at Sync should not lose it because the registry is unreadable.
-    // The failure is shown in the panel instead of swallowed.
-    refreshEpics();
-    // one global section, one writer, one polling loop — refresh() itself
-    // IS the stale-response guard; no generation counter needed here.
-    renderBenchmarks(benchmarks);
-    renderSummary(summary);
-    document.getElementById("projects").innerHTML = ov.projects.map(p => `
+    renderSync(await get("/api/sync"));
+  } catch (err) {
+    document.getElementById("sync-hosts").textContent = "sync failed: " + err;
+  }
+}
+
+async function loadProjects() {
+  const grid = document.getElementById("projects");
+  try {
+    const ov = await get("/api/overview");
+    grid.innerHTML = ov.projects.map(p => `
       <div class="card ${p.detected ? "" : "off"}"
            ${p.detected
              // data-dir is the ON-DISK clone dirname (from p.path's basename),
@@ -2170,6 +2194,22 @@ async function refresh() {
         ${(p.warnings || []).map(w => `<div class="warn">⚠ ${esc(w)}</div>`)
           .join("")}
       </div>`).join("");
+  } catch (err) {
+    // named, not an empty grid: no cards would read as "no projects", a
+    // claim about the fleet rather than about this request
+    grid.innerHTML = `<div class="err">projects unavailable: ${esc(String(err))}</div>`;
+  }
+}
+
+async function loadErrors() {
+  try {
+    const errorsUrl = "/api/errors?limit=50"
+      + (errorsDays === null ? "" : `&days=${errorsDays}`)
+      + (errorsProject === null
+        ? "" : `&project=${encodeURIComponent(errorsProject)}`)
+      + (errorsService === null
+        ? "" : `&service=${encodeURIComponent(errorsService)}`);
+    const errors = await get(errorsUrl);
     document.querySelector("#errors tbody").innerHTML = errors.map(e => {
       const full = e.body ?? "";
       const short = full.length > MSG_LIMIT
@@ -2185,71 +2225,158 @@ async function refresh() {
       `(${errors.length})`;
     errors.forEach(e => { if (e.service) knownServices.add(e.service); });
     renderServiceOptions();
+  } catch (err) {
+    // «no errors 🎉» is a claim; an unread endpoint may not make it
+    document.querySelector("#errors tbody").innerHTML =
+      `<tr><td colspan="3" class="err">errors unavailable: ${esc(String(err))}</td></tr>`;
+    document.getElementById("errors-count").textContent = "(—)";
+  }
+}
+
+async function loadModels() {
+  try {
+    const models = await get("/api/models");
     document.querySelector("#models tbody").innerHTML = models.map(m => `
       <tr><td>${esc(m.project)}</td><td>${esc(m.model_id)}</td>
       <td>${esc(m.harness ?? "—")}</td><td>${esc(m.role)}</td>
       <td>${esc(m.vendor ?? "—")}</td><td>${esc(m.status ?? "—")}</td></tr>`)
       .join("");
-    document.querySelector("#contracts tbody").innerHTML = contracts.map(c => `
-      <tr><td>${esc(c.name)}</td><td>${esc(c.kind)}</td>
-      <td>${esc(c.canonical_path || "—")}</td>
-      <td>${esc(c.vendored_path || "—")}</td>
-      <td class="${c.in_sync === false ? "err" : "ok"}">
-        ${c.in_sync === null ? esc(c.detail ?? "n/a")
-          : c.in_sync ? "✓ in sync" : "✗ drift"}</td></tr>`).join("");
-    const stCls = s => s === "verified" || s === "implemented" ? "ok"
-      : s === "blocked" || s === "drift" ? "err" : "";
-    // Fold per-copy checker rows: any drifted copy drifts the contract,
-    // any not-comparable copy blocks an in-sync verdict (parity with
-    // contract_sync_by_name in dispatcher/core/roadmap.py).
-    // Only upstream_drift rows: this view asks whether canon moved. Folding
-    // vendored_integrity in would answer a different question in the same cell.
-    const syncByName = new Map();
-    for (const c of contracts) {
-      if (c.kind !== "upstream_drift") continue;
-      const prev = syncByName.has(c.name) ? syncByName.get(c.name) : c.in_sync;
-      syncByName.set(c.name,
-        prev === false || c.in_sync === false ? false
-        : prev === null || c.in_sync === null ? null : true);
-    }
-    document.getElementById("roadmap-names").textContent =
-      (roadmap.roadmaps || []).join(", ");
-    document.querySelector("#roadmap tbody").innerHTML =
-      roadmap.items.map(i => {
-        const passed = i.evidence.filter(e => e.passed).length;
-        const ev = i.evidence.length
-          ? `${passed}/${i.evidence.length} rules` : "no rules";
-        // Attested-only impl: amber + `(attested)` label, never machine-green
-        // (ADR-ECO-005 D3). status_label carries the marker from the API.
-        const attested = i.implementation_is_attested_only;
-        const stCell = attested ? "attested" : stCls(i.computed_status);
-        const stTitle = attested
-          ? "implementation asserted by owner (attestation), not machine-verified"
-          : "";
-        const tc = i.target_contract;
-        const tcSync = tc ? syncByName.get(tc) : undefined;
-        const tcCell = !tc ? "—"
-          : tcSync === true ? `${tc} ✓ in sync`
-          : tcSync === false ? `${tc} ✗ drift` : `${tc} n/a`;
-        const tcCls = tcSync === true ? "ok" : tcSync === false ? "err" : "";
-        return `
-      <tr><td>${esc(i.phase ?? "—")}</td>
-      <td title="${esc(i.title)}">${esc(i.id)} ${esc(i.title)}</td>
-      <td>${esc(i.owner_project ?? "—")}</td>
-      <td class="${stCell}" title="${esc(stTitle)}">${esc(i.status_label)}</td>
-      <td class="${tcCls}">${esc(tcCell)}</td>
-      <td>${esc((i.blockers || []).join(", ") || "—")}</td>
-      <td title="${esc(i.evidence.map(e =>
-        `${e.passed ? "✓" : "✗"} ${e.rule}: ${e.detail}`).join("\n"))}">
-        ${esc(ev)}</td>
-      <td class="fresh">${esc(i.last_seen ?? "—")}</td></tr>`;
-      }).join("")
-      || `<tr><td colspan="8">no roadmap items</td></tr>`;
-    document.getElementById("updated").textContent =
-      "updated " + new Date().toLocaleTimeString();
   } catch (err) {
-    document.getElementById("updated").textContent = "refresh failed: " + err;
+    document.querySelector("#models tbody").innerHTML =
+      `<tr><td colspan="6" class="err">models unavailable: ${esc(String(err))}</td></tr>`;
   }
+}
+
+function renderContracts(contracts) {
+  document.querySelector("#contracts tbody").innerHTML = contracts.map(c => `
+    <tr><td>${esc(c.name)}</td><td>${esc(c.kind)}</td>
+    <td>${esc(c.canonical_path || "—")}</td>
+    <td>${esc(c.vendored_path || "—")}</td>
+    <td class="${c.in_sync === false ? "err" : "ok"}">
+      ${c.in_sync === null ? esc(c.detail ?? "n/a")
+        : c.in_sync ? "✓ in sync" : "✗ drift"}</td></tr>`).join("");
+}
+
+async function loadContracts() {
+  try {
+    renderContracts(await get("/api/contracts"));
+  } catch (err) {
+    document.querySelector("#contracts tbody").innerHTML =
+      `<tr><td colspan="5" class="err">contracts unavailable: ${esc(String(err))}</td></tr>`;
+  }
+}
+
+function renderRoadmap(roadmap, contracts) {
+  const stCls = s => s === "verified" || s === "implemented" ? "ok"
+    : s === "blocked" || s === "drift" ? "err" : "";
+  // Fold per-copy checker rows: any drifted copy drifts the contract,
+  // any not-comparable copy blocks an in-sync verdict (parity with
+  // contract_sync_by_name in dispatcher/core/roadmap.py).
+  // Only upstream_drift rows: this view asks whether canon moved. Folding
+  // vendored_integrity in would answer a different question in the same cell.
+  const syncByName = new Map();
+  for (const c of contracts) {
+    if (c.kind !== "upstream_drift") continue;
+    const prev = syncByName.has(c.name) ? syncByName.get(c.name) : c.in_sync;
+    syncByName.set(c.name,
+      prev === false || c.in_sync === false ? false
+      : prev === null || c.in_sync === null ? null : true);
+  }
+  document.getElementById("roadmap-names").textContent =
+    (roadmap.roadmaps || []).join(", ");
+  document.querySelector("#roadmap tbody").innerHTML =
+    roadmap.items.map(i => {
+      const passed = i.evidence.filter(e => e.passed).length;
+      const ev = i.evidence.length
+        ? `${passed}/${i.evidence.length} rules` : "no rules";
+      // Attested-only impl: amber + `(attested)` label, never machine-green
+      // (ADR-ECO-005 D3). status_label carries the marker from the API.
+      const attested = i.implementation_is_attested_only;
+      const stCell = attested ? "attested" : stCls(i.computed_status);
+      const stTitle = attested
+        ? "implementation asserted by owner (attestation), not machine-verified"
+        : "";
+      const tc = i.target_contract;
+      const tcSync = tc ? syncByName.get(tc) : undefined;
+      const tcCell = !tc ? "—"
+        : tcSync === true ? `${tc} ✓ in sync`
+        : tcSync === false ? `${tc} ✗ drift` : `${tc} n/a`;
+      const tcCls = tcSync === true ? "ok" : tcSync === false ? "err" : "";
+      return `
+    <tr><td>${esc(i.phase ?? "—")}</td>
+    <td title="${esc(i.title)}">${esc(i.id)} ${esc(i.title)}</td>
+    <td>${esc(i.owner_project ?? "—")}</td>
+    <td class="${stCell}" title="${esc(stTitle)}">${esc(i.status_label)}</td>
+    <td class="${tcCls}">${esc(tcCell)}</td>
+    <td>${esc((i.blockers || []).join(", ") || "—")}</td>
+    <td title="${esc(i.evidence.map(e =>
+      `${e.passed ? "✓" : "✗"} ${e.rule}: ${e.detail}`).join("\n"))}">
+      ${esc(ev)}</td>
+    <td class="fresh">${esc(i.last_seen ?? "—")}</td></tr>`;
+    }).join("")
+    || `<tr><td colspan="8">no roadmap items</td></tr>`;
+}
+
+async function loadRoadmap() {
+  try {
+    const [roadmap, summary, contracts] = await Promise.all([
+      get("/api/roadmap"), get("/api/roadmap/summary"), get("/api/contracts"),
+    ]);
+    renderSummary(summary);
+    renderRoadmap(roadmap, contracts);
+  } catch (err) {
+    document.getElementById("roadmap-names").textContent =
+      "roadmap failed: " + err;
+    document.querySelector("#roadmap tbody").innerHTML =
+      `<tr><td colspan="8" class="err">not read — see above</td></tr>`;
+  }
+}
+
+// Benchmarks is a CONDITIONAL section with no panel of its own until Task 7
+// gives it a tab, so it is NOT in LOADERS and the screen timer never touches
+// it: it loads once at boot and again on an explicit selection. One section,
+// one writer, one caller at a time — no generation counter needed here.
+async function loadBenchmarks() {
+  try {
+    renderBenchmarks(await get("/api/benchmarks"));
+  } catch (err) {
+    document.getElementById("benchmarks-status").textContent =
+      "benchmarks unavailable: " + err;
+  }
+}
+
+// `launchpad: null` is the registry saying so out loud: the Launchpad drives
+// itself on LP_REFRESH_MS with its own sequence/idempotency discipline
+// (lpIssueFetch), and must not be double-driven from here.
+const LOADERS = {
+  launchpad: null,
+  sync: loadSync,
+  projects: loadProjects,
+  errors: loadErrors,
+  models: loadModels,
+  contracts: loadContracts,
+  epics: refreshEpics,       // already self-contained, with its own catch
+  waits: refreshWaits,       // already self-contained, with its own guard
+  roadmap: loadRoadmap,
+};
+
+// `#updated` is one global element for the whole page. After the split it is
+// written by the ACTIVE screen's loader — not by whichever endpoint happened
+// to answer last.
+async function loadActiveScreen() {
+  const load = LOADERS[activeScreen()];
+  if (!load) return;
+  await load();
+  document.getElementById("updated").textContent =
+    "updated " + new Date().toLocaleTimeString();
+}
+
+let screenTimer = null;
+
+function restartScreenTimer() {
+  if (typeof setInterval !== "function") return;
+  if (screenTimer !== null) clearInterval(screenTimer);
+  screenTimer = setInterval(loadActiveScreen, SCREEN_REFRESH_MS);
 }
 
 let currentSpecRunnerConfig = null;
@@ -3971,8 +4098,16 @@ document.getElementById('ta-open-panel').addEventListener('click', () => {
   section.scrollIntoView({behavior: 'smooth', block: 'nearest'});
 });
 
-refresh();
-setInterval(refresh, 10000);
+// The boot load for whatever screen the hash opened on, plus the timer
+// that keeps ONLY that screen fresh. onScreenShown() takes over from here:
+// every later screen change reloads and restarts the timer itself. This is
+// where the old `refresh(); setInterval(refresh, 10000);` — one fan-out over
+// eight endpoints, every 10s, whatever was on screen — used to sit.
+loadActiveScreen();
+restartScreenTimer();
+// Benchmarks has no panel of its own until Task 7, so it is not on the
+// screen timer: one load at boot, and a reload on an explicit selection.
+loadBenchmarks();
 
 // ---- Launchpad root panel (spec §9, PR-C Task 6) ---------------------------
 //

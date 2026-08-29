@@ -203,7 +203,7 @@ async function boot(governance, names = ['widget'], onboardingRoute, govRoute) {
 async function openDetail(env, index = 0) {
   const card = env.document
     .querySelectorAll('#projects .card[data-name]')[index];
-  if (!card) throw new Error('refresh() rendered no selectable project card');
+  if (!card) throw new Error('the projects loader rendered no selectable project card');
   await Promise.all(dispatch(card.querySelector('h2') || card, 'click'));
   await drain();
 }

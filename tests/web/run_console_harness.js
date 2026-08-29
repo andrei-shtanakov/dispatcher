@@ -121,9 +121,10 @@ const DEFAULT_LAUNCHPAD_SNAPSHOT = {
   completed_total: 0, next_cursor: null, store_unreadable: [],
 };
 
-// refresh() (index.html:651-669) fans out to exactly these eight endpoints on
-// load; the run console lives at the top level and needs none of the
-// detail()-only routes (onboarding, governance, product-proposals, runs).
+// The page's per-screen loaders (index.html's LOADERS) reach these endpoints,
+// one screen at a time; the run console lives inside the Launchpad panel and
+// needs none of the detail()-only routes (onboarding, governance,
+// product-proposals, runs).
 // `/api/launchpad` is a ninth: the whole page script's own `lpFetchSnapshot()`
 // call at the bottom fires unconditionally too (Task 6/7).
 function defaultRoutes(submitRoute) {
@@ -228,11 +229,13 @@ async function boot(submitRoute) {
   vm.createContext(ctx);
   vm.runInContext(PAGE_SCRIPT, ctx);
   await drain();
-  // The page's own `setInterval(refresh, 10000)` (index.html:2663) registers
-  // here too, on the SAME virtual clock as any per-run polling this harness
-  // starts. A tick large enough to cross 10000ms will fire it — that is
-  // correct behaviour, not a test failure; tests below stay under that
-  // threshold specifically so it does not confound the polling assertions.
+  // The page's own `setInterval(loadActiveScreen, 10000)` registers here too,
+  // on the SAME virtual clock as any per-run polling this harness starts. A
+  // tick large enough to cross 10000ms will fire it — that is correct
+  // behaviour, not a test failure; tests below stay under that threshold
+  // specifically so it does not confound the polling assertions. (Since
+  // Task 5 that tick is a no-op on Launchpad anyway — LOADERS.launchpad is
+  // null — but the tests do not lean on that.)
   return {ctx, document, calls, routes, clock};
 }
 
@@ -642,9 +645,9 @@ testCase('unreadable is NOT absent: the collector warning reaches the screen',
 // once BOTH axes are settled.
 //
 // Every test below ticks by exactly 5000ms — under BOTH the page's own
-// global `setInterval(refresh, 10000)` (index.html:2663) and this view's
-// own 5000ms poll period (index.html rcPollView). That is a real coupling,
-// not an arbitrary number: it keeps the global refresh's eight fetches out
+// `setInterval(loadActiveScreen, 10000)` and this view's own 5000ms poll
+// period (index.html rcPollView). That is a real coupling, not an arbitrary
+// number: it keeps the screen timer's fetches out
 // of `page.calls` while still crossing this view's own period exactly
 // once. If either period changes — the view's to >=10000, or a tick here
 // grows to >=10000 — these counts start measuring the wrong interval and

@@ -89,9 +89,9 @@ const PAGE_SCRIPT = between(BODY_HTML, /<script[^>]*>/i, '</script>', 'script');
 
 // The launchpad panel's own auto-refresh period (spec §9: "30s
 // auto-refresh"). The whole page script also registers the pre-existing
-// dashboard's `setInterval(refresh, 10000)` on the SAME fake timer this
-// harness installs — the two are told apart by period, not by call order,
-// since nothing in this harness controls which runs first.
+// dashboard's `setInterval(loadActiveScreen, 10000)` — the per-screen timer
+// — on the SAME fake timer this harness installs; the two are told apart by
+// period, not by call order, since nothing here controls which runs first.
 const LP_REFRESH_MS = 30000;
 
 // ---- fixtures ---------------------------------------------------------------
@@ -124,9 +124,10 @@ function snapshot(overrides = {}) {
   };
 }
 
-// refresh() (index.html) fans out to these endpoints on load, same set as
-// run_console_harness.js's defaultRoutes — every whole-script harness needs
-// all of them fixture'd or the unrelated dashboard code throws during boot.
+// The page's per-screen loaders (index.html's LOADERS) reach these endpoints,
+// one screen at a time, same set as run_console_harness.js's defaultRoutes —
+// every whole-script harness needs all of them fixture'd, because a case may
+// open any tab and a missing route is a rejected fetch, not a skipped one.
 function defaultRoutes(launchpadRoute) {
   return [
     [u => u.startsWith('/api/overview'), () => ok({projects: []})],
@@ -166,8 +167,8 @@ const drain = async (turns = 5) => {
  * the whole point of asserting the sequence guard through the real entry
  * points rather than a simulated clock. `byPeriod` finds the launchpad
  * panel's own interval among the page's several registered ones (the
- * pre-existing dashboard `refresh()` loop registers its own, at a
- * different period, on this exact same fake timer). */
+ * dashboard's per-screen timer registers its own, at a different period,
+ * on this exact same fake timer). */
 function makeIntervalRecorder() {
   const registered = new Map();
   let nextId = 1;
