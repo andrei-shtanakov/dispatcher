@@ -25,6 +25,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const {Document, dispatch} = require(path.join(__dirname, 'dom.js'));
+const {browserGlobals, openScreen} = require(path.join(__dirname, 'screens.js'));
 
 const HTML_PATH = process.argv[2];
 if (!HTML_PATH) {
@@ -159,7 +160,7 @@ async function boot(runRoute) {
       for (const [test, make] of routes) if (test(u)) return Promise.resolve(make(u));
       return Promise.reject(new Error(`no fixture route for ${u}`));
     },
-    window: {open: () => {}},
+    ...browserGlobals(),
   };
   vm.createContext(ctx);
   vm.runInContext(PAGE_SCRIPT, ctx);

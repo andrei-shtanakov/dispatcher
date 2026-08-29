@@ -16,6 +16,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const {Document} = require(path.join(__dirname, 'dom.js'));
+const {browserGlobals, openScreen} = require(path.join(__dirname, 'screens.js'));
 
 const HTML_PATH = process.argv[2];
 if (!HTML_PATH) {
@@ -44,7 +45,12 @@ function check(name, condition, detail) {
   console.error(`FAIL ${name}${detail ? `: ${detail}` : ''}`);
 }
 
-function boot() {
+// The page is a tab shell now: #epics lives inside the hidden
+// `#screen-epics` tabpanel until a person opens it. Every case here boots on
+// the Epics screen, opened through the real tab button (tests/web/screens.js)
+// — asserting against markup nobody can see is exactly what the tab shell
+// made possible, so it is closed off here at the source.
+async function boot() {
   const document = new Document(BODY_HTML);
   const ctx = {
     document, console, URL,
@@ -52,11 +58,13 @@ function boot() {
     setInterval: () => 0,
     clearInterval: () => {},
     fetch: () => Promise.reject(new Error('the epics harness drives renderEpics directly')),
-    window: {open: () => {}},
+    ...browserGlobals(),
   };
   vm.createContext(ctx);
   vm.runInContext(PAGE_SCRIPT, ctx);
-  return {ctx, document};
+  const page = {ctx, document};
+  await openScreen(page, 'epics');
+  return page;
 }
 
 const plane = (name, state, count, detail) => ({plane: name, state, count, detail: detail || null});
@@ -83,9 +91,16 @@ const cells = document => Array.from(
   document.querySelector('#epics tbody').querySelectorAll('td')
 ).map(td => td.textContent);
 
+// Opening the Epics tab is asynchronous (it goes through a real click and the
+// hashchange the browser delivers), so the previously top-level case blocks
+// now run inside this one async IIFE. Its body is deliberately left at the
+// original indentation: re-indenting a hundred untouched lines would bury the
+// actual change of this task in a cosmetic diff.
+(async () => {
+
 // ---- case 1: a complete plane renders its number, plainly ------------------
 {
-  const {ctx, document} = boot();
+  const {ctx, document} = await boot();
   ctx.renderEpics(view([
     plane('todo', 'read', 3),
     plane('issues', 'read', 2),
@@ -101,7 +116,7 @@ const cells = document => Array.from(
 
 // ---- case 2: an unread plane is a dash, never a zero -----------------------
 {
-  const {ctx, document} = boot();
+  const {ctx, document} = await boot();
   ctx.renderEpics(view([
     plane('todo', 'read', 3),
     plane('issues', 'unavailable', 0, 'no published snapshot'),
@@ -116,7 +131,7 @@ const cells = document => Array.from(
 
 // ---- case 3: partial is neither a plain number nor a dash ------------------
 {
-  const {ctx, document} = boot();
+  const {ctx, document} = await boot();
   const why = 'hosts still on snapshot v1 contribute nothing: h-old';
   ctx.renderEpics(view([
     plane('todo', 'read', 3),
@@ -135,7 +150,7 @@ const cells = document => Array.from(
 
 // ---- case 4: a state this client has never heard of falls to the safe side --
 {
-  const {ctx, document} = boot();
+  const {ctx, document} = await boot();
   ctx.renderEpics(view([
     plane('todo', 'read', 3),
     plane('issues', 'sampled', 2, 'a state the server grew after this client shipped'),
@@ -150,7 +165,7 @@ const cells = document => Array.from(
     html.includes('a state the server grew'), html);
 
   // ...and with no reason supplied, the wording points at THIS page
-  const bare = boot();
+  const bare = await boot();
   bare.ctx.renderEpics(view([
     plane('todo', 'read', 1),
     plane('issues', 'sampled', 2),
@@ -163,7 +178,7 @@ const cells = document => Array.from(
 
 // ---- case 4b: `unavailable` without a detail is not called "unknown" -------
 {
-  const {ctx, document} = boot();
+  const {ctx, document} = await boot();
   ctx.renderEpics(view([
     plane('todo', 'read', 1),
     plane('issues', 'unavailable', 0),
@@ -176,7 +191,7 @@ const cells = document => Array.from(
 
 // ---- case 5: a tag finding is reported without blaming the registry --------
 {
-  const {ctx, document} = boot();
+  const {ctx, document} = await boot();
   ctx.renderEpics(view(
     [plane('todo', 'read', 1), plane('issues', 'read', 1), plane('pull_requests', 'read', 0)],
     {classification_diagnostics: [
@@ -194,3 +209,8 @@ if (failures) {
   process.exit(1);
 }
 console.log('epics harness: all checks passed');
+
+})().catch(err => {
+  console.error('\nHARNESS CRASHED:', (err && err.stack) || err);
+  process.exit(1);
+});

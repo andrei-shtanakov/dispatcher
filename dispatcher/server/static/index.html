@@ -138,6 +138,13 @@
   .ta-outcome { display: flex; gap: 8px; align-items: baseline;
     flex-wrap: wrap; padding: 4px 0; }
   .ta-outcome .what { font-weight: 600; }
+  #tablist { display: flex; gap: 4px; overflow-x: auto; white-space: nowrap;
+             border-bottom: 1px solid #d4d4d8; margin: 0 0 12px; }
+  #tablist button { border: 0; background: none; padding: 8px 12px;
+                    font: inherit; cursor: pointer;
+                    border-bottom: 3px solid transparent; }
+  #tablist button[aria-selected="true"] { border-bottom-color: #2563eb;
+                                          background: #eff6ff; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -145,6 +152,30 @@
 <div class="sub">Ecosystem overview · auto-refresh 10s ·
   <span id="updated"></span></div>
 
+<!-- Tab shell (design §4): the tab strip is the ONLY navigation; the
+     hash is the only writer of the active screen (see the router at
+     the top of the page script below). -->
+<nav id="tablist" role="tablist" aria-label="Разделы">
+  <button id="tab-launchpad" role="tab" type="button" aria-controls="screen-launchpad" aria-selected="true">Launchpad</button>
+  <button id="tab-sync" role="tab" type="button" aria-controls="screen-sync" aria-selected="false">Sync</button>
+  <button id="tab-projects" role="tab" type="button" aria-controls="screen-projects" aria-selected="false">Projects</button>
+  <button id="tab-errors" role="tab" type="button" aria-controls="screen-errors" aria-selected="false">Errors</button>
+  <button id="tab-models" role="tab" type="button" aria-controls="screen-models" aria-selected="false">Models</button>
+  <button id="tab-contracts" role="tab" type="button" aria-controls="screen-contracts" aria-selected="false">Contracts</button>
+  <button id="tab-epics" role="tab" type="button" aria-controls="screen-epics" aria-selected="false">Epics</button>
+  <button id="tab-waits" role="tab" type="button" aria-controls="screen-waits" aria-selected="false">Waits (partial)</button>
+  <button id="tab-roadmap" role="tab" type="button" aria-controls="screen-roadmap" aria-selected="false">Roadmap</button>
+</nav>
+
+<!-- I-A: outcomes of MUTATIONS outlive the panel that started them. This
+     region is deliberately outside #task-authoring and #detail-section, so
+     nothing on the navigation path (detail(), ta-open-panel) can reach it:
+     a request that was actually sent stays on screen until the operator
+     resolves or dismisses it. -->
+<section id="ta-outcomes" hidden><h2>Unresolved task requests</h2>
+  <div id="ta-outcomes-list"></div></section>
+
+<div id="screen-launchpad" class="screen" role="tabpanel" aria-labelledby="tab-launchpad">
 <!-- Launchpad root panel (spec §9): FIRST section in the body — the
      existing #run-console below stays as drill-down + manual form,
      rewired in Task 7. `#lp-store-banner` mirrors `store_unreadable`
@@ -166,31 +197,6 @@
     <div id="lp-diagnostics-body"></div>
   </details>
 </section>
-
-<!-- I-A: outcomes of MUTATIONS outlive the panel that started them. This
-     region is deliberately outside #task-authoring and #detail-section, so
-     nothing on the navigation path (detail(), ta-open-panel) can reach it:
-     a request that was actually sent stays on screen until the operator
-     resolves or dismisses it. -->
-<section id="ta-outcomes" hidden><h2>Unresolved task requests</h2>
-  <div id="ta-outcomes-list"></div></section>
-
-<section id="sync-section" style="margin-top:0"><h2>Sync
-  <span id="sync-topline" class="badge dim">…</span>
-  <span id="sync-reason" class="fresh"></span>
-  <span id="sync-fetch" class="fresh" hidden>
-    <span class="spin">⚙</span> fetching…</span></h2>
-  <div id="sync-proposals"></div>
-  <div id="sync-hosts" class="fresh">loading…</div></section>
-
-<section id="benchmarks-section" hidden><h2>Benchmarks
-  <span id="benchmarks-status" class="fresh"></span></h2>
-  <div id="benchmarks-list"></div>
-  <div id="benchmarks-leaderboard"></div>
-  <div id="run-status-row"><label>Run #
-    <input id="run-status-input" type="number" min="1" inputmode="numeric"></label>
-    <button id="run-status-check" type="button">Check status</button></div>
-  <div id="run-status-result"></div></section>
 
 <!-- Task 7 (spec §9 "Manual (advanced)"): the operator names WHAT to run
      (repo_key, work_id) and dispatcher recovers everything launch-time from
@@ -215,7 +221,19 @@
     <button id="rc-open" type="button">Open run</button>
   </div>
   <div id="rc-run-view"></div></section>
+</div>
 
+<div id="screen-sync" class="screen" role="tabpanel" aria-labelledby="tab-sync" hidden>
+<section id="sync-section" style="margin-top:0"><h2>Sync
+  <span id="sync-topline" class="badge dim">…</span>
+  <span id="sync-reason" class="fresh"></span>
+  <span id="sync-fetch" class="fresh" hidden>
+    <span class="spin">⚙</span> fetching…</span></h2>
+  <div id="sync-proposals"></div>
+  <div id="sync-hosts" class="fresh">loading…</div></section>
+</div>
+
+<div id="screen-projects" class="screen" role="tabpanel" aria-labelledby="tab-projects" hidden>
 <section><h2>Projects</h2>
 <div class="grid" id="projects"></div></section>
 
@@ -288,7 +306,9 @@
     <span id="ta-result"></span>
   </div>
 </section>
+</div>
 
+<div id="screen-errors" class="screen" role="tabpanel" aria-labelledby="tab-errors" hidden>
 <section><details id="errors-box">
   <summary><h2>Errors <span id="errors-count"></span>
     <span id="errors-filter"></span>
@@ -297,19 +317,25 @@
   <div class="tablewrap"><table id="errors">
     <thead><tr><th>Time</th><th>Service</th><th>Message</th></tr></thead>
     <tbody></tbody></table></div></details></section>
+</div>
 
+<div id="screen-models" class="screen" role="tabpanel" aria-labelledby="tab-models" hidden>
 <section><h2>Models</h2>
   <div class="tablewrap"><table id="models">
     <thead><tr><th>Project</th><th>Model</th><th>Harness</th><th>Role</th>
       <th>Vendor</th><th>Status</th></tr></thead>
     <tbody></tbody></table></div></section>
+</div>
 
+<div id="screen-contracts" class="screen" role="tabpanel" aria-labelledby="tab-contracts" hidden>
 <section><h2>Contracts</h2>
   <div class="tablewrap"><table id="contracts">
     <thead><tr><th>Name</th><th>Check</th><th>Canon</th><th>Vendored</th>
       <th>Sync</th>
       </tr></thead><tbody></tbody></table></div></section>
+</div>
 
+<div id="screen-epics" class="screen" role="tabpanel" aria-labelledby="tab-epics" hidden>
 <section><h2>Epics <span id="epics-planes" class="sub"></span></h2>
   <div id="epics-registry" class="fresh"></div>
   <div style="margin:6px 0">
@@ -324,7 +350,9 @@
   <div class="tablewrap" style="margin-top:10px"><table id="defects">
     <thead><tr><th>Defect class</th><th>Count</th><th>By epic</th></tr></thead>
     <tbody></tbody></table></div></section>
+</div>
 
+<div id="screen-waits" class="screen" role="tabpanel" aria-labelledby="tab-waits" hidden>
 <section><h2>Waits <span id="waits-plane" class="sub"></span></h2>
   <div id="waits-disclaimer" class="fresh"></div>
   <div id="waits-graph" class="tablewrap"></div>
@@ -344,7 +372,9 @@
       <thead><tr><th>Пункт</th><th>Условие</th></tr></thead>
       <tbody></tbody></table></div>
   </details></section>
+</div>
 
+<div id="screen-roadmap" class="screen" role="tabpanel" aria-labelledby="tab-roadmap" hidden>
 <section><h2>Roadmap <span id="roadmap-names" class="sub"></span></h2>
   <div class="tablewrap" style="margin-bottom:10px"><table id="roadmap-summary">
     <thead><tr><th>Project</th><th>Done</th><th>Readiness</th>
@@ -355,11 +385,121 @@
       <th>Contract</th><th>Blockers</th><th>Evidence</th><th>Freshness</th>
       </tr></thead>
     <tbody></tbody></table></div></section>
+</div>
+
+<!-- Benchmarks is a CONDITIONAL tab (design §3.1) and is still outside
+     the panels until Task 7 gives it one; leaving it here keeps it
+     visible and its harnesses honest in the meantime. -->
+<section id="benchmarks-section" hidden><h2>Benchmarks
+  <span id="benchmarks-status" class="fresh"></span></h2>
+  <div id="benchmarks-list"></div>
+  <div id="benchmarks-leaderboard"></div>
+  <div id="run-status-row"><label>Run #
+    <input id="run-status-input" type="number" min="1" inputmode="numeric"></label>
+    <button id="run-status-check" type="button">Check status</button></div>
+  <div id="run-status-result"></div></section>
 
 <script>
 const esc = s => String(s ?? "").replace(/[&<>"']/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const get = async p => (await fetch(p)).json();
+
+// ---- screens and routing --------------------------------------------------
+//
+// The hash is the ONLY writer of the current screen: a tab click assigns
+// `location.hash`, the browser delivers `hashchange`, and applyRoute() is the
+// single place that shows a panel. Back/Forward then work with no second code
+// path. Where there is no `location` (the Node harness sandbox before it
+// installs one), routing degrades to a static Launchpad rather than throwing —
+// the same feature-detect idiom the launchpad timer already uses.
+
+const SCREENS = [
+  {id: "launchpad", label: "Launchpad"},
+  {id: "sync", label: "Sync"},
+  {id: "projects", label: "Projects"},
+  {id: "errors", label: "Errors"},
+  {id: "models", label: "Models"},
+  {id: "contracts", label: "Contracts"},
+  {id: "epics", label: "Epics"},
+  {id: "waits", label: "Waits (partial)"},
+  {id: "roadmap", label: "Roadmap"},
+];
+const DEFAULT_SCREEN = "launchpad";
+const HASH_RE = /^#([a-z][a-z-]*)(?:\/([A-Za-z0-9._-]{1,200}))?$/;
+const hasLocation = typeof location !== "undefined" && location !== null;
+const hasWindow = typeof window !== "undefined" && window !== null
+  && typeof window.addEventListener === "function";
+
+let route = {screen: DEFAULT_SCREEN, sub: null};
+
+/** Screens currently offered — Task 7 makes this conditional. */
+function screenIds() { return SCREENS.map(s => s.id); }
+
+function parseHash(raw) {
+  const m = HASH_RE.exec(String(raw || ""));
+  if (!m || !screenIds().includes(m[1])) {
+    return {screen: DEFAULT_SCREEN, sub: null};
+  }
+  return {screen: m[1], sub: m[2] || null};
+}
+
+function hashFor(screen, sub) {
+  return sub ? `#${screen}/${sub}` : `#${screen}`;
+}
+
+/** The one way the page changes screen. */
+function navigate(screen, sub) {
+  const next = hashFor(screen, sub || null);
+  if (hasLocation && location.hash !== next) { location.hash = next; return; }
+  route = parseHash(next);
+  applyRoute();
+}
+
+function applyRoute() {
+  if (hasLocation) route = parseHash(location.hash);
+  for (const {id} of SCREENS) {
+    const panel = document.getElementById(`screen-${id}`);
+    const tab = document.getElementById(`tab-${id}`);
+    if (!panel || !tab) continue;
+    const active = id === route.screen;
+    panel.hidden = !active;
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+  }
+  onScreenShown(route);
+}
+
+/** Extended by Task 5 (loaders) and Task 3 (drill-down). */
+function onScreenShown(_route) {}
+
+function activeScreen() { return route.screen; }
+
+document.getElementById("tablist").addEventListener("click", e => {
+  const button = e.target.closest("button[role='tab']");
+  if (!button) return;
+  navigate(button.id.replace(/^tab-/, ""), null);
+});
+
+document.getElementById("tablist").addEventListener("keydown", e => {
+  const key = e.key;
+  if (key !== "ArrowLeft" && key !== "ArrowRight"
+      && key !== "Enter" && key !== " ") return;
+  const ids = screenIds();
+  const at = ids.indexOf(route.screen);
+  if (key === "Enter" || key === " ") {
+    const button = e.target.closest("button[role='tab']");
+    if (button) { e.preventDefault(); navigate(button.id.replace(/^tab-/, ""), null); }
+    return;
+  }
+  e.preventDefault();
+  const delta = key === "ArrowLeft" ? -1 : 1;
+  const next = ids[(at + delta + ids.length) % ids.length];
+  navigate(next, null);
+  const button = document.getElementById(`tab-${next}`);
+  if (button) button.focus();
+});
+
+if (hasWindow) window.addEventListener("hashchange", applyRoute);
+applyRoute();
 
 // Shared by every sink that renders or opens a URL from an opaque
 // passthrough payload (merge-gate's MG_REQUIRED, task-authoring's
