@@ -338,6 +338,48 @@ testCase('a malformed nested segment falls back to Launchpad', async () => {
   }, {hash: '#projects/../etc/passwd'});
 });
 
+// ---- terminal review 7: the nested segment is NOT a general form --------
+//
+// `HASH_RE` is one pattern for every screen, and `parseHash` used to check
+// only that the screen existed — so `#sync/foo` opened Sync and ran its
+// loader on an address spec §4.1 does not define. Nothing read the segment,
+// so nothing visibly broke; the point is that a closed grammar is the thing
+// keeping a hash value from becoming a surface, and seven screens were
+// accepting 200 arbitrary characters they had no use for.
+//
+// Driven through the real router (a boot hash), not by calling parseHash.
+const SUBLESS_SCREENS = ['sync', 'errors', 'models', 'contracts', 'epics',
+  'waits', 'roadmap'];
+
+testCase('a nested segment on a screen that has none falls back to Launchpad',
+  async () => {
+  for (const id of SUBLESS_SCREENS) {
+    await withPage(page => {
+      check(!el(page, '#screen-launchpad').hidden,
+        `#${id}/foo is an unknown address, so it falls back to launchpad`);
+      check(el(page, `#screen-${id}`).hidden,
+        `and #screen-${id} did not open`);
+    }, {hash: `#${id}/foo`});
+  }
+});
+
+testCase('the two screens §4.1 DOES give nested state still take it', async () => {
+  // The other half: tightening the grammar must not cost the addresses the
+  // spec names. Launchpad's segment is consumed (the drill-down opens);
+  // Projects' is reserved and unread, so the assertion is that the SCREEN
+  // still opens rather than falling back — which is exactly what would
+  // break if the marker were dropped from it.
+  await withPage(page => {
+    check(!el(page, '#screen-launchpad').hidden, 'launchpad opened');
+    check(!el(page, '#rc-run-view').hidden,
+      'and its drill-down opened from the segment');
+  }, {hash: '#launchpad/rc-1'});
+  await withPage(page => {
+    check(!el(page, '#screen-projects').hidden,
+      '#projects/<directory> still resolves to Projects');
+  }, {hash: '#projects/deployer'});
+});
+
 testCase('back and forward walk the screens', async () => {
   await withPage(async page => {
     await openScreen(page, 'models');

@@ -489,10 +489,22 @@ function screenGenStale(screen, gen) {
 // installs one), routing degrades to a static Launchpad rather than throwing —
 // the same feature-detect idiom the launchpad timer already uses.
 
+// `sub: true` marks the screens spec §4.1 gives NESTED state — the two, and
+// only the two, whose address may carry a `/<value>` segment:
+// `#launchpad/<request_id>` (the drill-down) and `#projects/<directory>`.
+// Declared HERE rather than as a list inside parseHash for the same reason
+// runLoader takes the screen id instead of each caller retyping it: a screen
+// says what it accepts at the point it is declared, and the router reads the
+// registry rather than carrying its own copy of that knowledge.
+//
+// `#projects/<directory>` is reserved, not yet consumed: the Projects screen
+// records its selection through a card click (`errorsProject`), and nothing
+// reads `route.sub` for it. The marker keeps the address §4.1 promises from
+// being rejected by the router before the screen is ready to use it.
 const SCREENS = [
-  {id: "launchpad", label: "Launchpad"},
+  {id: "launchpad", label: "Launchpad", sub: true},
   {id: "sync", label: "Sync"},
-  {id: "projects", label: "Projects"},
+  {id: "projects", label: "Projects", sub: true},
   {id: "errors", label: "Errors"},
   {id: "models", label: "Models"},
   {id: "contracts", label: "Contracts"},
@@ -566,9 +578,26 @@ function setBenchmarksAvailable(available) {
   }
 }
 
+/** Whether spec §4.1 gives `id` nested state — see SCREENS. */
+function screenTakesSub(id) {
+  return SCREENS.some(s => s.id === id && s.sub === true);
+}
+
 function parseHash(raw) {
   const m = HASH_RE.exec(String(raw || ""));
   if (!m || !screenIds().includes(m[1])) {
+    return {screen: DEFAULT_SCREEN, sub: null};
+  }
+  // Terminal review 7: HASH_RE is ONE general pattern, so it matched
+  // `#sync/foo` and `#errors/foo` too, and the only check here was that the
+  // screen exists — the screen opened and its loader ran on an address the
+  // closed grammar does not define. Harmless in effect (nothing read the
+  // segment) but not harmless in kind: a closed grammar is what keeps a
+  // hash value from becoming a surface, and seven screens were quietly
+  // accepting 200 arbitrary characters they had no use for. A segment on a
+  // screen that declares none makes the whole address unknown, which §4.1
+  // resolves the same way as any other unknown hash.
+  if (m[2] && !screenTakesSub(m[1])) {
     return {screen: DEFAULT_SCREEN, sub: null};
   }
   return {screen: m[1], sub: m[2] || null};
