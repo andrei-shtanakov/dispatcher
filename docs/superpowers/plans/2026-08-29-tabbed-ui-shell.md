@@ -746,7 +746,7 @@ git commit -m "feat(ui): верхние вкладки и hash-роутинг �
 
 **Interfaces:**
 - Consumes: `navigate`, `route`, `onScreenShown` (Задача 2); существующие
-  `rcOpenView(requestId)` / `#rc-run-view` (в коде Run console).
+  `openRunView(requestId)` / `#rc-run-view` (в коде Run console).
 - Produces: `lpOpenRun(requestId)` — открывает run view и проставляет
   `#launchpad/<request_id>`.
 
@@ -758,9 +758,19 @@ git commit -m "feat(ui): верхние вкладки и hash-роутинг �
 что видит оператор.
 
 Drill-down не заводит второй способ открыть прогон: он вызывает уже
-существующую функцию открытия run view и дополнительно пишет hash. Найди в
-коде функцию, которую сегодня дёргает кнопка `#rc-open`, и переиспользуй её —
-не пиши вторую.
+существующую `openRunView(requestId)` (`index.html:1862`) и дополнительно
+пишет hash. Её собственный комментарий объявляет её «the ONE way any control
+on the page … opens a request's drill-down» — это ровно то, что нужно; второй
+не писать. Она `async`: `lpOpenRun` её не ждёт, а `onScreenShown` остаётся
+синхронной — возвращённый промис разрешается сам, harness добирает его через
+`drain()`.
+
+**Куда именно переставляется `#run-console`.** Между `<div id="lp-recent">` и
+`<details id="lp-diagnostics">`, **прямым потомком** `<section id="launchpad">`
+— не внутрь какого-либо `#lp-*` контейнера. Рендеры панели переписывают
+`#lp-repos`/`#lp-ready`/`#lp-pending`/`#lp-active`/`#lp-recent` целиком через
+`innerHTML =`; секция, оказавшаяся внутри любого из них, будет стёрта первым
+же снапшотом вместе со всем введённым в её поля.
 
 Незалинкованные прогоны (`run_id` без `request_id`) drill-down не получают: у
 них нет ключа, по которому `GET /api/runs/{request_id}` вообще отвечает.
@@ -839,7 +849,7 @@ document.getElementById("launchpad").addEventListener("click", e => {
 function lpOpenRun(requestId) {
   if (!requestId) return;
   navigate("launchpad", requestId);
-  rcOpenView(requestId);      // the SAME entry point #rc-open already uses
+  openRunView(requestId);      // the SAME entry point #rc-open already uses
 }
 ```
 
@@ -849,7 +859,7 @@ function lpOpenRun(requestId) {
 
 ```js
 function onScreenShown(r) {
-  if (r.screen === "launchpad" && r.sub) rcOpenView(r.sub);
+  if (r.screen === "launchpad" && r.sub) openRunView(r.sub);
 }
 ```
 
@@ -898,7 +908,7 @@ refetch. Полная перерисовка стёрла бы открытые 
 причиной.
 
 **`onScreenShown` дописывается, а не переписывается:** ветка
-`if (r.sub) rcOpenView(r.sub)` из Задачи 3 обязана остаться.
+`if (r.sub) openRunView(r.sub)` из Задачи 3 обязана остаться.
 
 **Хелперы, которых в `launchpad_harness.js` ещё нет** — их пишет эта задача,
 рядом с существующими `click`/`htmlOf`/`callsTo`: `READY_ROW` (фикстура строки
@@ -971,7 +981,7 @@ function onScreenShown(r) {
     // A return must not preserve a stale permission to act: refetch, then let
     // the SAME post-refetch predicate re-validate any open confirmation.
     lpRefetchAfterAction();
-    if (r.sub) rcOpenView(r.sub);
+    if (r.sub) openRunView(r.sub);
   }
 }
 ```
@@ -1142,7 +1152,7 @@ function restartScreenTimer() {
 ```
 
 `onScreenShown` **дополняется** вызовом `loadActiveScreen()` и
-`restartScreenTimer()` — ветки Задач 3 и 4 (`rcOpenView(r.sub)`,
+`restartScreenTimer()` — ветки Задач 3 и 4 (`openRunView(r.sub)`,
 `lpRefetchAfterAction()`) остаются на месте. Старая строка `refresh(); setInterval(refresh, 10000);`
 удаляется целиком; сама `refresh()` удаляется после того, как её последний
 вызов исчез — оставленная «на всякий случай», она снова начнёт тянуть всё.
