@@ -1434,6 +1434,125 @@ testCase('a SUCCESSFUL load still stamps, on every unconditional screen',
   });
 });
 
+/** Parks each screen's endpoint(s) so its loads can be answered out of
+ * order. `settle(i)` answers the i-th LOAD — Roadmap's three endpoints
+ * together, since one load of that screen is all three. `waits` and `epics`
+ * are absent: the first cannot have two loads in flight (its gate) and the
+ * second is superseded by a filter click, not a tick — both have their own
+ * cases below. */
+const STALE_DRILL = {
+  sync: p => {
+    const d = deferrable();
+    overrideRoute(p, '/api/sync', d.route);
+    return {count: () => d.pending.length, settle: i => d.settle(i, SYNC_FRESH)};
+  },
+  projects: p => {
+    const d = deferrable();
+    overrideRoute(p, '/api/overview', d.route);
+    return {count: () => d.pending.length, settle: i => d.settle(i, {projects: []})};
+  },
+  errors: p => {
+    const d = deferrable();
+    overridePrefix(p, '/api/errors', d.route);
+    return {count: () => d.pending.length, settle: i => d.settle(i, [])};
+  },
+  models: p => {
+    const d = deferrable();
+    overrideRoute(p, '/api/models', d.route);
+    return {count: () => d.pending.length, settle: i => d.settle(i, [])};
+  },
+  contracts: p => {
+    const d = deferrable();
+    overrideRoute(p, '/api/contracts', d.route);
+    return {count: () => d.pending.length, settle: i => d.settle(i, [])};
+  },
+  roadmap: p => {
+    const r = deferrable(), s = deferrable(), c = deferrable();
+    // Summary registered LAST so it sits ahead of the `/api/roadmap`
+    // matcher and cannot be swallowed by it (same order as the
+    // partial-stale-mix case above).
+    overrideRoute(p, '/api/roadmap', r.route);
+    overrideRoute(p, '/api/contracts', c.route);
+    overrideRoute(p, '/api/roadmap/summary', s.route);
+    return {
+      count: () => r.pending.length,
+      settle: i => {
+        r.settle(i, {roadmaps: [], items: []});
+        s.settle(i, {projects: []});
+        c.settle(i, []);
+      },
+    };
+  },
+};
+
+testCase('a superseded load stamps nothing — on every loader a tick can '
+  + 'supersede', async () => {
+  // The structural half of the DROPPED case, one entry per loader: a loader
+  // that returns PAINTED from its generation guard instead of STALE would
+  // otherwise only be caught on whichever screen a hand-written case picked
+  // (Roadmap's guard, the all-or-nothing one, had no case at all).
+  for (const screen of Object.keys(STALE_DRILL)) {
+    await withPage(async page => {
+      const load = STALE_DRILL[screen](page);
+      await clickTab(page, screen);
+      check(load.count() === 1,
+        `${screen}: precondition: the entry read is in flight, got ${load.count()}`);
+      page.timers.byPeriod(10000).cb();
+      await drain();
+      check(load.count() === 2,
+        `${screen}: precondition: the tick issued a second load, got ${load.count()}`);
+      parkUpdated(page);
+
+      load.settle(0);          // the older load, whose render is dropped
+      await drain();
+      check(updatedText(page) === SENTINEL,
+        `${screen}: a dropped load leaves #updated alone, got `
+        + `"${updatedText(page)}"`);
+
+      load.settle(1);          // the newer one, which paints
+      await drain();
+      check(/^updated /.test(updatedText(page)),
+        `${screen}: and the paint stamps, got "${updatedText(page)}"`);
+    });
+  }
+});
+
+/** The endpoint to break to make each LOADERS screen fail — by PREFIX where
+ * the loader's URL carries a query string. Roadmap reads three endpoints;
+ * breaking one is enough, its `Promise.all` rejects. `benchmarks` is absent
+ * on purpose: breaking its boot request hides the conditional tab, so that
+ * screen has its own case further down. */
+const BREAK_ROUTE = {
+  sync: p => overrideRoute(p, '/api/sync', FAILS),
+  projects: p => overrideRoute(p, '/api/overview', FAILS),
+  errors: p => overridePrefix(p, '/api/errors', FAILS),
+  models: p => overrideRoute(p, '/api/models', FAILS),
+  contracts: p => overrideRoute(p, '/api/contracts', FAILS),
+  epics: p => overridePrefix(p, '/api/epics', FAILS),
+  waits: p => overrideRoute(p, '/api/waits', FAILS),
+  roadmap: p => overrideRoute(p, '/api/roadmap', FAILS),
+};
+function FAILS() { throw new Error('transport down'); }
+
+testCase('every LOADERS screen reports its own failure to #updated', async () => {
+  // The structural half of the cover: one entry per loader, so a loader
+  // whose catch returns the WRONG outcome — or none — is caught by name
+  // rather than by whichever screen a case happened to pick. A fresh page
+  // per screen: breaking one endpoint must not be what makes the next
+  // screen fail (Roadmap also reads /api/contracts).
+  for (const screen of Object.keys(BREAK_ROUTE)) {
+    await withPage(async page => {
+      BREAK_ROUTE[screen](page);
+      await openScreen(page, screen);
+      check(updatedText(page) === UNREAD,
+        `${screen}: a failed read is marked unread, got "${updatedText(page)}"`);
+      check(el(page, '#updated').className === 'err',
+        `${screen}: and carries the failure class, got `
+        + `"${el(page, '#updated').className}"`);
+    });
+  }
+});
+
 testCase('a FAILED load on the screen the operator LEFT does not mark the '
   + 'screen they moved to', async () => {
   // The screen-id re-check still comes first: an unread marker belongs to
@@ -1516,16 +1635,15 @@ testCase('Waits keeps its behaviour: the in-flight gate stamps nothing, the '
     await clickTab(page, 'waits');
     check(waits.pending.length === 1,
       `precondition: one waits read is in flight, got ${waits.pending.length}`);
-    parkUpdated(page);
 
+    // Models paints and stamps on the way past, so the sentinel is parked
+    // AFTER that switch and BEFORE the return — the return is the call the
+    // gate suppresses, and the only write to `#updated` this case may see.
     await clickTab(page, 'models');
+    parkUpdated(page);
     await clickTab(page, 'waits');
     check(waits.pending.length === 1,
       `precondition: the gate suppressed the second read, got ${waits.pending.length}`);
-    // models painted in between and stamped, so the sentinel is re-parked
-    // here rather than asserted through that switch.
-    parkUpdated(page);
-    await drain();
     check(updatedText(page) === SENTINEL,
       `the suppressed call neither stamps nor marks unread, got `
       + `"${updatedText(page)}"`);
@@ -1575,6 +1693,35 @@ testCase('the conditional Benchmarks loader reports its outcome too', async () =
     check(updatedText(page) === UNREAD,
       `and the screen is marked unread rather than freshly stamped, got `
       + `"${updatedText(page)}"`);
+  }, configuredBenchmarksRoutes);
+});
+
+testCase('a superseded Benchmarks load stamps nothing either', async () => {
+  // Kept out of the STALE_DRILL loop because this screen cannot be parked
+  // from boot: the tab only exists once the boot request has answered. So
+  // it is opened on a good answer first, and only then made deferrable.
+  await withPage(async page => {
+    await openScreen(page, 'benchmarks');
+    const bench = deferrable();
+    overrideRoute(page, '/api/benchmarks', bench.route);
+    const timer = page.timers.byPeriod(10000);
+    timer.cb();
+    await drain();
+    timer.cb();
+    await drain();
+    check(bench.pending.length === 2,
+      `precondition: two loads are in flight, got ${bench.pending.length}`);
+    parkUpdated(page);
+
+    bench.settle(0, BENCH_CONFIGURED);
+    await drain();
+    check(updatedText(page) === SENTINEL,
+      `the dropped load leaves #updated alone, got "${updatedText(page)}"`);
+
+    bench.settle(1, BENCH_CONFIGURED);
+    await drain();
+    check(/^updated /.test(updatedText(page)),
+      `and the load that paints stamps, got "${updatedText(page)}"`);
   }, configuredBenchmarksRoutes);
 });
 
