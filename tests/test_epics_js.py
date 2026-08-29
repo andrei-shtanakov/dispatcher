@@ -29,8 +29,16 @@ _MISSING_NODE = (
 def test_epics_panel_js_suite_passes() -> None:
     node = shutil.which("node")
     assert node is not None, _MISSING_NODE
+    # Same timeout discipline as the sibling entry points
+    # (test_launchpad_js.py, test_tabs_js.py): the harness's cases are async
+    # now, so an await on a promise that never settles must FAIL rather than
+    # hang the suite. The harness's own `process.on('exit')` guard catches the
+    # same failure when the event loop drains instead of stalling.
     result = subprocess.run(
-        [node, str(HARNESS), str(INDEX_HTML)], capture_output=True, text=True
+        [node, str(HARNESS), str(INDEX_HTML)],
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     assert result.returncode == 0, (
         f"epics harness failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"

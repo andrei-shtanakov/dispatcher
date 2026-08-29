@@ -39,11 +39,40 @@ const BODY_HTML = between(html, /<body[^>]*>/i, '</body>', 'body');
 const PAGE_SCRIPT = between(BODY_HTML, /<script[^>]*>/i, '</script>', 'script');
 
 let failures = 0;
+let asyncErrors = 0;
+let currentCase = '(startup)';
+let summaryPrinted = false;
 function check(name, condition, detail) {
   if (condition) return;
   failures++;
   console.error(`FAIL ${name}${detail ? `: ${detail}` : ''}`);
 }
+
+// The same three crash guards every sibling harness carries
+// (launchpad_harness.js and the rest). They matter more here since the cases
+// became asynchronous: without the `exit` guard, an await on a promise that
+// never settles would drain the event loop and exit 0 — a green suite over
+// zero coverage. `tests/test_epics_js.py` bounds the same failure in wall
+// time with a subprocess timeout.
+process.on('unhandledRejection', reason => {
+  asyncErrors++;
+  process.exitCode = 1;
+  console.error(`\nUNHANDLED REJECTION during ${currentCase}:`,
+    (reason && reason.stack) || reason);
+});
+process.on('uncaughtException', error => {
+  asyncErrors++;
+  process.exitCode = 1;
+  console.error(`\nUNCAUGHT EXCEPTION during ${currentCase}:`,
+    (error && error.stack) || error);
+});
+process.on('exit', () => {
+  if (!summaryPrinted) {
+    process.exitCode = 1;
+    console.error(`\nRUN DID NOT FINISH: exited during ${currentCase} without `
+      + 'reaching the summary.');
+  }
+});
 
 // The page is a tab shell now: #epics lives inside the hidden
 // `#screen-epics` tabpanel until a person opens it. Every case here boots on
@@ -100,6 +129,7 @@ const cells = document => Array.from(
 
 // ---- case 1: a complete plane renders its number, plainly ------------------
 {
+  currentCase = 'case 1: a complete plane';
   const {ctx, document} = await boot();
   ctx.renderEpics(view([
     plane('todo', 'read', 3),
@@ -116,6 +146,7 @@ const cells = document => Array.from(
 
 // ---- case 2: an unread plane is a dash, never a zero -----------------------
 {
+  currentCase = 'case 2: an unread plane';
   const {ctx, document} = await boot();
   ctx.renderEpics(view([
     plane('todo', 'read', 3),
@@ -131,6 +162,7 @@ const cells = document => Array.from(
 
 // ---- case 3: partial is neither a plain number nor a dash ------------------
 {
+  currentCase = 'case 3: partial';
   const {ctx, document} = await boot();
   const why = 'hosts still on snapshot v1 contribute nothing: h-old';
   ctx.renderEpics(view([
@@ -150,6 +182,7 @@ const cells = document => Array.from(
 
 // ---- case 4: a state this client has never heard of falls to the safe side --
 {
+  currentCase = 'case 4: an unknown plane state';
   const {ctx, document} = await boot();
   ctx.renderEpics(view([
     plane('todo', 'read', 3),
@@ -178,6 +211,7 @@ const cells = document => Array.from(
 
 // ---- case 4b: `unavailable` without a detail is not called "unknown" -------
 {
+  currentCase = 'case 4b: unavailable without a detail';
   const {ctx, document} = await boot();
   ctx.renderEpics(view([
     plane('todo', 'read', 1),
@@ -191,6 +225,7 @@ const cells = document => Array.from(
 
 // ---- case 5: a tag finding is reported without blaming the registry --------
 {
+  currentCase = 'case 5: a tag finding';
   const {ctx, document} = await boot();
   ctx.renderEpics(view(
     [plane('todo', 'read', 1), plane('issues', 'read', 1), plane('pull_requests', 'read', 0)],
@@ -204,13 +239,17 @@ const cells = document => Array.from(
     reg.className !== 'err' && reg.textContent.includes('clean'), reg.textContent);
 }
 
-if (failures) {
-  console.error(`\n${failures} epics-panel check(s) failed`);
+currentCase = '(summary)';
+summaryPrinted = true;
+if (failures || asyncErrors) {
+  console.error(`\n${failures} epics-panel check(s) failed `
+    + `\u00b7 ${asyncErrors} async error(s)`);
   process.exit(1);
 }
 console.log('epics harness: all checks passed');
 
 })().catch(err => {
+  summaryPrinted = true;
   console.error('\nHARNESS CRASHED:', (err && err.stack) || err);
   process.exit(1);
 });
