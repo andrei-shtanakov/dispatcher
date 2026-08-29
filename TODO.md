@@ -549,7 +549,7 @@
 `_cowork_output/plans/2026-08-27-dispatcher-tabbed-interface-rework.md` — dev-scratch,
 канон — спека в репо. Три PR-а, PR-1 первый по зависимости.
 
-- [ ] PR-1: тестовая среда + tab shell + главный экран Launchpad + развязка refresh — план `docs/superpowers/plans/2026-08-29-tabbed-ui-shell.md` (7 задач TDD, ветка `feat/tabbed-ui`) @owner:github:andrei-shtanakov @id:tabbed-ui-shell @epic:eco.ops
+- [ ] PR-1: тестовая среда + tab shell + главный экран Launchpad + развязка refresh — план `docs/superpowers/plans/2026-08-29-tabbed-ui-shell.md` (7 задач TDD закрыты, ветка `feat/tabbed-ui` = 19 коммитов, ждёт PR и визуальной приёмки владельца) @owner:github:andrei-shtanakov @id:tabbed-ui-shell @epic:eco.ops
       Девять вкладок, `Launchpad` первый и по умолчанию; `Run console` исчезает
       из верхней навигации и становится вложенным инструментом (run view —
       drill-down `#launchpad/<request_id>`, manual-форма — свёрнутый блок).
