@@ -193,7 +193,12 @@ function makeIntervalRecorder() {
   };
 }
 
-async function boot(launchpadRoute) {
+/** `hash` (default '', i.e. Launchpad) is the address bar the page opens
+ * on — Task 6's round-1 addition, needed to prove the boot-on-another-screen
+ * chain: a non-launchpad hash makes the trailing `lpFetchSnapshot()` at
+ * boot a no-op (Task 6), and the panel is filled on first visit instead by
+ * Task 4's return-refetch branch in `onScreenShown`. */
+async function boot(launchpadRoute, hash = '') {
   const document = new Document(BODY_HTML);
   const calls = [];
   const routes = defaultRoutes(launchpadRoute);
@@ -209,7 +214,7 @@ async function boot(launchpadRoute) {
       for (const [test, make] of routes) if (test(u)) return Promise.resolve(make(u));
       return Promise.reject(new Error(`no fixture route for ${u}`));
     },
-    ...browserGlobals(),
+    ...browserGlobals(hash),
   };
   vm.createContext(ctx);
   vm.runInContext(PAGE_SCRIPT, ctx);
@@ -218,7 +223,7 @@ async function boot(launchpadRoute) {
 }
 
 /** Boots a fresh page and hands it to `fn`. */
-async function withPage(fn, launchpadRoute) { await fn(await boot(launchpadRoute)); }
+async function withPage(fn, launchpadRoute, hash) { await fn(await boot(launchpadRoute, hash)); }
 
 function el(page, selector) {
   const node = page.document.querySelector(selector);
@@ -1041,6 +1046,24 @@ testCase('/api/launchpad has exactly one poller', async () => {
   });
 });
 
+testCase('booting on a non-launchpad hash fills Launchpad on first visit '
+  + 'via return-refetch, not the boot no-op', async () => {
+  await withPage(async page => {
+    // Booting hidden: activeScreen() isn't "launchpad" and nothing is
+    // pending, so lpShouldPoll() makes the trailing boot-time
+    // lpFetchSnapshot() a no-op — this chain crosses Task 4 (return-refetch),
+    // Task 5 (per-screen loaders/boot order) and Task 6 (the poll gate).
+    check(callsTo(page, '/api/launchpad') === 0,
+      `boot on a hidden Launchpad issues no fetch (got ${callsTo(page, '/api/launchpad')})`);
+
+    await openScreen(page, 'launchpad');
+    check(callsTo(page, '/api/launchpad') === 1,
+      `first visit fetched exactly once, via return-refetch (got ${callsTo(page, '/api/launchpad')})`);
+    check(htmlOf(page, '#lp-repos').includes('deployer'),
+      `the panel actually rendered the fetched snapshot (got: ${htmlOf(page, '#lp-repos')})`);
+  }, readyRowRoute(), '#sync');
+});
+
 // ---- Task 6 / Task 5 review finding: `#updated` must not lie -----------------
 //
 // A deferred Task 5 review finding: `#updated` has exactly one writer,
@@ -1055,13 +1078,38 @@ testCase('a hidden background poll never rewrites #updated', async () => {
     failTheSubmitTransport(page);
     await openReadyRowAndConfirm(page, 'deployer');
     await openScreen(page, 'sync');
-    const before = htmlOf(page, '#updated');
+    // A real before/after timestamp comparison is vacuous here:
+    // toLocaleTimeString() only has SECOND resolution, and this whole case
+    // runs in milliseconds, so an ungated write would produce the identical
+    // string and the check would pass either way. A sentinel the real write
+    // format could never reproduce is the only thing that actually proves
+    // the gate held.
+    el(page, '#updated').textContent = 'SENTINEL';
 
     page.timers.byPeriod(LP_REFRESH_MS).cb();
     await drain();
-    check(htmlOf(page, '#updated') === before,
-      'a hidden panel\'s background poll must not touch #updated '
-      + `(before: ${JSON.stringify(before)}, after: ${JSON.stringify(htmlOf(page, '#updated'))})`);
+    check(htmlOf(page, '#updated') === 'SENTINEL',
+      `a hidden panel's background poll must not touch #updated (got: ${htmlOf(page, '#updated')})`);
+  }, readyRowRoute());
+});
+
+testCase('a hidden Launchpad does NOT poll for a merely-open confirmation',
+  async () => {
+  await withPage(async page => {
+    // Opened, never submitted: nothing is on the wire and there is no
+    // outcome to discover. Counting `status: "open"` in lpShouldPoll would
+    // keep a hidden tab polling forever just because someone expanded a
+    // confirm and wandered off — the exact waste active-only polling exists
+    // to remove.
+    await openReadyRow(page, 'deployer');
+    await openScreen(page, 'sync');
+
+    const before = callsTo(page, '/api/launchpad');
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+    check(callsTo(page, '/api/launchpad') === before,
+      `an open-but-unsubmitted confirm must not keep a hidden panel polling `
+      + `(got ${callsTo(page, '/api/launchpad')} vs before ${before})`);
   }, readyRowRoute());
 });
 

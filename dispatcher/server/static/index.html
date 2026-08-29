@@ -2372,15 +2372,21 @@ const LOADERS = {
   roadmap: loadRoadmap,
 };
 
-// `#updated` is one global element for the whole page. After the split it is
-// written by the ACTIVE screen's loader — not by whichever endpoint happened
-// to answer last.
+// `#updated` is one global element for the whole page, with exactly two
+// writers (this loader, and Task 6's gated write in lpApplySnapshot) — both
+// funnel through here so the two can never drift apart in appearance.
+function stampUpdated() {
+  document.getElementById("updated").textContent =
+    "updated " + new Date().toLocaleTimeString();
+}
+
+// After the split, `#updated` is written by the ACTIVE screen's loader — not
+// by whichever endpoint happened to answer last.
 async function loadActiveScreen() {
   const load = LOADERS[activeScreen()];
   if (!load) return;
   await load();
-  document.getElementById("updated").textContent =
-    "updated " + new Date().toLocaleTimeString();
+  stampUpdated();
 }
 
 let screenTimer = null;
@@ -4559,10 +4565,7 @@ function lpApplySnapshot(seq, snapshot) {
   if (seq !== lpState.seq) return;
   lpState.snapshot = snapshot;
   lpRender(snapshot);
-  if (activeScreen() === "launchpad") {
-    document.getElementById("updated").textContent =
-      "updated " + new Date().toLocaleTimeString();
-  }
+  if (activeScreen() === "launchpad") stampUpdated();
 }
 
 // The one place that actually calls fetch() — both lpFetchSnapshot() and
@@ -4586,14 +4589,20 @@ function lpIssueFetch() {
     });
 }
 
-// Spec §9.1: the ONE exception to active-only polling. An unresolved attempt
-// is the state the operator must not silently lose; anything else, hidden
-// means quiet. Evaluated INSIDE the tick (lpFetchSnapshot), not at
-// tab-switch time — a pending entry can settle between ticks, and a stop
-// triggered by the switch event would miss that.
+// Spec §9.1: the ONE exception to active-only polling. An unresolved
+// ATTEMPT — "submitting" (on the wire) or "unknown" (transport-uncertain,
+// no outcome yet) — is the state the operator must not silently lose;
+// anything else, hidden means quiet. An "open" entry is just an expanded
+// two-step confirm nobody submitted: nothing is in flight and there is no
+// outcome to discover, so it must NOT keep a hidden tab polling forever —
+// re-validating it is Task 4's return-refetch's job, not this timer's.
+// Evaluated INSIDE the tick (lpFetchSnapshot), not at tab-switch time — a
+// pending entry can settle between ticks, and a stop triggered by the
+// switch event would miss that.
 function lpShouldPoll() {
   if (activeScreen() === "launchpad") return true;
-  return Object.keys(lpState.pending).length > 0;
+  return Object.values(lpState.pending)
+    .some(entry => entry.status === "submitting" || entry.status === "unknown");
 }
 
 // Timer-tick entry: refuses outright while ANY fetch is inflight (the
