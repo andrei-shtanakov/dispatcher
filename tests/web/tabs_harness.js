@@ -54,6 +54,9 @@ const SCREEN_IDS = [
   'launchpad', 'sync', 'projects', 'errors', 'models',
   'contracts', 'epics', 'waits', 'roadmap',
 ];
+// The case that makes the paragraph above true rather than merely intended:
+// `the visible tabs are exactly this list, in this order` (Task 7 block).
+// Every OTHER use of SCREEN_IDS below is order-insensitive.
 // Every panel the page ships, conditional one included: structural
 // assertions (ARIA wiring, one-visible-panel, `#ta-outcomes` placement) hold
 // for the tenth screen whether or not its tab is currently offered.
@@ -746,6 +749,24 @@ testCase('an unconfigured stand cannot be routed onto Benchmarks at all',
     check(!el(page, '#screen-launchpad').hidden, 'fell back to launchpad');
     check(el(page, '#screen-benchmarks').hidden, 'the panel did not open');
   }, {hash: '#benchmarks'});
+});
+
+const tabIds = page =>
+  visibleTabs(page).map(b => b.attributes.id.replace(/^tab-/, ''));
+
+testCase('the visible tabs are exactly SCREEN_IDS, in that order', async () => {
+  // The one order-sensitive assertion in this file: every other use of
+  // SCREEN_IDS is a set, so without this case the literal list above would
+  // pin nothing and a reordered strip would ship green.
+  await withPage(page => {
+    check(tabIds(page).join(',') === SCREEN_IDS.join(','),
+      `nine tabs in registry order, got ${tabIds(page).join(',')}`);
+  });
+  await withPage(page => {
+    const expected = [...SCREEN_IDS, 'benchmarks'].join(',');
+    check(tabIds(page).join(',') === expected,
+      `the conditional tab appends, got ${tabIds(page).join(',')}`);
+  }, configuredBenchmarksRoutes);
 });
 
 testCase('a configured profile adds the Benchmarks tab last', async () => {
