@@ -416,6 +416,56 @@ testCase("C1: the operator's actual journey — submit, see the id, open the "
   }, () => ok({request_id: 'rc-happy-1', run_id: '01AAA', accepted: true, reason: null}));
 });
 
+// -- terminal review, PR #220: #rc-open must route through the hash, like
+// every other opener -------------------------------------------------------
+// The Manual "Open run" button used to call openRunView() directly,
+// bypassing navigate()/the hash: a run opened this way could not be
+// restored by reload, was closed by the next tab switch (onScreenShown's
+// close branch fires whenever there is no r.sub), and Back returned to bare
+// Launchpad instead of the drill-down (spec §4.1). #rc-open now goes
+// through lpOpenRun, the same function the row click (tabs_harness.js) and
+// the Pending-row button already use.
+
+testCase('#rc-open with a routable id writes #launchpad/<id> and opens the '
+  + 'run, exactly once', async () => {
+  await withPage(async page => {
+    page.routes.push([u => u === '/api/runs/rc-open-routable', () => ok(
+      {record: {state: 'materialized', run_id: '01AAA'},
+       run: {status: 'running'}, warnings: []})]);
+    fill(page, '#rc-request-id', 'rc-open-routable');
+    await click(page, '#rc-open');
+
+    check(page.ctx.location.hash === '#launchpad/rc-open-routable',
+      `hash is the drill-down, got ${page.ctx.location.hash}`);
+    // Exact count, not `.some()`: a double-open (navigate()'s own
+    // synchronous hashchange plus a second, direct call) has already
+    // shipped on this branch once, and only an exact count catches it.
+    check(page.calls.filter(c => c.url === '/api/runs/rc-open-routable').length === 1,
+      'the run was fetched exactly once (got '
+      + `${page.calls.filter(c => c.url === '/api/runs/rc-open-routable').length})`);
+  });
+});
+
+testCase('#rc-open with an id that cannot survive HASH_RE opens directly '
+  + 'and leaves the hash unchanged', async () => {
+  const UNROUTABLE_ID = 'weird id';   // a space fails HASH_RE's sub-segment
+  await withPage(async page => {
+    const before = page.ctx.location.hash;
+    const url = `/api/runs/${encodeURIComponent(UNROUTABLE_ID)}`;
+    page.routes.push([u => u === url, () => ok(
+      {record: {state: 'materialized', run_id: '01AAA'},
+       run: {status: 'running'}, warnings: []})]);
+    fill(page, '#rc-request-id', UNROUTABLE_ID);
+    await click(page, '#rc-open');
+
+    check(page.ctx.location.hash === before,
+      `an unroutable request_id must not write the hash, got `
+      + `${page.ctx.location.hash}`);
+    check(page.calls.filter(c => c.url === url).length === 1,
+      'the run view still opened directly, exactly once');
+  });
+});
+
 testCase('accepted:false renders as a refusal WITH the reason', async () => {
   const page = await boot();
   const html = receiptHtml(page,

@@ -591,12 +591,13 @@ function onScreenShown(r) {
   // NOT an early return and NOT an `else` on the branch above: this
   // function accretes, and the loader dispatch below must still run.
   //
-  // KNOWN AND ACCEPTED: `#rc-open` (the diagnostic field inside Manual
-  // (advanced)) and lpOpenRun's non-grammar fallback (for a request_id
-  // that cannot survive HASH_RE) both open a view WITHOUT writing the
-  // hash, so the next navigation closes them. That is correct, not a bug
-  // to rediscover: the hash is the only writer of the screen, and a view
-  // the address bar cannot name cannot be restored by it either.
+  // KNOWN AND ACCEPTED: lpOpenRun's non-grammar fallback (for a request_id
+  // that cannot survive HASH_RE) opens a view WITHOUT writing the hash, so
+  // the next navigation closes it. That is correct, not a bug to
+  // rediscover: the hash is the only writer of the screen, and a view the
+  // address bar cannot name cannot be restored by it either. `#rc-open`
+  // itself now routes through lpOpenRun like every other opener, so it is
+  // exempt from this — a routable id gets a hash like any other.
   if (r.screen !== "launchpad" || !r.sub) {
     closeRunView();
   }
@@ -2071,14 +2072,14 @@ function closeRunView() {
   document.getElementById("rc-run-view").innerHTML = "";
 }
 
-document.getElementById("rc-open").addEventListener("click", async () => {
+document.getElementById("rc-open").addEventListener("click", () => {
   const requestId = document.getElementById("rc-request-id").value.trim();
   if (!requestId) {
     document.getElementById("rc-run-view").innerHTML =
       `<div class="warn">enter a request_id</div>`;
     return;
   }
-  await openRunView(requestId);
+  lpOpenRun(requestId);
 });
 
 // Fires one Mode-1 verb against the currently open request (Task 5, spec

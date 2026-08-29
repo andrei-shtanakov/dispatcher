@@ -262,6 +262,7 @@ async function click(page, selector) {
   await drain();
 }
 function callsTo(page, url) { return page.calls.filter(c => c.url === url).length; }
+function fill(page, selector, value) { el(page, selector).value = value; }
 
 // ---- case runner -----------------------------------------------------------
 
@@ -648,6 +649,43 @@ testCase('re-entering the drill-down re-opens it', async () => {
     check(callsTo(page, '/api/runs/rc-active-1') === 2,
       `two opens, two fetches (got ${callsTo(page, '/api/runs/rc-active-1')})`);
   }, {hash: '#launchpad', ...snapshotRoute({active: [ACTIVE_LINKED]})});
+});
+
+// -- terminal review, PR #220: #rc-open (Manual) is a drill-down opener too -
+// Only the row/button openers were exercised above. #rc-open used to call
+// openRunView() directly, bypassing the hash entirely — so a run opened
+// through the Manual form could not be restored by reload, and Back/Forward
+// never knew it had been open at all. It now routes through lpOpenRun like
+// every other opener, so the same Back/Forward contract must hold for it.
+
+testCase('Back/Forward restore a run view opened via #rc-open (Manual), '
+  + 'not just a row click', async () => {
+  await withPage(async page => {
+    fill(page, '#rc-request-id', 'rc-open-manual-1');
+    await click(page, '#rc-open');
+    check(page.ctx.location.hash === '#launchpad/rc-open-manual-1',
+      `hash is the drill-down, got ${page.ctx.location.hash}`);
+    check(htmlOf(page, '#rc-run-view') !== '',
+      'precondition: #rc-open painted the run view');
+
+    page.ctx.history.back();
+    await drain();
+
+    check(page.ctx.location.hash === '#launchpad',
+      `Back landed on the bare screen, got ${page.ctx.location.hash}`);
+    check(htmlOf(page, '#rc-run-view') === '',
+      `#launchpad and #launchpad/<id> must not render alike, got `
+      + `${htmlOf(page, '#rc-run-view')}`);
+
+    page.ctx.history.forward();
+    await drain();
+
+    check(page.ctx.location.hash === '#launchpad/rc-open-manual-1',
+      `Forward restores the drill-down opened via #rc-open, got `
+      + `${page.ctx.location.hash}`);
+    check(htmlOf(page, '#rc-run-view') !== '',
+      'the run view opened via #rc-open is repainted, not lost to Back/Forward');
+  }, {hash: '#launchpad'});
 });
 
 // ---- Whole-branch review, ITEM 2: `#updated` belongs to the ACTIVE screen -
