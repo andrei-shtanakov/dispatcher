@@ -462,7 +462,12 @@ let route = {screen: DEFAULT_SCREEN, sub: null};
 // after being on another screen" (needs a refetch so the SAME post-refetch
 // predicate that already gates every applied snapshot — lpValidateOpenConfirm,
 // invoked from lpRender via lpRenderReady/lpRenderPending — gets a chance to
-// re-validate whatever confirmation is still open).
+// re-validate whatever confirmation is still open). The `null` case is load-
+// bearing beyond that double-fetch: `lpState`/`lpRefetchAfterAction` are not
+// declared until further down the script, so calling it here at the very
+// first boot call (before that point is reached) would throw a TDZ
+// ReferenceError out of applyRoute() itself — this branch has shipped that
+// exact shape of bug once already (Task 3).
 let lpLastScreenShown = null;
 
 /** Screens currently offered — Task 7 makes this conditional. */
@@ -505,21 +510,26 @@ function applyRoute() {
  * on return). ACCRETES: each task adds its own branch here, never replaces
  * the function outright. */
 function onScreenShown(r) {
+  // Read-then-write, both at the TOP: this function accretes (Task 5 adds a
+  // branch below), and a branch that returns early must never strand
+  // `lpLastScreenShown` un-updated — that would silently skip re-validation
+  // on the next real return, the exact failure this task exists to prevent.
+  const previousScreen = lpLastScreenShown;
+  lpLastScreenShown = r.screen;
   if (r.screen === "launchpad") {
     // A return must not preserve a stale permission to act (spec §5.5):
     // state (lpState.pending/rowMessages/escapes) already survives a tab
     // switch untouched — only `hidden` changed. What must NOT survive
     // unchecked is an open confirmation's validity, so refetch and let the
     // existing post-refetch predicate re-run, same as any other applied
-    // snapshot. Skipped on the very first paint (`lpLastScreenShown ===
-    // null`) — that fetch is lpFetchSnapshot()'s job; doing it here too
-    // would fetch twice at boot.
-    if (lpLastScreenShown !== null && lpLastScreenShown !== "launchpad") {
+    // snapshot. Skipped on the very first paint (`previousScreen === null`)
+    // — that fetch is lpFetchSnapshot()'s job; doing it here too would
+    // fetch twice at boot (and, before lpState is even declared, throw).
+    if (previousScreen !== null && previousScreen !== "launchpad") {
       lpRefetchAfterAction();
     }
     if (r.sub) openRunView(r.sub);
   }
-  lpLastScreenShown = r.screen;
 }
 
 function activeScreen() { return route.screen; }

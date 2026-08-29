@@ -290,14 +290,6 @@ const REPO_UNREADABLE = {
     detail: 'not a checkout'}],
 };
 
-// Task 4 (tabbed-ui): a `ready[]` row for REPO_READY — the pair the
-// tab-round-trip cases below need already sitting in the Ready list at
-// boot, so `openReadyRow`/`openReadyRowAndConfirm` have a real row to click.
-const READY_ROW = {
-  repo_key: REPO_READY.repo_key, work_id: 'todo://deployer/some-work-item',
-  dag_path: 'tasks/dag.yaml', seen_revision: REPO_READY.seen_revision,
-};
-
 // ---- case 1: wholesale rendering of a fixture snapshot ----------------------
 
 testCase('renders repo rows with admission classes', async () => {
@@ -585,6 +577,12 @@ const READY_ITEM = {
 function readySnapshot(overrides = {}) {
   return snapshot({ready: [READY_ITEM], ...overrides});
 }
+// Task 4 (tabbed-ui) names this fixture READY_ROW in the plan — an ALIAS,
+// not a second definition: a fixture drifting out of sync with READY_ITEM
+// (e.g. someone editing one but not the other) would silently make the
+// §5.5 tab-round-trip cases below stop exercising the same row §10's cases
+// above do.
+const READY_ROW = READY_ITEM;
 /** Sets a control's value and fires 'input', exactly as a real keystroke
  * does — dom.js's `dispatch()` bubbles it to the delegated listener on
  * #launchpad the same way it bubbles 'click' (tests/web/dom.js). */
@@ -900,15 +898,20 @@ testCase('behaviour 5: release-malformed — a structured error keeps the '
 // never by calling lpRefetchAfterAction() by hand — that path was already
 // covered by behaviour 4 / scenario 3.
 
-/** A boot route with REPO_READY and its matching READY_ROW already Ready —
- * what every case below needs sitting in the Ready list before it can open
- * a row through the real control. */
+/** A boot route with REPO_READY and its matching READY_ROW (== READY_ITEM)
+ * already Ready — what every case below needs sitting in the Ready list
+ * before it can open a row through the real control. Defined in terms of
+ * `readySnapshot` (not a second `ready: [...]` literal) so it can't drift
+ * out of sync with the §10 cases that already use READY_ITEM. */
 function readyRowRoute(overrides = {}) {
-  return () => ok(snapshot({repositories: [REPO_READY], ready: [READY_ROW], ...overrides}));
+  return () => ok(readySnapshot({repositories: [REPO_READY], ...overrides}));
 }
 
 testCase('leaving and returning keeps an unresolved attempt', async () => {
   await withPage(async page => {
+    check(callsTo(page, '/api/launchpad') === 1,
+      `exactly one fetch at boot (got ${callsTo(page, '/api/launchpad')})`);
+
     failTheSubmitTransport(page);
     await openReadyRowAndConfirm(page, 'deployer');
     check(/launch outcome unknown/.test(htmlOf(page, '#lp-ready')),
@@ -934,12 +937,19 @@ testCase('leaving and returning keeps an unresolved attempt', async () => {
 
 testCase('an open confirmation survives an unchanged snapshot', async () => {
   await withPage(async page => {
+    check(callsTo(page, '/api/launchpad') === 1,
+      `exactly one fetch at boot (got ${callsTo(page, '/api/launchpad')})`);
     await openReadyRow(page, 'deployer');
     check(el(page, '#lp-ready .lp-confirm').disabled === false, 'starts enabled');
 
     await openScreen(page, 'sync');
     await openScreen(page, 'launchpad');
 
+    // The count is the whole point here: without a real return-refetch this
+    // case would pass byte-identically on the never-re-rendered DOM left
+    // over from before the trip, proving nothing about the return.
+    check(callsTo(page, '/api/launchpad') === 2,
+      `the return trip issued exactly one more fetch (got ${callsTo(page, '/api/launchpad')})`);
     const confirm = el(page, '#lp-ready .lp-confirm');
     check(!confirm.disabled, 'Confirm stays enabled over an unchanged row');
   }, readyRowRoute());
