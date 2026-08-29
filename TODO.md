@@ -568,6 +568,13 @@
       product proposals, orchestration runs, merge gate, task authoring,
       spec-runner config) — backend не удаляется, изменение доступности
       называется в PR первой строкой. План пишется после мержа PR-1.
+      Найдено в PR-1 (терминальное ревью 7 + разбор потребителей `sub`):
+      **`#projects/<directory>` объявлен спекой §4.1, но не реализован.**
+      Роутер его принимает (`sub: true` в реестре — иначе код противоречил бы
+      спеке), однако экран Projects выбор пишет в `errorsProject` по клику
+      карточки и `route.sub` не читает никогда. Единственные потребители
+      `sub` во всей странице — Launchpad'овы. PR-2 обязан либо реализовать
+      адресацию, либо снять `sub: true` вместе с правкой спеки.
 - [ ] PR-3: перекомпоновка экрана Sync без смены источника истины @owner:github:andrei-shtanakov @blocked_by:todo://dispatcher/tabbed-ui-shell @id:tabbed-ui-sync @epic:eco.ops
       Спека §7. Repo-centric строки, явный статус источника каждой машины
       (`live`/`published`/`stale`/`unavailable`), обе машины отдельно. Сырой JSON
