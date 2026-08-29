@@ -560,11 +560,36 @@ function setBenchmarksAvailable(available) {
   if (available === benchmarksAvailable) return;
   benchmarksAvailable = available;
   const tab = document.getElementById("tab-benchmarks");
+  // Read BEFORE the tab is hidden. A browser moves focus off an element it
+  // hides (to `<body>`), so asking afterwards would be too late to learn
+  // that the operator had been standing on it.
+  const hadFocus = !!tab && document.activeElement === tab;
   if (tab) tab.hidden = !available;
   if (!available) {
     // An operator standing on a screen whose tab just vanished has nothing
     // to click back from.
     if (route.screen === "benchmarks") navigate(DEFAULT_SCREEN, null);
+    // Terminal review 8: the route moved but DOM FOCUS did not, so a
+    // keyboard operator was left with `activeElement` on a hidden button —
+    // their place in the strip gone, navigation to re-enter from scratch.
+    // `applyRoute` maintains visibility, selection and the roving tabindex,
+    // but it has never moved focus; nothing had, until here.
+    //
+    // Gated on `hadFocus`: someone who was somewhere else on the page when
+    // the profile changed must not have focus stolen from them.
+    //
+    // `activeScreen()` rather than a hardcoded DEFAULT_SCREEN, though today
+    // they are always the same value here: this function is reached only
+    // from loadBenchmarks, which runs only while Benchmarks is the ACTIVE
+    // screen, so the navigate above has always just happened and the route
+    // is `launchpad`. Writing the general rule costs nothing and keeps this
+    // correct if that ever stops being true — if the profile probe were
+    // widened to run on every screen, design §4's manual activation would
+    // make "focused on the Benchmarks tab while another screen is open" a
+    // reachable state, and a hardcoded launchpad would then drop that
+    // operator onto a tab that is neither where they were nor where they
+    // are going.
+    if (hadFocus) focusTab(activeScreen());
     return;
   }
   // The answer that creates the tab arrives AFTER the boot hash was parsed,

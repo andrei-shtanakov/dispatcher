@@ -2231,6 +2231,76 @@ testCase('losing the profile drops the active Benchmarks screen to Launchpad',
   }, configuredBenchmarksRoutes);
 });
 
+// ---- terminal review 8: focus must not be stranded on a vanished tab -----
+//
+// `setBenchmarksAvailable(false)` hid the tab and moved the ROUTE, but never
+// DOM focus, so a keyboard operator was left with `activeElement` on a
+// hidden button: their place in the strip gone, navigation to re-enter from
+// scratch. `applyRoute` maintains visibility, selection and the roving
+// tabindex and has never touched focus — which is exactly why the hole was
+// invisible until focus itself became observable (dom.js models it; before
+// that these assertions could not have been written).
+//
+// Two cases: focus IS rescued when the vanishing tab held it, and is NOT
+// stolen when it did not. There is deliberately no third case for "focused
+// on the Benchmarks tab while another screen is open" — design §4's manual
+// activation makes that state describable, but nothing can produce it:
+// `setBenchmarksAvailable` is reached only from `loadBenchmarks`, which runs
+// only while Benchmarks is the active screen (plus the boot probe, where the
+// value is unchanged and the function returns early). The page still writes
+// the general rule; see setBenchmarksAvailable's comment for why.
+
+testCase('losing the profile moves focus off the vanishing tab', async () => {
+  await withPage(async page => {
+    await openScreen(page, 'benchmarks');
+    // Arrow onto the tab itself: the operator is standing ON the control
+    // that is about to disappear.
+    el(page, '#tab-benchmarks').focus();
+    check(focusedTab(page) === 'benchmarks',
+      `precondition: focus is on the benchmarks tab, got ${focusedTab(page)}`);
+
+    overrideRoute(page, '/api/benchmarks', () => ok(BENCH_UNCONFIGURED));
+    page.timers.byPeriod(10000).cb();
+    await drain();
+
+    check(!el(page, '#screen-launchpad').hidden, 'the route fell back to launchpad');
+    check(focusedTab(page) === 'launchpad',
+      `and focus went with it, rather than being stranded on the hidden `
+      + `button, got ${focusedTab(page)}`);
+    check(!el(page, '#tab-launchpad').hidden,
+      'onto a tab that is actually visible');
+  }, configuredBenchmarksRoutes);
+});
+
+testCase('a profile change does not steal focus from a tab that survives',
+  async () => {
+  // The other half of the gate: the rescue is conditional on the VANISHING
+  // tab having held focus. Under manual activation an operator can be
+  // arrowed onto a different tab while Benchmarks is still the open screen;
+  // the profile going away must not yank them off it.
+  //
+  // Focus is parked on `sync`, deliberately NOT on `launchpad`: parking it
+  // where the rescue would land anyway makes this case pass with or without
+  // the gate, which is how the first draft of it went vacuous.
+  await withPage(async page => {
+    await openScreen(page, 'benchmarks');
+    el(page, '#tab-benchmarks').focus();
+    await press(page, 'ArrowRight');   // wraps onto launchpad…
+    await press(page, 'ArrowRight');   // …and on to sync
+    check(focusedTab(page) === 'sync',
+      `precondition: focus is on a tab that will survive, got ${focusedTab(page)}`);
+    check(openScreenId(page) === 'benchmarks',
+      `precondition: benchmarks is still the open screen, got ${openScreenId(page)}`);
+
+    overrideRoute(page, '/api/benchmarks', () => ok(BENCH_UNCONFIGURED));
+    page.timers.byPeriod(10000).cb();
+    await drain();
+
+    check(focusedTab(page) === 'sync',
+      `focus stayed where the operator put it, got ${focusedTab(page)}`);
+  }, configuredBenchmarksRoutes);
+});
+
 testCase('a failed benchmarks read leaves the tab the operator is standing on',
   async () => {
   // A transport failure is not an answer about configuration: yanking the
