@@ -205,10 +205,17 @@ const drain = async (turns = 5) => {
   for (let i = 0; i < turns; i++) await new Promise(r => setTimeout(r, 0));
 };
 
-/** A recording, non-firing setInterval/clearInterval: every registration is
- * kept and NOTHING fires on its own, so no case here races a real clock. */
+/** A recording, non-firing setInterval/setTimeout: every registration is
+ * kept and NOTHING fires on its own, so no case here races a real clock.
+ *
+ * setTimeout is recorded for the same reason the interval is (fix round 2):
+ * the page's ONE setTimeout is the 800 ms reload after a Sync host-action,
+ * and a case must be able to fire it on demand rather than sleep through it.
+ * `drain()` above uses the harness's own module-scope setTimeout, not this
+ * one, so recording here does not stall the run. */
 function makeIntervalRecorder() {
   const registered = new Map();
+  const timeouts = new Map();
   let nextId = 1;
   return {
     setInterval(cb, period) {
@@ -219,6 +226,17 @@ function makeIntervalRecorder() {
     clearInterval(id) { registered.delete(id); },
     byPeriod(period) {
       for (const iv of registered.values()) if (iv.period === period) return iv;
+      return null;
+    },
+    setTimeout(cb, delay) {
+      const id = nextId++;
+      timeouts.set(id, {cb, delay});
+      return id;
+    },
+    clearTimeout(id) { timeouts.delete(id); },
+    /** The recorded callback scheduled for exactly `delay` ms, or null. */
+    timeoutByDelay(delay) {
+      for (const t of timeouts.values()) if (t.delay === delay) return t;
       return null;
     },
   };
@@ -235,7 +253,8 @@ async function boot(opts = {}) {
   const timers = makeIntervalRecorder();
   const ctx = {
     document, console, URL,
-    setTimeout, clearTimeout,
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
     setInterval: timers.setInterval,
     clearInterval: timers.clearInterval,
     fetch: (url, opts2) => {
@@ -1668,6 +1687,116 @@ testCase('a direct loader call that SUCCEEDS stamps normally', async () => {
         + `"${el(page, '#updated').className}"`);
     }, c.boot || {});
   }
+});
+
+// ---- fix round 2: the loader passed BY NAME to setTimeout ---------------
+//
+// `setTimeout(loadSync, 800)` — the delayed reload after a successful Sync
+// host-action — was the ninth call site, and the one two sweeps missed,
+// because a function passed by NAME does not match a grep for `loadSync(`.
+// The operator runs a host-action, the reload 800 ms later fails, loadSync
+// clears its panel and says "не прочитано" — and the previous read's
+// timestamp stayed above it.
+
+/** A live host with a behind-only `sync-first` verdict: the one shape that
+ * renders a `button.act[data-act="pull"]` (renderSync's `actions`). */
+const SYNC_WITH_HOST_ACTION = {
+  fetch_in_flight: false,
+  report: {
+    top_line: 'sync-first', top_reason: null, proposals: [],
+    hosts: [{
+      host: 'h1', source: 'live', age_seconds: 0, stale: false,
+      gh_error: null, error: null,
+      verdicts: [{repo: 'alpha', verdict: 'sync-first', reason: '',
+        branch: 'master', ahead: 0, behind: 2, dirty: false, is_kb: false}],
+    }],
+  },
+};
+const hostActionRoutes = {routes: [
+  [u => u === '/api/sync', () => ok(SYNC_WITH_HOST_ACTION)],
+  [u => u.startsWith('/api/actions/pull'),
+    () => ok({ok: true, detail: 'fast-forwarded'})],
+]};
+
+/** Runs the host-action and returns the recorded 800 ms reload, unfired.
+ * The action is driven through the real button, and the reload is left for
+ * the caller to fire so the case controls when — and against what — it
+ * lands. */
+async function runHostAction(page) {
+  await openScreen(page, 'sync');
+  const btn = el(page, '#sync-hosts')
+    .querySelector('button.act[data-act="pull"][data-dir="alpha"]');
+  check(!!btn, 'precondition: the behind-only row offers a pull button');
+  if (!btn) return null;
+  await Promise.all(dispatch(btn, 'click'));
+  await drain();
+  check(el(page, '#sync-hosts')
+    .querySelector('.act-result[data-for="alpha"]').textContent
+    === '✓ fast-forwarded',
+    'precondition: the action itself succeeded');
+  const reload = page.timers.timeoutByDelay(800);
+  check(!!reload, 'precondition: a successful action schedules the reload');
+  return reload;
+}
+
+testCase("a host-action's delayed reload that FAILS leaves no success stamp",
+  async () => {
+  await withPage(async page => {
+    const reload = await runHostAction(page);
+    if (!reload) return;
+    // The stamp the defect left standing: it belongs to the read that
+    // painted the screen BEFORE the action, and the sentinel stands in for
+    // it so a survivor and a fresh stamp stay distinguishable.
+    parkUpdated(page);
+
+    overrideRoute(page, '/api/sync', FAILS);
+    reload.cb();
+    await drain();
+
+    check(el(page, '#sync-topline').textContent === 'не прочитано',
+      `precondition: the reload failed and the panel says so, got `
+      + `"${el(page, '#sync-topline').textContent}"`);
+    check(updatedText(page) === UNREAD,
+      `the delayed reload reports its failure, got "${updatedText(page)}"`);
+    check(el(page, '#updated').className === 'err',
+      `and carries the failure class, got "${el(page, '#updated').className}"`);
+  }, hostActionRoutes);
+});
+
+testCase("a host-action's delayed reload that SUCCEEDS stamps", async () => {
+  await withPage(async page => {
+    const reload = await runHostAction(page);
+    if (!reload) return;
+    parkUpdated(page);
+
+    reload.cb();
+    await drain();
+
+    check(el(page, '#sync-topline').textContent === 'sync-first',
+      `precondition: the reload repainted the screen, got `
+      + `"${el(page, '#sync-topline').textContent}"`);
+    check(/^updated /.test(updatedText(page)),
+      `the reload stamps, got "${updatedText(page)}"`);
+    check(el(page, '#updated').className === '',
+      `without the failure class, got "${el(page, '#updated').className}"`);
+  }, hostActionRoutes);
+});
+
+testCase("a host-action's delayed reload landing on ANOTHER screen stamps "
+  + 'nothing', async () => {
+  // 800 ms is long enough to change tabs in. The reload belongs to Sync.
+  await withPage(async page => {
+    const reload = await runHostAction(page);
+    if (!reload) return;
+    await clickTab(page, 'models');
+    parkUpdated(page);
+
+    reload.cb();
+    await drain();
+
+    check(updatedText(page) === SENTINEL,
+      `the Sync reload may not stamp over Models, got "${updatedText(page)}"`);
+  }, hostActionRoutes);
 });
 
 testCase('a direct call whose answer arrives after the operator has LEFT '

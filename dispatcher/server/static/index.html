@@ -1381,7 +1381,9 @@ document.getElementById("sync-hosts").addEventListener("click", async e => {
     out.className = "act-result " + (data.ok ? "ok" : "err");
     // Only reachable from the Sync screen's own host table, so the Sync
     // loader is the whole repaint this needs.
-    if (data.ok) setTimeout(loadSync, 800);
+    if (data.ok) {
+      setTimeout(() => loadSync().then(o => applyOutcome("sync", o)), 800);
+    }
   } catch (err) {
     out.textContent = "✗ " + err;
     out.className = "act-result err";
@@ -2706,7 +2708,10 @@ function markUpdatedUnread() {
 // await — see the two checks below.
 //
 // Extracted from `loadActiveScreen` (fix round 1): the screen timer and
-// tab entry are not the only callers that reach a loader. The Errors
+// tab entry are not the only callers that reach a loader. When adding one,
+// grep for the loader's NAME, not for `loadSync(` — the site missed twice
+// was `setTimeout(loadSync, 800)`, passed by name, and Task 5 lost a
+// `refresh()` site the same way. The Errors
 // filters, the Epics `kind` buttons, the benchmark selector and the
 // post-track Sync reload all call one DIRECTLY, and each of them threw the
 // outcome away — so the finding this function exists to fix survived on
