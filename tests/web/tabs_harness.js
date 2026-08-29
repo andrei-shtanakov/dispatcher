@@ -1553,6 +1553,168 @@ testCase('every LOADERS screen reports its own failure to #updated', async () =>
   }
 });
 
+// ---- fix round 1: the loaders reached DIRECTLY, not via loadActiveScreen
+//
+// The Errors filters, the Epics `kind` buttons, the benchmark selector and
+// the post-track Sync reload call a loader without going through
+// `loadActiveScreen`, so they used to throw the outcome away — the same
+// defect one path over, on the most-clicked control of the Errors screen.
+// Every case below drives a REAL control, never the loader by hand.
+
+/** A configured profile with one benchmark, so the selector button
+ * (`renderBenchmarks`'s `button[data-bench]`) actually exists to click. */
+const BENCH_WITH_ROW = {
+  fetch_in_flight: false,
+  report: {status: 'ok', url: 'https://bench.example/api',
+    fetched_at: '2026-08-29T00:00:00Z', error: null,
+    benchmarks: [{id: 'b1', name: 'swe', version: '1', tasks_count: 3, tags: []}],
+    leaderboards: {}},
+};
+
+/** Every control that reaches a loader DIRECTLY — the five call sites that
+ * used to drop the outcome — with the screen it belongs to, the endpoint
+ * that makes it fail, and the real click that drives it. One table so the
+ * failure and success cases below cover all five by name, and a sixth
+ * added later is one entry rather than two new cases. */
+const DIRECT_CONTROLS = {
+  'errors: the days filter': {
+    screen: 'errors', breaks: '/api/errors', prefix: true,
+    open: p => openScreen(p, 'errors'),
+    act: p => click(p, '#errors-toggle'),
+  },
+  'errors: the service filter': {
+    screen: 'errors', breaks: '/api/errors', prefix: true,
+    open: p => openScreen(p, 'errors'),
+    act: async p => {
+      fill(p, '#errors-service', 'dispatcher');
+      await Promise.all(dispatch(el(p, '#errors-service'), 'change'));
+      await drain();
+    },
+  },
+  'errors: clearing the project filter': {
+    // The whole real flow: the filter is recorded by a card click on the
+    // Projects screen, and the ✕ only exists once it is.
+    screen: 'errors', breaks: '/api/errors', prefix: true,
+    boot: projectsRoute,
+    open: async p => {
+      await openScreen(p, 'projects');
+      await click(p, '#projects .card[data-name]');
+      await openScreen(p, 'errors');
+    },
+    act: p => click(p, '#errors-clear'),
+  },
+  'epics: the kind filter': {
+    screen: 'epics', breaks: '/api/epics', prefix: true,
+    open: p => openScreen(p, 'epics'),
+    act: p => click(p, 'button[data-epic-kind="ecosystem"]'),
+  },
+  'benchmarks: the benchmark selector': {
+    screen: 'benchmarks', breaks: '/api/benchmarks',
+    boot: {routes: [[u => u === '/api/benchmarks', () => ok(BENCH_WITH_ROW)]]},
+    open: p => openScreen(p, 'benchmarks'),
+    act: p => click(p, '#benchmarks-list button[data-bench]'),
+  },
+  'sync: the post-track reload': {
+    // The proposal button POSTs a real mutation and then reloads the
+    // screen; a reload that fails must not leave the pre-POST timestamp
+    // standing over a topline that now reads "не прочитано".
+    screen: 'sync', breaks: '/api/sync',
+    boot: {routes: [
+      [u => u === '/api/sync/track', () => ok({})],
+      ...syncWithProposalRoute.routes,
+    ]},
+    open: p => openScreen(p, 'sync'),
+    act: p => click(p, '#sync-proposals button[data-track]'),
+  },
+};
+
+const breakRoute = (page, c) =>
+  (c.prefix ? overridePrefix : overrideRoute)(page, c.breaks, FAILS);
+
+testCase('a direct loader call that FAILS leaves no success stamp', async () => {
+  for (const [name, c] of Object.entries(DIRECT_CONTROLS)) {
+    await withPage(async page => {
+      await c.open(page);
+      check(/^updated /.test(updatedText(page)),
+        `${name}: precondition: the screen entry stamped, got `
+        + `"${updatedText(page)}"`);
+      // The sentinel stands in for that stamp, so "the old stamp survived"
+      // and "a new stamp was written" stay distinguishable — two
+      // `toLocaleTimeString()` values in the same second would not be.
+      parkUpdated(page);
+
+      breakRoute(page, c);
+      await c.act(page);
+
+      check(updatedText(page) === UNREAD,
+        `${name}: a failed click is marked unread, got "${updatedText(page)}"`);
+      check(el(page, '#updated').className === 'err',
+        `${name}: and carries the failure class, got `
+        + `"${el(page, '#updated').className}"`);
+    }, c.boot || {});
+  }
+});
+
+testCase('a direct loader call that SUCCEEDS stamps normally', async () => {
+  for (const [name, c] of Object.entries(DIRECT_CONTROLS)) {
+    await withPage(async page => {
+      await c.open(page);
+      parkUpdated(page);
+      await c.act(page);
+      check(/^updated /.test(updatedText(page)),
+        `${name}: a good click stamps, got "${updatedText(page)}"`);
+      check(el(page, '#updated').className === '',
+        `${name}: without the failure class, got `
+        + `"${el(page, '#updated').className}"`);
+    }, c.boot || {});
+  }
+});
+
+testCase('a direct call whose answer arrives after the operator has LEFT '
+  + 'stamps nothing', async () => {
+  // The direct callers get the same screen-id check as the timer path: a
+  // filter answer that lands on another screen is not that screen's news.
+  await withPage(async page => {
+    await openScreen(page, 'errors');
+    const errors = deferrable();
+    overridePrefix(page, '/api/errors', errors.route);
+    await click(page, '#errors-toggle');
+    check(errors.pending.length === 1,
+      `precondition: the filter click issued a read, got ${errors.pending.length}`);
+
+    await clickTab(page, 'models');
+    parkUpdated(page);
+    errors.settle(0, []);
+    await drain();
+
+    check(updatedText(page) === SENTINEL,
+      `the Errors filter may not stamp over Models, got "${updatedText(page)}"`);
+  });
+});
+
+testCase('the boot probe stamps nothing — it is not a screen load', async () => {
+  // The one direct call that must keep discarding: it decides whether the
+  // conditional tab exists, and it answers while the operator is on
+  // Launchpad. `#updated` is blank at that point and must stay blank until
+  // a screen actually paints.
+  await withPage(async page => {
+    check(!el(page, '#screen-launchpad').hidden,
+      'precondition: the probe answered while Launchpad was open');
+    check(!el(page, '#tab-benchmarks').hidden,
+      'precondition: and it did decide the conditional tab');
+    check(callsTo(page, '/api/benchmarks') === 1,
+      `precondition: exactly the one probe request, got `
+      + `${callsTo(page, '/api/benchmarks')}`);
+    // The Launchpad's own snapshot is what stamps here, so the assertion is
+    // that the field never says the Benchmarks screen was read: the probe
+    // paints a panel the operator is not looking at.
+    check(!/^не прочитано/.test(updatedText(page)),
+      `the probe did not mark a screen unread, got "${updatedText(page)}"`);
+    check(el(page, '#screen-benchmarks').hidden,
+      'and the screen it read is still closed');
+  }, configuredBenchmarksRoutes);
+});
+
 testCase('a FAILED load on the screen the operator LEFT does not mark the '
   + 'screen they moved to', async () => {
   // The screen-id re-check still comes first: an unread marker belongs to

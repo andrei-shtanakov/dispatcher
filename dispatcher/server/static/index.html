@@ -799,7 +799,10 @@ document.getElementById("errors-filter").addEventListener("click", e => {
   e.stopPropagation();  // don't collapse the <details>
   errorsProject = null;
   renderErrorsFilter();
-  loadErrors();
+  // `.then`, not `await` in an async handler: these handlers stay
+  // SYNCHRONOUS so the click's timing is exactly what it was — only the
+  // outcome, which used to be dropped on the floor, now reaches `#updated`.
+  loadErrors().then(o => applyOutcome("errors", o));
 });
 
 document.getElementById("errors-toggle").addEventListener("click", e => {
@@ -808,14 +811,14 @@ document.getElementById("errors-toggle").addEventListener("click", e => {
   errorsDays = errorsDays === null ? ERRORS_DAYS_DEFAULT : null;
   e.target.textContent =
     errorsDays === null ? `last ${ERRORS_DAYS_DEFAULT} days` : "show all";
-  loadErrors();
+  loadErrors().then(o => applyOutcome("errors", o));
 });
 
 const serviceSelect = document.getElementById("errors-service");
 serviceSelect.addEventListener("click", e => e.stopPropagation());
 serviceSelect.addEventListener("change", e => {
   errorsService = e.target.value || null;
-  loadErrors();
+  loadErrors().then(o => applyOutcome("errors", o));
 });
 
 // Long messages render truncated; click a message cell to expand/collapse.
@@ -963,7 +966,7 @@ document.getElementById("benchmarks-list").addEventListener("click", (ev) => {
   const btn = ev.target.closest("button[data-bench]");
   if (!btn) return;
   benchSelected = btn.dataset.bench;
-  loadBenchmarks();
+  loadBenchmarks().then(o => applyOutcome("benchmarks", o));
 });
 
 // Phase-2 run-status (spec 2026-08-16 §7): click-driven; the token is
@@ -1312,7 +1315,7 @@ async function refreshWaits() {
 document.querySelectorAll("button[data-epic-kind]").forEach(btn => {
   btn.addEventListener("click", () => {
     epicsKind = btn.dataset.epicKind;
-    refreshEpics();
+    refreshEpics().then(o => applyOutcome("epics", o));
   });
 });
 
@@ -1339,7 +1342,10 @@ document.getElementById("sync-proposals").addEventListener("click", async e => {
                             action: btn.dataset.action}),
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    loadSync();
+    // Deliberately NOT awaited inside this try: the try owns the POST, and
+    // awaiting the reload here would route a reload failure into the catch
+    // that re-enables a button renderSync may have just removed.
+    loadSync().then(o => applyOutcome("sync", o));
   } catch (err) {
     btn.disabled = false;  // ошибка не должна оставить кнопку мёртвой
     btn.closest(".proposal").insertAdjacentHTML("beforeend",
@@ -2695,15 +2701,21 @@ function markUpdatedUnread() {
   node.className = "err";
 }
 
-// After the split, `#updated` is written by the ACTIVE screen's loader — not
-// by whichever endpoint happened to answer last.
-async function loadActiveScreen() {
-  const screen = activeScreen();
-  const load = LOADERS[screen];
-  if (!load) return;
-  const outcome = await load();
-  // Whole-branch review, ITEM 2: the screen id is captured BEFORE the await
-  // and re-checked after it. A slow loader that answers once the operator
+// What `#updated` is allowed to say once a load of `screen` has finished.
+// The screen id is the one the load was ISSUED for, captured before its
+// await — see the two checks below.
+//
+// Extracted from `loadActiveScreen` (fix round 1): the screen timer and
+// tab entry are not the only callers that reach a loader. The Errors
+// filters, the Epics `kind` buttons, the benchmark selector and the
+// post-track Sync reload all call one DIRECTLY, and each of them threw the
+// outcome away — so the finding this function exists to fix survived on
+// the most-clicked path of the Errors screen: with `/api/errors` down, a
+// filter click left "errors unavailable" in the table under a "updated
+// <now>" that belonged to the previous, successful read.
+function applyOutcome(screen, outcome) {
+  // Whole-branch review, ITEM 2: the screen id is captured BEFORE the load's
+  // await and re-checked here. A slow loader that answers once the operator
   // has already switched tabs would otherwise stamp "updated <now>" onto the
   // screen they moved to, before that screen has painted anything — the same
   // false-freshness the `activeScreen() === "launchpad"` gate in
@@ -2732,6 +2744,15 @@ async function loadActiveScreen() {
     // wrong in the direction that gets noticed and fixed.
     markUpdatedUnread();
   }
+}
+
+// After the split, `#updated` is written by the ACTIVE screen's loader — not
+// by whichever endpoint happened to answer last.
+async function loadActiveScreen() {
+  const screen = activeScreen();
+  const load = LOADERS[screen];
+  if (!load) return;
+  applyOutcome(screen, await load());
 }
 
 let screenTimer = null;
@@ -4475,6 +4496,13 @@ restartScreenTimer();
 // a direct `#benchmarks` boot this request also re-resolves the hash, so that
 // screen's loader then reads the endpoint a second time: the same two reads
 // clicking the tab would produce, not a poll anyone else pays for.
+//
+// The ONE loader call that keeps discarding its outcome (fix round 1): this
+// is a configuration probe, not a screen load — the operator is usually on
+// Launchpad when it answers, and `#updated` must not report on a screen
+// they are not looking at. (`applyOutcome`'s screen-id check would suppress
+// it in that case anyway; leaving the call bare states the intent instead
+// of relying on that.) The Benchmarks screen stamps from its own loader.
 loadBenchmarks();
 
 // ---- Launchpad root panel (spec §9, PR-C Task 6) ---------------------------
