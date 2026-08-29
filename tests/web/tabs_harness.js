@@ -978,6 +978,285 @@ testCase('a failed sync read stops every node renderSync owns from asserting '
   }, syncWithProposalRoute);
 });
 
+// ---- terminal review, PR #220: per-screen LOAD GENERATION (design §9) -----
+//
+// "переключение экрана инвалидирует поздние ответы прошлого там, где они
+// могут менять общий DOM". Re-entering a screen issues a SECOND request
+// while the first is still airborne (onScreenShown → loadActiveScreen), and
+// a screen entry overlaps the 10s tick the same way. Whichever answered LAST
+// used to paint.
+//
+// The pre-existing slow-loader case above cannot see this: it LEAVES a
+// screen and never comes back, so it never has two responses of ONE loader
+// to order, and after a return `loadActiveScreen`'s screen-id re-check
+// matches by construction (the active screen IS sync again). Every case
+// below returns to the origin screen, or overlaps entry with a tick, and
+// settles the OLDER response LAST — the only ordering that fails.
+
+/** A route whose every call PARKS: `pending[i]` resolves the i-th request,
+ * so a case can answer requests in any order it likes — which is the whole
+ * point here. `pending.length` doubles as "how many reads were issued". */
+function deferrable() {
+  const pending = [];
+  return {
+    pending,
+    route: () => new Promise(resolve => pending.push(resolve)),
+    /** Answers the i-th request (0-based) with `body`, 200 OK. */
+    settle(i, body) { pending[i](ok(body)); },
+  };
+}
+
+/** Like `overrideRoute`, but by PREFIX — for the loaders whose URL carries a
+ * query string (Epics' `kind`), which an exact match would miss. */
+function overridePrefix(page, prefix, make) {
+  page.routes.unshift([u => u.startsWith(prefix), make]);
+}
+
+/** Clicks a tab WITHOUT waiting for its loader — `openScreen` is fine too,
+ * but naming the intent keeps the parked-loader cases readable. */
+async function clickTab(page, id) {
+  await Promise.all(dispatch(el(page, `#tab-${id}`), 'click'));
+  await drain();
+}
+
+/** The answer the operator must NOT be left looking at: a verdict, a reason,
+ * and a proposal that renders as a live button over POST /api/sync/track. */
+const SYNC_STALE = {
+  fetch_in_flight: true,
+  report: {top_line: 'sync-first', top_reason: 'stale reason',
+    proposals: ['stale-newcomer'], hosts: []},
+};
+/** The fresher answer: clean, and with nothing to click. */
+const SYNC_FRESH = {
+  fetch_in_flight: false,
+  report: {top_line: 'ok', top_reason: null, proposals: [], hosts: []},
+};
+
+/** Every assertion that the Sync screen shows SYNC_FRESH and no trace of
+ * SYNC_STALE — shared by the two orderings below so they cannot drift. */
+function checkSyncIsFresh(page, how) {
+  check(el(page, '#sync-topline').textContent === 'ok',
+    `${how}: the fresh verdict stands, got "${el(page, '#sync-topline').textContent}"`);
+  check(el(page, '#sync-reason').textContent === '',
+    `${how}: no stale reason, got "${el(page, '#sync-reason').textContent}"`);
+  check(el(page, '#sync-fetch').hidden === true,
+    `${how}: no stale in-flight indicator`);
+  // The finding's sharpest edge: a superseded read used to re-create the
+  // proposals as LIVE buttons whose click POSTs a real mutation.
+  check(!maybeEl(page, '#sync-proposals button[data-track]'),
+    `${how}: no stale, clickable proposal survives, got `
+    + `${htmlOf(page, '#sync-proposals')}`);
+}
+
+testCase('returning to Sync: the first, slower read may not overwrite the '
+  + 'second — and may not re-create a clickable proposal', async () => {
+  await withPage(async page => {
+    const sync = deferrable();
+    overrideRoute(page, '/api/sync', sync.route);
+
+    await clickTab(page, 'sync');
+    check(sync.pending.length === 1,
+      `precondition: one sync read is in flight, got ${sync.pending.length}`);
+
+    await clickTab(page, 'models');
+    await clickTab(page, 'sync');
+    check(sync.pending.length === 2,
+      `precondition: returning issues a SECOND read, got ${sync.pending.length}`);
+
+    sync.settle(1, SYNC_FRESH);   // the NEWER request answers first…
+    await drain();
+    check(el(page, '#sync-topline').textContent === 'ok',
+      `precondition: the second read painted, got `
+      + `"${el(page, '#sync-topline').textContent}"`);
+
+    sync.settle(0, SYNC_STALE);   // …and the OLDER one lands last
+    await drain();
+
+    checkSyncIsFresh(page, 'after the superseded read resolved');
+  });
+});
+
+testCase('an entry read and a 10s tick overlap on Sync: the older answer, '
+  + 'resolving last, still loses', async () => {
+  await withPage(async page => {
+    const sync = deferrable();
+    overrideRoute(page, '/api/sync', sync.route);
+
+    await clickTab(page, 'sync');
+    check(sync.pending.length === 1,
+      `precondition: the entry read is in flight, got ${sync.pending.length}`);
+    const timer = page.timers.byPeriod(10000);
+    check(!!timer, 'precondition: the 10s screen timer is registered');
+    if (!timer) return;
+    timer.cb();
+    await drain();
+    check(sync.pending.length === 2,
+      `precondition: the tick issues a second read over the first, got `
+      + `${sync.pending.length}`);
+
+    sync.settle(1, SYNC_FRESH);
+    await drain();
+    sync.settle(0, SYNC_STALE);
+    await drain();
+
+    checkSyncIsFresh(page, 'entry vs tick');
+  });
+});
+
+// Roadmap is the ALL-OR-NOTHING case: three endpoints feed one screen
+// (/api/roadmap, /api/roadmap/summary, /api/contracts), so a guard applied
+// per-fetch instead of once per load would let a stale summary sit above a
+// fresh table. Each endpoint is parked separately and the stale load's three
+// answers are settled INTERLEAVED, after the fresh load has painted.
+const ROADMAP_STALE_ITEM = {...ROADMAP_ITEM, id: 'R-STALE', phase: 'M0'};
+const ROADMAP_FRESH_ITEM = {...ROADMAP_ITEM, id: 'R-FRESH', phase: 'M9'};
+const SUMMARY_STALE = {projects: [
+  {project: 'stale-project', done: 1, total: 4, readiness: 0.25,
+    lagging: true, contract_drift: true},
+]};
+const SUMMARY_FRESH = {projects: [
+  {project: 'fresh-project', done: 4, total: 4, readiness: 1,
+    lagging: false, contract_drift: false},
+]};
+
+testCase('Roadmap renders no partial stale mix: a superseded load contributes '
+  + 'none of its three endpoints', async () => {
+  await withPage(async page => {
+    const roadmap = deferrable();
+    const summary = deferrable();
+    const contracts = deferrable();
+    // Summary is registered LAST of the three so it sits ahead of the
+    // `/api/roadmap` matcher in `page.routes` and cannot be swallowed by it.
+    overrideRoute(page, '/api/roadmap', roadmap.route);
+    overrideRoute(page, '/api/contracts', contracts.route);
+    overrideRoute(page, '/api/roadmap/summary', summary.route);
+
+    await clickTab(page, 'roadmap');
+    check(roadmap.pending.length === 1 && summary.pending.length === 1
+      && contracts.pending.length === 1,
+      `precondition: the first load parked all three endpoints, got `
+      + `${roadmap.pending.length}/${summary.pending.length}/${contracts.pending.length}`);
+
+    await clickTab(page, 'models');
+    await clickTab(page, 'roadmap');
+    check(roadmap.pending.length === 2 && summary.pending.length === 2
+      && contracts.pending.length === 2,
+      `precondition: returning issued a second load of all three, got `
+      + `${roadmap.pending.length}/${summary.pending.length}/${contracts.pending.length}`);
+
+    // The SECOND load answers in full and paints.
+    roadmap.settle(1, {roadmaps: ['fresh'], items: [ROADMAP_FRESH_ITEM]});
+    summary.settle(1, SUMMARY_FRESH);
+    contracts.settle(1, [CONTRACT_IN_SYNC]);
+    await drain();
+    check(/R-FRESH/.test(htmlOf(page, '#roadmap')),
+      `precondition: the second load painted, got ${htmlOf(page, '#roadmap')}`);
+
+    // The FIRST load answers afterwards, its three endpoints interleaved.
+    summary.settle(0, SUMMARY_STALE);
+    contracts.settle(0, []);
+    roadmap.settle(0, {roadmaps: ['stale'], items: [ROADMAP_STALE_ITEM]});
+    await drain();
+
+    check(el(page, '#roadmap-names').textContent === 'fresh',
+      `the roadmap names stay fresh, got "${el(page, '#roadmap-names').textContent}"`);
+    check(/R-FRESH/.test(htmlOf(page, '#roadmap'))
+      && !/R-STALE/.test(htmlOf(page, '#roadmap')),
+      `the table stays fresh, got ${htmlOf(page, '#roadmap')}`);
+    check(/fresh-project/.test(htmlOf(page, '#roadmap-summary'))
+      && !/stale-project/.test(htmlOf(page, '#roadmap-summary')),
+      `the summary above it stays fresh — no half-stale screen, got `
+      + `${htmlOf(page, '#roadmap-summary')}`);
+    // /api/contracts feeds the Contract COLUMN (renderRoadmap's syncByName),
+    // so a stale empty contracts answer landing alone would empty it.
+    check(/✓ in sync/.test(htmlOf(page, '#roadmap')),
+      `the folded Contract column stays fresh, got ${htmlOf(page, '#roadmap')}`);
+  });
+});
+
+// -- the two screens that already carried guards: unchanged behaviour -------
+
+const EPICS_VIEW = rows => ({
+  generated_at: null, registry_path: '/ws/epics.toml', registry_ok: true,
+  registry_diagnostics: [], programs: {}, planes: [], rows, defects: [],
+});
+const EPIC_ROW = (id, kind) => ({
+  id, title: id, program: 'P', kind, status: 'open', planes: [], defects: {},
+  last_activity_at: null, activity_sources: [],
+});
+
+testCase('Epics: the kind filter is not repainted by the unfiltered read it '
+  + 'overlapped', async () => {
+  // refreshEpics never had an in-flight gate — only its own catch. The
+  // `kind` buttons call it directly, so a click while a screen tick is
+  // airborne is a real overlap, and the tick's UNFILTERED answer landing
+  // last would silently widen the list the operator just narrowed.
+  await withPage(async page => {
+    const epics = deferrable();
+    overridePrefix(page, '/api/epics', epics.route);
+
+    await clickTab(page, 'epics');
+    check(epics.pending.length === 1,
+      `precondition: the entry read is in flight, got ${epics.pending.length}`);
+
+    await click(page, 'button[data-epic-kind="ecosystem"]');
+    check(epics.pending.length === 2,
+      `precondition: the filter click issued its own read, got ${epics.pending.length}`);
+    const filtered = page.calls.filter(c => c.url.includes('kind=ecosystem'));
+    check(filtered.length === 1,
+      `precondition: and it carried the filter, saw ${filtered.map(c => c.url).join(',')}`);
+
+    epics.settle(1, EPICS_VIEW([EPIC_ROW('E-ECO', 'ecosystem')]));
+    await drain();
+    epics.settle(0, EPICS_VIEW([EPIC_ROW('E-ECO', 'ecosystem'),
+      EPIC_ROW('E-EXT', 'external')]));
+    await drain();
+
+    check(/E-ECO/.test(htmlOf(page, '#epics')),
+      `the filtered answer still stands, got ${htmlOf(page, '#epics')}`);
+    check(!/E-EXT/.test(htmlOf(page, '#epics')),
+      `the superseded unfiltered read did not widen it back, got `
+      + `${htmlOf(page, '#epics')}`);
+  });
+});
+
+const WAITS_VIEW = {
+  todo_plane: {state: 'read', repos_read: 3, detail: null},
+  edges: [], loose_refs: [], findings: [], triggers: [], absent_repos: [],
+};
+
+testCase('Waits keeps its in-flight gate: a return that issues no request of '
+  + 'its own does not strand the poll painting for it', async () => {
+  // `waitsInFlight` makes a second call return EARLY, on the promise that
+  // "the running poll will paint". The load generation is therefore bumped
+  // AFTER that gate, never before: a bump by a call that issued no request
+  // would supersede the only poll in flight and nothing would ever paint.
+  await withPage(async page => {
+    const waits = deferrable();
+    overrideRoute(page, '/api/waits', waits.route);
+
+    await clickTab(page, 'waits');
+    check(waits.pending.length === 1,
+      `precondition: one waits read is in flight, got ${waits.pending.length}`);
+
+    await clickTab(page, 'models');
+    await clickTab(page, 'waits');
+    check(waits.pending.length === 1,
+      `the in-flight gate still suppresses the second read, got `
+      + `${waits.pending.length}`);
+
+    waits.settle(0, WAITS_VIEW);
+    await drain();
+
+    check(el(page, '#waits-plane').textContent === '0 рёбер · 3 репо',
+      `the surviving poll still paints for the screen that returned, got `
+      + `"${el(page, '#waits-plane').textContent}"`);
+    check(el(page, '#waits-disclaimer').textContent === '',
+      `and it is not left under a failure notice, got `
+      + `"${el(page, '#waits-disclaimer').textContent}"`);
+  });
+});
+
 testCase('a project card records the Errors filter without fetching the '
   + 'hidden Errors screen', async () => {
   await withPage(async page => {

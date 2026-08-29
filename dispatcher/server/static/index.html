@@ -432,6 +432,48 @@ let rcViewTimer = null;
 let rcViewRequestId = null;
 let rcLogsGen = 0;
 
+// ---- per-screen load generation (design §9) -------------------------------
+//
+// Spec §9, verbatim: "переключение экрана инвалидирует поздние ответы
+// прошлого там, где они могут менять общий DOM". The per-screen loaders
+// (LOADERS, below) were split out of one `refresh()` that could not race
+// itself; split, they can. Leaving a screen and returning fires
+// onScreenShown → loadActiveScreen a SECOND time while the first read is
+// still airborne, and an entry overlaps the 10s screen timer the same way.
+// Whichever answered LAST used to paint — so a stale Sync verdict could
+// overwrite a fresh one, and with it stale proposals re-created as live
+// buttons whose click issues a real, mutating POST /api/sync/track.
+//
+// The same discipline as the Launchpad's `lpState.seq` (lpIssueFetch bumps
+// at ISSUE time, lpApplySnapshot compares at APPLY time; a superseded
+// answer is discarded, never patched in), one counter PER SCREEN rather
+// than one global: the screens own disjoint DOM, and a Models read must not
+// supersede a Contracts one.
+//
+// WHERE the check lives: inside each loader, between its own await and its
+// own render — not in loadActiveScreen around the awaited call. By the time
+// that await returns the loader has already painted, so a check there could
+// only undo a render, not prevent it; and the bump inside the loader also
+// covers the callers that never go through loadActiveScreen at all (the
+// Errors filter controls, the post-track loadSync, the benchmark selector).
+// `loadActiveScreen`'s own screen-id re-check around stampUpdated stays as
+// it is — that guards a different node (#updated) against a different
+// mistake (stamping onto the screen the operator moved to).
+const screenGen = Object.create(null);
+
+/** Issue time: claims the next generation for `screen`. */
+function nextScreenGen(screen) {
+  screenGen[screen] = (screenGen[screen] || 0) + 1;
+  return screenGen[screen];
+}
+
+/** Apply time: true when a newer load for `screen` was issued after `gen`,
+ * so the answer in hand is superseded and must not touch the DOM — neither
+ * its success render nor its failure notice. */
+function screenGenStale(screen, gen) {
+  return screenGen[screen] !== gen;
+}
+
 // ---- screens and routing --------------------------------------------------
 //
 // The hash is the ONLY writer of the current screen: a tab click assigns
@@ -1073,9 +1115,15 @@ function renderEpics(view) {
 }
 
 async function refreshEpics() {
+  // The `kind` filter makes the race concrete: a click here while a screen
+  // tick is airborne must not have the tick's UNFILTERED answer land last.
+  const gen = nextScreenGen("epics");
   try {
-    renderEpics(await get("/api/epics" + (epicsKind ? `?kind=${epicsKind}` : "")));
+    const epics = await get("/api/epics" + (epicsKind ? `?kind=${epicsKind}` : ""));
+    if (screenGenStale("epics", gen)) return;
+    renderEpics(epics);
   } catch (err) {
+    if (screenGenStale("epics", gen)) return;
     // named, not silent: an empty table would read as "no epics", which is a
     // claim about the fleet rather than about this request
     const reg = document.getElementById("epics-registry");
@@ -1222,9 +1270,19 @@ let waitsInFlight = false;
 async function refreshWaits() {
   if (waitsInFlight) return; // the running poll will paint; a later tick retries
   waitsInFlight = true;
+  // AFTER the in-flight gate, deliberately: a call that returned early above
+  // issued no request, and letting it bump would supersede the poll that is
+  // painting on its behalf — turning "the running poll will paint" into
+  // "nobody paints". With the gate in place at most one waits read is ever
+  // airborne, so this counter changes nothing here; it is carried so the
+  // screen is not the one exception to the rule.
+  const gen = nextScreenGen("waits");
   try {
-    renderWaits(await get("/api/waits"));
+    const waits = await get("/api/waits");
+    if (screenGenStale("waits", gen)) return;
+    renderWaits(waits);
   } catch (err) {
+    if (screenGenStale("waits", gen)) return;
     // named, not silent — an empty graph would read as "no obligations";
     // and the previous poll's tables must not survive under this disclaimer
     const disc = document.getElementById("waits-disclaimer");
@@ -2279,9 +2337,18 @@ document.getElementById("rc-run-view").addEventListener("change", e => {
 const SCREEN_REFRESH_MS = 10000;
 
 async function loadSync() {
+  const gen = nextScreenGen("sync");
   try {
-    renderSync(await get("/api/sync"));
+    const sync = await get("/api/sync");
+    // A superseded read must not paint: the proposals renderSync draws are
+    // live buttons over a mutating POST, so a late answer would not merely
+    // look stale — it would be ACTIONABLE stale (spec §9).
+    if (screenGenStale("sync", gen)) return;
+    renderSync(sync);
   } catch (err) {
+    // A superseded FAILURE is not this screen's news either: it would erase
+    // the verdict a newer, successful read has already painted.
+    if (screenGenStale("sync", gen)) return;
     // NFR-02: nothing renderSync owns may keep asserting after a failed
     // read. Naming the failure only in #sync-hosts would leave the PREVIOUS
     // verdict standing in the topline and the PREVIOUS proposals still
@@ -2300,8 +2367,10 @@ async function loadSync() {
 
 async function loadProjects() {
   const grid = document.getElementById("projects");
+  const gen = nextScreenGen("projects");
   try {
     const ov = await get("/api/overview");
+    if (screenGenStale("projects", gen)) return;
     grid.innerHTML = ov.projects.map(p => `
       <div class="card ${p.detected ? "" : "off"}"
            ${p.detected
@@ -2324,6 +2393,7 @@ async function loadProjects() {
           .join("")}
       </div>`).join("");
   } catch (err) {
+    if (screenGenStale("projects", gen)) return;
     // named, not an empty grid: no cards would read as "no projects", a
     // claim about the fleet rather than about this request
     grid.innerHTML = `<div class="err">projects unavailable: ${esc(String(err))}</div>`;
@@ -2331,6 +2401,10 @@ async function loadProjects() {
 }
 
 async function loadErrors() {
+  // Bumped here rather than in loadActiveScreen so the filter controls
+  // (project / days / service) supersede an older, differently-filtered
+  // read they overlap — they call this loader directly.
+  const gen = nextScreenGen("errors");
   try {
     const errorsUrl = "/api/errors?limit=50"
       + (errorsDays === null ? "" : `&days=${errorsDays}`)
@@ -2339,6 +2413,7 @@ async function loadErrors() {
       + (errorsService === null
         ? "" : `&service=${encodeURIComponent(errorsService)}`);
     const errors = await get(errorsUrl);
+    if (screenGenStale("errors", gen)) return;
     document.querySelector("#errors tbody").innerHTML = errors.map(e => {
       const full = e.body ?? "";
       const short = full.length > MSG_LIMIT
@@ -2355,6 +2430,7 @@ async function loadErrors() {
     errors.forEach(e => { if (e.service) knownServices.add(e.service); });
     renderServiceOptions();
   } catch (err) {
+    if (screenGenStale("errors", gen)) return;
     // «no errors 🎉» is a claim; an unread endpoint may not make it
     document.querySelector("#errors tbody").innerHTML =
       `<tr><td colspan="3" class="err">errors unavailable: ${esc(String(err))}</td></tr>`;
@@ -2363,14 +2439,17 @@ async function loadErrors() {
 }
 
 async function loadModels() {
+  const gen = nextScreenGen("models");
   try {
     const models = await get("/api/models");
+    if (screenGenStale("models", gen)) return;
     document.querySelector("#models tbody").innerHTML = models.map(m => `
       <tr><td>${esc(m.project)}</td><td>${esc(m.model_id)}</td>
       <td>${esc(m.harness ?? "—")}</td><td>${esc(m.role)}</td>
       <td>${esc(m.vendor ?? "—")}</td><td>${esc(m.status ?? "—")}</td></tr>`)
       .join("");
   } catch (err) {
+    if (screenGenStale("models", gen)) return;
     document.querySelector("#models tbody").innerHTML =
       `<tr><td colspan="6" class="err">models unavailable: ${esc(String(err))}</td></tr>`;
   }
@@ -2387,9 +2466,13 @@ function renderContracts(contracts) {
 }
 
 async function loadContracts() {
+  const gen = nextScreenGen("contracts");
   try {
-    renderContracts(await get("/api/contracts"));
+    const contracts = await get("/api/contracts");
+    if (screenGenStale("contracts", gen)) return;
+    renderContracts(contracts);
   } catch (err) {
+    if (screenGenStale("contracts", gen)) return;
     document.querySelector("#contracts tbody").innerHTML =
       `<tr><td colspan="5" class="err">contracts unavailable: ${esc(String(err))}</td></tr>`;
   }
@@ -2447,13 +2530,20 @@ function renderRoadmap(roadmap, contracts) {
 }
 
 async function loadRoadmap() {
+  const gen = nextScreenGen("roadmap");
   try {
     const [roadmap, summary, contracts] = await Promise.all([
       get("/api/roadmap"), get("/api/roadmap/summary"), get("/api/contracts"),
     ]);
+    // ALL-OR-NOTHING: this screen is painted from three endpoints, so the
+    // check sits after `Promise.all` and before the FIRST render. Guarding
+    // each fetch on its own would let a stale summary sit above a fresh
+    // table — half a stale answer, which is worse than a whole one.
+    if (screenGenStale("roadmap", gen)) return;
     renderSummary(summary);
     renderRoadmap(roadmap, contracts);
   } catch (err) {
+    if (screenGenStale("roadmap", gen)) return;
     document.getElementById("roadmap-names").textContent =
       "roadmap failed: " + err;
     document.querySelector("#roadmap tbody").innerHTML =
@@ -2480,11 +2570,17 @@ async function loadRoadmap() {
 // operator off the screen on a transport blip is worse than a panel that
 // names its own failure.
 async function loadBenchmarks() {
+  const gen = nextScreenGen("benchmarks");
   try {
     const status = await get("/api/benchmarks");
+    // Also gates setBenchmarksAvailable: a superseded answer must not decide
+    // whether the conditional tab is offered — that would take the operator
+    // off a screen on the strength of an answer already overtaken.
+    if (screenGenStale("benchmarks", gen)) return;
     renderBenchmarks(status);
     setBenchmarksAvailable(status.report.status !== "unconfigured");
   } catch (err) {
+    if (screenGenStale("benchmarks", gen)) return;
     document.getElementById("benchmarks-status").textContent =
       "benchmarks unavailable: " + err;
   }
@@ -2500,8 +2596,8 @@ const LOADERS = {
   errors: loadErrors,
   models: loadModels,
   contracts: loadContracts,
-  epics: refreshEpics,       // already self-contained, with its own catch
-  waits: refreshWaits,       // already self-contained, with its own guard
+  epics: refreshEpics,       // self-contained: own catch + load generation
+  waits: refreshWaits,       // self-contained: own in-flight gate, then gen
   roadmap: loadRoadmap,
   // Reached only while the conditional tab is offered, so `/api/benchmarks`
   // stays off every other screen's path.
