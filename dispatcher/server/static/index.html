@@ -4547,10 +4547,22 @@ function lpRenderFetchError(err) {
 // patched in — strict supersession: `seq === lpState.seq` (the LATEST
 // issued), checked at apply time, not at issue time, so whichever of two
 // in-flight requests resolves first can still lose.
+//
+// Task 6 also makes this the ONE writer of `#updated` while Launchpad is
+// active (a deferred Task 5 finding: `loadActiveScreen` never reaches here,
+// since `LOADERS.launchpad` is null). Gated on `activeScreen() ===
+// "launchpad"` — Task 6 makes a HIDDEN panel keep polling, and a background
+// apply writing `#updated` would claim the visible screen had just
+// refreshed. A wrong timestamp is a false freshness claim (criterion 11),
+// worse than the blank field it would replace.
 function lpApplySnapshot(seq, snapshot) {
   if (seq !== lpState.seq) return;
   lpState.snapshot = snapshot;
   lpRender(snapshot);
+  if (activeScreen() === "launchpad") {
+    document.getElementById("updated").textContent =
+      "updated " + new Date().toLocaleTimeString();
+  }
 }
 
 // The one place that actually calls fetch() — both lpFetchSnapshot() and
@@ -4574,10 +4586,22 @@ function lpIssueFetch() {
     });
 }
 
+// Spec §9.1: the ONE exception to active-only polling. An unresolved attempt
+// is the state the operator must not silently lose; anything else, hidden
+// means quiet. Evaluated INSIDE the tick (lpFetchSnapshot), not at
+// tab-switch time — a pending entry can settle between ticks, and a stop
+// triggered by the switch event would miss that.
+function lpShouldPoll() {
+  if (activeScreen() === "launchpad") return true;
+  return Object.keys(lpState.pending).length > 0;
+}
+
 // Timer-tick entry: refuses outright while ANY fetch is inflight (the
 // counter, not a boolean — see lpState's own comment) — at most one timer
-// fetch airborne at a time.
+// fetch airborne at a time. Also refuses when the panel is hidden and
+// nothing is pending — see lpShouldPoll().
 function lpFetchSnapshot() {
+  if (!lpShouldPoll()) return;
   if (lpState.inflight > 0) return;
   lpIssueFetch();
 }

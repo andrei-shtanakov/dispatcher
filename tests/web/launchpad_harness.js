@@ -94,6 +94,13 @@ const PAGE_SCRIPT = between(BODY_HTML, /<script[^>]*>/i, '</script>', 'script');
 // period, not by call order, since nothing here controls which runs first.
 const LP_REFRESH_MS = 30000;
 
+// The dashboard's per-screen timer (index.html's `restartScreenTimer`) — a
+// literal here, not derived from the page, precisely so Task 6's "exactly
+// one poller" case can drive BOTH registered intervals and tell them apart
+// by period rather than by trusting the page not to have swapped which one
+// fetches `/api/launchpad`.
+const SCREEN_REFRESH_MS = 10000;
+
 // ---- fixtures ---------------------------------------------------------------
 
 const resp = (status, body) => ({
@@ -975,6 +982,100 @@ testCase('an open confirmation is disabled when the row changed', async () => {
     check(/revision/i.test(htmlOf(page, '#lp-ready')),
       `the cause is shown, not just the disabled state (got: ${htmlOf(page, '#lp-ready')})`);
   }, readyRowRoute());
+});
+
+// ---- Task 6: the one exception to active-only polling ------------------------
+//
+// Spec §9.1: a hidden Launchpad keeps polling `/api/launchpad` while
+// `lpState.pending` holds an unresolved attempt, and goes quiet the moment
+// nothing is pending. Every case here drives the real 30s timer callback
+// (`page.timers.byPeriod(LP_REFRESH_MS).cb()`), never `lpShouldPoll()`
+// directly — the rule is evaluated INSIDE the tick, and only the tick proves
+// that.
+
+testCase('a hidden Launchpad keeps polling while an attempt is unresolved', async () => {
+  await withPage(async page => {
+    failTheSubmitTransport(page);
+    await openReadyRowAndConfirm(page, 'deployer');
+    check(/launch outcome unknown/.test(htmlOf(page, '#lp-ready')),
+      'sanity: the attempt is unresolved before leaving');
+    await openScreen(page, 'sync');
+
+    const before = callsTo(page, '/api/launchpad');
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+    check(callsTo(page, '/api/launchpad') === before + 1,
+      'the hidden panel refetched while pending was open');
+  }, readyRowRoute());
+});
+
+testCase('a hidden Launchpad stops polling once nothing is pending', async () => {
+  await withPage(async page => {
+    await openScreen(page, 'sync');
+
+    const before = callsTo(page, '/api/launchpad');
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+    check(callsTo(page, '/api/launchpad') === before,
+      'a hidden panel with nothing pending must not poll');
+  });
+});
+
+testCase('the visible Launchpad polls as before', async () => {
+  await withPage(async page => {
+    const before = callsTo(page, '/api/launchpad');
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+    check(callsTo(page, '/api/launchpad') === before + 1, 'visible panel polls');
+  });
+});
+
+testCase('/api/launchpad has exactly one poller', async () => {
+  await withPage(async page => {
+    const before = callsTo(page, '/api/launchpad');
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    page.timers.byPeriod(SCREEN_REFRESH_MS).cb();
+    await drain();
+    check(callsTo(page, '/api/launchpad') === before + 1,
+      'the screen timer must not fetch the launchpad snapshot');
+  });
+});
+
+// ---- Task 6 / Task 5 review finding: `#updated` must not lie -----------------
+//
+// A deferred Task 5 review finding: `#updated` has exactly one writer,
+// `loadActiveScreen`, which never reaches Launchpad (`LOADERS.launchpad` is
+// null) — so the default screen showed a permanently blank timestamp. The
+// fix moves the write into `lpApplySnapshot`, gated on the panel being
+// VISIBLE: a background apply (Task 6's new hidden-poll case) must not claim
+// the visible screen just refreshed when it did not.
+
+testCase('a hidden background poll never rewrites #updated', async () => {
+  await withPage(async page => {
+    failTheSubmitTransport(page);
+    await openReadyRowAndConfirm(page, 'deployer');
+    await openScreen(page, 'sync');
+    const before = htmlOf(page, '#updated');
+
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+    check(htmlOf(page, '#updated') === before,
+      'a hidden panel\'s background poll must not touch #updated '
+      + `(before: ${JSON.stringify(before)}, after: ${JSON.stringify(htmlOf(page, '#updated'))})`);
+  }, readyRowRoute());
+});
+
+testCase('a visible Launchpad poll writes #updated', async () => {
+  await withPage(async page => {
+    check(/^updated /.test(htmlOf(page, '#updated')),
+      `the boot fetch already stamped #updated (got: ${htmlOf(page, '#updated')})`);
+
+    el(page, '#updated').textContent = '';
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+    check(/^updated /.test(htmlOf(page, '#updated')),
+      `a visible panel's background poll DOES stamp #updated (got: ${htmlOf(page, '#updated')})`);
+  });
 });
 
 // ---- main -------------------------------------------------------------------
