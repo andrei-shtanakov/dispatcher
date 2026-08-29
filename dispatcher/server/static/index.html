@@ -57,6 +57,14 @@
     box-sizing: border-box; }
   .lp-ready-detail td { white-space: normal; }
   .lp-pending-list { margin: 0; padding-left: 18px; }
+  /* Task 3 (tabbed-ui): whole-row click is a MOUSE convenience
+     (data-lp-request-id) on top of a real focusable control
+     (.lp-open-run-btn) — the row itself never gets tabindex/role=button,
+     which would break the table's row semantics for a screen reader. Used
+     on both <tr> (Active/Recent) and <li> (Pending). */
+  .lp-run-row { cursor: pointer; }
+  .lp-open-run-btn { background: none; border: none; color: var(--accent);
+    text-decoration: underline; cursor: pointer; font: inherit; padding: 0; }
   #ta-prose { margin: 10px 0; font: inherit; padding: 8px 10px;
     background: var(--card); color: var(--ink);
     border: 1px solid var(--line); border-radius: 8px; resize: vertical; }
@@ -138,6 +146,13 @@
   .ta-outcome { display: flex; gap: 8px; align-items: baseline;
     flex-wrap: wrap; padding: 4px 0; }
   .ta-outcome .what { font-weight: 600; }
+  #tablist { display: flex; gap: 4px; overflow-x: auto; white-space: nowrap;
+             border-bottom: 1px solid #d4d4d8; margin: 0 0 12px; }
+  #tablist button { border: 0; background: none; padding: 8px 12px;
+                    font: inherit; cursor: pointer;
+                    border-bottom: 3px solid transparent; }
+  #tablist button[aria-selected="true"] { border-bottom-color: #2563eb;
+                                          background: #eff6ff; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -145,13 +160,49 @@
 <div class="sub">Ecosystem overview · auto-refresh 10s ·
   <span id="updated"></span></div>
 
+<!-- Tab shell (design §4): the tab strip is the ONLY navigation; the
+     hash is the only writer of the active screen (see the router at
+     the top of the page script below). -->
+<nav id="tablist" role="tablist" aria-label="Разделы">
+  <button id="tab-launchpad" role="tab" type="button" tabindex="0" aria-controls="screen-launchpad" aria-selected="true">Launchpad</button>
+  <button id="tab-sync" role="tab" type="button" tabindex="-1" aria-controls="screen-sync" aria-selected="false">Sync</button>
+  <button id="tab-projects" role="tab" type="button" tabindex="-1" aria-controls="screen-projects" aria-selected="false">Projects</button>
+  <button id="tab-errors" role="tab" type="button" tabindex="-1" aria-controls="screen-errors" aria-selected="false">Errors</button>
+  <button id="tab-models" role="tab" type="button" tabindex="-1" aria-controls="screen-models" aria-selected="false">Models</button>
+  <button id="tab-contracts" role="tab" type="button" tabindex="-1" aria-controls="screen-contracts" aria-selected="false">Contracts</button>
+  <button id="tab-epics" role="tab" type="button" tabindex="-1" aria-controls="screen-epics" aria-selected="false">Epics</button>
+  <button id="tab-waits" role="tab" type="button" tabindex="-1" aria-controls="screen-waits" aria-selected="false">Waits (partial)</button>
+  <button id="tab-roadmap" role="tab" type="button" tabindex="-1" aria-controls="screen-roadmap" aria-selected="false">Roadmap</button>
+  <!-- The CONDITIONAL tenth tab (design §3.1): present in the strip exactly
+       when the eco-profile is configured. It stays in the static markup and
+       is toggled with `hidden` by setBenchmarksAvailable() — a hidden button
+       is out of the accessibility tree, and nothing else on this page builds
+       navigation dynamically. -->
+  <button id="tab-benchmarks" role="tab" type="button" tabindex="-1" aria-controls="screen-benchmarks" aria-selected="false" hidden>Benchmarks</button>
+</nav>
+
+<!-- I-A: outcomes of MUTATIONS outlive the panel that started them. This
+     region is deliberately outside #task-authoring and #detail-section, so
+     nothing on the navigation path (detail(), ta-open-panel) can reach it:
+     a request that was actually sent stays on screen until the operator
+     resolves or dismisses it. -->
+<section id="ta-outcomes" hidden><h2>Unresolved task requests</h2>
+  <div id="ta-outcomes-list"></div></section>
+
+<div id="screen-launchpad" class="screen" role="tabpanel" aria-labelledby="tab-launchpad">
 <!-- Launchpad root panel (spec §9): FIRST section in the body — the
      existing #run-console below stays as drill-down + manual form,
      rewired in Task 7. `#lp-store-banner` mirrors `store_unreadable`
      ONLY (never a transport error — spec §9's transport-uncertainty
-     handling is Task 7's). -->
+     handling is Task 7's); `#lp-fetch-error` is that deliberate second
+     element: the SNAPSHOT read itself failed, so the rows below are the
+     previous snapshot's. Two elements because the distinction is real —
+     a store note means "the server read this snapshot and one source in
+     it was unreadable"; a fetch error means "there is no new snapshot at
+     all". -->
 <section id="launchpad"><h2>Launchpad</h2>
   <div id="lp-store-banner" class="warn" hidden></div>
+  <div id="lp-fetch-error" class="err" hidden></div>
   <h3>Repositories</h3>
   <div id="lp-repos"></div>
   <h3>Ready</h3>
@@ -162,19 +213,43 @@
   <div id="lp-active"></div>
   <h3>Recent completed</h3>
   <div id="lp-recent"></div>
+
+  <!-- Task 3 (tabbed-ui): the manual/advanced form is a servicing input, not
+       the operator's first stop — collapsed by default. request_id is
+       optional at submit (pin a known id for diagnostics) and doubles as
+       the "Open run" field below. The operator names WHAT to run (repo_key,
+       work_id); dispatcher recovers everything launch-time from canon
+       (spec §4.2) — snapshot_id/seen_revision are attached SILENTLY from
+       this panel's own snapshot once repo_key is recognized. `#rc-run-view`
+       sits OUTSIDE the collapsed form: a drill-down opened from a row below
+       (Active/Recent completed) or from a `#launchpad/<request_id>` hash
+       must be visible without also expanding "Manual (advanced)". -->
+  <section id="run-console">
+    <details><summary><h3>Manual (advanced)</h3></summary>
+      <label for="rc-repo-key">repo_key</label>
+      <input id="rc-repo-key" type="text" spellcheck="false">
+      <label for="rc-work-id">work_id</label>
+      <input id="rc-work-id" type="text" spellcheck="false">
+      <div id="rc-actions">
+        <button id="rc-submit" type="button">Submit run</button>
+      </div>
+      <div id="rc-receipt"></div>
+      <div id="rc-view-open">
+        <label for="rc-request-id">request_id (optional at submit; required to open a run)</label>
+        <input id="rc-request-id" type="text" spellcheck="false">
+        <button id="rc-open" type="button">Open run</button>
+      </div>
+    </details>
+    <div id="rc-run-view"></div>
+  </section>
+
   <details id="lp-diagnostics"><summary><h3>Diagnostics</h3></summary>
     <div id="lp-diagnostics-body"></div>
   </details>
 </section>
+</div>
 
-<!-- I-A: outcomes of MUTATIONS outlive the panel that started them. This
-     region is deliberately outside #task-authoring and #detail-section, so
-     nothing on the navigation path (detail(), ta-open-panel) can reach it:
-     a request that was actually sent stays on screen until the operator
-     resolves or dismisses it. -->
-<section id="ta-outcomes" hidden><h2>Unresolved task requests</h2>
-  <div id="ta-outcomes-list"></div></section>
-
+<div id="screen-sync" class="screen" role="tabpanel" aria-labelledby="tab-sync" hidden>
 <section id="sync-section" style="margin-top:0"><h2>Sync
   <span id="sync-topline" class="badge dim">…</span>
   <span id="sync-reason" class="fresh"></span>
@@ -182,40 +257,9 @@
     <span class="spin">⚙</span> fetching…</span></h2>
   <div id="sync-proposals"></div>
   <div id="sync-hosts" class="fresh">loading…</div></section>
+</div>
 
-<section id="benchmarks-section" hidden><h2>Benchmarks
-  <span id="benchmarks-status" class="fresh"></span></h2>
-  <div id="benchmarks-list"></div>
-  <div id="benchmarks-leaderboard"></div>
-  <div id="run-status-row"><label>Run #
-    <input id="run-status-input" type="number" min="1" inputmode="numeric"></label>
-    <button id="run-status-check" type="button">Check status</button></div>
-  <div id="run-status-result"></div></section>
-
-<!-- Task 7 (spec §9 "Manual (advanced)"): the operator names WHAT to run
-     (repo_key, work_id) and dispatcher recovers everything launch-time from
-     canon (spec §4.2) — the legacy revision/tasks/spec_ref/plan_ref inputs
-     are gone. snapshot_id/seen_revision are attached SILENTLY from the
-     launchpad panel's own snapshot once repo_key is recognized; typing them
-     by hand would recreate the old API-console. request_id is optional
-     here for diagnostics (pin a known id) and doubles as the "Open run"
-     field below. -->
-<section id="run-console"><h2>Run console</h2>
-  <label for="rc-repo-key">repo_key</label>
-  <input id="rc-repo-key" type="text" spellcheck="false">
-  <label for="rc-work-id">work_id</label>
-  <input id="rc-work-id" type="text" spellcheck="false">
-  <div id="rc-actions">
-    <button id="rc-submit" type="button">Submit run</button>
-  </div>
-  <div id="rc-receipt"></div>
-  <div id="rc-view-open">
-    <label for="rc-request-id">request_id (optional at submit; required to open a run)</label>
-    <input id="rc-request-id" type="text" spellcheck="false">
-    <button id="rc-open" type="button">Open run</button>
-  </div>
-  <div id="rc-run-view"></div></section>
-
+<div id="screen-projects" class="screen" role="tabpanel" aria-labelledby="tab-projects" hidden>
 <section><h2>Projects</h2>
 <div class="grid" id="projects"></div></section>
 
@@ -288,7 +332,9 @@
     <span id="ta-result"></span>
   </div>
 </section>
+</div>
 
+<div id="screen-errors" class="screen" role="tabpanel" aria-labelledby="tab-errors" hidden>
 <section><details id="errors-box">
   <summary><h2>Errors <span id="errors-count"></span>
     <span id="errors-filter"></span>
@@ -297,19 +343,25 @@
   <div class="tablewrap"><table id="errors">
     <thead><tr><th>Time</th><th>Service</th><th>Message</th></tr></thead>
     <tbody></tbody></table></div></details></section>
+</div>
 
+<div id="screen-models" class="screen" role="tabpanel" aria-labelledby="tab-models" hidden>
 <section><h2>Models</h2>
   <div class="tablewrap"><table id="models">
     <thead><tr><th>Project</th><th>Model</th><th>Harness</th><th>Role</th>
       <th>Vendor</th><th>Status</th></tr></thead>
     <tbody></tbody></table></div></section>
+</div>
 
+<div id="screen-contracts" class="screen" role="tabpanel" aria-labelledby="tab-contracts" hidden>
 <section><h2>Contracts</h2>
   <div class="tablewrap"><table id="contracts">
     <thead><tr><th>Name</th><th>Check</th><th>Canon</th><th>Vendored</th>
       <th>Sync</th>
       </tr></thead><tbody></tbody></table></div></section>
+</div>
 
+<div id="screen-epics" class="screen" role="tabpanel" aria-labelledby="tab-epics" hidden>
 <section><h2>Epics <span id="epics-planes" class="sub"></span></h2>
   <div id="epics-registry" class="fresh"></div>
   <div style="margin:6px 0">
@@ -324,7 +376,9 @@
   <div class="tablewrap" style="margin-top:10px"><table id="defects">
     <thead><tr><th>Defect class</th><th>Count</th><th>By epic</th></tr></thead>
     <tbody></tbody></table></div></section>
+</div>
 
+<div id="screen-waits" class="screen" role="tabpanel" aria-labelledby="tab-waits" hidden>
 <section><h2>Waits <span id="waits-plane" class="sub"></span></h2>
   <div id="waits-disclaimer" class="fresh"></div>
   <div id="waits-graph" class="tablewrap"></div>
@@ -344,7 +398,9 @@
       <thead><tr><th>Пункт</th><th>Условие</th></tr></thead>
       <tbody></tbody></table></div>
   </details></section>
+</div>
 
+<div id="screen-roadmap" class="screen" role="tabpanel" aria-labelledby="tab-roadmap" hidden>
 <section><h2>Roadmap <span id="roadmap-names" class="sub"></span></h2>
   <div class="tablewrap" style="margin-bottom:10px"><table id="roadmap-summary">
     <thead><tr><th>Project</th><th>Done</th><th>Readiness</th>
@@ -355,11 +411,369 @@
       <th>Contract</th><th>Blockers</th><th>Evidence</th><th>Freshness</th>
       </tr></thead>
     <tbody></tbody></table></div></section>
+</div>
+
+<div id="screen-benchmarks" class="screen" role="tabpanel" aria-labelledby="tab-benchmarks" hidden>
+<section id="benchmarks-section" hidden><h2>Benchmarks
+  <span id="benchmarks-status" class="fresh"></span></h2>
+  <div id="benchmarks-list"></div>
+  <div id="benchmarks-leaderboard"></div>
+  <div id="run-status-row"><label>Run #
+    <input id="run-status-input" type="number" min="1" inputmode="numeric"></label>
+    <button id="run-status-check" type="button">Check status</button></div>
+  <div id="run-status-result"></div></section>
+</div>
 
 <script>
 const esc = s => String(s ?? "").replace(/[&<>"']/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const get = async p => (await fetch(p)).json();
+
+// Run-view state (openRunView/rcPollView, below), hoisted ahead of the
+// routing section: applyRoute() runs synchronously at the bottom of this
+// block and, on a `#launchpad/<request_id>` boot hash, onScreenShown calls
+// openRunView() before the script would otherwise reach its own section —
+// a `let` declared there is still in the temporal dead zone at that point.
+let rcViewTimer = null;
+let rcViewRequestId = null;
+let rcLogsGen = 0;
+
+// ---- per-screen load generation (design §9) -------------------------------
+//
+// Spec §9, verbatim: "переключение экрана инвалидирует поздние ответы
+// прошлого там, где они могут менять общий DOM". The per-screen loaders
+// (LOADERS, below) were split out of one `refresh()` that could not race
+// itself; split, they can. Leaving a screen and returning fires
+// onScreenShown → runLoader a SECOND time while the first read is
+// still airborne, and an entry overlaps the 10s screen timer the same way.
+// Whichever answered LAST used to paint — so a stale Sync verdict could
+// overwrite a fresh one, and with it stale proposals re-created as live
+// buttons whose click issues a real, mutating POST /api/sync/track.
+//
+// The same discipline as the Launchpad's `lpState.seq` (lpIssueFetch bumps
+// at ISSUE time, lpApplySnapshot compares at APPLY time; a superseded
+// answer is discarded, never patched in), one counter PER SCREEN rather
+// than one global: the screens own disjoint DOM, and a Models read must not
+// supersede a Contracts one.
+//
+// WHERE the check lives: inside each loader, between its own await and its
+// own render — not in runLoader around the awaited call. By the time
+// that await returns the loader has already painted, so a check there could
+// only undo a render, not prevent it; and the bump inside the loader also
+// covers the callers that never go through the screen timer at all (the
+// Errors filter controls, the post-track loadSync, the benchmark selector).
+// `applyOutcome`'s own screen-id re-check around stampUpdated stays as
+// it is — that guards a different node (#updated) against a different
+// mistake (stamping onto the screen the operator moved to).
+const screenGen = Object.create(null);
+
+/** Issue time: claims the next generation for `screen`. */
+function nextScreenGen(screen) {
+  screenGen[screen] = (screenGen[screen] || 0) + 1;
+  return screenGen[screen];
+}
+
+/** Apply time: true when a newer load for `screen` was issued after `gen`,
+ * so the answer in hand is superseded and must not touch the DOM — neither
+ * its success render nor its failure notice. */
+function screenGenStale(screen, gen) {
+  return screenGen[screen] !== gen;
+}
+
+// ---- screens and routing --------------------------------------------------
+//
+// The hash is the ONLY writer of the current screen: a tab click assigns
+// `location.hash`, the browser delivers `hashchange`, and applyRoute() is the
+// single place that shows a panel. Back/Forward then work with no second code
+// path. Where there is no `location` (the Node harness sandbox before it
+// installs one), routing degrades to a static Launchpad rather than throwing —
+// the same feature-detect idiom the launchpad timer already uses.
+
+// `sub: true` marks the screens spec §4.1 gives NESTED state — the two, and
+// only the two, whose address may carry a `/<value>` segment:
+// `#launchpad/<request_id>` (the drill-down) and `#projects/<directory>`.
+// Declared HERE rather than as a list inside parseHash for the same reason
+// runLoader takes the screen id instead of each caller retyping it: a screen
+// says what it accepts at the point it is declared, and the router reads the
+// registry rather than carrying its own copy of that knowledge.
+//
+// `#projects/<directory>` is reserved, not yet consumed: the Projects screen
+// records its selection through a card click (`errorsProject`), and nothing
+// reads `route.sub` for it. The marker keeps the address §4.1 promises from
+// being rejected by the router before the screen is ready to use it.
+const SCREENS = [
+  {id: "launchpad", label: "Launchpad", sub: true},
+  {id: "sync", label: "Sync"},
+  {id: "projects", label: "Projects", sub: true},
+  {id: "errors", label: "Errors"},
+  {id: "models", label: "Models"},
+  {id: "contracts", label: "Contracts"},
+  {id: "epics", label: "Epics"},
+  {id: "waits", label: "Waits (partial)"},
+  {id: "roadmap", label: "Roadmap"},
+  // The conditional tenth (design §3.1): last in the strip, and offered only
+  // while `benchmarksAvailable` — see setBenchmarksAvailable() below.
+  {id: "benchmarks", label: "Benchmarks"},
+];
+const DEFAULT_SCREEN = "launchpad";
+const HASH_RE = /^#([a-z][a-z-]*)(?:\/([A-Za-z0-9._-]{1,200}))?$/;
+const hasLocation = typeof location !== "undefined" && location !== null;
+const hasWindow = typeof window !== "undefined" && window !== null
+  && typeof window.addEventListener === "function";
+
+let route = {screen: DEFAULT_SCREEN, sub: null};
+
+// The last screen onScreenShown actually ran for — `null` until the very
+// first applyRoute() call (Task 4, tabbed-ui, spec §5.5). Distinguishes
+// "just booted into Launchpad" (lpFetchSnapshot() below already covers that
+// fetch; refetching here too would double it) from "returned to Launchpad
+// after being on another screen" (needs a refetch so the SAME post-refetch
+// predicate that already gates every applied snapshot — lpValidateOpenConfirm,
+// invoked from lpRender via lpRenderReady/lpRenderPending — gets a chance to
+// re-validate whatever confirmation is still open). The `null` case is load-
+// bearing beyond that double-fetch: `lpRefetchAfterAction` is a hoisted
+// function declaration and IS callable from up here, but the `lpState` it
+// reads is a `const` declared only further down the script — so calling it
+// at the very first boot call (before that point is reached) would throw a
+// TDZ ReferenceError on `lpState`, out of applyRoute() itself. This branch
+// has shipped that exact shape of bug once already (Task 3).
+let lpLastScreenShown = null;
+
+// Whether the eco-profile is configured, i.e. whether `Benchmarks` is a
+// screen at all. Decided by the one `/api/benchmarks` request at page load
+// and re-decided by that screen's own loader while it is active; `false`
+// until an answer arrives, so an unconfigured stand shows exactly nine tabs
+// and never flashes a tenth.
+let benchmarksAvailable = false;
+
+/** Screens currently offered — the tenth is conditional (design §3.1). */
+function screenIds() {
+  return SCREENS.map(s => s.id)
+    .filter(id => id !== "benchmarks" || benchmarksAvailable);
+}
+
+/**
+ * The tab exists exactly when `#benchmarks-section` used to un-hide itself:
+ * one visibility rule, lifted to the navigation level.
+ */
+function setBenchmarksAvailable(available) {
+  if (available === benchmarksAvailable) return;
+  benchmarksAvailable = available;
+  const tab = document.getElementById("tab-benchmarks");
+  // Read BEFORE the tab is hidden. A browser moves focus off an element it
+  // hides (to `<body>`), so asking afterwards would be too late to learn
+  // that the operator had been standing on it.
+  const hadFocus = !!tab && document.activeElement === tab;
+  if (tab) tab.hidden = !available;
+  if (!available) {
+    // An operator standing on a screen whose tab just vanished has nothing
+    // to click back from.
+    if (route.screen === "benchmarks") navigate(DEFAULT_SCREEN, null);
+    // Terminal review 8: the route moved but DOM FOCUS did not, so a
+    // keyboard operator was left with `activeElement` on a hidden button —
+    // their place in the strip gone, navigation to re-enter from scratch.
+    // `applyRoute` maintains visibility, selection and the roving tabindex,
+    // but it has never moved focus; nothing had, until here.
+    //
+    // Gated on `hadFocus`: someone who was somewhere else on the page when
+    // the profile changed must not have focus stolen from them.
+    //
+    // `activeScreen()` rather than a hardcoded DEFAULT_SCREEN, though today
+    // they are always the same value here: this function is reached only
+    // from loadBenchmarks, which runs only while Benchmarks is the ACTIVE
+    // screen, so the navigate above has always just happened and the route
+    // is `launchpad`. Writing the general rule costs nothing and keeps this
+    // correct if that ever stops being true — if the profile probe were
+    // widened to run on every screen, design §4's manual activation would
+    // make "focused on the Benchmarks tab while another screen is open" a
+    // reachable state, and a hardcoded launchpad would then drop that
+    // operator onto a tab that is neither where they were nor where they
+    // are going.
+    if (hadFocus) focusTab(activeScreen());
+    return;
+  }
+  // The answer that creates the tab arrives AFTER the boot hash was parsed,
+  // so a direct `#benchmarks` link has already fallen back to Launchpad
+  // (screenIds() did not offer it yet). Re-resolve the address bar now that
+  // the screen exists — otherwise the conditional screen would be the one
+  // screen nobody can bookmark. `location.hash` itself was never rewritten
+  // by the fallback, so it still carries what the owner opened.
+  if (hasLocation && parseHash(location.hash).screen === "benchmarks") {
+    applyRoute();
+  }
+}
+
+/** Whether spec §4.1 gives `id` nested state — see SCREENS. */
+function screenTakesSub(id) {
+  return SCREENS.some(s => s.id === id && s.sub === true);
+}
+
+function parseHash(raw) {
+  const m = HASH_RE.exec(String(raw || ""));
+  if (!m || !screenIds().includes(m[1])) {
+    return {screen: DEFAULT_SCREEN, sub: null};
+  }
+  // Terminal review 7: HASH_RE is ONE general pattern, so it matched
+  // `#sync/foo` and `#errors/foo` too, and the only check here was that the
+  // screen exists — the screen opened and its loader ran on an address the
+  // closed grammar does not define. Harmless in effect (nothing read the
+  // segment) but not harmless in kind: a closed grammar is what keeps a
+  // hash value from becoming a surface, and seven screens were quietly
+  // accepting 200 arbitrary characters they had no use for. A segment on a
+  // screen that declares none makes the whole address unknown, which §4.1
+  // resolves the same way as any other unknown hash.
+  if (m[2] && !screenTakesSub(m[1])) {
+    return {screen: DEFAULT_SCREEN, sub: null};
+  }
+  return {screen: m[1], sub: m[2] || null};
+}
+
+function hashFor(screen, sub) {
+  return sub ? `#${screen}/${sub}` : `#${screen}`;
+}
+
+/** The one way the page changes screen. */
+function navigate(screen, sub) {
+  const next = hashFor(screen, sub || null);
+  if (hasLocation && location.hash !== next) { location.hash = next; return; }
+  route = parseHash(next);
+  applyRoute();
+}
+
+function applyRoute() {
+  if (hasLocation) route = parseHash(location.hash);
+  for (const {id} of SCREENS) {
+    const panel = document.getElementById(`screen-${id}`);
+    const tab = document.getElementById(`tab-${id}`);
+    if (!panel || !tab) continue;
+    const active = id === route.screen;
+    panel.hidden = !active;
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+    // Roving tabindex, set in THIS loop so `hidden`, `aria-selected` and the
+    // tab order can never disagree: exactly one tab is reachable by Tab, and
+    // it is the selected one. Arrow keys then move focus WITHIN the strip
+    // (focusTab below) without opening anything.
+    tab.setAttribute("tabindex", active ? "0" : "-1");
+  }
+  onScreenShown(route);
+}
+
+/** Extended by Task 5 (loaders) and Task 3 (drill-down), Task 4 (revalidate
+ * on return). ACCRETES: each task adds its own branch here, never replaces
+ * the function outright. */
+function onScreenShown(r) {
+  // Read-then-write, both at the TOP: this function accretes (Task 5 adds a
+  // branch below), and a branch that returns early must never strand
+  // `lpLastScreenShown` un-updated — that would silently skip re-validation
+  // on the next real return, the exact failure this task exists to prevent.
+  const previousScreen = lpLastScreenShown;
+  lpLastScreenShown = r.screen;
+  if (r.screen === "launchpad") {
+    // A return must not preserve a stale permission to act (spec §5.5):
+    // state (lpState.pending/rowMessages/escapes) already survives a tab
+    // switch untouched — only `hidden` changed. What must NOT survive
+    // unchecked is an open confirmation's validity, so refetch and let the
+    // existing post-refetch predicate re-run, same as any other applied
+    // snapshot. Skipped on the very first paint (`previousScreen === null`)
+    // — that fetch is lpFetchSnapshot()'s job; doing it here too would
+    // fetch twice at boot (and, before lpState is even declared, throw).
+    if (previousScreen !== null && previousScreen !== "launchpad") {
+      lpRefetchAfterAction();
+    }
+    if (r.sub) openRunView(r.sub);
+  }
+  // Whole-branch review, ITEM 1: the drill-down had an open branch and no
+  // close one. Without this, leaving Launchpad left `rcViewTimer` armed —
+  // a second, unnamed exception to §9.1's active-only polling, and one
+  // with no stop condition while the run is live — and coming back to a
+  // bare `#launchpad` left `#rc-run-view` still rendering the request the
+  // hash no longer names, so Back out of `#launchpad/<id>` did not close
+  // the drill-down (acceptance criterion 3).
+  //
+  // NOT an early return and NOT an `else` on the branch above: this
+  // function accretes, and the loader dispatch below must still run.
+  //
+  // KNOWN AND ACCEPTED: lpOpenRun's non-grammar fallback (for a request_id
+  // that cannot survive HASH_RE) opens a view WITHOUT writing the hash, so
+  // the next navigation closes it. That is correct, not a bug to
+  // rediscover: the hash is the only writer of the screen, and a view the
+  // address bar cannot name cannot be restored by it either. `#rc-open`
+  // itself now routes through lpOpenRun like every other opener, so it is
+  // exempt from this — a routable id gets a hash like any other.
+  if (r.screen !== "launchpad" || !r.sub) {
+    closeRunView();
+  }
+  // Task 5: the screen in front of the operator is the only one loaded and
+  // the only one polled. Skipped on the very first call for the same reason
+  // the launchpad refetch above is: applyRoute() runs at the TOP of this
+  // script, where `LOADERS` (a `const` declared with the loaders, further
+  // down) is still in the temporal dead zone. The boot load is the explicit
+  // `runLoader(activeScreen()); restartScreenTimer();` pair further down, where
+  // old `refresh(); setInterval(refresh, 10000);` used to sit.
+  if (previousScreen !== null) {
+    runLoader(activeScreen());
+    // Restarted per switch, not left free-running: an operator who has just
+    // arrived on a screen gets a whole period before the next repaint,
+    // instead of a tick left over from the screen they came from.
+    restartScreenTimer();
+  }
+}
+
+function activeScreen() { return route.screen; }
+
+document.getElementById("tablist").addEventListener("click", e => {
+  const button = e.target.closest("button[role='tab']");
+  if (!button) return;
+  navigate(button.id.replace(/^tab-/, ""), null);
+});
+
+/**
+ * Moves DOM focus to a tab and carries the roving `tabindex="0"` with it.
+ * Focus only — the screen does not change, so no loader runs. That is the
+ * point: every screen has its own loader, and arrowing from `Launchpad` to
+ * `Roadmap` under automatic activation would fire eight of them to reach
+ * one screen — exactly the waste that splitting the monolithic refresh()
+ * removed.
+ */
+function focusTab(id) {
+  const button = document.getElementById(`tab-${id}`);
+  if (!button) return;
+  for (const s of SCREENS) {
+    const tab = document.getElementById(`tab-${s.id}`);
+    if (tab) tab.setAttribute("tabindex", s.id === id ? "0" : "-1");
+  }
+  button.focus();
+}
+
+// Design §4: "Left/Right перемещают фокус, Enter/Space открывают экран" —
+// MANUAL activation. The neighbour is computed from the FOCUSED tab
+// (`e.target`), never from `route.screen`: those two differ the moment
+// someone Tabs into the strip and arrows without activating, and reading the
+// active screen there would move relative to a tab the person is not on.
+document.getElementById("tablist").addEventListener("keydown", e => {
+  const key = e.key;
+  if (key !== "ArrowLeft" && key !== "ArrowRight"
+      && key !== "Enter" && key !== " ") return;
+  const button = e.target.closest("button[role='tab']");
+  if (!button) return;
+  const from = button.id.replace(/^tab-/, "");
+  if (key === "Enter" || key === " ") {
+    // preventDefault suppresses the click the browser would synthesize from
+    // Enter/Space on a <button>; without it navigate() would run twice.
+    e.preventDefault();
+    navigate(from, null);
+    return;
+  }
+  const ids = screenIds();
+  const at = ids.indexOf(from);
+  if (at === -1) return;   // a tab that is not currently offered
+  e.preventDefault();
+  const delta = key === "ArrowLeft" ? -1 : 1;
+  focusTab(ids[(at + delta + ids.length) % ids.length]);
+});
+
+if (hasWindow) window.addEventListener("hashchange", applyRoute);
+applyRoute();
 
 // Shared by every sink that renders or opens a URL from an opaque
 // passthrough payload (merge-gate's MG_REQUIRED, task-authoring's
@@ -431,7 +845,11 @@ document.getElementById("projects").addEventListener("click", e => {
   errorsProject = card.dataset.name;
   renderErrorsFilter();
   document.getElementById("errors-box").open = true;
-  refresh();
+  // Deliberately NO fetch here (Task 5 ruling): this click happens on the
+  // Projects screen, so the Errors screen is hidden. The filter is recorded
+  // in `errorsProject` and loadErrors() reads it when that tab is next
+  // opened. A hidden screen gets no eager fetch — that IS the active-only
+  // behaviour, not a gap in it.
   detail(card.dataset.name, card.dataset.dir || null);
 });
 
@@ -441,7 +859,12 @@ document.getElementById("errors-filter").addEventListener("click", e => {
   e.stopPropagation();  // don't collapse the <details>
   errorsProject = null;
   renderErrorsFilter();
-  refresh();
+  // runLoader, never `loadErrors()` by hand: the loader and the screen id
+  // it reports under come from one argument, so no call site can pair them
+  // wrongly or forget the second half (see runLoader). These handlers stay
+  // SYNCHRONOUS — the returned promise is deliberately not awaited here, so
+  // the click's timing is exactly what it was.
+  runLoader("errors");
 });
 
 document.getElementById("errors-toggle").addEventListener("click", e => {
@@ -450,14 +873,14 @@ document.getElementById("errors-toggle").addEventListener("click", e => {
   errorsDays = errorsDays === null ? ERRORS_DAYS_DEFAULT : null;
   e.target.textContent =
     errorsDays === null ? `last ${ERRORS_DAYS_DEFAULT} days` : "show all";
-  refresh();
+  runLoader("errors");
 });
 
 const serviceSelect = document.getElementById("errors-service");
 serviceSelect.addEventListener("click", e => e.stopPropagation());
 serviceSelect.addEventListener("change", e => {
   errorsService = e.target.value || null;
-  refresh();
+  runLoader("errors");
 });
 
 // Long messages render truncated; click a message cell to expand/collapse.
@@ -605,7 +1028,7 @@ document.getElementById("benchmarks-list").addEventListener("click", (ev) => {
   const btn = ev.target.closest("button[data-bench]");
   if (!btn) return;
   benchSelected = btn.dataset.bench;
-  refresh();
+  runLoader("benchmarks");
 });
 
 // Phase-2 run-status (spec 2026-08-16 §7): click-driven; the token is
@@ -756,10 +1179,22 @@ function renderEpics(view) {
     </tr>`).join("") || `<tr><td colspan="3">no defect-tagged items</td></tr>`;
 }
 
+// Returns a LOAD_* outcome like every other LOADERS entry — see the
+// "loader OUTCOMES" block above `loadSync`. The constants are declared
+// further down in this same script scope; nothing calls this before the
+// script has run to the bottom (the boot `applyRoute()` deliberately skips
+// `runLoader`, and the `kind` buttons need a click).
 async function refreshEpics() {
+  // The `kind` filter makes the race concrete: a click here while a screen
+  // tick is airborne must not have the tick's UNFILTERED answer land last.
+  const gen = nextScreenGen("epics");
   try {
-    renderEpics(await get("/api/epics" + (epicsKind ? `?kind=${epicsKind}` : "")));
+    const epics = await get("/api/epics" + (epicsKind ? `?kind=${epicsKind}` : ""));
+    if (screenGenStale("epics", gen)) return LOAD_STALE;
+    renderEpics(epics);
+    return LOAD_PAINTED;
   } catch (err) {
+    if (screenGenStale("epics", gen)) return LOAD_STALE;
     // named, not silent: an empty table would read as "no epics", which is a
     // claim about the fleet rather than about this request
     const reg = document.getElementById("epics-registry");
@@ -769,6 +1204,7 @@ async function refreshEpics() {
     }
     document.querySelector("#epics tbody").innerHTML =
       `<tr><td colspan="8" class="err">not read — see above</td></tr>`;
+    return LOAD_FAILED;
   }
 }
 
@@ -894,8 +1330,8 @@ function renderWaits(view) {
     `<tr><td colspan="2">нет</td></tr>`;
 }
 
-// refresh() fires every 10s without awaiting this poll, so polls could
-// overlap. Serialize instead of racing: while one request is in flight, the
+// The screen timer fires this loader every 10s without awaiting the poll
+// already running, so polls could overlap. Serialize instead of racing: while one request is in flight, the
 // next tick simply skips — so responses can never arrive out of order (a
 // late answer repainting a newer one would show a closed wait as waiting),
 // and, unlike a newest-wins generation token, a poll that consistently
@@ -904,17 +1340,35 @@ function renderWaits(view) {
 let waitsInFlight = false;
 
 async function refreshWaits() {
-  if (waitsInFlight) return; // the running poll will paint; a later tick retries
+  // LOAD_STALE, not a failure and certainly not a paint: this call rendered
+  // nothing, and the poll already in flight will stamp `#updated` when it
+  // paints. Marking the screen unread here would flash "не прочитано" over
+  // a panel that is a moment away from a good render; stamping would claim
+  // a freshness this call did not produce. Same reasoning as a superseded
+  // generation — see the "loader OUTCOMES" block above `loadSync`.
+  if (waitsInFlight) return LOAD_STALE; // the running poll will paint
   waitsInFlight = true;
+  // AFTER the in-flight gate, deliberately: a call that returned early above
+  // issued no request, and letting it bump would supersede the poll that is
+  // painting on its behalf — turning "the running poll will paint" into
+  // "nobody paints". With the gate in place at most one waits read is ever
+  // airborne, so this counter changes nothing here; it is carried so the
+  // screen is not the one exception to the rule.
+  const gen = nextScreenGen("waits");
   try {
-    renderWaits(await get("/api/waits"));
+    const waits = await get("/api/waits");
+    if (screenGenStale("waits", gen)) return LOAD_STALE;
+    renderWaits(waits);
+    return LOAD_PAINTED;
   } catch (err) {
+    if (screenGenStale("waits", gen)) return LOAD_STALE;
     // named, not silent — an empty graph would read as "no obligations";
     // and the previous poll's tables must not survive under this disclaimer
     const disc = document.getElementById("waits-disclaimer");
     disc.className = "err";
     disc.textContent = `waits unavailable: ${err && err.message ? err.message : err}`;
     renderWaitsUnread();
+    return LOAD_FAILED;
   } finally {
     waitsInFlight = false;
   }
@@ -923,7 +1377,7 @@ async function refreshWaits() {
 document.querySelectorAll("button[data-epic-kind]").forEach(btn => {
   btn.addEventListener("click", () => {
     epicsKind = btn.dataset.epicKind;
-    refreshEpics();
+    runLoader("epics");
   });
 });
 
@@ -950,7 +1404,10 @@ document.getElementById("sync-proposals").addEventListener("click", async e => {
                             action: btn.dataset.action}),
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    refresh();
+    // Deliberately NOT awaited inside this try: the try owns the POST, and
+    // awaiting the reload here would route a reload failure into the catch
+    // that re-enables a button renderSync may have just removed.
+    runLoader("sync");
   } catch (err) {
     btn.disabled = false;  // ошибка не должна оставить кнопку мёртвой
     btn.closest(".proposal").insertAdjacentHTML("beforeend",
@@ -984,7 +1441,11 @@ document.getElementById("sync-hosts").addEventListener("click", async e => {
       ? "✓ " + (data.pr_url ?? data.detail ?? "done")
       : "✗ " + (data.error ?? "failed");
     out.className = "act-result " + (data.ok ? "ok" : "err");
-    if (data.ok) setTimeout(refresh, 800);
+    // Only reachable from the Sync screen's own host table, so the Sync
+    // loader is the whole repaint this needs.
+    if (data.ok) {
+      setTimeout(() => runLoader("sync"), 800);
+    }
   } catch (err) {
     out.textContent = "✗ " + err;
     out.className = "act-result err";
@@ -1472,8 +1933,8 @@ function renderRunView(view) {
     + `<div id="rc-logs"></div>`;
 }
 
-let rcViewTimer = null;
-let rcViewRequestId = null;
+// rcViewTimer/rcViewRequestId are declared near the top of this script
+// (with rcLogsGen below) — see the comment there for why.
 
 async function rcPollView() {
   const requestId = rcViewRequestId;
@@ -1596,7 +2057,7 @@ async function rcPollView() {
 // because a half-written last line is ordinary while a run is live and
 // hiding it would make this pane disagree with the file it claims to show.
 //: Monotonic per-click generation for the logs panel — see `settle`.
-let rcLogsGen = 0;
+// (rcLogsGen itself is declared near the top of this script.)
 
 function renderRunLogs(logs) {
   const rows = logs.events.map(e => e.event
@@ -1733,14 +2194,35 @@ async function openRunView(requestId) {
   await rcPollView();
 }
 
-document.getElementById("rc-open").addEventListener("click", async () => {
+// The counterpart to openRunView, called by onScreenShown whenever the route
+// no longer names a drill-down (see the comment there). Everything
+// openRunView arms is disarmed here, in the same order it matters:
+//   - the 5s poll, which otherwise keeps issuing GET /api/runs/{id} from
+//     behind another screen for as long as the run is unsettled;
+//   - `rcViewRequestId`, so an in-flight answer for the closed request
+//     cannot repaint a box nobody is looking at (every await in this
+//     section re-checks it);
+//   - `rcLogsGen`, for the same reason on the logs/task-log fetches, which
+//     carry their own generation;
+//   - the box itself, so `#launchpad` and `#launchpad/<id>` never render
+//     the same thing.
+// `#rc-request-id` is deliberately LEFT alone: it is the Manual form's own
+// input, and blanking what an operator typed is not part of closing a view.
+function closeRunView() {
+  if (rcViewTimer !== null) { clearInterval(rcViewTimer); rcViewTimer = null; }
+  rcViewRequestId = null;
+  rcLogsGen++;
+  document.getElementById("rc-run-view").innerHTML = "";
+}
+
+document.getElementById("rc-open").addEventListener("click", () => {
   const requestId = document.getElementById("rc-request-id").value.trim();
   if (!requestId) {
     document.getElementById("rc-run-view").innerHTML =
       `<div class="warn">enter a request_id</div>`;
     return;
   }
-  await openRunView(requestId);
+  lpOpenRun(requestId);
 });
 
 // Fires one Mode-1 verb against the currently open request (Task 5, spec
@@ -1918,37 +2400,103 @@ document.getElementById("rc-run-view").addEventListener("change", e => {
   btn.disabled = !(runId && outcome);
 });
 
-async function refresh() {
-  // Waits is fired BEFORE the shared Promise.all and outside its try: a
-  // failing /api/models must not stop a healthy /api/waits from painting,
-  // and refreshWaits carries its own catch + generation guard. Placing the
-  // call after the await (as Epics is) skips it whenever any unrelated
-  // endpoint rejects — the local.sh finding on this change.
-  refreshWaits();
+// ---- per-screen loaders ---------------------------------------------------
+//
+// One `refresh()` used to fetch eight endpoints in a single Promise.all every
+// 10 s, whatever the operator was actually looking at. Now every screen owns
+// a loader and ONLY the active screen's loader runs — once on entry
+// (onScreenShown) and then on the screen timer.
+//
+// Split by SCREEN, never by endpoint. The Roadmap table's `Contract` column
+// is folded from /api/contracts (`syncByName` in renderRoadmap), not from
+// /api/roadmap, so loadRoadmap fetches BOTH — cut along endpoint lines and
+// that column empties silently. Contracts keeps its own fetch of the same
+// endpoint on purpose: two cheap fetches of one endpoint from two screens
+// beat an implicit coupling through a shared cache.
+//
+// Each loader carries its OWN try/catch and writes only its own nodes: a
+// broken endpoint on one screen must never blank a neighbour. A hidden
+// screen is never cleared, so returning to it shows the last good paint
+// until the new response lands.
+
+const SCREEN_REFRESH_MS = 10000;
+
+// ---- loader OUTCOMES (terminal review, PR #220) ---------------------------
+//
+// A loader used to swallow its own outcome: it caught its failure, painted
+// "<screen> unavailable", and returned normally — indistinguishable, to
+// the caller, from a successful paint. So `#updated` read
+// "updated <now>" beside a panel that had read nothing. Same for a load
+// whose render was DROPPED by the generation guard above: it returns
+// without painting, and the caller stamped anyway — a freshness claim over
+// a panel that painted nothing, or over an empty one on a first entry.
+// Both are exactly what NFR-02 forbids ("показ устаревшего состояния как
+// актуального недопустим") and what criterion 11 of this spec forbids.
+//
+// So every loader RETURNS what happened, and `applyOutcome` decides
+// what `#updated` may say. Three outcomes, because three are what the
+// caller must tell apart:
+//
+//   PAINTED — this load rendered fresh data. The only outcome that earns a
+//             timestamp.
+//   STALE   — a newer load for this screen superseded this one (or, on
+//             Waits, a poll already in flight will paint for it). The
+//             newer load stamps when IT paints; this one must leave
+//             `#updated` exactly as it found it. Not a failure: nothing is
+//             wrong, and marking it would flicker an error onto a screen
+//             that is about to render.
+//   FAILED  — the read did not happen. `#updated` says so in the page's
+//             existing vocabulary for an unread source ("не прочитано" +
+//             class `err`, which loadSync's own catch and the waits panel
+//             already use) rather than claiming a freshness it does not
+//             have.
+//
+// Strings rather than booleans: two booleans would need a convention about
+// which combination is impossible, and a new loader would have to guess it.
+// A returned name is readable at each `return` site, and every exit path of
+// every loader below carries one.
+const LOAD_PAINTED = "painted";
+const LOAD_STALE = "stale";
+const LOAD_FAILED = "failed";
+
+async function loadSync() {
+  const gen = nextScreenGen("sync");
   try {
-    const errorsUrl = "/api/errors?limit=50"
-      + (errorsDays === null ? "" : `&days=${errorsDays}`)
-      + (errorsProject === null
-        ? "" : `&project=${encodeURIComponent(errorsProject)}`)
-      + (errorsService === null
-        ? "" : `&service=${encodeURIComponent(errorsService)}`);
-    const [ov, errors, models, contracts, roadmap, sync, summary, benchmarks] =
-      await Promise.all([
-      get("/api/overview"), get(errorsUrl),
-      get("/api/models"), get("/api/contracts"), get("/api/roadmap"),
-      get("/api/sync"), get("/api/roadmap/summary"), get("/api/benchmarks")]);
+    const sync = await get("/api/sync");
+    // A superseded read must not paint: the proposals renderSync draws are
+    // live buttons over a mutating POST, so a late answer would not merely
+    // look stale — it would be ACTIONABLE stale (spec §9).
+    if (screenGenStale("sync", gen)) return LOAD_STALE;
     renderSync(sync);
-    // Epics is fetched OUTSIDE the Promise.all above, deliberately. Joining it
-    // there makes one panel's endpoint able to blank the whole dashboard — the
-    // rest of this page has nothing to do with the stream axis, and a reader
-    // looking at Sync should not lose it because the registry is unreadable.
-    // The failure is shown in the panel instead of swallowed.
-    refreshEpics();
-    // one global section, one writer, one polling loop — refresh() itself
-    // IS the stale-response guard; no generation counter needed here.
-    renderBenchmarks(benchmarks);
-    renderSummary(summary);
-    document.getElementById("projects").innerHTML = ov.projects.map(p => `
+    return LOAD_PAINTED;
+  } catch (err) {
+    // A superseded FAILURE is not this screen's news either: it would erase
+    // the verdict a newer, successful read has already painted.
+    if (screenGenStale("sync", gen)) return LOAD_STALE;
+    // NFR-02: nothing renderSync owns may keep asserting after a failed
+    // read. Naming the failure only in #sync-hosts would leave the PREVIOUS
+    // verdict standing in the topline and the PREVIOUS proposals still
+    // rendered and still clickable — stale state presented as current, and
+    // in the proposals' case stale state an operator can act on. Same
+    // reasoning as the errors count: a leftover verdict is a claim.
+    const top = document.getElementById("sync-topline");
+    top.textContent = "не прочитано";
+    top.className = "badge err";
+    document.getElementById("sync-reason").textContent = "";
+    document.getElementById("sync-fetch").hidden = true;
+    document.getElementById("sync-proposals").innerHTML = "";
+    document.getElementById("sync-hosts").textContent = "sync failed: " + err;
+    return LOAD_FAILED;
+  }
+}
+
+async function loadProjects() {
+  const grid = document.getElementById("projects");
+  const gen = nextScreenGen("projects");
+  try {
+    const ov = await get("/api/overview");
+    if (screenGenStale("projects", gen)) return LOAD_STALE;
+    grid.innerHTML = ov.projects.map(p => `
       <div class="card ${p.detected ? "" : "off"}"
            ${p.detected
              // data-dir is the ON-DISK clone dirname (from p.path's basename),
@@ -1969,6 +2517,30 @@ async function refresh() {
         ${(p.warnings || []).map(w => `<div class="warn">⚠ ${esc(w)}</div>`)
           .join("")}
       </div>`).join("");
+    return LOAD_PAINTED;
+  } catch (err) {
+    if (screenGenStale("projects", gen)) return LOAD_STALE;
+    // named, not an empty grid: no cards would read as "no projects", a
+    // claim about the fleet rather than about this request
+    grid.innerHTML = `<div class="err">projects unavailable: ${esc(String(err))}</div>`;
+    return LOAD_FAILED;
+  }
+}
+
+async function loadErrors() {
+  // Bumped here rather than in runLoader so the filter controls
+  // (project / days / service) supersede an older, differently-filtered
+  // read they overlap — they call this loader directly.
+  const gen = nextScreenGen("errors");
+  try {
+    const errorsUrl = "/api/errors?limit=50"
+      + (errorsDays === null ? "" : `&days=${errorsDays}`)
+      + (errorsProject === null
+        ? "" : `&project=${encodeURIComponent(errorsProject)}`)
+      + (errorsService === null
+        ? "" : `&service=${encodeURIComponent(errorsService)}`);
+    const errors = await get(errorsUrl);
+    if (screenGenStale("errors", gen)) return LOAD_STALE;
     document.querySelector("#errors tbody").innerHTML = errors.map(e => {
       const full = e.body ?? "";
       const short = full.length > MSG_LIMIT
@@ -1984,71 +2556,302 @@ async function refresh() {
       `(${errors.length})`;
     errors.forEach(e => { if (e.service) knownServices.add(e.service); });
     renderServiceOptions();
+    return LOAD_PAINTED;
+  } catch (err) {
+    if (screenGenStale("errors", gen)) return LOAD_STALE;
+    // «no errors 🎉» is a claim; an unread endpoint may not make it
+    document.querySelector("#errors tbody").innerHTML =
+      `<tr><td colspan="3" class="err">errors unavailable: ${esc(String(err))}</td></tr>`;
+    document.getElementById("errors-count").textContent = "(—)";
+    return LOAD_FAILED;
+  }
+}
+
+async function loadModels() {
+  const gen = nextScreenGen("models");
+  try {
+    const models = await get("/api/models");
+    if (screenGenStale("models", gen)) return LOAD_STALE;
     document.querySelector("#models tbody").innerHTML = models.map(m => `
       <tr><td>${esc(m.project)}</td><td>${esc(m.model_id)}</td>
       <td>${esc(m.harness ?? "—")}</td><td>${esc(m.role)}</td>
       <td>${esc(m.vendor ?? "—")}</td><td>${esc(m.status ?? "—")}</td></tr>`)
       .join("");
-    document.querySelector("#contracts tbody").innerHTML = contracts.map(c => `
-      <tr><td>${esc(c.name)}</td><td>${esc(c.kind)}</td>
-      <td>${esc(c.canonical_path || "—")}</td>
-      <td>${esc(c.vendored_path || "—")}</td>
-      <td class="${c.in_sync === false ? "err" : "ok"}">
-        ${c.in_sync === null ? esc(c.detail ?? "n/a")
-          : c.in_sync ? "✓ in sync" : "✗ drift"}</td></tr>`).join("");
-    const stCls = s => s === "verified" || s === "implemented" ? "ok"
-      : s === "blocked" || s === "drift" ? "err" : "";
-    // Fold per-copy checker rows: any drifted copy drifts the contract,
-    // any not-comparable copy blocks an in-sync verdict (parity with
-    // contract_sync_by_name in dispatcher/core/roadmap.py).
-    // Only upstream_drift rows: this view asks whether canon moved. Folding
-    // vendored_integrity in would answer a different question in the same cell.
-    const syncByName = new Map();
-    for (const c of contracts) {
-      if (c.kind !== "upstream_drift") continue;
-      const prev = syncByName.has(c.name) ? syncByName.get(c.name) : c.in_sync;
-      syncByName.set(c.name,
-        prev === false || c.in_sync === false ? false
-        : prev === null || c.in_sync === null ? null : true);
-    }
-    document.getElementById("roadmap-names").textContent =
-      (roadmap.roadmaps || []).join(", ");
-    document.querySelector("#roadmap tbody").innerHTML =
-      roadmap.items.map(i => {
-        const passed = i.evidence.filter(e => e.passed).length;
-        const ev = i.evidence.length
-          ? `${passed}/${i.evidence.length} rules` : "no rules";
-        // Attested-only impl: amber + `(attested)` label, never machine-green
-        // (ADR-ECO-005 D3). status_label carries the marker from the API.
-        const attested = i.implementation_is_attested_only;
-        const stCell = attested ? "attested" : stCls(i.computed_status);
-        const stTitle = attested
-          ? "implementation asserted by owner (attestation), not machine-verified"
-          : "";
-        const tc = i.target_contract;
-        const tcSync = tc ? syncByName.get(tc) : undefined;
-        const tcCell = !tc ? "—"
-          : tcSync === true ? `${tc} ✓ in sync`
-          : tcSync === false ? `${tc} ✗ drift` : `${tc} n/a`;
-        const tcCls = tcSync === true ? "ok" : tcSync === false ? "err" : "";
-        return `
-      <tr><td>${esc(i.phase ?? "—")}</td>
-      <td title="${esc(i.title)}">${esc(i.id)} ${esc(i.title)}</td>
-      <td>${esc(i.owner_project ?? "—")}</td>
-      <td class="${stCell}" title="${esc(stTitle)}">${esc(i.status_label)}</td>
-      <td class="${tcCls}">${esc(tcCell)}</td>
-      <td>${esc((i.blockers || []).join(", ") || "—")}</td>
-      <td title="${esc(i.evidence.map(e =>
-        `${e.passed ? "✓" : "✗"} ${e.rule}: ${e.detail}`).join("\n"))}">
-        ${esc(ev)}</td>
-      <td class="fresh">${esc(i.last_seen ?? "—")}</td></tr>`;
-      }).join("")
-      || `<tr><td colspan="8">no roadmap items</td></tr>`;
-    document.getElementById("updated").textContent =
-      "updated " + new Date().toLocaleTimeString();
+    return LOAD_PAINTED;
   } catch (err) {
-    document.getElementById("updated").textContent = "refresh failed: " + err;
+    if (screenGenStale("models", gen)) return LOAD_STALE;
+    document.querySelector("#models tbody").innerHTML =
+      `<tr><td colspan="6" class="err">models unavailable: ${esc(String(err))}</td></tr>`;
+    return LOAD_FAILED;
   }
+}
+
+function renderContracts(contracts) {
+  document.querySelector("#contracts tbody").innerHTML = contracts.map(c => `
+    <tr><td>${esc(c.name)}</td><td>${esc(c.kind)}</td>
+    <td>${esc(c.canonical_path || "—")}</td>
+    <td>${esc(c.vendored_path || "—")}</td>
+    <td class="${c.in_sync === false ? "err" : "ok"}">
+      ${c.in_sync === null ? esc(c.detail ?? "n/a")
+        : c.in_sync ? "✓ in sync" : "✗ drift"}</td></tr>`).join("");
+}
+
+async function loadContracts() {
+  const gen = nextScreenGen("contracts");
+  try {
+    const contracts = await get("/api/contracts");
+    if (screenGenStale("contracts", gen)) return LOAD_STALE;
+    renderContracts(contracts);
+    return LOAD_PAINTED;
+  } catch (err) {
+    if (screenGenStale("contracts", gen)) return LOAD_STALE;
+    document.querySelector("#contracts tbody").innerHTML =
+      `<tr><td colspan="5" class="err">contracts unavailable: ${esc(String(err))}</td></tr>`;
+    return LOAD_FAILED;
+  }
+}
+
+function renderRoadmap(roadmap, contracts) {
+  const stCls = s => s === "verified" || s === "implemented" ? "ok"
+    : s === "blocked" || s === "drift" ? "err" : "";
+  // Fold per-copy checker rows: any drifted copy drifts the contract,
+  // any not-comparable copy blocks an in-sync verdict (parity with
+  // contract_sync_by_name in dispatcher/core/roadmap.py).
+  // Only upstream_drift rows: this view asks whether canon moved. Folding
+  // vendored_integrity in would answer a different question in the same cell.
+  const syncByName = new Map();
+  for (const c of contracts) {
+    if (c.kind !== "upstream_drift") continue;
+    const prev = syncByName.has(c.name) ? syncByName.get(c.name) : c.in_sync;
+    syncByName.set(c.name,
+      prev === false || c.in_sync === false ? false
+      : prev === null || c.in_sync === null ? null : true);
+  }
+  document.getElementById("roadmap-names").textContent =
+    (roadmap.roadmaps || []).join(", ");
+  document.querySelector("#roadmap tbody").innerHTML =
+    roadmap.items.map(i => {
+      const passed = i.evidence.filter(e => e.passed).length;
+      const ev = i.evidence.length
+        ? `${passed}/${i.evidence.length} rules` : "no rules";
+      // Attested-only impl: amber + `(attested)` label, never machine-green
+      // (ADR-ECO-005 D3). status_label carries the marker from the API.
+      const attested = i.implementation_is_attested_only;
+      const stCell = attested ? "attested" : stCls(i.computed_status);
+      const stTitle = attested
+        ? "implementation asserted by owner (attestation), not machine-verified"
+        : "";
+      const tc = i.target_contract;
+      const tcSync = tc ? syncByName.get(tc) : undefined;
+      const tcCell = !tc ? "—"
+        : tcSync === true ? `${tc} ✓ in sync`
+        : tcSync === false ? `${tc} ✗ drift` : `${tc} n/a`;
+      const tcCls = tcSync === true ? "ok" : tcSync === false ? "err" : "";
+      return `
+    <tr><td>${esc(i.phase ?? "—")}</td>
+    <td title="${esc(i.title)}">${esc(i.id)} ${esc(i.title)}</td>
+    <td>${esc(i.owner_project ?? "—")}</td>
+    <td class="${stCell}" title="${esc(stTitle)}">${esc(i.status_label)}</td>
+    <td class="${tcCls}">${esc(tcCell)}</td>
+    <td>${esc((i.blockers || []).join(", ") || "—")}</td>
+    <td title="${esc(i.evidence.map(e =>
+      `${e.passed ? "✓" : "✗"} ${e.rule}: ${e.detail}`).join("\n"))}">
+      ${esc(ev)}</td>
+    <td class="fresh">${esc(i.last_seen ?? "—")}</td></tr>`;
+    }).join("")
+    || `<tr><td colspan="8">no roadmap items</td></tr>`;
+}
+
+async function loadRoadmap() {
+  const gen = nextScreenGen("roadmap");
+  try {
+    const [roadmap, summary, contracts] = await Promise.all([
+      get("/api/roadmap"), get("/api/roadmap/summary"), get("/api/contracts"),
+    ]);
+    // ALL-OR-NOTHING: this screen is painted from three endpoints, so the
+    // check sits after `Promise.all` and before the FIRST render. Guarding
+    // each fetch on its own would let a stale summary sit above a fresh
+    // table — half a stale answer, which is worse than a whole one.
+    if (screenGenStale("roadmap", gen)) return LOAD_STALE;
+    renderSummary(summary);
+    renderRoadmap(roadmap, contracts);
+    return LOAD_PAINTED;
+  } catch (err) {
+    if (screenGenStale("roadmap", gen)) return LOAD_STALE;
+    document.getElementById("roadmap-names").textContent =
+      "roadmap failed: " + err;
+    document.querySelector("#roadmap tbody").innerHTML =
+      `<tr><td colspan="8" class="err">not read — see above</td></tr>`;
+    return LOAD_FAILED;
+  }
+}
+
+// The CONDITIONAL screen's loader, and the single reader of the answer that
+// decides whether its tab is offered at all. Called once at boot (that one
+// request decides the tab — no other screen pays for `/api/benchmarks`),
+// then by the screen timer while Benchmarks is the active screen, and on an
+// explicit benchmark selection.
+//
+// Callers overlap in exactly one place: on a direct `#benchmarks` boot this
+// function re-resolves the hash (setBenchmarksAvailable, below), and the
+// screen that opens then runs this same loader again while the first call is
+// still on the stack. That overlap is ORDERED, not racing — the first call
+// has already rendered by the time it triggers the second, so the second is
+// strictly the fresher read — which is why one section with one writer still
+// needs no generation counter here.
+//
+// A FAILED read is not an answer about configuration: the catch leaves the
+// tab exactly as it is (fail-loud on the panel instead), because dropping an
+// operator off the screen on a transport blip is worse than a panel that
+// names its own failure.
+async function loadBenchmarks() {
+  const gen = nextScreenGen("benchmarks");
+  try {
+    const status = await get("/api/benchmarks");
+    // Also gates setBenchmarksAvailable: a superseded answer must not decide
+    // whether the conditional tab is offered — that would take the operator
+    // off a screen on the strength of an answer already overtaken.
+    if (screenGenStale("benchmarks", gen)) return LOAD_STALE;
+    renderBenchmarks(status);
+    setBenchmarksAvailable(status.report.status !== "unconfigured");
+    return LOAD_PAINTED;
+  } catch (err) {
+    if (screenGenStale("benchmarks", gen)) return LOAD_STALE;
+    document.getElementById("benchmarks-status").textContent =
+      "benchmarks unavailable: " + err;
+    return LOAD_FAILED;
+  }
+}
+
+// `launchpad: null` is the registry saying so out loud: the Launchpad drives
+// itself on LP_REFRESH_MS with its own sequence/idempotency discipline
+// (lpIssueFetch), and must not be double-driven from here.
+const LOADERS = {
+  launchpad: null,
+  sync: loadSync,
+  projects: loadProjects,
+  errors: loadErrors,
+  models: loadModels,
+  contracts: loadContracts,
+  epics: refreshEpics,       // self-contained: own catch + load generation
+  waits: refreshWaits,       // self-contained: own in-flight gate, then gen
+  roadmap: loadRoadmap,
+  // Reached only while the conditional tab is offered, so `/api/benchmarks`
+  // stays off every other screen's path.
+  benchmarks: loadBenchmarks,
+};
+
+// `#updated` is one global element for the whole page, with exactly two
+// writers (this loader, and Task 6's gated write in lpApplySnapshot) — both
+// funnel through here so the two can never drift apart in appearance.
+function stampUpdated() {
+  const node = document.getElementById("updated");
+  node.textContent = "updated " + new Date().toLocaleTimeString();
+  // Clears a previous failure's `err` class: the field is one node reused
+  // by both states, so a good read must take the red off as well as put a
+  // time on.
+  node.className = "";
+}
+
+// The other half of the same field. Not a third vocabulary: "не прочитано"
+// with class `err` is what loadSync's topline and the waits panel already
+// say about a source they could not read, and this says it about the
+// screen's freshness itself. Blanking the field instead would be quieter
+// but wrong in the other direction — an empty field reads as "no answer
+// yet", not as "the last attempt failed".
+function markUpdatedUnread() {
+  const node = document.getElementById("updated");
+  node.textContent = "не прочитано";
+  node.className = "err";
+}
+
+// What `#updated` is allowed to say once a load of `screen` has finished.
+// The screen id is the one the load was ISSUED for, captured before its
+// await — see the two checks below.
+//
+// Extracted from the screen-timer path (fix round 1): the timer and
+// tab entry are not the only callers that reach a loader. When adding one,
+// grep for the loader's NAME, not for `loadSync(` — the site missed twice
+// was `setTimeout(loadSync, 800)`, passed by name, and Task 5 lost a
+// `refresh()` site the same way. The Errors
+// filters, the Epics `kind` buttons, the benchmark selector and the
+// post-track Sync reload all call one DIRECTLY, and each of them threw the
+// outcome away — so the finding this function exists to fix survived on
+// the most-clicked path of the Errors screen: with `/api/errors` down, a
+// filter click left "errors unavailable" in the table under a "updated
+// <now>" that belonged to the previous, successful read.
+function applyOutcome(screen, outcome) {
+  // Whole-branch review, ITEM 2: the screen id is captured BEFORE the load's
+  // await and re-checked here. A slow loader that answers once the operator
+  // has already switched tabs would otherwise stamp "updated <now>" onto the
+  // screen they moved to, before that screen has painted anything — the same
+  // false-freshness the `activeScreen() === "launchpad"` gate in
+  // lpApplySnapshot already prevents, and what criterion 11 forbids. The
+  // screen that came second stamps for itself when its own load returns.
+  if (activeScreen() !== screen) return;
+  // Terminal review, PR #220: the screen id is necessary but not sufficient.
+  // It answers "is this still the screen in front of the operator?", not
+  // "did anything actually get painted?" — and a load that FAILED, or one
+  // whose render the generation guard dropped, satisfies the first while
+  // failing the second. Only a real paint earns a timestamp.
+  if (outcome === LOAD_PAINTED) {
+    stampUpdated();
+  } else if (outcome === LOAD_STALE) {
+    // Left EXACTLY as it was: a newer load for this screen is already in
+    // flight (or already painted) and stamps for itself. Writing anything
+    // here would either overwrite a fresher stamp or flash an error over a
+    // screen nothing is wrong with.
+    return;
+  } else {
+    // LOAD_FAILED — and anything a future loader returns that is not one of
+    // the three. Fail-closed AND fail-loud: an unrecognised outcome means
+    // this code does not know the screen is fresh, and NFR-02 forbids
+    // showing not-knowing as freshness. A new loader that forgets to return
+    // an outcome therefore shows "не прочитано" on every load, which is
+    // wrong in the direction that gets noticed and fixed.
+    markUpdatedUnread();
+  }
+}
+
+// The ONE way to run a loader. After the split, `#updated` is written by the
+// ACTIVE screen's loader — not by whichever endpoint happened to answer last
+// — and this is the only place that pairs a loader with the report of what
+// it did.
+//
+// Why a function and not a convention: the SAME defect — a caller that
+// discarded the outcome, so an unread screen wore a freshness marker — was
+// found and patched four times running (the failure path, then eight direct
+// calls, then a ninth passed BY NAME to setTimeout, then the Launchpad).
+// Each fix was right and each left the next instance alive, because the
+// pairing was hand-written at every call site. Worse, the screen id was
+// retyped as a string literal beside it, and getting THAT wrong fails
+// silently: `applyOutcome`'s id guard simply never matches, so the stamp
+// quietly stops working instead of erroring.
+//
+// Both problems go away for the same reason: the id arrives as one argument
+// and is used for BOTH the registry lookup and the outcome, so the two
+// cannot disagree, and there is no way to reach a loader here without also
+// reporting its outcome. Note that no loader is NAMED in this body —
+// `LOADERS[screen]` is the only path to one — which is what lets
+// tabs_harness.js's 'no call site reaches a loader except through
+// runLoader' case forbid every by-name mention outside the registry and the
+// definitions themselves, with no exemption for this function.
+//
+// Returns the promise so callers can still chain (and so the harness can
+// await a click). A screen with no loader — `launchpad`, which drives
+// itself — resolves immediately, having done nothing.
+function runLoader(screen) {
+  const load = LOADERS[screen];
+  if (!load) return Promise.resolve();
+  return load().then(outcome => { applyOutcome(screen, outcome); });
+}
+
+let screenTimer = null;
+
+function restartScreenTimer() {
+  if (typeof setInterval !== "function") return;
+  if (screenTimer !== null) clearInterval(screenTimer);
+  screenTimer = setInterval(() => runLoader(activeScreen()), SCREEN_REFRESH_MS);
 }
 
 let currentSpecRunnerConfig = null;
@@ -3770,8 +4573,31 @@ document.getElementById('ta-open-panel').addEventListener('click', () => {
   section.scrollIntoView({behavior: 'smooth', block: 'nearest'});
 });
 
-refresh();
-setInterval(refresh, 10000);
+// The boot load for whatever screen the hash opened on, plus the timer
+// that keeps ONLY that screen fresh. onScreenShown() takes over from here:
+// every later screen change reloads and restarts the timer itself. This is
+// where the old `refresh(); setInterval(refresh, 10000);` — one fan-out over
+// eight endpoints, every 10s, whatever was on screen — used to sit.
+runLoader(activeScreen());
+restartScreenTimer();
+// The request that decides whether the conditional tenth tab exists (design
+// §3.1). It runs whatever screen the hash opened on — the tab strip cannot be
+// drawn without an answer — and from then on the Benchmarks screen is
+// refreshed by its own LOADERS entry, only while it is the active screen. On
+// a direct `#benchmarks` boot this request also re-resolves the hash, so that
+// screen's loader then reads the endpoint a second time: the same two reads
+// clicking the tab would produce, not a poll anyone else pays for.
+//
+// This was documented as the ONE call that must discard its outcome — a
+// configuration probe, not a screen load, answering while the operator is
+// usually on Launchpad, where `#updated` must not report on a screen they
+// are not looking at. It turns out no bypass is needed, and that is what
+// makes runLoader mandatory rather than merely conventional: `applyOutcome`
+// already returns early when `activeScreen() !== screen`, so on a Launchpad
+// boot this stamps nothing on its own. On a direct `#benchmarks` boot it
+// DOES stamp — correctly: that is a real read of the screen in front of the
+// operator, and the screen's own loader stamps again right after.
+runLoader("benchmarks");
 
 // ---- Launchpad root panel (spec §9, PR-C Task 6) ---------------------------
 //
@@ -3790,8 +4616,8 @@ const LP_RUN_VANISHED = "run_vanished";
 const LP_LOCK_MALFORMED = "lock_malformed";
 
 // The panel's own refresh period (spec §9: "30 s auto-refresh") — distinct
-// from the pre-existing dashboard's `setInterval(refresh, 10000)` above;
-// the two timers are independent, each guarding only its own section.
+// from the dashboard's per-screen 10s `runLoader(activeScreen())` tick
+// above; the two timers are independent, each guarding only its own section.
 const LP_REFRESH_MS = 30000;
 
 // `inflight` is a COUNTER, not a boolean (round-5 review finding): an
@@ -4022,13 +4848,26 @@ function lpRenderReady(rows) {
 // function of its argument, same as `lpRenderReady`.
 function lpPendingItemHtml(rowKey, entry) {
   const label = `${esc(entry.repoKey)}: ${esc(entry.workId)}`;
+  // Task 3 (tabbed-ui) drill-down, spec §5.3: a pending entry with a real
+  // request_id (submitting/unknown — an "open" confirm's requestId is still
+  // null) opens the run view same as Active/Recent, through a real
+  // `.lp-open-run-btn` control (keyboard-reachable) plus the `<li>`'s own
+  // attribute (mouse convenience). The nested Confirm/Retry/Cancel/
+  // Check-status buttons stay reachable: the delegated click handler below
+  // skips any OTHER interactive control before it looks for this attribute.
+  const attrs = entry.requestId
+    ? ` class="lp-run-row" data-lp-request-id="${esc(entry.requestId)}"` : "";
+  const openBtn = entry.requestId
+    ? ` <button type="button" class="lp-open-run-btn"
+         data-lp-request-id="${esc(entry.requestId)}"
+         aria-label="Open run ${esc(entry.requestId)}">Open run</button>` : "";
   if (entry.status === "unknown") {
-    return `<li>${label} — ${lpUnknownFragment(rowKey, entry)}</li>`;
+    return `<li${attrs}>${label}${openBtn} — ${lpUnknownFragment(rowKey, entry)}</li>`;
   }
   if (entry.status === "open") {
-    return `<li>${label} — ${lpOpenConfirmFragment(rowKey, entry)}</li>`;
+    return `<li${attrs}>${label}${openBtn} — ${lpOpenConfirmFragment(rowKey, entry)}</li>`;
   }
-  return `<li>${label} — ${esc(entry.status)}</li>`;
+  return `<li${attrs}>${label}${openBtn} — ${esc(entry.status)}</li>`;
 }
 
 function lpRenderPending(readyRows) {
@@ -4050,13 +4889,26 @@ function lpRenderPending(readyRows) {
 }
 
 function lpActiveRowHtml(row) {
-  // A linked row (request_id present) opens the run view — the same typed
-  // split as repo blockers: unlinked runs render text only (spec §2/§12.4).
+  // A linked row (request_id present) opens the run view (Task 3's
+  // `data-lp-request-id` drill-down) — the same typed split as repo
+  // blockers: unlinked runs (bare run_id, no request_id) render text only,
+  // no drill-down, since GET /api/runs/{request_id} has no key for them
+  // (spec §2/§12.4). The whole `<tr>` is a mouse convenience; the REAL,
+  // keyboard-reachable control is `.lp-open-run-btn` inside it (review
+  // finding: a bare `<tr>` with no button/link is unreachable by keyboard,
+  // and giving the row itself role=button/tabindex would break its row
+  // semantics for a screen reader instead).
+  const runLabel = esc(row.run_id ?? row.request_id ?? "—");
   const runCell = row.request_id
-    ? `<a href="#run-console" class="lp-open-run"
-         data-request-id="${esc(row.request_id)}">${esc(row.run_id ?? row.request_id)}</a>`
-    : esc(row.run_id ?? "—");
-  return `<tr class="${row.attention ? "warn" : ""}">
+    ? `<button type="button" class="lp-open-run-btn"
+         data-lp-request-id="${esc(row.request_id)}"
+         aria-label="Open run ${runLabel}">${runLabel}</button>`
+    : runLabel;
+  const classes = [row.attention ? "warn" : "", row.request_id ? "lp-run-row" : ""]
+    .filter(Boolean).join(" ");
+  const attrs = (classes ? ` class="${classes}"` : "")
+    + (row.request_id ? ` data-lp-request-id="${esc(row.request_id)}"` : "");
+  return `<tr${attrs}>
     <td>${esc(row.repo_key)}</td>
     <td>${esc(row.work_id ?? "—")}</td>
     <td>${esc(row.state)}</td>
@@ -4080,11 +4932,18 @@ function lpRecentRowHtml(row) {
   const label = `${esc(row.work_id)} · ${esc(row.outcome)}`;
   // #191's lesson: a bare run_id is not enough to promise a link —
   // `logs_available` is computed server-side from the log directory's
-  // real presence.
+  // real presence. `request_id` is required on CompletedRow, so the only
+  // gate here is `logs_available` (Task 3's `data-lp-request-id`
+  // drill-down, same as Active — a real `.lp-open-run-btn` control for the
+  // keyboard, the row's own attribute a mouse convenience on top of it).
   const cell = row.logs_available
-    ? `<a href="#" class="lp-open-run" data-request-id="${esc(row.request_id)}">${label}</a>`
-    : `<span>${label}</span>`;
-  return `<tr><td>${esc(row.repo_key)}</td><td>${cell}</td>
+    ? `<button type="button" class="lp-open-run-btn"
+         data-lp-request-id="${esc(row.request_id)}"
+         aria-label="Open run for ${label}">${label}</button>`
+    : label;
+  const attrs = row.logs_available
+    ? ` class="lp-run-row" data-lp-request-id="${esc(row.request_id)}"` : "";
+  return `<tr${attrs}><td>${esc(row.repo_key)}</td><td>${cell}</td>
     <td>${row.revision ? esc(row.revision.slice(0, 7)) : "—"}</td>
     <td>${esc(row.updated_at || "—")}</td></tr>`;
 }
@@ -4152,24 +5011,107 @@ function lpRerenderRepos() {
   lpRenderRepos(lpState.snapshot ? (lpState.snapshot.repositories || []) : []);
 }
 
-// A failed fetch here is deliberately quiet in Task 6: spec §9's
-// transport-uncertainty handling (retry with the same request_id,
-// read-back, blocking a fresh Launch) is per-ROW and belongs to Task 7's
-// launch flow, not to this whole-snapshot refresh. Logged, not surfaced,
-// so a stale prior render simply stays on screen until the next refresh
-// succeeds.
-function lpRenderFetchError(err) {
+// What to call the failure on screen. An HTTP error hands us the parsed
+// body (FastAPI's `{detail: …}`); a transport error hands us an Error. Both
+// are server/runtime text, so the caller escapes whatever comes back.
+// `fallback` is the HTTP path's `HTTP <status>` — a 500 with a body that
+// carries no `detail` should still say what happened, not "unavailable".
+function lpFetchErrorDetail(err, fallback) {
+  if (err && typeof err === "object") {
+    if (typeof err.detail === "string") return err.detail;
+    if (typeof err.message === "string") return err.message;
+  }
+  return fallback || "unavailable";
+}
+
+// Terminal review, PR #220: this used to be a bare console.error. Spec §340
+// — every screen catches and SHOWS its own error — was met everywhere else
+// on this branch through the shared loader machinery, which never covers
+// Launchpad (`LOADERS.launchpad` is null). So a visible panel whose 30s
+// refresh failed kept the previous snapshot's rows under an unchanged
+// "updated <time>": unread state wearing a freshness marker.
+//
+// Two things happen now, and only these two:
+//   - the panel says so, in the page's existing unread vocabulary
+//     ("не прочитано" + class `err`, as loadSync's topline and the waits
+//     panel say it), in its OWN element — not `#lp-store-banner`, whose
+//     contract is `store_unreadable` only.
+//   - `#updated` stops claiming freshness — but ONLY when Launchpad is the
+//     visible screen, the same gate lpApplySnapshot uses. A hidden panel's
+//     background poll (spec §9.1) that wrote there would make a false claim
+//     about whatever screen the operator IS looking at.
+// The prior rows stay on screen underneath: a failed refresh is not a
+// reason to blank a panel someone is reading. Row-level transport
+// uncertainty (retry with the same request_id, read-back) is still Task 7's
+// separate, per-row concern.
+function lpRenderFetchError(err, fallback) {
   console.error("launchpad snapshot fetch failed:", err);
+  // The PANEL's own element, written whether or not the panel is showing.
+  // It is not a claim about the screen in front of the operator — it is
+  // inside `#screen-launchpad`, invisible while that panel is hidden — and
+  // writing it now is what makes the failure already on screen when the
+  // operator arrives, instead of stale rows with nothing said about them.
+  // (Arriving also refetches, via onScreenShown; whichever answer comes
+  // back then rewrites or clears this.) Server text, so `esc`.
+  const banner = document.getElementById("lp-fetch-error");
+  banner.hidden = false;
+  banner.innerHTML = `не прочитано: ${esc(lpFetchErrorDetail(err, fallback))}`;
+  // `#updated` is the GLOBAL half, and it is reported the way every other
+  // screen reports: through `applyOutcome`, with the Launchpad's own screen
+  // id. Not `markUpdatedUnread()` behind a hand-written `activeScreen()`
+  // check — that would be the same defect this branch spent four rounds
+  // removing, a second copy of the policy that has to be kept in step by
+  // hand. `applyOutcome` returns early when Launchpad is not the active
+  // screen, which is exactly the gate a hidden panel needs: the operator is
+  // looking at another screen, and marking THAT screen unread because a
+  // background Launchpad poll (spec §9.1) failed would be a false claim
+  // about a screen that read fine.
+  //
+  // So the Launchpad occupies the same seat as the nine registry screens
+  // even though `LOADERS.launchpad` is null: it drives its own fetch, and
+  // reports the result in the one vocabulary. A future change to what an
+  // outcome MEANS reaches this panel without anyone remembering to come
+  // here.
+  applyOutcome("launchpad", LOAD_FAILED);
+}
+
+// The mirror image of the bug: a marker that outlives the problem. Called
+// from lpApplySnapshot, so only a snapshot that actually APPLIED clears it
+// (a superseded response clears nothing).
+function lpClearFetchError() {
+  const banner = document.getElementById("lp-fetch-error");
+  banner.hidden = true;
+  banner.innerHTML = "";
 }
 
 // One fetch in flight is applied; a superseded one is discarded, never
 // patched in — strict supersession: `seq === lpState.seq` (the LATEST
 // issued), checked at apply time, not at issue time, so whichever of two
 // in-flight requests resolves first can still lose.
+//
+// Task 6 also makes this the ONE writer of `#updated` while Launchpad is
+// active (a deferred Task 5 finding: `runLoader` never reaches here,
+// since `LOADERS.launchpad` is null). Gated on `activeScreen() ===
+// "launchpad"` — Task 6 makes a HIDDEN panel keep polling, and a background
+// apply writing `#updated` would claim the visible screen had just
+// refreshed. A wrong timestamp is a false freshness claim (criterion 11),
+// worse than the blank field it would replace.
 function lpApplySnapshot(seq, snapshot) {
   if (seq !== lpState.seq) return;
   lpState.snapshot = snapshot;
+  lpClearFetchError();
   lpRender(snapshot);
+  // The other half of the same seat (see lpRenderFetchError): a snapshot
+  // that actually applied is a PAINT, reported like any other screen's.
+  // `applyOutcome` gates it on Launchpad being active — a background apply
+  // writing `#updated` would claim the visible screen had just refreshed —
+  // and its LOAD_PAINTED branch also takes the `err` class back off, so a
+  // visible success clears BOTH halves of a previous failure's marking.
+  //
+  // A SUPERSEDED response never reaches here at all: the `seq` guard above
+  // returns first, which is the third outcome (LOAD_STALE: change nothing)
+  // expressed as control flow rather than as a value.
+  applyOutcome("launchpad", LOAD_PAINTED);
 }
 
 // The one place that actually calls fetch() — both lpFetchSnapshot() and
@@ -4184,7 +5126,10 @@ function lpIssueFetch() {
     .then(r => r.json().then(data => [r, data]))
     .then(([r, data]) => {
       lpState.inflight--;
-      if (!r.ok) { if (seq === lpState.seq) lpRenderFetchError(data); return; }
+      if (!r.ok) {
+        if (seq === lpState.seq) lpRenderFetchError(data, `HTTP ${r.status}`);
+        return;
+      }
       lpApplySnapshot(seq, data);
     })
     .catch(err => {
@@ -4193,10 +5138,28 @@ function lpIssueFetch() {
     });
 }
 
+// Spec §9.1: the ONE exception to active-only polling. An unresolved
+// ATTEMPT — "submitting" (on the wire) or "unknown" (transport-uncertain,
+// no outcome yet) — is the state the operator must not silently lose;
+// anything else, hidden means quiet. An "open" entry is just an expanded
+// two-step confirm nobody submitted: nothing is in flight and there is no
+// outcome to discover, so it must NOT keep a hidden tab polling forever —
+// re-validating it is Task 4's return-refetch's job, not this timer's.
+// Evaluated INSIDE the tick (lpFetchSnapshot), not at tab-switch time — a
+// pending entry can settle between ticks, and a stop triggered by the
+// switch event would miss that.
+function lpShouldPoll() {
+  if (activeScreen() === "launchpad") return true;
+  return Object.values(lpState.pending)
+    .some(entry => entry.status === "submitting" || entry.status === "unknown");
+}
+
 // Timer-tick entry: refuses outright while ANY fetch is inflight (the
 // counter, not a boolean — see lpState's own comment) — at most one timer
-// fetch airborne at a time.
+// fetch airborne at a time. Also refuses when the panel is hidden and
+// nothing is pending — see lpShouldPoll().
 function lpFetchSnapshot() {
+  if (!lpShouldPoll()) return;
   if (lpState.inflight > 0) return;
   lpIssueFetch();
 }
@@ -4471,6 +5434,50 @@ document.getElementById("launchpad").addEventListener("click", async e => {
   const rowTr = e.target.closest("tr.lp-ready-row");
   if (rowTr) { lpToggleRow(rowTr.dataset.rowKey); return; }
 });
+
+// Task 3 (tabbed-ui) drill-down: an Active/Recent-completed/Pending row
+// carrying `data-lp-request-id` (lpActiveRowHtml/lpRecentRowHtml/
+// lpPendingItemHtml), or its own `.lp-open-run-btn` control, opens the run
+// view IN PLACE and records it in the hash. A SEPARATE listener from the
+// one above — not a branch inside it — since neither row is a
+// `.lp-open-run` anchor: no `e.preventDefault()` is needed, and no
+// double-open results. A Pending row nests its OWN interactive controls
+// (Confirm/Retry/Cancel/Check-status, plus its own `.lp-open-run-btn`) — a
+// click on one of the FORMER must reach ONLY the listener above, so this
+// bails out before even looking for the attribute whenever the click
+// landed on a control that is not itself the drill-down button (fix round
+// 1, finding 2: the guard must exempt its own control, or it swallows it).
+document.getElementById("launchpad").addEventListener("click", e => {
+  const control = e.target.closest("button, input, select, textarea, a");
+  if (control && !control.hasAttribute("data-lp-request-id")) return;
+  const row = e.target.closest("[data-lp-request-id]");
+  if (!row) return;
+  lpOpenRun(row.dataset.lpRequestId);
+});
+
+// Fix round 1, finding 1: `navigate()` firing `hashchange` synchronously,
+// which `applyRoute()` already turns into `onScreenShown` -> `openRunView`,
+// made this call it a SECOND time (double GET /api/runs/{id}, `rcLogsGen`
+// bumped twice). The hash is the ONLY writer of the current screen (spec)
+// and the drill-down is part of the screen, so this writes the hash and
+// nothing else — re-clicking the same row still re-opens, since `navigate`
+// already falls through to `applyRoute()` when the hash is unchanged.
+//
+// One request_id shape does not survive that route: HASH_RE's sub-segment
+// grammar (`[A-Za-z0-9._-]{1,200}`). Writing the hash for one of those
+// would bounce straight back to Launchpad with the id lost — so THAT one
+// case opens directly, with no hash write, checked by round-tripping the
+// target hash through the router's OWN `parseHash`/`hashFor` rather than a
+// second, hand-duplicated copy of the grammar.
+function lpOpenRun(requestId) {
+  if (!requestId) return;
+  const next = hashFor("launchpad", requestId);
+  if (parseHash(next).sub === requestId) {
+    navigate("launchpad", requestId);
+  } else {
+    openRunView(requestId);
+  }
+}
 
 // Delegated `input` handler: keeps `lpState.escapes` in sync as the
 // operator types, so a wholesale #lp-repos rerender landing mid-fill (the

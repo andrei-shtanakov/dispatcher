@@ -542,6 +542,44 @@
       («файлов нет в дереве») опровергнута в #207 — наводка обвязке
       review-pr.sh: отдавать ревьюеру дерево головы, не чекаут.
 
+## Переработка интерфейса: вкладки и главный экран Launchpad (спека docs/superpowers/specs/2026-08-29-tabbed-interface-design.md)
+
+Приёмка FR-02 (Must) из `spec/discovery-brief-customer-ui.md`: «ни один экран не
+смешивает темы». Черновик воркспейса
+`_cowork_output/plans/2026-08-27-dispatcher-tabbed-interface-rework.md` — dev-scratch,
+канон — спека в репо. Три PR-а, PR-1 первый по зависимости.
+
+- [ ] PR-1: тестовая среда + tab shell + главный экран Launchpad + развязка refresh — план `docs/superpowers/plans/2026-08-29-tabbed-ui-shell.md` (7 задач TDD закрыты, ветка `feat/tabbed-ui` = 19 коммитов, ждёт PR и визуальной приёмки владельца) @owner:github:andrei-shtanakov @id:tabbed-ui-shell @epic:eco.ops
+      Девять вкладок, `Launchpad` первый и по умолчанию; `Run console` исчезает
+      из верхней навигации и становится вложенным инструментом (run view —
+      drill-down `#launchpad/<request_id>`, manual-форма — свёрнутый блок).
+      Названные в спеке решения владельца: скрытый Launchpad опрашивается,
+      пока в `lpState.pending` есть незакрытая попытка, и умолкает после её
+      разрешения; глобальной полосы-уведомления не вводим; раскрытое
+      подтверждение переживает возврат только после ре-валидации против
+      актуального снапшота. Найдено при написании плана и решено в спеке:
+      `Benchmarks` — условная десятая вкладка (§3.1), колонка `Contract` в
+      Roadmap кормится из `/api/contracts` и переживает развязку загрузчиков
+      (§9). Цена, которую нельзя пропустить: `tests/web/dom.js` не знает
+      `location`/`history`, а `dispatch()` не кликает по невидимому — девять
+      harness'ов чинятся в той же задаче, что вводит панели (§10).
+- [ ] PR-2: `OverviewEntry.directory` + read-only README endpoint + экран Projects (список каталогов слева, полный README справа) @owner:github:andrei-shtanakov @blocked_by:todo://dispatcher/tabbed-ui-shell @id:tabbed-ui-projects @epic:eco.ops
+      Спека §6. Снимает UI-входы старого Project detail (onboarding, governance,
+      product proposals, orchestration runs, merge gate, task authoring,
+      spec-runner config) — backend не удаляется, изменение доступности
+      называется в PR первой строкой. План пишется после мержа PR-1.
+      Найдено в PR-1 (терминальное ревью 7 + разбор потребителей `sub`):
+      **`#projects/<directory>` объявлен спекой §4.1, но не реализован.**
+      Роутер его принимает (`sub: true` в реестре — иначе код противоречил бы
+      спеке), однако экран Projects выбор пишет в `errorsProject` по клику
+      карточки и `route.sub` не читает никогда. Единственные потребители
+      `sub` во всей странице — Launchpad'овы. PR-2 обязан либо реализовать
+      адресацию, либо снять `sub: true` вместе с правкой спеки.
+- [ ] PR-3: перекомпоновка экрана Sync без смены источника истины @owner:github:andrei-shtanakov @blocked_by:todo://dispatcher/tabbed-ui-shell @id:tabbed-ui-sync @epic:eco.ops
+      Спека §7. Repo-centric строки, явный статус источника каждой машины
+      (`live`/`published`/`stale`/`unavailable`), обе машины отдельно. Сырой JSON
+      github-checker в браузер не транслируется. План пишется после мержа PR-1.
+
 ## Хвосты качества
 
 - [x] Проход 1 слайса 0 ПРИНЯТ — deployer#40 @owner:github:andrei-shtanakov @id:df-slice0-pass1-acceptance

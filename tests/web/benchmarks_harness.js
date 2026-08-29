@@ -2,9 +2,13 @@
 // running the REAL, WHOLE <script> of dispatcher/server/static/index.html
 // inside a VM over the page's own parsed markup (tests/web/dom.js) — the
 // same discipline as product_proposals_harness.js: nothing is sliced by
-// string markers and no handler is simulated. `refresh()` fires on load and
-// drives `renderBenchmarks(...)` from a stubbed `/api/benchmarks` response;
-// cases override that one route and assert DOM state.
+// string markers and no handler is simulated. `loadBenchmarks()` fires on
+// load — the one request that decides whether the CONDITIONAL Benchmarks tab
+// exists at all — and drives `renderBenchmarks(...)` from a stubbed
+// `/api/benchmarks` response; cases override that one route and assert DOM
+// state. Since Task 7 (tabbed-ui) the section lives inside the
+// `#screen-benchmarks` panel, so every case that acts on a control opens the
+// screen first (`bootOpen`): dispatch() refuses a control nobody can see.
 //
 // Asserted here, client-side:
 //   1. `unconfigured` hides the whole section.
@@ -29,6 +33,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const {Document, dispatch} = require(path.join(__dirname, 'dom.js'));
+const {browserGlobals, openScreen} = require(path.join(__dirname, 'screens.js'));
 
 const HTML_PATH = process.argv[2];
 if (!HTML_PATH) {
@@ -195,12 +200,24 @@ async function boot(benchRoute) {
       for (const [test, make] of routes) if (test(u)) return Promise.resolve(make(u));
       return Promise.reject(new Error(`no fixture route for ${u}`));
     },
-    window: {open: () => {}},
+    ...browserGlobals(),
   };
   vm.createContext(ctx);
   vm.runInContext(PAGE_SCRIPT, ctx);
   await drain();
   return {ctx, document};
+}
+
+/**
+ * Boots a CONFIGURED stand and opens the Benchmarks screen the way a person
+ * does — by clicking its tab. Every assertion below then reads a panel the
+ * operator can actually see, and the click-driven cases can reach their
+ * controls at all.
+ */
+async function bootOpen(benchRoute) {
+  const env = await boot(benchRoute);
+  await openScreen(env, 'benchmarks');
+  return env;
 }
 
 function textOf(env, id) {
@@ -229,7 +246,7 @@ testCase('unconfigured hides the whole section', async () => {
 });
 
 testCase('ok + empty benchmarks is a confident «0 benchmarks»', async () => {
-  const env = await boot(() => ok(OK_EMPTY));
+  const env = await bootOpen(() => ok(OK_EMPTY));
   const section = env.document.getElementById('benchmarks-section');
   check(section.hidden === false, 'section is visible once configured');
   check(textOf(env, 'benchmarks-list').includes('0 benchmarks'),
@@ -237,7 +254,7 @@ testCase('ok + empty benchmarks is a confident «0 benchmarks»', async () => {
 });
 
 testCase('unavailable, never fetched yet: no confident zero', async () => {
-  const env = await boot(() => ok(NOT_FETCHED_YET));
+  const env = await bootOpen(() => ok(NOT_FETCHED_YET));
   const listText = textOf(env, 'benchmarks-list');
   check(listText.includes('not fetched yet'),
     `list says not fetched yet (got: ${listText})`);
@@ -246,7 +263,7 @@ testCase('unavailable, never fetched yet: no confident zero', async () => {
 });
 
 testCase('unavailable with an error: unknown, never a confident zero', async () => {
-  const env = await boot(() => ok(UNAVAILABLE_WITH_ERROR));
+  const env = await bootOpen(() => ok(UNAVAILABLE_WITH_ERROR));
   const listText = textOf(env, 'benchmarks-list');
   const statusText = textOf(env, 'benchmarks-status');
   check(listText.includes('unknown'),
@@ -260,7 +277,7 @@ testCase('unavailable with an error: unknown, never a confident zero', async () 
 });
 
 testCase('unreadable with an error: unknown, never a confident zero', async () => {
-  const env = await boot(() => ok(UNREADABLE_WITH_ERROR));
+  const env = await bootOpen(() => ok(UNREADABLE_WITH_ERROR));
   const listText = textOf(env, 'benchmarks-list');
   const statusText = textOf(env, 'benchmarks-status');
   check(listText.includes('unknown'),
@@ -272,7 +289,7 @@ testCase('unreadable with an error: unknown, never a confident zero', async () =
 });
 
 testCase('clicking a benchmark with an ok, empty leaderboard: «0 entries»', async () => {
-  const env = await boot(() => ok(OK_ONE_BENCH_EMPTY_LEADERBOARD));
+  const env = await bootOpen(() => ok(OK_ONE_BENCH_EMPTY_LEADERBOARD));
   const btn = env.document.querySelector('#benchmarks-list button[data-bench]');
   if (!btn) throw new Error('no benchmark button rendered');
   await Promise.all(dispatch(btn, 'click'));
@@ -283,7 +300,7 @@ testCase('clicking a benchmark with an ok, empty leaderboard: «0 entries»', as
 });
 
 testCase('clicking a benchmark with an unavailable leaderboard: «leaderboard unknown»', async () => {
-  const env = await boot(() => ok(OK_ONE_BENCH_UNAVAILABLE_LEADERBOARD));
+  const env = await bootOpen(() => ok(OK_ONE_BENCH_UNAVAILABLE_LEADERBOARD));
   const btn = env.document.querySelector('#benchmarks-list button[data-bench]');
   if (!btn) throw new Error('no benchmark button rendered');
   await Promise.all(dispatch(btn, 'click'));
@@ -307,7 +324,7 @@ testCase('a selected benchmark with NO leaderboard entry: unknown, not empty', a
       leaderboards: {},
     },
   };
-  const env = await boot(() => ok(NO_LB_ENTRY));
+  const env = await bootOpen(() => ok(NO_LB_ENTRY));
   const btn = env.document.querySelector('#benchmarks-list button[data-bench]');
   if (!btn) throw new Error('no benchmark button rendered');
   await Promise.all(dispatch(btn, 'click'));
@@ -320,7 +337,7 @@ testCase('a selected benchmark with NO leaderboard entry: unknown, not empty', a
 });
 
 testCase('a hostile benchmark name arrives escaped, no element created', async () => {
-  const env = await boot(() => ok(OK_HOSTILE_NAME));
+  const env = await bootOpen(() => ok(OK_HOSTILE_NAME));
   const list = env.document.getElementById('benchmarks-list');
   check(list.innerHTML.includes('&lt;img'),
     `the hostile name is readable, escaped (got: ${list.innerHTML})`);

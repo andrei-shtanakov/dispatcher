@@ -168,7 +168,24 @@ class El {
     this.listeners[type] = (this.listeners[type] || []).filter(f => f !== fn);
   }
 
-  matches(selector) { return matchesCompound(this, selector.trim()); }
+  // A comma-separated selector LIST (`"button, input, a"`) matches if ANY
+  // branch does — the same semantics as the real `Element.matches()`, and
+  // needed for a delegated handler's own "did this click land on ANY
+  // interactive control" guard (index.html's launchpad click handlers).
+  // Bracket-aware split (fix round 1, finding 3): a bare `.split(',')` broke
+  // `matchesCompound`'s own `[attr="a,b"]` support (a comma inside an
+  // attribute value used to work and would now throw "unsupported
+  // selector"), and a trailing comma produced an empty branch that
+  // `matchesCompound('')` matches against ANY element — so `closest("x,")`
+  // would match everything. `querySelectorAll` already splits this way for
+  // its (whitespace) combinator; empty branches are dropped rather than
+  // trusted to fail matchesCompound on their own.
+  matches(selector) {
+    return selector.split(/,(?![^[]*\])/)
+      .map(part => part.trim())
+      .filter(part => part !== '')
+      .some(part => matchesCompound(this, part));
+  }
   closest(selector) {
     for (let n = this; n; n = n.parentNode) if (n.matches(selector)) return n;
     return null;
@@ -177,7 +194,29 @@ class El {
   querySelectorAll(selector) { return querySelectorAll(this, selector); }
 
   scrollIntoView() {}
-  focus() {}
+  /**
+   * Real focus, not a no-op: the owning document's `activeElement` becomes
+   * this node. Browser behaviour, so it lives here — a page that moves focus
+   * along a tab strip (roving tabindex) is otherwise untestable, the same
+   * gap `location`/`history` had before they were modelled below.
+   *
+   * Two browser rules come with it: a node that no person can see is not
+   * focusable (`hidden`, `aria-hidden`, `display:none`, `visibility:hidden`
+   * — the same four `visible` already walks), and a node outside any
+   * document has nowhere to be active, so both cases leave `activeElement`
+   * where it was rather than throwing.
+   */
+  focus() {
+    const doc = this.ownerDocument;
+    if (!doc || !this.visible) return;
+    doc.activeElement = this;
+  }
+  /** The Document this node is attached to, or null while detached. */
+  get ownerDocument() {
+    let n = this;
+    while (n.parentNode) n = n.parentNode;
+    return n._document || null;
+  }
   remove() {
     if (!this.parentNode) return;
     const siblings = this.parentNode.childNodes;
@@ -407,7 +446,15 @@ function querySelectorAll(root, selector) {
 class Document {
   constructor(bodyHtml) {
     this.body = new El('body');
+    // The back-reference `El.ownerDocument` walks up to: only nodes actually
+    // attached under this body belong to this document.
+    this.body._document = this;
     for (const n of parseFragment(bodyHtml)) this.body.appendChild(n);
+    // Defaults to `body`, as in a real document before anything is focused.
+    // Not null: `document.activeElement` in a browser is never null while a
+    // body exists, and a null default would let a test pass by accident
+    // whenever focus simply never moved.
+    this.activeElement = this.body;
   }
   getElementById(id) {
     return descendants(this.body).find(el => el.attributes.id === id) || null;
@@ -423,7 +470,7 @@ class Document {
  * container expects. Returns the listeners' return values so the caller can
  * await async handlers instead of racing them.
  */
-function dispatch(el, type, {force = false} = {}) {
+function dispatch(el, type, {force = false, init = null} = {}) {
   // A real person can only act on a control that is BOTH visible and
   // enabled. `force` is the structural escape hatch: it exists so a test can
   // drive defence-in-depth code that the UI cannot reach, and every use of it
@@ -432,6 +479,7 @@ function dispatch(el, type, {force = false} = {}) {
   const event = {
     type, target: el, currentTarget: null,
     preventDefault() {}, stopPropagation() {},
+    ...(init || {}),
   };
   const results = [];
   for (let n = el; n; n = n.parentNode) {
@@ -443,4 +491,79 @@ function dispatch(el, type, {force = false} = {}) {
   return results;
 }
 
-module.exports = {Document, El, TextNode, dispatch, parseFragment};
+// ---- browser: location, history, hashchange -------------------------------
+//
+// The page routes screens through the hash and writes it exactly one way
+// (`location.hash = …`), so the model has to get three browser behaviours
+// right: assignment fires `hashchange`, a same-value assignment does not, and
+// pushState/replaceState move the hash silently while back()/forward() fire.
+
+/** A minimal same-document history + location pair. */
+function makeBrowser(initialHash = '') {
+  const listeners = Object.create(null);
+  const normalise = v => {
+    const s = String(v == null ? '' : v);
+    if (s === '') return '';
+    return s.startsWith('#') ? s : `#${s}`;
+  };
+  // History entries the page created, plus the one it started on.
+  const entries = [normalise(initialHash)];
+  let index = 0;
+  const fire = () => {
+    for (const fn of (listeners.hashchange || []).slice()) {
+      fn({type: 'hashchange'});
+    }
+  };
+  const window = {
+    open() {},
+    addEventListener(type, fn) {
+      (listeners[type] = listeners[type] || []).push(fn);
+    },
+    removeEventListener(type, fn) {
+      listeners[type] = (listeners[type] || []).filter(f => f !== fn);
+    },
+  };
+  const location = {
+    get hash() { return entries[index]; },
+    set hash(value) {
+      const next = normalise(value);
+      if (next === entries[index]) return;   // browsers stay silent here
+      entries.splice(index + 1);             // a new entry truncates forward
+      entries.push(next);
+      index = entries.length - 1;
+      fire();
+    },
+  };
+  const move = delta => {
+    const next = index + delta;
+    if (next < 0 || next >= entries.length) return;
+    index = next;
+    fire();
+  };
+  const history = {
+    // Same-document pushState/replaceState do NOT fire hashchange.
+    pushState(_state, _title, url) {
+      entries.splice(index + 1);
+      entries.push(normalise(hashOfUrl(url, entries[index])));
+      index = entries.length - 1;
+    },
+    replaceState(_state, _title, url) {
+      entries[index] = normalise(hashOfUrl(url, entries[index]));
+    },
+    back() { move(-1); },
+    forward() { move(1); },
+  };
+  window.location = location;
+  window.history = history;
+  return {window, location, history, setHash: v => { location.hash = v; }};
+}
+
+/** `url` is whatever the page passed to pushState: '#x', '/p#x' or null. */
+function hashOfUrl(url, fallback) {
+  if (url == null) return fallback;
+  const s = String(url);
+  const at = s.indexOf('#');
+  return at === -1 ? '' : s.slice(at);
+}
+
+module.exports = {Document, El, TextNode, dispatch, parseFragment, makeBrowser};

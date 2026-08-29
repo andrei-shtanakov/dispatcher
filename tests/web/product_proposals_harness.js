@@ -23,6 +23,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const {Document, dispatch} = require(path.join(__dirname, 'dom.js'));
+const {browserGlobals, openScreen} = require(path.join(__dirname, 'screens.js'));
 
 const HTML_PATH = process.argv[2];
 if (!HTML_PATH) {
@@ -230,18 +231,25 @@ async function boot(ppRoute, names = ['impresario'], govRoute) {
       for (const [test, make] of routes) if (test(u)) return Promise.resolve(make(u));
       return Promise.reject(new Error(`no fixture route for ${u}`));
     },
-    window: {open: () => {}},
+    ...browserGlobals(),
   };
   vm.createContext(ctx);
   vm.runInContext(PAGE_SCRIPT, ctx);
   await drain();
-  return {ctx, document};
+  const page = {ctx, document};
+  // The page is a tab shell now: the project cards this harness clicks live
+  // inside the hidden `#screen-projects` tabpanel, and dom.js refuses to
+  // dispatch on what a person cannot see. Open the screen the way a person
+  // does — through the real tab button (tests/web/screens.js).
+  await openScreen(page, 'projects');
+  await drain();
+  return page;
 }
 
 async function openDetail(env, index = 0) {
   const card = env.document
     .querySelectorAll('#projects .card[data-name]')[index];
-  if (!card) throw new Error('refresh() rendered no selectable project card');
+  if (!card) throw new Error('the projects loader rendered no selectable project card');
   await Promise.all(dispatch(card.querySelector('h2') || card, 'click'));
   await drain();
 }

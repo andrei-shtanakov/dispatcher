@@ -32,6 +32,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const {Document, dispatch} = require(path.join(__dirname, 'dom.js'));
+const {browserGlobals, openScreen} = require(path.join(__dirname, 'screens.js'));
 
 const HTML_PATH = process.argv[2];
 const SELFTEST_ARG = process.argv.find(a => a.startsWith('--selftest='));
@@ -195,6 +196,11 @@ function makeEnv(project) {
   const routes = defaultRoutes(project);
   const windowOpens = [];
   const requests = [];
+  // The router needs a real location/history/window; `open` stays recorded,
+  // because "which URL did the page open, and with what target" is one of
+  // this harness's oracles.
+  const browser = browserGlobals();
+  browser.window.open = (u, target) => windowOpens.push({url: u, target});
 
   const ctx = {
     document, console, URL,
@@ -209,7 +215,7 @@ function makeEnv(project) {
       for (const [test, make] of routes) if (test(u)) return Promise.resolve(make(u));
       return Promise.reject(new Error(`no fixture route for ${u}`));
     },
-    window: {open: (u, target) => windowOpens.push({url: u, target})},
+    ...browser,
   };
   vm.createContext(ctx);
 
@@ -298,10 +304,16 @@ function makeEnv(project) {
   return env;
 }
 
-/** Load the page exactly as a browser would, and let its first refresh land. */
+/** Load the page exactly as a browser would, and let its boot load land. */
 async function boot(project) {
   const env = makeEnv(project);
   vm.runInContext(PAGE_SCRIPT, env.ctx);
+  await drain();
+  // The page is a tab shell now: the project cards, #detail-section and
+  // #task-authoring all live inside the hidden `#screen-projects` tabpanel,
+  // and dom.js refuses to dispatch on what a person cannot see. Open the
+  // screen the way a person does — through the real tab button.
+  await openScreen(env, 'projects');
   await drain();
   return env;
 }
@@ -309,7 +321,7 @@ async function boot(project) {
 async function selectProject(env, which = 0) {
   const card = env.document
     .querySelectorAll('#projects .card[data-name]')[which];
-  if (!card) throw new Error('refresh() rendered no selectable project card');
+  if (!card) throw new Error('the projects loader rendered no selectable project card');
   // Click the heading INSIDE the card, so the container's delegated handler
   // has to resolve the card itself via closest() — as it does for a person.
   await env.fireNode(card.querySelector('h2') || card, 'click');
@@ -414,15 +426,16 @@ function syncFixture(verdicts, source = 'live', topLine = 'sync-first') {
 }
 
 /**
- * Re-render the sync table against a fresh `/api/sync` fixture. `refresh()`
- * is only ever invoked by the page itself (on load and its 10s timer, which
- * the harness's fake `setInterval` never fires) — there is no user event to
- * dispatch here, so it is called directly, exactly as the browser's own
- * timer would.
+ * Re-render the sync table against a fresh `/api/sync` fixture. `loadSync()`
+ * — the Sync screen's own loader (index.html's LOADERS) — is only ever
+ * invoked by the page itself (on entering the screen and on its 10s screen
+ * timer, which the harness's fake `setInterval` never fires) — there is no
+ * user event to dispatch here, so it is called directly, exactly as the
+ * browser's own timer would.
  */
 async function refreshSync(env, verdicts, source = 'live', topLine = 'sync-first') {
   env.route(u => u.startsWith('/api/sync'), () => syncFixture(verdicts, source, topLine));
-  env.read('refresh()');
+  env.read('loadSync()');
   await drain();
 }
 
@@ -1977,6 +1990,10 @@ const CASES = [
       + 'actually runs the pull action when clicked',
     async run(env) {
       await refreshSync(env, [syncVerdict({behind: 2})]);
+      // This is the one sync case that CLICKS. `#sync-hosts` lives on the
+      // Sync tab, so a person has to be looking at it to press the button —
+      // the reading-only sync cases below need no such switch.
+      await openScreen(env, 'sync');
       env.route(u => u.startsWith('/api/actions/pull'),
         () => ok({ok: true, detail: 'fast-forwarded'}));
       const btn = env.el('sync-hosts')

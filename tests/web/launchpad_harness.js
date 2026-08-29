@@ -34,6 +34,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const {Document, dispatch} = require(path.join(__dirname, 'dom.js'));
+const {browserGlobals, openScreen, overrideRoute} = require(path.join(__dirname, 'screens.js'));
 
 const HTML_PATH = process.argv[2];
 if (!HTML_PATH) {
@@ -88,10 +89,17 @@ const PAGE_SCRIPT = between(BODY_HTML, /<script[^>]*>/i, '</script>', 'script');
 
 // The launchpad panel's own auto-refresh period (spec §9: "30s
 // auto-refresh"). The whole page script also registers the pre-existing
-// dashboard's `setInterval(refresh, 10000)` on the SAME fake timer this
-// harness installs — the two are told apart by period, not by call order,
-// since nothing in this harness controls which runs first.
+// dashboard's 10s `runLoader(activeScreen())` tick — the per-screen timer
+// — on the SAME fake timer this harness installs; the two are told apart by
+// period, not by call order, since nothing here controls which runs first.
 const LP_REFRESH_MS = 30000;
+
+// The dashboard's per-screen timer (index.html's `restartScreenTimer`) — a
+// literal here, not derived from the page, precisely so Task 6's "exactly
+// one poller" case can drive BOTH registered intervals and tell them apart
+// by period rather than by trusting the page not to have swapped which one
+// fetches `/api/launchpad`.
+const SCREEN_REFRESH_MS = 10000;
 
 // ---- fixtures ---------------------------------------------------------------
 
@@ -123,9 +131,10 @@ function snapshot(overrides = {}) {
   };
 }
 
-// refresh() (index.html) fans out to these endpoints on load, same set as
-// run_console_harness.js's defaultRoutes — every whole-script harness needs
-// all of them fixture'd or the unrelated dashboard code throws during boot.
+// The page's per-screen loaders (index.html's LOADERS) reach these endpoints,
+// one screen at a time, same set as run_console_harness.js's defaultRoutes —
+// every whole-script harness needs all of them fixture'd, because a case may
+// open any tab and a missing route is a rejected fetch, not a skipped one.
 function defaultRoutes(launchpadRoute) {
   return [
     [u => u.startsWith('/api/overview'), () => ok({projects: []})],
@@ -165,8 +174,8 @@ const drain = async (turns = 5) => {
  * the whole point of asserting the sequence guard through the real entry
  * points rather than a simulated clock. `byPeriod` finds the launchpad
  * panel's own interval among the page's several registered ones (the
- * pre-existing dashboard `refresh()` loop registers its own, at a
- * different period, on this exact same fake timer). */
+ * dashboard's per-screen timer registers its own, at a different period,
+ * on this exact same fake timer). */
 function makeIntervalRecorder() {
   const registered = new Map();
   let nextId = 1;
@@ -184,7 +193,12 @@ function makeIntervalRecorder() {
   };
 }
 
-async function boot(launchpadRoute) {
+/** `hash` (default '', i.e. Launchpad) is the address bar the page opens
+ * on — Task 6's round-1 addition, needed to prove the boot-on-another-screen
+ * chain: a non-launchpad hash makes the trailing `lpFetchSnapshot()` at
+ * boot a no-op (Task 6), and the panel is filled on first visit instead by
+ * Task 4's return-refetch branch in `onScreenShown`. */
+async function boot(launchpadRoute, hash = '') {
   const document = new Document(BODY_HTML);
   const calls = [];
   const routes = defaultRoutes(launchpadRoute);
@@ -200,7 +214,7 @@ async function boot(launchpadRoute) {
       for (const [test, make] of routes) if (test(u)) return Promise.resolve(make(u));
       return Promise.reject(new Error(`no fixture route for ${u}`));
     },
-    window: {open: () => {}},
+    ...browserGlobals(hash),
   };
   vm.createContext(ctx);
   vm.runInContext(PAGE_SCRIPT, ctx);
@@ -209,7 +223,7 @@ async function boot(launchpadRoute) {
 }
 
 /** Boots a fresh page and hands it to `fn`. */
-async function withPage(fn, launchpadRoute) { await fn(await boot(launchpadRoute)); }
+async function withPage(fn, launchpadRoute, hash) { await fn(await boot(launchpadRoute, hash)); }
 
 function el(page, selector) {
   const node = page.document.querySelector(selector);
@@ -223,6 +237,39 @@ async function click(page, selector) {
   await drain();
 }
 function callsTo(page, url) { return page.calls.filter(c => c.url === url).length; }
+
+// ---- Task 4 (tabbed-ui) helpers: driving the two-step confirm through the --
+// ---- real controls, never by poking lpState directly ------------------------
+
+/** The Ready row for `repo` (matched against its rendered text — repo_key
+ * and work_id both include it for the fixtures these helpers use). */
+function readyRowFor(page, repo) {
+  const rows = page.document.querySelectorAll('#lp-ready tr.lp-ready-row');
+  const row = rows.find(tr => tr.textContent.includes(repo));
+  if (!row) throw new Error(`no Ready row for repo "${repo}" (found ${rows.length} rows)`);
+  return row;
+}
+
+/** Clicks a Ready row open — the two-step confirm's first step. */
+async function openReadyRow(page, repo) {
+  await Promise.all(dispatch(readyRowFor(page, repo), 'click'));
+  await drain();
+}
+
+/** Opens the row AND clicks Confirm — the two-step confirm's second step. */
+async function openReadyRowAndConfirm(page, repo) {
+  await openReadyRow(page, repo);
+  await click(page, '#lp-ready .lp-confirm');
+}
+
+/** Overrides `/api/runs/submit` so the NEXT attempt hits a dropped
+ * connection — the same shape the existing §10 scenario-1 case uses — so a
+ * Confirm click lands the row in "launch outcome unknown" rather than
+ * settling. */
+function failTheSubmitTransport(page) {
+  overrideRoute(page, '/api/runs/submit',
+    () => Promise.reject(new Error('connection reset')));
+}
 
 // ---- case runner -----------------------------------------------------------
 
@@ -312,10 +359,12 @@ testCase('recent rows: logs_available=false renders NO link, true renders one',
     }));
     const rows = page.document.querySelectorAll('#lp-recent tbody tr');
     check(rows.length === 2, `two recent rows render (got ${rows.length})`);
-    check(!rows[0].innerHTML.includes('<a'),
-      `logs_available:false row has no link (got: ${rows[0].innerHTML})`);
-    check(rows[1].innerHTML.includes('<a'),
-      `logs_available:true row has a link (got: ${rows[1].innerHTML})`);
+    // Task 3 (tabbed-ui): the drill-down is a whole-row `data-lp-request-id`
+    // attribute, not a per-cell `<a>` — see index.html's lpRecentRowHtml.
+    check(!rows[0].hasAttribute('data-lp-request-id'),
+      `logs_available:false row offers no drill-down (got: ${rows[0].innerHTML})`);
+    check(rows[1].getAttribute('data-lp-request-id') === 'r-haslog',
+      `logs_available:true row carries the drill-down (got: ${rows[1].innerHTML})`);
   });
 });
 
@@ -541,6 +590,12 @@ const READY_ITEM = {
 function readySnapshot(overrides = {}) {
   return snapshot({ready: [READY_ITEM], ...overrides});
 }
+// Task 4 (tabbed-ui) names this fixture READY_ROW in the plan — an ALIAS,
+// not a second definition: a fixture drifting out of sync with READY_ITEM
+// (e.g. someone editing one but not the other) would silently make the
+// §5.5 tab-round-trip cases below stop exercising the same row §10's cases
+// above do.
+const READY_ROW = READY_ITEM;
 /** Sets a control's value and fires 'input', exactly as a real keystroke
  * does — dom.js's `dispatch()` bubbles it to the delegated listener on
  * #launchpad the same way it bubbles 'click' (tests/web/dom.js). */
@@ -841,8 +896,399 @@ testCase('behaviour 5: release-malformed — a structured error keeps the '
   }, () => ok(snapshot({repositories: [REPO_LOCK_MALFORMED]})));
 });
 
+// Whole-branch review, ITEM 3: spec §5.5 promises typed state survives a TAB
+// ROUND TRIP, not merely a re-render. Behaviour 5 above proves the re-render
+// half (an error keeps the form filled); this proves the other half, over the
+// real tabs. The mechanism is the delegated `input` handler mirroring into
+// `lpState.escapes`, re-emitted by lpEscapeFormHtml when the return-refetch
+// re-renders #lp-repos — already correct, unpinned until now.
+testCase('a typed escape reason survives a tab round trip (§5.5)', async () => {
+  await withPage(async page => {
+    await click(page, '#lp-repos a.lp-blocker-anchor');
+    await typeInto(page, '.lp-escape-form input[data-escape-field="reason"]',
+      'checked the lock by hand');
+
+    await openScreen(page, 'sync');
+    await openScreen(page, 'launchpad');
+
+    check(el(page, '.lp-escape-form input[data-escape-field="reason"]').value
+      === 'checked the lock by hand',
+      `the typed reason survived the round trip (got: `
+      + `"${(maybeEl(page, '.lp-escape-form input[data-escape-field="reason"]')
+        || {}).value}")`);
+  }, () => ok(snapshot({repositories: [REPO_LOCK_MALFORMED]})));
+});
+
 // Behaviour 6 (the manual/advanced form) lives in run_console_harness.js —
 // #run-console is that harness's page, not this one's.
+
+// ---- Task 4 (tabbed-ui): lpState survives a tab round trip, permission to --
+// ---- act does not (spec §5.5) ------------------------------------------------
+//
+// `lpState` itself already survives a tab switch untouched — switching tabs
+// only sets `hidden`, and behaviour 4 / §10 scenario 3 above already prove
+// the re-validation predicate (lpValidateOpenConfirm) fires on ANY applied
+// snapshot. What was missing is the trigger: a return to Launchpad must
+// itself provoke a refetch, not just sit on the last-applied snapshot. All
+// three cases here drive that trigger through the real tabs (openScreen),
+// never by calling lpRefetchAfterAction() by hand — that path was already
+// covered by behaviour 4 / scenario 3.
+
+/** A boot route with REPO_READY and its matching READY_ROW (== READY_ITEM)
+ * already Ready — what every case below needs sitting in the Ready list
+ * before it can open a row through the real control. Defined in terms of
+ * `readySnapshot` (not a second `ready: [...]` literal) so it can't drift
+ * out of sync with the §10 cases that already use READY_ITEM. */
+function readyRowRoute(overrides = {}) {
+  return () => ok(readySnapshot({repositories: [REPO_READY], ...overrides}));
+}
+
+testCase('leaving and returning keeps an unresolved attempt', async () => {
+  await withPage(async page => {
+    check(callsTo(page, '/api/launchpad') === 1,
+      `exactly one fetch at boot (got ${callsTo(page, '/api/launchpad')})`);
+
+    failTheSubmitTransport(page);
+    await openReadyRowAndConfirm(page, 'deployer');
+    check(/launch outcome unknown/.test(htmlOf(page, '#lp-ready')),
+      'sanity: the attempt is unknown before leaving');
+
+    await openScreen(page, 'sync');
+    await openScreen(page, 'launchpad');
+
+    check(/launch outcome unknown/.test(htmlOf(page, '#lp-ready')),
+      `the unknown-outcome row survived the round trip (got: ${htmlOf(page, '#lp-ready')})`);
+
+    const firstBody = submitBodies(page)[0];
+    check(!!(firstBody && firstBody.request_id), 'the attempt minted a request_id');
+    if (!firstBody) return;
+
+    await click(page, '#lp-ready .lp-retry');
+    const bodies = submitBodies(page);
+    check(bodies.length === 2, `retry hit the wire again (got ${bodies.length})`);
+    const ids = new Set(bodies.map(b => b.request_id));
+    check(ids.size === 1, `retry reuses the SAME request_id, saw ${ids.size} distinct`);
+  }, readyRowRoute());
+});
+
+testCase('an open confirmation survives an unchanged snapshot', async () => {
+  await withPage(async page => {
+    check(callsTo(page, '/api/launchpad') === 1,
+      `exactly one fetch at boot (got ${callsTo(page, '/api/launchpad')})`);
+    await openReadyRow(page, 'deployer');
+    check(el(page, '#lp-ready .lp-confirm').disabled === false, 'starts enabled');
+
+    await openScreen(page, 'sync');
+    await openScreen(page, 'launchpad');
+
+    // The count is the whole point here: without a real return-refetch this
+    // case would pass byte-identically on the never-re-rendered DOM left
+    // over from before the trip, proving nothing about the return.
+    check(callsTo(page, '/api/launchpad') === 2,
+      `the return trip issued exactly one more fetch (got ${callsTo(page, '/api/launchpad')})`);
+    const confirm = el(page, '#lp-ready .lp-confirm');
+    check(!confirm.disabled, 'Confirm stays enabled over an unchanged row');
+  }, readyRowRoute());
+});
+
+testCase('an open confirmation is disabled when the row changed', async () => {
+  await withPage(async page => {
+    await openReadyRow(page, 'deployer');
+    await openScreen(page, 'sync');
+
+    // Changes while the operator is away: the SAME row (repo_key/work_id),
+    // now at a moved seen_revision — the exact fact lpValidateOpenConfirm
+    // checks (it reads the ready-list item, not the repositories list).
+    overrideRoute(page, '/api/launchpad', () => ok(snapshot({
+      repositories: [REPO_READY],
+      ready: [{...READY_ROW, seen_revision: 'c'.repeat(40)}],
+    })));
+    await openScreen(page, 'launchpad');
+
+    const confirm = el(page, '#lp-ready .lp-confirm');
+    check(confirm.disabled, 'Confirm is disabled after seen_revision moved');
+    check(/revision/i.test(htmlOf(page, '#lp-ready')),
+      `the cause is shown, not just the disabled state (got: ${htmlOf(page, '#lp-ready')})`);
+  }, readyRowRoute());
+});
+
+// ---- Task 6: the one exception to active-only polling ------------------------
+//
+// Spec §9.1: a hidden Launchpad keeps polling `/api/launchpad` while
+// `lpState.pending` holds an unresolved attempt, and goes quiet the moment
+// nothing is pending. Every case here drives the real 30s timer callback
+// (`page.timers.byPeriod(LP_REFRESH_MS).cb()`), never `lpShouldPoll()`
+// directly — the rule is evaluated INSIDE the tick, and only the tick proves
+// that.
+
+testCase('a hidden Launchpad keeps polling while an attempt is unresolved', async () => {
+  await withPage(async page => {
+    failTheSubmitTransport(page);
+    await openReadyRowAndConfirm(page, 'deployer');
+    check(/launch outcome unknown/.test(htmlOf(page, '#lp-ready')),
+      'sanity: the attempt is unresolved before leaving');
+    await openScreen(page, 'sync');
+
+    const before = callsTo(page, '/api/launchpad');
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+    check(callsTo(page, '/api/launchpad') === before + 1,
+      'the hidden panel refetched while pending was open');
+  }, readyRowRoute());
+});
+
+testCase('a hidden Launchpad stops polling once nothing is pending', async () => {
+  await withPage(async page => {
+    await openScreen(page, 'sync');
+
+    const before = callsTo(page, '/api/launchpad');
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+    check(callsTo(page, '/api/launchpad') === before,
+      'a hidden panel with nothing pending must not poll');
+  });
+});
+
+testCase('the visible Launchpad polls as before', async () => {
+  await withPage(async page => {
+    const before = callsTo(page, '/api/launchpad');
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+    check(callsTo(page, '/api/launchpad') === before + 1, 'visible panel polls');
+  });
+});
+
+testCase('/api/launchpad has exactly one poller', async () => {
+  await withPage(async page => {
+    const before = callsTo(page, '/api/launchpad');
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    page.timers.byPeriod(SCREEN_REFRESH_MS).cb();
+    await drain();
+    check(callsTo(page, '/api/launchpad') === before + 1,
+      'the screen timer must not fetch the launchpad snapshot');
+  });
+});
+
+testCase('booting on a non-launchpad hash fills Launchpad on first visit '
+  + 'via return-refetch, not the boot no-op', async () => {
+  await withPage(async page => {
+    // Booting hidden: activeScreen() isn't "launchpad" and nothing is
+    // pending, so lpShouldPoll() makes the trailing boot-time
+    // lpFetchSnapshot() a no-op — this chain crosses Task 4 (return-refetch),
+    // Task 5 (per-screen loaders/boot order) and Task 6 (the poll gate).
+    check(callsTo(page, '/api/launchpad') === 0,
+      `boot on a hidden Launchpad issues no fetch (got ${callsTo(page, '/api/launchpad')})`);
+
+    await openScreen(page, 'launchpad');
+    check(callsTo(page, '/api/launchpad') === 1,
+      `first visit fetched exactly once, via return-refetch (got ${callsTo(page, '/api/launchpad')})`);
+    check(htmlOf(page, '#lp-repos').includes('deployer'),
+      `the panel actually rendered the fetched snapshot (got: ${htmlOf(page, '#lp-repos')})`);
+  }, readyRowRoute(), '#sync');
+});
+
+// ---- Task 6 / Task 5 review finding: `#updated` must not lie -----------------
+//
+// A deferred Task 5 review finding: `#updated` has exactly one writer,
+// `runLoader`, which never reaches Launchpad (`LOADERS.launchpad` is
+// null) — so the default screen showed a permanently blank timestamp. The
+// fix moves the write into `lpApplySnapshot`, gated on the panel being
+// VISIBLE: a background apply (Task 6's new hidden-poll case) must not claim
+// the visible screen just refreshed when it did not.
+
+testCase('a hidden background poll never rewrites #updated', async () => {
+  await withPage(async page => {
+    failTheSubmitTransport(page);
+    await openReadyRowAndConfirm(page, 'deployer');
+    await openScreen(page, 'sync');
+    // A real before/after timestamp comparison is vacuous here:
+    // toLocaleTimeString() only has SECOND resolution, and this whole case
+    // runs in milliseconds, so an ungated write would produce the identical
+    // string and the check would pass either way. A sentinel the real write
+    // format could never reproduce is the only thing that actually proves
+    // the gate held.
+    el(page, '#updated').textContent = 'SENTINEL';
+
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+    check(htmlOf(page, '#updated') === 'SENTINEL',
+      `a hidden panel's background poll must not touch #updated (got: ${htmlOf(page, '#updated')})`);
+  }, readyRowRoute());
+});
+
+testCase('a hidden Launchpad does NOT poll for a merely-open confirmation',
+  async () => {
+  await withPage(async page => {
+    // Opened, never submitted: nothing is on the wire and there is no
+    // outcome to discover. Counting `status: "open"` in lpShouldPoll would
+    // keep a hidden tab polling forever just because someone expanded a
+    // confirm and wandered off — the exact waste active-only polling exists
+    // to remove.
+    await openReadyRow(page, 'deployer');
+    await openScreen(page, 'sync');
+
+    const before = callsTo(page, '/api/launchpad');
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+    check(callsTo(page, '/api/launchpad') === before,
+      `an open-but-unsubmitted confirm must not keep a hidden panel polling `
+      + `(got ${callsTo(page, '/api/launchpad')} vs before ${before})`);
+  }, readyRowRoute());
+});
+
+testCase('a visible Launchpad poll writes #updated', async () => {
+  await withPage(async page => {
+    check(/^updated /.test(htmlOf(page, '#updated')),
+      `the boot fetch already stamped #updated (got: ${htmlOf(page, '#updated')})`);
+
+    el(page, '#updated').textContent = '';
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+    check(/^updated /.test(htmlOf(page, '#updated')),
+      `a visible panel's background poll DOES stamp #updated (got: ${htmlOf(page, '#updated')})`);
+  });
+});
+
+// ---- terminal review PR #220: a failed refresh must SAY so ------------------
+//
+// Spec §340: every screen catches and SHOWS its own error. Launchpad caught
+// and showed nothing (`lpRenderFetchError` was a bare console.error), so a
+// visible panel whose refresh failed kept the previous rows under an
+// unchanged "updated <time>". The three cases below pin the whole shape:
+// visible failure speaks (in the panel AND in `#updated`), hidden failure
+// stays out of `#updated`, and a later success takes both marks off again.
+
+/** Makes the NEXT `/api/launchpad` fetch fail at the transport, the same
+ * shape `failTheSubmitTransport` uses for the submit endpoint. */
+function failTheSnapshotTransport(page, message = 'connection reset') {
+  overrideRoute(page, '/api/launchpad', () => Promise.reject(new Error(message)));
+}
+
+const unreadPanel = page => el(page, '#lp-fetch-error');
+
+testCase('a visible Launchpad SHOWS a failed refresh and stops claiming '
+  + 'freshness', async () => {
+  await withPage(async page => {
+    check(unreadPanel(page).hidden === true, 'sanity: nothing wrong before the failure');
+    check(htmlOf(page, '#lp-ready').includes('some-work-item'),
+      `sanity: the boot snapshot painted rows (got: ${htmlOf(page, '#lp-ready')})`);
+
+    failTheSnapshotTransport(page);
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+
+    check(unreadPanel(page).hidden === false,
+      'the panel surfaces the failed refresh instead of swallowing it');
+    check(unreadPanel(page).innerHTML.includes('не прочитано'),
+      `in the page's existing unread vocabulary (got: ${unreadPanel(page).innerHTML})`);
+    check(unreadPanel(page).className.split(/\s+/).includes('err'),
+      `carrying class err (got: ${unreadPanel(page).className})`);
+    check(unreadPanel(page).innerHTML.includes('connection reset'),
+      `naming the failure (got: ${unreadPanel(page).innerHTML})`);
+    check(el(page, '#lp-store-banner').hidden === true,
+      'a transport error does NOT get mirrored into the store banner, whose '
+      + 'contract is store_unreadable only');
+
+    check(htmlOf(page, '#updated') === 'не прочитано',
+      `#updated stops claiming freshness (got: ${htmlOf(page, '#updated')})`);
+    check(el(page, '#updated').className === 'err',
+      `marked with the same err class as every other failed load `
+      + `(got: ${el(page, '#updated').className})`);
+
+    check(htmlOf(page, '#lp-ready').includes('some-work-item'),
+      `the prior snapshot's rows stay on screen underneath `
+      + `(got: ${htmlOf(page, '#lp-ready')})`);
+  }, () => ok(readySnapshot()));
+});
+
+testCase('a HIDDEN Launchpad\'s failed background poll leaves #updated alone',
+  async () => {
+  await withPage(async page => {
+    // Same construction as the hidden-success case above: an unresolved
+    // attempt is what keeps a hidden panel polling at all (spec §9.1).
+    failTheSubmitTransport(page);
+    await openReadyRowAndConfirm(page, 'deployer');
+    await openScreen(page, 'sync');
+    // SENTINELs, not a before/after timestamp comparison: toLocaleTimeString()
+    // has second resolution and this case runs in milliseconds, so comparing
+    // stamps would pass whether or not the gate held. Both halves of the
+    // field are sentinelled — the failure path writes text AND class.
+    el(page, '#updated').textContent = 'SENTINEL';
+    el(page, '#updated').className = 'SENTINEL-CLASS';
+
+    failTheSnapshotTransport(page);
+    const before = callsTo(page, '/api/launchpad');
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+
+    check(callsTo(page, '/api/launchpad') === before + 1,
+      `sanity: the hidden panel did poll, and it did fail `
+      + `(got ${callsTo(page, '/api/launchpad')} vs before ${before})`);
+    check(htmlOf(page, '#updated') === 'SENTINEL',
+      `a hidden panel's failure must not write #updated — it would be a claim `
+      + `about the screen the operator IS on (got: ${htmlOf(page, '#updated')})`);
+    check(el(page, '#updated').className === 'SENTINEL-CLASS',
+      `nor mark that screen's freshness red (got: ${el(page, '#updated').className})`);
+    // The panel's own element is NOT global: it belongs to the hidden screen
+    // and is what the operator should find waiting when they come back (a
+    // successful return-refetch clears it before they see it).
+    check(unreadPanel(page).hidden === false,
+      'the hidden panel still records its own failure, in its own element');
+  }, readyRowRoute());
+});
+
+testCase('a later successful snapshot clears BOTH marks', async () => {
+  await withPage(async page => {
+    failTheSnapshotTransport(page);
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+    check(unreadPanel(page).hidden === false && htmlOf(page, '#updated') === 'не прочитано',
+      `sanity: the failure is on screen before the recovery `
+      + `(panel hidden=${unreadPanel(page).hidden}, `
+      + `#updated=${htmlOf(page, '#updated')})`);
+
+    overrideRoute(page, '/api/launchpad', () => ok(readySnapshot()));
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+
+    check(unreadPanel(page).hidden === true,
+      'a marker that outlives the problem is the same bug mirrored');
+    check(unreadPanel(page).innerHTML === '',
+      `and its text goes with it (got: ${unreadPanel(page).innerHTML})`);
+    check(/^updated /.test(htmlOf(page, '#updated')),
+      `#updated is a timestamp again (got: ${htmlOf(page, '#updated')})`);
+    check(el(page, '#updated').className === '',
+      `with the err class taken back off (got: ${el(page, '#updated').className})`);
+  }, () => ok(readySnapshot()));
+});
+
+testCase('a SUPERSEDED failure never paints over a fresher success', async () => {
+  await withPage(async page => {
+    // The failure path is now visible, so supersession has to hold on it too:
+    // a slow first fetch that fails after a newer one already rendered must
+    // stay silent (the `seq === lpState.seq` guard at the catch).
+    const releases = [];
+    page.routes.unshift([u => u === '/api/launchpad', () => new Promise(
+      (resolve, reject) => { releases.push({resolve, reject}); })]);
+
+    page.timers.byPeriod(LP_REFRESH_MS).cb();   // fetch A: will fail, slowly
+    await drain();
+    page.ctx.lpRefetchAfterAction();            // fetch B: supersedes A
+    await drain();
+
+    releases[1].resolve(ok(readySnapshot()));
+    await drain();
+    check(unreadPanel(page).hidden === true, 'sanity: B applied cleanly');
+
+    releases[0].reject(new Error('late failure'));
+    await drain();
+    check(unreadPanel(page).hidden === true,
+      `a superseded failure must not paint an error over the fresher render `
+      + `(got: ${unreadPanel(page).innerHTML})`);
+    check(/^updated /.test(htmlOf(page, '#updated')),
+      `nor take the fresh timestamp away (got: ${htmlOf(page, '#updated')})`);
+  }, () => ok(readySnapshot()));
+});
 
 // ---- main -------------------------------------------------------------------
 
@@ -873,6 +1319,34 @@ testCase('behaviour 5: release-malformed — a structured error keeps the '
 
 // ---- gate pass-3: outcomes survive the row's disappearance -------------------
 
+// The fifth of this group: what the panel actually SAYS. `detail` is the
+// server's own words (FastAPI's `{detail: …}`), so it goes through `esc`
+// like every other server string on this page; and a 5xx whose body
+// carries no `detail` must still name what happened rather than fall
+// back to a bare "unavailable".
+testCase('the Launchpad error escapes server text and names a bare HTTP '
+  + 'status', async () => {
+  // `detail` is the server's own words (FastAPI's `{detail: …}`), so it goes
+  // through `esc` like every other server string on this page.
+  await withPage(async page => {
+    overrideRoute(page, '/api/launchpad', () => resp(500, {detail: '<b>boom</b>'}));
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+    check(/&lt;b&gt;boom&lt;\/b&gt;/.test(unreadPanel(page).innerHTML),
+      `the server's text is escaped, got "${unreadPanel(page).innerHTML}"`);
+    check(!/<b>/.test(unreadPanel(page).innerHTML),
+      'and no live markup reaches the panel');
+  });
+  // A 5xx whose body carries no `detail` must still say what happened.
+  await withPage(async page => {
+    overrideRoute(page, '/api/launchpad', () => resp(503, {}));
+    page.timers.byPeriod(LP_REFRESH_MS).cb();
+    await drain();
+    check(/HTTP 503/.test(unreadPanel(page).innerHTML),
+      `a bodyless failure names its status, got "${unreadPanel(page).innerHTML}"`);
+  });
+});
+
 testCase('gate-3a: a settled receipt stays visible after the Ready row '
   + 'vanishes on refetch', async () => {
   let servedFirst = false;
@@ -900,11 +1374,21 @@ testCase('gate-3a: a settled receipt stays visible after the Ready row '
 testCase('gate-3b: an active row with a request_id links to the run view',
   async () => {
   await withPage(async page => {
-    const activeHtml = htmlOf(page, '#lp-active');
-    check(activeHtml.includes('lp-open-run'),
-      `active rows with a request_id carry the run-view opener (got: ${activeHtml})`);
-    check(!/lp-open-run[^>]*>[^<]*01UNLINKED/.test(activeHtml),
-      'an unlinked active row (request_id null) carries NO opener');
+    // Task 3 (tabbed-ui): the drill-down is a whole-row `data-lp-request-id`
+    // attribute (mouse convenience) PLUS a real, keyboard-reachable
+    // `.lp-open-run-btn` control inside it (fix round 1, finding 2) — not a
+    // per-cell `<a class="lp-open-run">` — see index.html's lpActiveRowHtml.
+    check(!!page.document.querySelector('#lp-active [data-lp-request-id="rq-act1"]'),
+      'active rows with a request_id carry the run-view opener');
+    check(!!page.document.querySelector(
+        '#lp-active button.lp-open-run-btn[data-lp-request-id="rq-act1"]'),
+      'the linked row carries a real, focusable drill-down control');
+    // Scoped to `<tr>` (the row) rather than every `[data-lp-request-id]`
+    // node — the linked row's own control carries the SAME attribute, so a
+    // blanket count would (correctly) be 2, not 1.
+    const linkedRows = page.document.querySelectorAll('#lp-active tr[data-lp-request-id]');
+    check(linkedRows.length === 1,
+      `only the linked row carries the drill-down attribute (got ${linkedRows.length})`);
   }, () => ok(snapshot({active: [
     {request_id: 'rq-act1', repo_key: 'github.com/o/r', work_id: 'w1',
      state: 'materialized', run_id: '01LINKED', run_status: 'RUNNING',

@@ -35,6 +35,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const {Document, dispatch} = require(path.join(__dirname, 'dom.js'));
+const {browserGlobals} = require(path.join(__dirname, 'screens.js'));
 
 const HTML_PATH = process.argv[2];
 if (!HTML_PATH) {
@@ -120,9 +121,10 @@ const DEFAULT_LAUNCHPAD_SNAPSHOT = {
   completed_total: 0, next_cursor: null, store_unreadable: [],
 };
 
-// refresh() (index.html:651-669) fans out to exactly these eight endpoints on
-// load; the run console lives at the top level and needs none of the
-// detail()-only routes (onboarding, governance, product-proposals, runs).
+// The page's per-screen loaders (index.html's LOADERS) reach these endpoints,
+// one screen at a time; the run console lives inside the Launchpad panel and
+// needs none of the detail()-only routes (onboarding, governance,
+// product-proposals, runs).
 // `/api/launchpad` is a ninth: the whole page script's own `lpFetchSnapshot()`
 // call at the bottom fires unconditionally too (Task 6/7).
 function defaultRoutes(submitRoute) {
@@ -222,16 +224,18 @@ async function boot(submitRoute) {
       for (const [test, make] of routes) if (test(u)) return Promise.resolve(make(u));
       return Promise.reject(new Error(`no fixture route for ${u}`));
     },
-    window: {open: () => {}},
+    ...browserGlobals(),
   };
   vm.createContext(ctx);
   vm.runInContext(PAGE_SCRIPT, ctx);
   await drain();
-  // The page's own `setInterval(refresh, 10000)` (index.html:2663) registers
-  // here too, on the SAME virtual clock as any per-run polling this harness
-  // starts. A tick large enough to cross 10000ms will fire it — that is
-  // correct behaviour, not a test failure; tests below stay under that
-  // threshold specifically so it does not confound the polling assertions.
+  // The page's own 10s `runLoader(activeScreen())` tick registers here too,
+  // on the SAME virtual clock as any per-run polling this harness starts. A
+  // tick large enough to cross 10000ms will fire it — that is correct
+  // behaviour, not a test failure; tests below stay under that threshold
+  // specifically so it does not confound the polling assertions. (Since
+  // Task 5 that tick is a no-op on Launchpad anyway — LOADERS.launchpad is
+  // null — but the tests do not lean on that.)
   return {ctx, document, calls, routes, clock};
 }
 
@@ -410,6 +414,56 @@ testCase("C1: the operator's actual journey — submit, see the id, open the "
     check(/materialized/i.test(el(page, '#rc-run-view').innerHTML),
       'the run view loads from the pre-filled id, no typing required');
   }, () => ok({request_id: 'rc-happy-1', run_id: '01AAA', accepted: true, reason: null}));
+});
+
+// -- terminal review, PR #220: #rc-open must route through the hash, like
+// every other opener -------------------------------------------------------
+// The Manual "Open run" button used to call openRunView() directly,
+// bypassing navigate()/the hash: a run opened this way could not be
+// restored by reload, was closed by the next tab switch (onScreenShown's
+// close branch fires whenever there is no r.sub), and Back returned to bare
+// Launchpad instead of the drill-down (spec §4.1). #rc-open now goes
+// through lpOpenRun, the same function the row click (tabs_harness.js) and
+// the Pending-row button already use.
+
+testCase('#rc-open with a routable id writes #launchpad/<id> and opens the '
+  + 'run, exactly once', async () => {
+  await withPage(async page => {
+    page.routes.push([u => u === '/api/runs/rc-open-routable', () => ok(
+      {record: {state: 'materialized', run_id: '01AAA'},
+       run: {status: 'running'}, warnings: []})]);
+    fill(page, '#rc-request-id', 'rc-open-routable');
+    await click(page, '#rc-open');
+
+    check(page.ctx.location.hash === '#launchpad/rc-open-routable',
+      `hash is the drill-down, got ${page.ctx.location.hash}`);
+    // Exact count, not `.some()`: a double-open (navigate()'s own
+    // synchronous hashchange plus a second, direct call) has already
+    // shipped on this branch once, and only an exact count catches it.
+    check(page.calls.filter(c => c.url === '/api/runs/rc-open-routable').length === 1,
+      'the run was fetched exactly once (got '
+      + `${page.calls.filter(c => c.url === '/api/runs/rc-open-routable').length})`);
+  });
+});
+
+testCase('#rc-open with an id that cannot survive HASH_RE opens directly '
+  + 'and leaves the hash unchanged', async () => {
+  const UNROUTABLE_ID = 'weird id';   // a space fails HASH_RE's sub-segment
+  await withPage(async page => {
+    const before = page.ctx.location.hash;
+    const url = `/api/runs/${encodeURIComponent(UNROUTABLE_ID)}`;
+    page.routes.push([u => u === url, () => ok(
+      {record: {state: 'materialized', run_id: '01AAA'},
+       run: {status: 'running'}, warnings: []})]);
+    fill(page, '#rc-request-id', UNROUTABLE_ID);
+    await click(page, '#rc-open');
+
+    check(page.ctx.location.hash === before,
+      `an unroutable request_id must not write the hash, got `
+      + `${page.ctx.location.hash}`);
+    check(page.calls.filter(c => c.url === url).length === 1,
+      'the run view still opened directly, exactly once');
+  });
 });
 
 testCase('accepted:false renders as a refusal WITH the reason', async () => {
@@ -641,9 +695,9 @@ testCase('unreadable is NOT absent: the collector warning reaches the screen',
 // once BOTH axes are settled.
 //
 // Every test below ticks by exactly 5000ms — under BOTH the page's own
-// global `setInterval(refresh, 10000)` (index.html:2663) and this view's
-// own 5000ms poll period (index.html rcPollView). That is a real coupling,
-// not an arbitrary number: it keeps the global refresh's eight fetches out
+// the 10s `runLoader(activeScreen())` tick and this view's own 5000ms poll
+// period (index.html rcPollView). That is a real coupling, not an arbitrary
+// number: it keeps the screen timer's fetches out
 // of `page.calls` while still crossing this view's own period exactly
 // once. If either period changes — the view's to >=10000, or a tick here
 // grows to >=10000 — these counts start measuring the wrong interval and
