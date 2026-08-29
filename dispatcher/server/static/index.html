@@ -5002,12 +5002,23 @@ function lpRenderFetchError(err, fallback) {
   const banner = document.getElementById("lp-fetch-error");
   banner.hidden = false;
   banner.innerHTML = `не прочитано: ${esc(lpFetchErrorDetail(err, fallback))}`;
-  // `#updated` is the GLOBAL half, and a hidden panel must not touch it:
-  // the operator is looking at another screen, and marking that screen
-  // unread because a background Launchpad poll (spec §9.1) failed would be
-  // a false claim about a screen that read fine. Same gate lpApplySnapshot
-  // uses for the mirror-image reason.
-  if (activeScreen() === "launchpad") markUpdatedUnread();
+  // `#updated` is the GLOBAL half, and it is reported the way every other
+  // screen reports: through `applyOutcome`, with the Launchpad's own screen
+  // id. Not `markUpdatedUnread()` behind a hand-written `activeScreen()`
+  // check — that would be the same defect this branch spent four rounds
+  // removing, a second copy of the policy that has to be kept in step by
+  // hand. `applyOutcome` returns early when Launchpad is not the active
+  // screen, which is exactly the gate a hidden panel needs: the operator is
+  // looking at another screen, and marking THAT screen unread because a
+  // background Launchpad poll (spec §9.1) failed would be a false claim
+  // about a screen that read fine.
+  //
+  // So the Launchpad occupies the same seat as the nine registry screens
+  // even though `LOADERS.launchpad` is null: it drives its own fetch, and
+  // reports the result in the one vocabulary. A future change to what an
+  // outcome MEANS reaches this panel without anyone remembering to come
+  // here.
+  applyOutcome("launchpad", LOAD_FAILED);
 }
 
 // The mirror image of the bug: a marker that outlives the problem. Called
@@ -5036,9 +5047,17 @@ function lpApplySnapshot(seq, snapshot) {
   lpState.snapshot = snapshot;
   lpClearFetchError();
   lpRender(snapshot);
-  // stampUpdated() also takes the `err` class back off `#updated`, so a
+  // The other half of the same seat (see lpRenderFetchError): a snapshot
+  // that actually applied is a PAINT, reported like any other screen's.
+  // `applyOutcome` gates it on Launchpad being active — a background apply
+  // writing `#updated` would claim the visible screen had just refreshed —
+  // and its LOAD_PAINTED branch also takes the `err` class back off, so a
   // visible success clears BOTH halves of a previous failure's marking.
-  if (activeScreen() === "launchpad") stampUpdated();
+  //
+  // A SUPERSEDED response never reaches here at all: the `seq` guard above
+  // returns first, which is the third outcome (LOAD_STALE: change nothing)
+  // expressed as control flow rather than as a value.
+  applyOutcome("launchpad", LOAD_PAINTED);
 }
 
 // The one place that actually calls fetch() — both lpFetchSnapshot() and

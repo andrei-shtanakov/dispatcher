@@ -2304,7 +2304,16 @@ function scanScript(src) {
     }
     if (c === '{') { top.depth++; prev = c; word = ''; i++; continue; }
     if (c === '}') {
-      if (top.depth === 0 && stack.length > 1) { stack.pop(); prev = '}'; word = ''; i++; continue; }
+      if (top.depth === 0 && stack.length > 1) {
+        // The `}` that closes a template's `${…}` is part of the LITERAL,
+        // like the `${` that opened it — not a code brace. Marking it is
+        // what keeps `bodySpan`'s brace matching honest: without this, the
+        // first interpolation inside a function body closed that body's
+        // count early and the span stopped short, silently exempting
+        // everything after it. `lpRenderFetchError` is the live example.
+        mark(i, i + 1);
+        stack.pop(); prev = '}'; word = ''; i++; continue;
+      }
       top.depth--; prev = c; word = ''; i++; continue;
     }
     if (/[A-Za-z0-9_$]/.test(c)) {
@@ -2376,6 +2385,15 @@ testCase('no call site reaches a loader except through runLoader', () => {
   const REGISTRY = bodySpan(SCAN, 'const', 'LOADERS');
   const RUN_LOADER = bodySpan(SCAN, 'function', 'runLoader');
   const LP_ISSUE_FETCH = bodySpan(SCAN, 'function', 'lpIssueFetch');
+  const APPLY_OUTCOME = bodySpan(SCAN, 'function', 'applyOutcome');
+  // The Launchpad's two report points. It has no registry entry by design
+  // (`launchpad: null`), so it cannot reach `applyOutcome` through
+  // `runLoader` — it drives its own fetch and reports the result itself.
+  // These two are the whole of that exemption, named rather than implied.
+  const LP_SEATS = [
+    bodySpan(SCAN, 'function', 'lpRenderFetchError'),
+    bodySpan(SCAN, 'function', 'lpApplySnapshot'),
+  ];
   check(REGISTRY !== null, 'precondition: the LOADERS registry is in the page');
   check(RUN_LOADER !== null,
     'the single entry point `runLoader` is gone from the page — without it '
@@ -2403,14 +2421,34 @@ testCase('no call site reaches a loader except through runLoader', () => {
     }
   }
   // The other half of the pairing: `applyOutcome` is what a call site used
-  // to have to remember, so it may be reached from exactly one place.
+  // to have to remember, so the places allowed to reach it are counted —
+  // `runLoader` for the nine registry screens, and the Launchpad's own two
+  // report points, which exist because it has no registry entry to be run
+  // through. Three, named; a fourth is a new way to report an outcome.
   const applyDef = /\bfunction\s+applyOutcome\s*\(/.exec(SCAN.code);
+  const APPLY_CALLERS = [RUN_LOADER, ...LP_SEATS];
   for (const m of SCAN.code.matchAll(/\bapplyOutcome\b/g)) {
     const i = m.index;
     if (SCAN.literal[i]) continue;
     if (i >= applyDef.index && i < applyDef.index + applyDef[0].length) continue;
-    if (within(i, RUN_LOADER)) continue;
+    if (APPLY_CALLERS.some(span => within(i, span))) continue;
     findings.push(`applyOutcome at index.html:${fileLine(i)} — ${sourceLine(i)}`);
+  }
+  // And what `applyOutcome` alone is allowed to do. Routing the Launchpad
+  // through `applyOutcome` (rather than its own `activeScreen()` check plus
+  // a direct `markUpdatedUnread()`) left these two with exactly one caller
+  // each, which makes the invariant worth pinning: `#updated`'s two states
+  // are written from ONE place, so the screen-id gate and the `err`-class
+  // handling cannot be half-copied to a second site and drift.
+  for (const writer of ['stampUpdated', 'markUpdatedUnread']) {
+    const def = new RegExp(`\\bfunction\\s+${writer}\\s*\\(`).exec(SCAN.code);
+    for (const m of SCAN.code.matchAll(new RegExp(`\\b${writer}\\b`, 'g'))) {
+      const i = m.index;
+      if (SCAN.literal[i]) continue;
+      if (def && i >= def.index && i < def.index + def[0].length) continue;
+      if (within(i, APPLY_OUTCOME)) continue;
+      findings.push(`${writer} at index.html:${fileLine(i)} — ${sourceLine(i)}`);
+    }
   }
   // And the Launchpad's own entry point, which the registry deliberately
   // does NOT hold (`launchpad: null` — its 30s cycle, its own `lpState.seq`
@@ -2430,10 +2468,15 @@ testCase('no call site reaches a loader except through runLoader', () => {
     + 'snapshot fetched ONLY in lpIssueFetch — the pairing of a loader with '
     + 'applyOutcome was hand-written at every call site for four rounds of '
     + 'the same bug, and a call site that forgets the second half leaves an '
-    + 'unread screen wearing a freshness stamp. The ONLY exemptions are the '
-    + 'LOADERS registry, each function\'s own declaration, and runLoader\'s '
-    + 'body for applyOutcome. Widening this allowlist means accepting a '
-    + 'second way to run a loader, so say why in the code. Found:\n    '
+    + 'unread screen wearing a freshness stamp. `#updated` itself is written '
+    + 'only by applyOutcome, so its screen-id gate cannot be half-copied '
+    + 'elsewhere. The ONLY exemptions are the LOADERS registry, each '
+    + 'function\'s own declaration, runLoader and the Launchpad\'s two report '
+    + 'points (lpRenderFetchError, lpApplySnapshot — it has no registry entry '
+    + 'to be run through) for applyOutcome, and applyOutcome for the two '
+    + '#updated writers. Widening this allowlist means accepting a second way '
+    + 'to run a loader or a second writer of the shared freshness marker, so '
+    + 'say why in the code. Found:\n    '
     + findings.join('\n    '));
 });
 
