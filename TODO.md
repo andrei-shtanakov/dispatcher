@@ -512,13 +512,11 @@
       `run_state_unreadable` (owner override на ревью B1), а не
       предполагавшееся in-flight.~~ (все три поправлены в спеке этой веткой,
       задача 1, feat/launchpad-c).
-- [ ] `snapshot_id` в submit v2 нигде не эхоится (спека зовёт его audit
-      echo) — либо поле в `LaunchRecord`, либо правка спеки
-      @owner:github:andrei-shtanakov @id:launchpad-snapshot-id-echo
-- [ ] Capture укладывается в ≤3 git-подпроцесса на файл `dags/` за submit и
-      на репо за assembly (B2 M8); оптимизация — только когда замер покажет
-      вред, риды ассемблера уже once-per-assembly @owner:github:andrei-shtanakov
-      @id:launchpad-perf-capture
+- [ ] `snapshot_id` в submit v2 нигде не эхоится @owner:github:andrei-shtanakov @id:launchpad-snapshot-id-echo
+      Спека зовёт его audit echo — либо поле в `LaunchRecord`, либо правка спеки.
+- [ ] Capture укладывается в ≤3 git-подпроцесса на файл `dags/` за submit и на репо за assembly (B2 M8) @owner:github:andrei-shtanakov @id:launchpad-perf-capture
+      Оптимизация — только когда замер покажет вред, риды ассемблера уже
+      once-per-assembly.
 - [ ] §10 живая приёмка среза: один боевой прогон реального пункта бэклога
       через панель — записанные work_id, полная seen_revision, ровно один
       request_id, run_branch созданный раннтаймом, дефолтная ветка не
@@ -585,7 +583,7 @@
       (§9). Цена, которую нельзя пропустить: `tests/web/dom.js` не знает
       `location`/`history`, а `dispatch()` не кликает по невидимому — девять
       harness'ов чинятся в той же задаче, что вводит панели (§10).
-- [ ] PR-2: `OverviewEntry.directory` + read-only README endpoint + экран Projects (список каталогов слева, полный README справа) @owner:github:andrei-shtanakov @blocked_by:todo://dispatcher/tabbed-ui-shell @id:tabbed-ui-projects @epic:eco.ops
+- [ ] PR-2: `OverviewEntry.directory` + read-only README endpoint + экран Projects (список каталогов слева, полный README справа) @owner:github:andrei-shtanakov @id:tabbed-ui-projects @epic:eco.ops
       Спека §6. Снимает UI-входы старого Project detail (onboarding, governance,
       product proposals, orchestration runs, merge gate, task authoring,
       spec-runner config) — backend не удаляется, изменение доступности
@@ -597,7 +595,7 @@
       карточки и `route.sub` не читает никогда. Единственные потребители
       `sub` во всей странице — Launchpad'овы. PR-2 обязан либо реализовать
       адресацию, либо снять `sub: true` вместе с правкой спеки.
-- [ ] PR-3: перекомпоновка экрана Sync без смены источника истины @owner:github:andrei-shtanakov @blocked_by:todo://dispatcher/tabbed-ui-shell @id:tabbed-ui-sync @epic:eco.ops
+- [ ] PR-3: перекомпоновка экрана Sync без смены источника истины @owner:github:andrei-shtanakov @id:tabbed-ui-sync @epic:eco.ops
       Спека §7. Repo-centric строки, явный статус источника каждой машины
       (`live`/`published`/`stale`/`unavailable`), обе машины отдельно. Сырой JSON
       github-checker в браузер не транслируется. План пишется после мержа PR-1.
@@ -967,11 +965,11 @@
 
 ## codex-review: потребитель кита steward (принят 2026-08-25)
 
-- [x] PR-B: caller-workflow гейта codex-review — влит #188 (`fe8da31`, 2026-08-25, пустой вердикт с первого прогона) (по образцу пилота spec-runner:
-      механика из base, потолки, generated-декларация, экономный триггер по
-      драфту/лейблу) + лейбл `codex-review` + секрет `CODEX_REVIEW_API_KEY`
-      (кладёт владелец в настройки репо) — после мержа PR-A
-      @owner:github:andrei-shtanakov @id:codex-review-caller
+- [x] PR-B: caller-workflow гейта codex-review — влит #188 (`fe8da31`, 2026-08-25, пустой вердикт с первого прогона) @owner:github:andrei-shtanakov @id:codex-review-caller
+      По образцу пилота spec-runner: механика из base, потолки,
+      generated-декларация, экономный триггер по драфту/лейблу; плюс лейбл
+      `codex-review` и секрет `CODEX_REVIEW_API_KEY` (кладёт владелец в
+      настройки репо) — после мержа PR-A.
 
   PR-A (этот): кит завендорен — `scripts/review/` (5 POSIX-скриптов) +
   `.github/codex/review-schema.json`, PIN @ steward `e4c43cc`;
