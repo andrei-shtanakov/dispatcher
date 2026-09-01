@@ -533,11 +533,11 @@
 - [ ] Capture укладывается в ≤3 git-подпроцесса на файл `dags/` за submit и на репо за assembly (B2 M8) @owner:github:andrei-shtanakov @id:launchpad-perf-capture
       Оптимизация — только когда замер покажет вред, риды ассемблера уже
       once-per-assembly.
-- [ ] §10 живая приёмка среза: один боевой прогон реального пункта бэклога
-      через панель — записанные work_id, полная seen_revision, ровно один
-      request_id, run_branch созданный раннтаймом, дефолтная ветка не
-      сдвинута, терминальный исход в Recent completed; ведёт владелец,
-      после мержа @owner:github:andrei-shtanakov @id:launchpad-live-acceptance
+- [ ] §10 живая приёмка среза launchpad @owner:github:andrei-shtanakov @id:launchpad-live-acceptance
+      Один боевой прогон реального пункта бэклога через панель — записанные
+      `work_id`, полная `seen_revision`, ровно один `request_id`, `run_branch`
+      созданный рантаймом, дефолтная ветка не сдвинута, терминальный исход в
+      Recent completed. Ведёт владелец, после мержа.
 - [ ] Флейк `test_run_end_through_the_resolution_path_also_binds_to_the_checkout` (fake-maestro subprocess timing; выстреливал в плане B1 и падает и standalone ~25-50% — замер 2026-08-26 на fbaed1c и HEAD, симптом: поздняя строка `run` от исходного launch-процесса перекрывает `run-end` в cwd-логе) @owner:github:andrei-shtanakov @id:flake-run-end-checkout
 - [ ] Флейк `test_revendor_script.py::test_a_signal_mid_run_leaves_the_working_copy_alone[SIGINT]` (периодически в полном прогоне, standalone зелёный) @owner:github:andrei-shtanakov @id:flake-revendor-sigint
 
@@ -577,15 +577,15 @@
       **Визуальная приёмка владельцем (1440/390 px, тёмная и светлая схема,
       различимость активной вкладки не только цветом) на момент мержа не
       проведена.**
-- [ ] Фокус остаётся на скрываемой кнопке ещё в двух местах (тот же класс, что
-      починен в PR #220 для вкладки `Benchmarks`): `suggestSetBusy(false)`
-      прячет `#spec-runner-config-suggest-cancel` по завершении запроса, и
-      `#mg-retry-sync` прячется по `outcome.ok` в merge gate. Оба скрываются
-      по состоянию, а не по действию оператора, поэтому клавиатурный фокус
-      остаётся на скрытом элементе. Проверены и признаны безобидными:
-      `overlaySetState` (оператор сам жмёт эти кнопки, на месте появляется
-      соседняя) и `applyRoute` (смену экрана ведёт оператор, фокус уже на
-      вкладке) @owner:github:andrei-shtanakov @id:hidden-focus-strays @epic:eco.ops
+- [ ] Фокус остаётся на скрываемой кнопке ещё в двух местах @owner:github:andrei-shtanakov @id:hidden-focus-strays @epic:eco.ops
+      Тот же класс, что починен в PR #220 для вкладки `Benchmarks`:
+      `suggestSetBusy(false)` прячет `#spec-runner-config-suggest-cancel` по
+      завершении запроса, и `#mg-retry-sync` прячется по `outcome.ok` в merge
+      gate. Оба скрываются по состоянию, а не по действию оператора, поэтому
+      клавиатурный фокус остаётся на скрытом элементе. Проверены и признаны
+      безобидными: `overlaySetState` (оператор сам жмёт эти кнопки, на месте
+      появляется соседняя) и `applyRoute` (смену экрана ведёт оператор, фокус
+      уже на вкладке).
       Девять вкладок, `Launchpad` первый и по умолчанию; `Run console` исчезает
       из верхней навигации и становится вложенным инструментом (run view —
       drill-down `#launchpad/<request_id>`, manual-форма — свёрнутый блок).
