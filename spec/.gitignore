@@ -1,0 +1,4 @@
+# spec-runner runtime state — never commit (managed by spec-runner)
+.executor-*
+.*task-history.log
+.*spec.lock
