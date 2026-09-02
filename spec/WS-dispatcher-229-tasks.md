@@ -161,15 +161,15 @@ Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-12
 **Traces to:** [FR-08]
 
 ### TASK-012: Self-owner warning наблюдаема без неявного governance gate
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-13.
 Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-13
 **Depends on:** [TASK-011]
 
 **Checklist:**
-- [ ] реализовать BEH-13: Self-owner warning наблюдаема без неявного governance gate
-- [ ] проверка группы: tests/plan_fields/governance/test_owner_repo_self_gate.py (kind: e2e) зелёные на BEH-13
+- [x] реализовать BEH-13: Self-owner warning наблюдаема без неявного governance gate
+- [x] проверка группы: tests/plan_fields/governance/test_owner_repo_self_gate.py (kind: e2e) зелёные на BEH-13
 
 **Traces to:** [FR-03, FR-10]
 
