@@ -65,18 +65,24 @@ def test_exactly_one_repository_verdict(
     assert not ("PF-OWNER-REPO-SELF" in codes and "PF-OWNER-REPO-UNKNOWN" in codes)
 
 
-@pytest.mark.parametrize(
-    "owner_tag",
-    ["repo:dispatcher", "repo:legacy-checkout-dir", "repo:maestro", "repo:unheard-of"],
-)
-def test_self_and_unknown_never_co_occur(owner_tag: str) -> None:
+def test_self_and_unknown_never_co_occur_for_undeclared_source_repo() -> None:
+    # Discriminating case: when the item's own source repo is itself absent
+    # from the frozen manifest and its owner names that same (undeclared)
+    # repo, `resolved_owner == repo` AND `repo not in canonical_keys` both
+    # hold at once. Every other fixture in this file has a manifest-declared
+    # source repo, so `resolved_owner == repo` and `resolved_owner not in
+    # canonical_keys` are never simultaneously true there — this is the only
+    # shape that actually exercises the `elif` (vs. two independent `if`s) in
+    # the fleet layer's owner-verdict resolution.
+    index = ManifestIndex(frozenset({"dispatcher"}), {})
     doc = parse_fleet(
-        [RepoInput("dispatcher", f"- [ ] work @id:x @owner:{owner_tag}\n")],
-        _index(),
+        [RepoInput("ghost-repo", "- [ ] work @id:x @owner:repo:ghost-repo\n")],
+        index,
     )
     validate_document(doc)
-    codes = set(_owner_codes(doc, "todo://dispatcher/x"))
-    assert not {"PF-OWNER-REPO-SELF", "PF-OWNER-REPO-UNKNOWN"}.issubset(codes)
+    codes = _owner_codes(doc, "todo://ghost-repo/x")
+    assert codes == ["PF-OWNER-REPO-UNKNOWN"]
+    assert not {"PF-OWNER-REPO-SELF", "PF-OWNER-REPO-UNKNOWN"}.issubset(set(codes))
 
 
 def test_grammar_invalid_owner_keeps_grammar_verdict_uncontested() -> None:
