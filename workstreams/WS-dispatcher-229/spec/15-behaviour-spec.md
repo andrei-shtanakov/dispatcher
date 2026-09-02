@@ -4,7 +4,7 @@ status: draft
 owner_role: product
 traces_to: [requirements]
 upstream_hashes:
-  requirements: "803c4c6c53fdeb941528034ebbdf74f43a99c384"
+  requirements: "fdf89dc702a4d51b5e06a3100894850b6cbfdd8d"
 ---
 
 # Behaviour spec — PF-OWNER-REPO-SELF: диагностика владельца `repo:<свой>` в `plan_fields`
@@ -33,18 +33,6 @@ grammar-only поведение single-repo parser.
   provenance, объясняет отсутствие передачи ответственности внешнему principal
   и предлагает typed principal либо `TBD`.
 
-#### BEH-02: Alias собственного репозитория нормализуется в self-owner
-`traces: [FR-02, FR-03, FR-09]`
-
-- **checked_by**: `status: planned` `kind: integration` `owner: qa` `target: tests/plan_fields/fleet/test_owner_repo_self_aliases.py`
-- **Given** frozen manifest объявляет один или несколько aliases source
-  repository, а repository owner записан одним из этих aliases.
-- **When** fleet-анализ разрешает owner и source через manifest identity-модель.
-- **Then** каждый объявленный alias даёт ту же canonical identity и тот же
-  self-owner verdict, что и canonical manifest key.
-- **And** для owner-ссылки выдаётся ровно одна warning-диагностика
-  `PF-OWNER-REPO-SELF`, даже если identity доступна через несколько manifest-имён.
-
 #### BEH-03: git_dir-написание собственного репозитория нормализуется в self-owner
 `traces: [FR-02, FR-03, FR-09]`
 
@@ -60,7 +48,7 @@ grammar-only поведение single-repo parser.
 `traces: [FR-02, FR-04]`
 
 - **checked_by**: `status: planned` `kind: integration` `owner: qa` `target: tests/plan_fields/fleet/test_owner_repo_verdicts.py`
-- **Given** repository owner строково похож на canonical key, alias или
+- **Given** repository owner строково похож на canonical key или
   `git_dir` source repository, но не объявлен frozen manifest.
 - **When** fleet-анализ разрешает repository owner.
 - **Then** owner получает unknown repo-owner verdict и существующую диагностику
@@ -106,7 +94,7 @@ grammar-only поведение single-repo parser.
 `traces: [FR-05, FR-09]`
 
 - **checked_by**: `status: planned` `kind: e2e` `owner: qa` `target: tests/plan_fields/reporters/test_self_owner_views.py`
-- **Given** fleet snapshot содержит canonical-key, alias или `git_dir`
+- **Given** fleet snapshot содержит canonical-key или `git_dir`
   self-owner node, а также валидный external repo-owner node.
 - **When** read-model строит агрегаты и все reporter-facing owner views.
 - **Then** self-owner доступен как отдельное машинно различимое состояние и не
@@ -118,7 +106,7 @@ grammar-only поведение single-repo parser.
 `traces: [FR-06]`
 
 - **checked_by**: `status: planned` `kind: integration` `owner: qa` `target: tests/plan_fields/fleet/test_owner_repo_self_explainability.py`
-- **Given** self-owner записан canonical key, alias или `git_dir`-формой.
+- **Given** self-owner записан canonical key или `git_dir`-формой.
 - **When** fleet-анализ формирует verdict и диагностику.
 - **Then** результат сохраняет точное исходное значение `owner_ref.raw`, node
   URI и repository/file/location provenance.
@@ -160,7 +148,7 @@ grammar-only поведение single-repo parser.
 - **When** пользователь ищет описание `PF-OWNER-REPO-SELF`.
 - **Then** он видит severity, fleet-only область применения и отличие self от
   unknown и валидного external repo-owner.
-- **And** примеры покрывают canonical key, alias и `git_dir` self-owner.
+- **And** примеры покрывают canonical key и `git_dir` self-owner.
 - **And** исправление рекомендует реального typed principal либо явный `TBD` и
   не обещает автоматического назначения.
 
@@ -192,7 +180,6 @@ grammar-only поведение single-repo parser.
 | Behaviour | Functional requirements |
 |---|---|
 | BEH-01 | FR-01, FR-03 |
-| BEH-02 | FR-02, FR-03, FR-09 |
 | BEH-03 | FR-02, FR-03, FR-09 |
 | BEH-04 | FR-02, FR-04 |
 | BEH-05 | FR-04, FR-05, FR-09 |

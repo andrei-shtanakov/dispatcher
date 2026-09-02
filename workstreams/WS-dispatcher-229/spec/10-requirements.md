@@ -4,7 +4,7 @@ status: draft
 owner_role: product
 traces_to: [charter]
 upstream_hashes:
-  charter: "aebc240472febf6197050927877c2059028e1aea"
+  charter: "6dbfc030a29fe0162c4ea164643c2b168836aafd"
 ---
 
 # Requirements — PF-OWNER-REPO-SELF: диагностика владельца `repo:<свой>` в `plan_fields`
@@ -23,7 +23,7 @@ parser и не назначают владельца автоматически.
 - **Owner repository** — репозиторий, на который ссылается
   `owner_ref` типа `repository`.
 - **Canonical identity** — manifest key репозитория после разрешения допустимого
-  manifest key, alias или `git_dir`-написания через frozen workspace manifest.
+  manifest key или `git_dir`-написания через frozen workspace manifest.
 - **Self-owner** — owner repository и source repository имеют одну canonical
   identity.
 - **External repo-owner** — owner repository известен manifest и его canonical
@@ -50,17 +50,17 @@ identity source repository из provenance того же node.
 - Owner другого типа, включая typed person/team и `TBD`, не попадает под эту
   классификацию.
 
-#### FR-02: Распознавание alias и git_dir собственного репозитория
+#### FR-02: Распознавание git_dir-написания собственного репозитория
 **Priority**: Must
 
-Fleet-анализ должен разрешать объявленные в frozen workspace manifest aliases и
-`git_dir`-написания owner repository в ту же canonical identity, которая
-используется для source repository.
+Fleet-анализ должен разрешать объявленное в frozen workspace manifest
+`git_dir`-написание owner repository в ту же canonical identity, которая
+используется для source repository. `git_dir`-локатор — единственная
+альтернативная manifest-форма записи репозитория; отдельного понятия alias
+identity-модель не содержит.
 
 Критерии приёмки:
 
-- Каждый объявленный alias source repository приводит к тому же self-owner
-  verdict, что и canonical manifest key.
 - Допустимое `git_dir`-написание source repository приводит к тому же
   self-owner verdict, что и canonical manifest key.
 - Необъявленное написание не считается совпадением только из-за сходства строк.
@@ -123,7 +123,7 @@ self-owner node как валидно назначенный external `repo-owne
 
 Критерии приёмки:
 
-- В результате доступно исходное написание owner tag, включая alias или
+- В результате доступно исходное написание owner tag, включая
   `git_dir`-форму.
 - Пользователь может по диагностике перейти к конкретному пункту и увидеть
   исходную запись, вызвавшую finding.
@@ -156,7 +156,7 @@ manifest и provenance fleet node.
 
 - Контракт различает self-owner, unknown repo-owner и валидного external
   repo-owner.
-- Документация содержит примеры canonical key и alias/`git_dir` self-owner.
+- Документация содержит примеры canonical key и `git_dir` self-owner.
 - Документация рекомендует заменить self-owner на реального typed principal
   либо `TBD` и не обещает автоматического назначения.
 - Канонический документ проходит применимую schema validation.
@@ -171,7 +171,7 @@ Conformance suite и профильные тесты должны закрепл
 
 - Тест проверяет canonical-key self-owner и ровно одну warning-диагностику с
   кодом `PF-OWNER-REPO-SELF`, node URI и provenance.
-- Тесты проверяют alias и `git_dir` варианты собственного репозитория.
+- Тесты проверяют `git_dir`-вариант собственного репозитория.
 - Негативные тесты проверяют известный внешний и неизвестный repository.
 - Тест подтверждает отсутствие одновременных `PF-OWNER-REPO-SELF` и
   `PF-OWNER-REPO-UNKNOWN` для одной owner-ссылки.
@@ -203,7 +203,7 @@ Conformance suite и профильные тесты должны закрепл
 #### NFR-02: Единая identity-модель
 
 Реализация должна переиспользовать manifest identity-модель fleet-слоя для
-разрешения canonical key, aliases и `git_dir`, не вводя отдельный несовместимый
+разрешения canonical key и `git_dir`, не вводя отдельный несовместимый
 алгоритм сопоставления owner.
 
 #### NFR-03: Read-only безопасность
