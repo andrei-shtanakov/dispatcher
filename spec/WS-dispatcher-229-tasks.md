@@ -174,15 +174,15 @@ Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-13
 **Traces to:** [FR-03, FR-10]
 
 ### TASK-013: Одинаковые frozen inputs дают одинаковый результат
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-14.
 Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-14
 **Depends on:** [TASK-012]
 
 **Checklist:**
-- [ ] реализовать BEH-14: Одинаковые frozen inputs дают одинаковый результат
-- [ ] проверка группы: tests/plan_fields/fleet/test_owner_repo_self_determinism.py (kind: integration) зелёные на BEH-14
+- [x] реализовать BEH-14: Одинаковые frozen inputs дают одинаковый результат
+- [x] проверка группы: tests/plan_fields/fleet/test_owner_repo_self_determinism.py (kind: integration) зелёные на BEH-14
 
 **Traces to:** [FR-01, FR-03, FR-04, FR-05]
 
