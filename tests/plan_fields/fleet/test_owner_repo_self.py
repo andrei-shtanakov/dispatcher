@@ -107,6 +107,4 @@ def test_owner_naming_a_different_manifest_repo_is_not_self_owner() -> None:
         _index(),
     )
     validate_document(doc)
-    assert not any(
-        d["code"].startswith("PF-OWNER") for d in doc["diagnostics"]
-    )
+    assert not any(d["code"].startswith("PF-OWNER") for d in doc["diagnostics"])
