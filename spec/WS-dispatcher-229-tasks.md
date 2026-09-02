@@ -1,12 +1,15 @@
 ---
+traces_to:
+- design
 spec_stage: tasks
-status: draft
-version: 1
+status: approved
+version: 3
 generated_by: fleet-agent
-generated_at: 2026-09-02T07:48:56
-source_prompt_version: ""
-validation: ""
-approved_by: ""
+generated_at: '2026-09-02T07:48:56'
+source_prompt_version: ''
+validation: warn
+approved_by: andrei-shtanakov
+approved_at: '2026-09-02T06:07:39Z'
 ---
 
 ## Milestone 1: PF-OWNER-REPO-SELF: диагностика владельца repo:<свой> в plan_fields (dispatcher#229)
