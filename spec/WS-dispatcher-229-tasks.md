@@ -161,7 +161,7 @@ Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-12
 **Traces to:** [FR-08]
 
 ### TASK-012: Self-owner warning наблюдаема без неявного governance gate
-P2 | 🔍 REVIEW   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-13.
 Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-13
