@@ -36,7 +36,7 @@ parser и не назначают владельца автоматически.
 #### FR-01: Определение self-owner по канонической identity
 **Priority**: Must
 
-Fleet-анализ должен классифицировать owner как self-owner, если `owner_ref.type`
+Fleet-анализ должен классифицировать owner как self-owner, если `owner_ref.kind`
 равен `repository`, а canonical identity owner repository совпадает с canonical
 identity source repository из provenance того же node.
 

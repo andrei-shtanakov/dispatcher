@@ -4,7 +4,7 @@ status: draft
 owner_role: product
 traces_to: [requirements]
 upstream_hashes:
-  requirements: "fdf89dc702a4d51b5e06a3100894850b6cbfdd8d"
+  requirements: "66c89b4d2d9270054116a739bed158b642a2cf14"
 ---
 
 # Behaviour spec — PF-OWNER-REPO-SELF: диагностика владельца `repo:<свой>` в `plan_fields`
@@ -23,7 +23,7 @@ grammar-only поведение single-repo parser.
 
 - **checked_by**: `status: planned` `kind: integration` `owner: qa` `target: tests/plan_fields/fleet/test_owner_repo_self.py`
 - **Given** frozen manifest содержит canonical key `dispatcher`, а plan node с
-  provenance `dispatcher/TODO.md` имеет `owner_ref.type = repository` и
+  provenance `dispatcher/TODO.md` имеет `owner_ref.kind = repository` и
   `owner_ref.raw = repo:dispatcher`.
 - **When** fleet-анализ классифицирует owner этого node.
 - **Then** owner verdict равен self-owner независимо от состояния checkbox.
