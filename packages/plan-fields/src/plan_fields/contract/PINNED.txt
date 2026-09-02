@@ -1,5 +1,5 @@
 source: prograph-vault authored/contracts/plan-fields/v3
-commit: dc12b0e3eaa6abd626e48f3ee6cf145ae70a0beb
-vendored: 2026-08-26
+commit: c13ed78dbb456d7affd277e6a744ea224a2db5e5
+vendored: 2026-09-02
 note: pinned copy (repo-boundaries vendoring). Do not edit here; re-vendor from
-canon and update this header. Revision: v3 r2 (adds optional @dag).
+canon and update this header. Revision: v3 r3 (adds PF-OWNER-REPO-SELF code).

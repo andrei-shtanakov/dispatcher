@@ -26,9 +26,12 @@ integration_pr: true
 # Строгий governance спек: draft не исполняется (spec approve обязателен).
 spec_governance: strict
 
-# Потолки бюджета: подъём — только `spec-runner budget authorize` (на записи).
-budget_usd: 10.0
-task_budget_usd: 2.0
+# Долларовых потолков нет намеренно: работа по подписке, total_cost_usd от
+# CLI — нотация API-листпрайса, не реальные траты (сорванный прогон
+# 2026-09-02: $2-потолок задачи остановил TASK-001 на трёх попытках о
+# локально красный сьют). Тормоза от runaway: max_retries,
+# task_timeout_minutes, лимит последовательных провалов; точечный потолок
+# при нужде — `budget authorize` (на записи).
 
 commands:
   test: "uv run pytest tests/ -v"
