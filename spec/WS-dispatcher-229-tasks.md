@@ -148,15 +148,15 @@ Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-11
 **Traces to:** [FR-03, FR-05, FR-08]
 
 ### TASK-011: Документация объясняет диагностику и исправление
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-12.
 Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-12
 **Depends on:** [TASK-010]
 
 **Checklist:**
-- [ ] реализовать BEH-12: Документация объясняет диагностику и исправление
-- [ ] проверка группы: docs/plan_fields/owner-repository.md (kind: manual) зелёные на BEH-12
+- [x] реализовать BEH-12: Документация объясняет диагностику и исправление
+- [x] проверка группы: docs/plan_fields/owner-repository.md (kind: manual) зелёные на BEH-12
 
 **Traces to:** [FR-08]
 
