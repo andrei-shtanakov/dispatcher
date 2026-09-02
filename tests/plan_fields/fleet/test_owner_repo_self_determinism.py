@@ -113,18 +113,10 @@ def test_reporter_facing_classification_is_stable_across_runs() -> None:
     assert repo_owned_node_ids(doc1) == ["todo://dispatcher/c"]
 
 
-def test_determinism_holds_across_differently_ordered_but_equal_manifests() -> None:
-    # Two ManifestIndex instances built from differently-ordered source
-    # collections but describing the exact same frozen manifest content must
-    # still resolve identically — the identity model is the manifest's
-    # CONTENT, never construction or iteration order.
-    index_a = ManifestIndex(
-        frozenset({"dispatcher", "maestro"}), {"legacy-checkout-dir": "dispatcher"}
-    )
-    index_b = ManifestIndex(
-        frozenset({"maestro", "dispatcher"}),
-        dict(reversed(list({"legacy-checkout-dir": "dispatcher"}.items()))),
-    )
-    doc_a = parse_fleet(_inputs(), index_a)
-    doc_b = parse_fleet(_inputs(), index_b)
-    assert doc_a == doc_b
+def test_determinism_holds_across_differently_ordered_repo_inputs() -> None:
+    # parse_fleet takes a Sequence[RepoInput]; a caller that discovers repos
+    # via filesystem/manifest iteration has no control over that order. The
+    # canonical result must not depend on it — only on frozen input content.
+    doc_forward = parse_fleet(_inputs(), _index())
+    doc_reversed = parse_fleet(list(reversed(_inputs())), _index())
+    assert doc_forward == doc_reversed

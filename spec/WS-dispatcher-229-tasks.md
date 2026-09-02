@@ -174,7 +174,7 @@ Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-13
 **Traces to:** [FR-03, FR-10]
 
 ### TASK-013: Одинаковые frozen inputs дают одинаковый результат
-P2 | ✅ DONE   Est: 0.5d
+P2 | 🔍 REVIEW   Est: 0.5d
 
 Реализовать сценарии BEH-14.
 Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-14
