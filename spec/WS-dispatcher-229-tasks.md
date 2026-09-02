@@ -122,15 +122,15 @@ Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-09
 **Traces to:** [FR-06]
 
 ### TASK-009: Single-repo parser остаётся grammar-only
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-10.
 Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-10
 **Depends on:** [TASK-008]
 
 **Checklist:**
-- [ ] реализовать BEH-10: Single-repo parser остаётся grammar-only
-- [ ] проверка группы: tests/plan_fields/parser/test_repository_owner_regression.py (kind: contract) зелёные на BEH-10
+- [x] реализовать BEH-10: Single-repo parser остаётся grammar-only
+- [x] проверка группы: tests/plan_fields/parser/test_repository_owner_regression.py (kind: contract) зелёные на BEH-10
 
 **Traces to:** [FR-07, FR-09]
 
