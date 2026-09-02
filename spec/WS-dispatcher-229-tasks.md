@@ -83,15 +83,15 @@ Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-06
 **Traces to:** [FR-04, FR-09]
 
 ### TASK-006: Owner другого типа не участвует в repository self-классификации
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-07.
 Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-07
 **Depends on:** [TASK-005]
 
 **Checklist:**
-- [ ] реализовать BEH-07: Owner другого типа не участвует в repository self-классификации
-- [ ] проверка группы: tests/plan_fields/fleet/test_owner_repo_type_boundaries.py (kind: integration) зелёные на BEH-07
+- [x] реализовать BEH-07: Owner другого типа не участвует в repository self-классификации
+- [x] проверка группы: tests/plan_fields/fleet/test_owner_repo_type_boundaries.py (kind: integration) зелёные на BEH-07
 
 **Traces to:** [FR-01, FR-04]
 
