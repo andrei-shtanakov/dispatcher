@@ -31,15 +31,15 @@ Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-01
 **Traces to:** [FR-01, FR-03]
 
 ### TASK-002: git_dir-написание собственного репозитория нормализуется в self-owner
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-03.
 Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-03
 **Depends on:** [TASK-001]
 
 **Checklist:**
-- [ ] реализовать BEH-03: git_dir-написание собственного репозитория нормализуется в self-owner
-- [ ] проверка группы: tests/plan_fields/fleet/test_owner_repo_self_git_dir.py (kind: integration) зелёные на BEH-03
+- [x] реализовать BEH-03: git_dir-написание собственного репозитория нормализуется в self-owner
+- [x] проверка группы: tests/plan_fields/fleet/test_owner_repo_self_git_dir.py (kind: integration) зелёные на BEH-03
 
 **Traces to:** [FR-02, FR-03, FR-09]
 
