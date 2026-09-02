@@ -75,3 +75,26 @@ def test_consumer_never_needs_to_renormalize_the_raw_owner_string() -> None:
     doc = _snapshot()
     verdicts = repo_owner_verdicts(doc)
     assert verdicts["todo://dispatcher/a"] == verdicts["todo://dispatcher/b"]
+
+
+def test_non_repository_owner_kind_is_absent_from_verdicts_and_repo_owned() -> None:
+    text = "- [ ] github owner @id:g @owner:github:octocat\n"
+    doc = parse_fleet([RepoInput("dispatcher", text)], _index())
+    validate_document(doc)
+
+    assert "todo://dispatcher/g" not in repo_owner_verdicts(doc)
+    assert repo_owned_node_ids(doc) == []
+
+
+def test_repo_owned_view_is_sorted_across_multiple_external_nodes() -> None:
+    text = (
+        "- [ ] second @id:z @owner:repo:maestro\n"
+        "- [ ] first @id:a @owner:repo:maestro\n"
+    )
+    doc = parse_fleet([RepoInput("dispatcher", text)], _index())
+    validate_document(doc)
+
+    assert repo_owned_node_ids(doc) == [
+        "todo://dispatcher/a",
+        "todo://dispatcher/z",
+    ]
