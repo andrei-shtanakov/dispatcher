@@ -157,27 +157,43 @@ def test_contract_dir_is_the_vendored_pin_this_test_reads() -> None:
 def test_reporters_do_not_rederive_repo_owner_classification() -> None:
     """BEH-11: все fleet-reporters разделяют ОДНУ классификацию (FR-05, NFR-02).
 
-    Архитектурная проверка вместо перечисления живых reporters: чтение кодов
-    `PF-OWNER-REPO-*` обратно в вердикт разрешено ровно одному модулю —
-    `plan_fields/views.py`; эмитирует их ровно один — `plan_fields/fleet_api.py`.
-    Reporter (web/TUI/VSCode/MCP или будущий), классифицирующий владельца
-    самостоятельно — по кодам или повторной нормализацией `owner_ref.raw`, —
-    обязан упомянуть код и покраснит этот тест, пока не перейдёт на общий
-    helper `repo_owner_verdicts`.
+    Архитектурная проверка вместо перечисления живых reporters, двумя
+    сканами fail-closed:
+
+    1. Коды `PF-OWNER-REPO-*` читает обратно в вердикт ровно один модуль —
+       `plan_fields/views.py`; эмитирует ровно один — `plan_fields/fleet_api.py`.
+    2. К `owner_ref` (включая `raw`/`kind`) прикасаются ровно три модуля —
+       parser (создаёт), fleet_api (классифицирует), views (общий helper).
+       Reporter, классифицирующий владельца самостоятельно — по кодам ИЛИ
+       повторной интерпретацией `owner_ref.raw`/`kind`, — обязан упомянуть
+       одно из двух и краснит тест, пока не перейдёт на
+       `repo_owner_verdicts`. Легитимный показ `raw` в отображении (FR-06)
+       идёт через результат общего helper/агрегатов, не через сырой
+       `owner_ref`; понадобится иначе — расширение allowlist делается
+       осознанным коммитом в этот тест.
     """
     repo_root = Path(__file__).resolve().parents[3]
-    allowed = {
-        repo_root / "packages/plan-fields/src/plan_fields/views.py",
-        repo_root / "packages/plan-fields/src/plan_fields/fleet_api.py",
-    }
+    pf_src = "packages/plan-fields/src/plan_fields"
+    scans = (
+        (
+            ("PF-OWNER-REPO-SELF", "PF-OWNER-REPO-UNKNOWN"),
+            {f"{pf_src}/views.py", f"{pf_src}/fleet_api.py"},
+        ),
+        (
+            ("owner_ref",),
+            {f"{pf_src}/views.py", f"{pf_src}/fleet_api.py", f"{pf_src}/parser.py"},
+        ),
+    )
     offenders: list[str] = []
-    for scope in ("dispatcher", "packages/plan-fields/src"):
-        for py in sorted((repo_root / scope).rglob("*.py")):
-            if py in allowed or "__pycache__" in py.parts:
-                continue
-            text = py.read_text(encoding="utf-8")
-            if "PF-OWNER-REPO-SELF" in text or "PF-OWNER-REPO-UNKNOWN" in text:
-                offenders.append(str(py.relative_to(repo_root)))
+    for tokens, allowed in scans:
+        for scope in ("dispatcher", "packages/plan-fields/src"):
+            for py in sorted((repo_root / scope).rglob("*.py")):
+                rel = str(py.relative_to(repo_root))
+                if rel in allowed or "__pycache__" in py.parts:
+                    continue
+                text = py.read_text(encoding="utf-8")
+                if any(tok in text for tok in tokens):
+                    offenders.append(f"{rel} ({'/'.join(tokens)})")
     assert not offenders, (
         "классификация repo-owner перевыведена вне общего helper: "
         f"{offenders} — используйте plan_fields.repo_owner_verdicts"
