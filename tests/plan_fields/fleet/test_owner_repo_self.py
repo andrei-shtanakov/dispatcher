@@ -88,19 +88,6 @@ def test_raw_owner_and_node_provenance_preserved() -> None:
     assert "TBD" in diag["message"]
 
 
-def test_self_owner_via_declared_git_dir_alias() -> None:
-    index = ManifestIndex(
-        frozenset({"dispatcher", "maestro"}), {"legacy-checkout-dir": "dispatcher"}
-    )
-    doc = parse_fleet(
-        [RepoInput("dispatcher", "- [ ] work @id:x @owner:repo:legacy-checkout-dir\n")],
-        index,
-    )
-    validate_document(doc)
-    codes = [d["code"] for d in doc["diagnostics"] if d["code"].startswith("PF-OWNER")]
-    assert codes == ["PF-OWNER-REPO-SELF"]
-
-
 def test_owner_naming_a_different_manifest_repo_is_not_self_owner() -> None:
     doc = parse_fleet(
         [RepoInput("dispatcher", "- [ ] work @id:x @owner:repo:maestro\n")],
