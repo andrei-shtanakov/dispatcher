@@ -96,15 +96,15 @@ Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-07
 **Traces to:** [FR-01, FR-04]
 
 ### TASK-007: Self-owner исключается из валидного external repo-owned состояния
-P2 | 🔍 REVIEW   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-08.
 Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-08
 **Depends on:** [TASK-006]
 
 **Checklist:**
-- [ ] реализовать BEH-08: Self-owner исключается из валидного external repo-owned состояния
-- [ ] проверка группы: tests/plan_fields/reporters/test_self_owner_views.py (kind: e2e) зелёные на BEH-08
+- [x] реализовать BEH-08: Self-owner исключается из валидного external repo-owned состояния
+- [x] проверка группы: tests/plan_fields/reporters/test_self_owner_views.py (kind: e2e) зелёные на BEH-08
 
 **Traces to:** [FR-05, FR-09]
 
