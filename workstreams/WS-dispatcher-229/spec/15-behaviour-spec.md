@@ -4,7 +4,7 @@ status: approved
 owner_role: product
 traces_to: [requirements]
 upstream_hashes:
-  requirements: "04cd7f01dc5d8f4a91c19672b3cd48f4ffff45a5"
+  requirements: "6e083465c4fcd792b3f1985d7608d789c424e8d7"
 ---
 
 # Behaviour spec — PF-OWNER-REPO-SELF: диагностика владельца `repo:<свой>` в `plan_fields`
