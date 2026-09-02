@@ -29,10 +29,20 @@ from plan_fields.parser import parse_dag, parse_owner, parse_todo
 from plan_fields.registry import EpicsRegistry, apply_registry, load_registry
 from plan_fields.scrape import ScrapedItem, last_tag_is_quoted, scrape_items
 from plan_fields.validator import load_schema, run_conformance, validate_document
+from plan_fields.views import (
+    REPO_OWNER_EXTERNAL,
+    REPO_OWNER_SELF,
+    REPO_OWNER_UNKNOWN,
+    repo_owned_node_ids,
+    repo_owner_verdicts,
+)
 
 __version__ = "0.10.0"
 
 __all__ = [
+    "REPO_OWNER_EXTERNAL",
+    "REPO_OWNER_SELF",
+    "REPO_OWNER_UNKNOWN",
     "AmbiguousIdentityError",
     "EpicsRegistry",
     "LegacyDiagnostic",
@@ -56,6 +66,8 @@ __all__ = [
     "parse_fleet",
     "parse_owner",
     "parse_todo",
+    "repo_owned_node_ids",
+    "repo_owner_verdicts",
     "resolve_checkout",
     "run_conformance",
     "scrape_items",
