@@ -66,15 +66,7 @@ def test_prefix_of_declared_git_dir_alias_is_not_self_owner() -> None:
         _index(),
     )
     validate_document(doc)
-    assert not any(d["code"] == "PF-OWNER-REPO-SELF" for d in doc["diagnostics"])
-    assert any(d["code"] == "PF-OWNER-REPO-UNKNOWN" for d in doc["diagnostics"])
-
-
-def test_similar_name_never_yields_both_verdicts_at_once() -> None:
-    doc = parse_fleet(
-        [RepoInput("dispatcher", "- [ ] work @id:x @owner:repo:dispatcher-fork\n")],
-        _index(),
-    )
-    validate_document(doc)
-    codes = {d["code"] for d in doc["diagnostics"]}
-    assert not ({"PF-OWNER-REPO-SELF", "PF-OWNER-REPO-UNKNOWN"} <= codes)
+    owner_codes = [
+        d["code"] for d in doc["diagnostics"] if d["code"].startswith("PF-OWNER")
+    ]
+    assert owner_codes == ["PF-OWNER-REPO-UNKNOWN"]

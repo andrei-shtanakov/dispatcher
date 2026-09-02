@@ -44,15 +44,15 @@ Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-03
 **Traces to:** [FR-02, FR-03, FR-09]
 
 ### TASK-003: Похожее, но необъявленное имя не считается self-owner
-P2 | 🔄 IN_PROGRESS   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-04.
 Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-04
 **Depends on:** [TASK-002]
 
 **Checklist:**
-- [ ] реализовать BEH-04: Похожее, но необъявленное имя не считается self-owner
-- [ ] проверка группы: tests/plan_fields/fleet/test_owner_repo_verdicts.py (kind: integration) зелёные на BEH-04
+- [x] реализовать BEH-04: Похожее, но необъявленное имя не считается self-owner
+- [x] проверка группы: tests/plan_fields/fleet/test_owner_repo_verdicts.py (kind: integration) зелёные на BEH-04
 
 **Traces to:** [FR-02, FR-04]
 
