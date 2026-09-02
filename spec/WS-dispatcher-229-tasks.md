@@ -135,15 +135,15 @@ Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-10
 **Traces to:** [FR-07, FR-09]
 
 ### TASK-010: Публичный контракт различает три repository owner состояния
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-11.
 Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-11
 **Depends on:** [TASK-009]
 
 **Checklist:**
-- [ ] реализовать BEH-11: Публичный контракт различает три repository owner состояния
-- [ ] проверка группы: tests/plan_fields/contracts/test_pf_owner_repo_self_schema.py (kind: contract) зелёные на BEH-11
+- [x] реализовать BEH-11: Публичный контракт различает три repository owner состояния
+- [x] проверка группы: tests/plan_fields/contracts/test_pf_owner_repo_self_schema.py (kind: contract) зелёные на BEH-11
 
 **Traces to:** [FR-03, FR-05, FR-08]
 
