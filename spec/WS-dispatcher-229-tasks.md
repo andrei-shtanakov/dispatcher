@@ -135,7 +135,7 @@ Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-10
 **Traces to:** [FR-07, FR-09]
 
 ### TASK-010: Публичный контракт различает три repository owner состояния
-P2 | ✅ DONE   Est: 0.5d
+P2 | 🔍 REVIEW   Est: 0.5d
 
 Реализовать сценарии BEH-11.
 Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-11

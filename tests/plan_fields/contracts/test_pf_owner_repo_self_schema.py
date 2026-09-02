@@ -68,6 +68,11 @@ def test_registry_declares_self_separately_from_unknown_repo_owner() -> None:
     assert "PF-OWNER-REPO-UNKNOWN" in codes
     assert codes["PF-OWNER-REPO-SELF"] != codes["PF-OWNER-REPO-UNKNOWN"]
     assert codes["PF-OWNER-REPO-SELF"]["default_severity"] == "warning"
+    assert codes["PF-OWNER-REPO-UNKNOWN"]["default_severity"] == "warning"
+    # SELF never escalates (it is expected steady state); UNKNOWN does — the
+    # registry must keep these divergent, not just same-severity siblings.
+    assert codes["PF-OWNER-REPO-SELF"]["escalation"] == "never"
+    assert codes["PF-OWNER-REPO-UNKNOWN"]["escalation"] != "never"
 
 
 def test_mixed_snapshot_passes_applicable_schema_validation() -> None:
@@ -79,7 +84,8 @@ def test_mixed_snapshot_passes_applicable_schema_validation() -> None:
     schema = load_schema()
     assert schema["$id"] == "urn:ecosystem:plan-fields:v3:schema"
     code_pattern = schema["$defs"]["Diagnostic"]["properties"]["code"]["pattern"]
-    assert "PF-" in code_pattern
+    assert re.match(code_pattern, "PF-OWNER-REPO-SELF")
+    assert re.match(code_pattern, "PF-OWNER-REPO-UNKNOWN")
 
 
 def test_self_owner_diagnostic_exposes_stable_machine_readable_fields() -> None:
