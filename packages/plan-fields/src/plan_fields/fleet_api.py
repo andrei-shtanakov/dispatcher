@@ -150,22 +150,41 @@ def parse_fleet(
         diagnostics.extend(doc["diagnostics"])
         for node in doc["nodes"]:
             owner_ref = node.get("owner_ref")
-            if (
-                isinstance(owner_ref, dict)
-                and owner_ref.get("kind") == "repository"
-                and owner_ref.get("id") not in index.canonical_keys
-            ):
-                diagnostics.append(
-                    _diag(
-                        "PF-OWNER-REPO-UNKNOWN",
-                        "warning",
-                        node["node_id"],
-                        None,
-                        None,
-                        f"repository owner {owner_ref.get('raw')} is absent from the frozen manifest",
-                        node["provenance"],
-                    )
+            if isinstance(owner_ref, dict) and owner_ref.get("kind") == "repository":
+                owner_id = owner_ref.get("id")
+                resolved_owner = (
+                    index.resolve_ref(owner_id) if isinstance(owner_id, str) else None
                 )
+                if resolved_owner is None or resolved_owner not in index.canonical_keys:
+                    diagnostics.append(
+                        _diag(
+                            "PF-OWNER-REPO-UNKNOWN",
+                            "warning",
+                            node["node_id"],
+                            None,
+                            None,
+                            f"repository owner {owner_ref.get('raw')} is absent from the frozen manifest",
+                            node["provenance"],
+                        )
+                    )
+                elif resolved_owner == repo:
+                    # BEH-01: canonical identity of the owner equals the item's own
+                    # source repository — self-ownership hands responsibility to no
+                    # external principal, regardless of the node's checkbox state.
+                    diagnostics.append(
+                        _diag(
+                            "PF-OWNER-REPO-SELF",
+                            "warning",
+                            node["node_id"],
+                            None,
+                            None,
+                            f"repository owner {owner_ref.get('raw')} names this "
+                            f"item's own source repository {repo} — self-ownership "
+                            f"hands responsibility to no external principal; use a "
+                            f"typed person/team owner or @owner:TBD",
+                            node["provenance"],
+                        )
+                    )
         present[repo] = doc["nodes"]
 
     node_ids = {n["node_id"] for n in nodes}
