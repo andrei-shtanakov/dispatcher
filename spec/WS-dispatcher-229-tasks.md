@@ -31,7 +31,7 @@ Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-01
 **Traces to:** [FR-01, FR-03]
 
 ### TASK-002: git_dir-написание собственного репозитория нормализуется в self-owner
-P2 | 🔄 IN_PROGRESS   Est: 0.5d
+P2 | 🔍 REVIEW   Est: 0.5d
 
 Реализовать сценарии BEH-03.
 Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-03

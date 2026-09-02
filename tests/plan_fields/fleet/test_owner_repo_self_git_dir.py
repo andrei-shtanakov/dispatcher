@@ -84,6 +84,19 @@ def test_git_dir_alias_verdict_matches_canonical_key_verdict() -> None:
     assert alias_diag["provenance"] == key_diag["provenance"]
 
 
+def test_git_dir_alias_naming_another_repo_is_not_self_owner() -> None:
+    # `legacy-checkout-dir` aliases to `dispatcher`, not `maestro`: a maestro
+    # item owned by that alias is an external (dispatcher) owner, the same
+    # negative verdict the canonical-key spelling gets in
+    # test_owner_repo_self.py::test_owner_naming_a_different_manifest_repo_is_not_self_owner.
+    doc = parse_fleet(
+        [RepoInput("maestro", "- [ ] work @id:x @owner:repo:legacy-checkout-dir\n")],
+        _index(),
+    )
+    validate_document(doc)
+    assert not any(d["code"].startswith("PF-OWNER") for d in doc["diagnostics"])
+
+
 def test_git_dir_alias_owner_node_ref_carries_resolved_identity() -> None:
     doc = parse_fleet(
         [RepoInput("dispatcher", "- [ ] work @id:x @owner:repo:legacy-checkout-dir\n")],
