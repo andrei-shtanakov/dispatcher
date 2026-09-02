@@ -1,10 +1,10 @@
 ---
 spec_stage: behaviour-spec
-status: draft
+status: approved
 owner_role: product
 traces_to: [requirements]
 upstream_hashes:
-  requirements: "66c89b4d2d9270054116a739bed158b642a2cf14"
+  requirements: "6e083465c4fcd792b3f1985d7608d789c424e8d7"
 ---
 
 # Behaviour spec — PF-OWNER-REPO-SELF: диагностика владельца `repo:<свой>` в `plan_fields`

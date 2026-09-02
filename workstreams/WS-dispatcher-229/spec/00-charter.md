@@ -1,6 +1,6 @@
 ---
 spec_stage: charter
-status: draft
+status: approved
 owner_role: product
 ---
 
@@ -114,10 +114,14 @@ repo-владение, хотя не указывает внешнего отв�
 
 ## Открытые вопросы
 
-- **Q-01 · owner_role: product · blocking: true.** Должен ли
+- **Q-01 · owner_role: product · РЕШЕНО 2026-09-02.** Вопрос: должен ли
   `PF-OWNER-REPO-SELF` сразу участвовать в обязательном governance gate или
-  сначала пройти наблюдаемый миграционный период? До решения charter остаётся
-  `draft`; базовая severity — `warning`.
+  сначала пройти наблюдаемый миграционный период? **Решение: миграционный
+  период** — базовая severity `warning`, в обязательный gate диагностика не
+  включается; включение — отдельное явное решение после оценки числа
+  существующих self-owner записей (режим закреплён FR-10 и BEH-13; совпадает
+  с доводом инициатора dispatcher#229 «warning, а не error»). С решением
+  Q-01 blocking-статус снят, charter переведён в `approved`.
 - **Q-02 · owner_role: architect · blocking: false.** Где хранить итоговую
   owner-классификацию (`self` как поле/состояние или вывод из diagnostics), чтобы
   все reporters применяли правило одинаково без дублирования логики?

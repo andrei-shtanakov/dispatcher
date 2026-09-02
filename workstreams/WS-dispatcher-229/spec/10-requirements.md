@@ -1,10 +1,10 @@
 ---
 spec_stage: requirements
-status: draft
+status: approved
 owner_role: product
 traces_to: [charter]
 upstream_hashes:
-  charter: "6dbfc030a29fe0162c4ea164643c2b168836aafd"
+  charter: "062605f4121fece63aaf2eba179a5c098dac63dd"
 ---
 
 # Requirements — PF-OWNER-REPO-SELF: диагностика владельца `repo:<свой>` в `plan_fields`
@@ -248,10 +248,10 @@ Conformance suite и профильные тесты должны закрепл
 
 ## Открытые решения
 
-- **Q-01 (product, blocking):** должна ли warning-диагностика
-  `PF-OWNER-REPO-SELF` после наблюдаемого миграционного периода участвовать в
-  обязательном governance gate? До решения действует FR-10, а статус документа
-  остаётся `draft`.
+- **Q-01 (product) — РЕШЕНО 2026-09-02 (см. charter):** выбран наблюдаемый
+  миграционный период — действует FR-10 (`warning`, без нового обязательного
+  gate); участие в обязательном gate — отдельное будущее решение с оценкой
+  существующих self-owner записей.
 - **Q-02 (architect, non-blocking):** хранится ли self как явное поле/состояние
   owner-классификации или однозначно выводится из diagnostics? Любой вариант
   обязан удовлетворять FR-05 и NFR-04 без дублирования identity-логики между

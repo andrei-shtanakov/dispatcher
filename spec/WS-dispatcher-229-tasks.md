@@ -1,17 +1,22 @@
 ---
+traces_to:
+- behaviour-spec
+upstream_hashes:
+  behaviour-spec: 5774992d22534cb6f8cd6c71b6f792542390bbe7
 spec_stage: tasks
-status: draft
-version: 1
+status: approved
+version: 3
 generated_by: fleet-agent
-generated_at: 2026-09-02T07:48:56
-source_prompt_version: ""
-validation: ""
-approved_by: ""
+generated_at: '2026-09-02T07:48:56'
+source_prompt_version: ''
+validation: warn
+approved_by: andrei-shtanakov
+approved_at: '2026-09-02T06:07:39Z'
 ---
 
 ## Milestone 1: PF-OWNER-REPO-SELF: диагностика владельца repo:<свой> в plan_fields (dispatcher#229)
 
-Сгенерировано task_bridge из behaviour-spec бандла WS-dispatcher-229 (шаг 3 плана развития конвейера; группировка задач — по Feature-секциям). Draft: исполнение только после человеческого approve.
+Сгенерировано task_bridge из behaviour-spec бандла WS-dispatcher-229 (шаг 3 плана развития конвейера; группировка задач — по Feature-секциям). Человеческий approve дан владельцем 2026-09-02 (`spec approve tasks`, лейн devtools#110); charter, requirements и behaviour-spec бандла — approved (ревью-контур пройден, Q-01 решён decision-record-ом в charter: миграционный период). Исполнение — режим FR-10: severity `warning`, без нового обязательного gate; включение в gate — отдельное будущее решение.
 
 ### TASK-001: Канонический ключ собственного репозитория определяется как self-owner
 P2 | TODO   Est: 0.5d
