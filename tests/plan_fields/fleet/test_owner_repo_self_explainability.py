@@ -131,11 +131,13 @@ def test_self_owner_provenance_is_not_crossed_between_repos_in_one_fleet() -> No
 
     diag_a = diags["todo://dispatcher/a"]
     diag_b = diags["todo://maestro/b"]
-    assert diag_a["provenance"]["repo"] == by_id["a"]["provenance"]["repo"] == (
-        "dispatcher"
+    assert (
+        diag_a["provenance"]["repo"]
+        == by_id["a"]["provenance"]["repo"]
+        == ("dispatcher")
     )
-    assert diag_b["provenance"]["repo"] == by_id["b"]["provenance"]["repo"] == (
-        "maestro"
+    assert (
+        diag_b["provenance"]["repo"] == by_id["b"]["provenance"]["repo"] == ("maestro")
     )
     assert diag_a["provenance"] == by_id["a"]["provenance"]
     assert diag_b["provenance"] == by_id["b"]["provenance"]
