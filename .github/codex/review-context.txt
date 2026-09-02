@@ -1,0 +1,4 @@
+# Манифест курируемого контекста ревью (scripts/review/collect-context.sh).
+# Каждая строка — буквальный путь в репо; содержимое читается из merge-base.
+.github/codex/review-policy.md
+spec/WS-dispatcher-229-tasks.md
