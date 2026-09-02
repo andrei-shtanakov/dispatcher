@@ -109,7 +109,7 @@ Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-08
 **Traces to:** [FR-05, FR-09]
 
 ### TASK-008: Исходный owner и provenance сохраняются без изменений
-P2 | ✅ DONE   Est: 0.5d
+P2 | 🔍 REVIEW   Est: 0.5d
 
 Реализовать сценарии BEH-09.
 Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-09

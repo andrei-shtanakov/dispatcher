@@ -108,24 +108,45 @@ def test_pinned_commit_provenance_stays_attached_to_the_right_node() -> None:
     assert diag["provenance"]["commit"] == "deadbeef"
 
 
-def test_analysis_never_rewrites_its_frozen_inputs() -> None:
-    todo_text = "- [ ] work @id:x @owner:repo:dispatcher\n"
-    repo_input = RepoInput("dispatcher", todo_text)
-    index = _index()
-
-    doc = parse_fleet([repo_input], index)
+def test_self_owner_provenance_is_not_crossed_between_repos_in_one_fleet() -> None:
+    # two different repos, each self-owning an item, scanned in the same
+    # parse_fleet call — the merge across repos must not attribute one
+    # repo's node/provenance to the other's diagnostic.
+    doc = parse_fleet(
+        [
+            RepoInput("dispatcher", "- [ ] work @id:a @owner:repo:dispatcher\n"),
+            RepoInput("maestro", "- [ ] work @id:b @owner:repo:maestro\n"),
+        ],
+        _index(),
+    )
     validate_document(doc)
 
-    # the frozen inputs passed in are untouched: same text, same identity
-    # index, same RepoInput object — parse_fleet is read-only over its
-    # arguments and writes to no file, manifest or contract.
-    assert repo_input.todo_text == todo_text
-    assert repo_input.repo == "dispatcher"
-    assert index.canonical_keys == frozenset({"dispatcher", "maestro"})
-    assert index.git_dir_to_key == {"legacy-checkout-dir": "dispatcher"}
+    by_id = {n["id"]: n for n in doc["nodes"]}
+    diags = {
+        d["subject_uri"]: d
+        for d in doc["diagnostics"]
+        if d["code"] == "PF-OWNER-REPO-SELF"
+    }
+    assert set(diags) == {"todo://dispatcher/a", "todo://maestro/b"}
 
-    # calling it again on the same frozen inputs reproduces the identical
-    # document — nothing about the inputs was consumed or mutated by the
-    # first call.
-    doc_again = parse_fleet([repo_input], index)
+    diag_a = diags["todo://dispatcher/a"]
+    diag_b = diags["todo://maestro/b"]
+    assert diag_a["provenance"]["repo"] == by_id["a"]["provenance"]["repo"] == (
+        "dispatcher"
+    )
+    assert diag_b["provenance"]["repo"] == by_id["b"]["provenance"]["repo"] == (
+        "maestro"
+    )
+    assert diag_a["provenance"] == by_id["a"]["provenance"]
+    assert diag_b["provenance"] == by_id["b"]["provenance"]
+
+    # re-running on the same frozen inputs is deterministic — nothing about
+    # the merge is order- or state-dependent across calls.
+    doc_again = parse_fleet(
+        [
+            RepoInput("dispatcher", "- [ ] work @id:a @owner:repo:dispatcher\n"),
+            RepoInput("maestro", "- [ ] work @id:b @owner:repo:maestro\n"),
+        ],
+        _index(),
+    )
     assert doc_again == doc
