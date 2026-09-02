@@ -19,7 +19,7 @@ approved_at: '2026-09-02T06:07:39Z'
 Сгенерировано task_bridge из behaviour-spec бандла WS-dispatcher-229 (шаг 3 плана развития конвейера; группировка задач — по Feature-секциям). Человеческий approve дан владельцем 2026-09-02 (`spec approve tasks`, лейн devtools#110); charter, requirements и behaviour-spec бандла — approved (ревью-контур пройден, Q-01 решён decision-record-ом в charter: миграционный период). Исполнение — режим FR-10: severity `warning`, без нового обязательного gate; включение в gate — отдельное будущее решение.
 
 ### TASK-001: Канонический ключ собственного репозитория определяется как self-owner
-P2 | TODO   Est: 0.5d
+P2 | ⏸️ BLOCKED   Est: 0.5d
 
 Реализовать сценарии BEH-01.
 Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-01
