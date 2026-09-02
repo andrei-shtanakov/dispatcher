@@ -122,7 +122,7 @@ Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-09
 **Traces to:** [FR-06]
 
 ### TASK-009: Single-repo parser остаётся grammar-only
-P2 | TODO   Est: 0.5d
+P2 | 🔄 IN_PROGRESS   Est: 0.5d
 
 Реализовать сценарии BEH-10.
 Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-10
