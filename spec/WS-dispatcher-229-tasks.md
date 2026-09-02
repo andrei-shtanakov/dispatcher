@@ -44,7 +44,7 @@ Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-03
 **Traces to:** [FR-02, FR-03, FR-09]
 
 ### TASK-003: Похожее, но необъявленное имя не считается self-owner
-P2 | TODO   Est: 0.5d
+P2 | 🔄 IN_PROGRESS   Est: 0.5d
 
 Реализовать сценарии BEH-04.
 Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-04
