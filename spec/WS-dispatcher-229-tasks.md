@@ -1,6 +1,8 @@
 ---
 traces_to:
-- design
+- behaviour-spec
+upstream_hashes:
+  behaviour-spec: 5774992d22534cb6f8cd6c71b6f792542390bbe7
 spec_stage: tasks
 status: approved
 version: 3
