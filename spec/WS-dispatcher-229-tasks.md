@@ -70,15 +70,15 @@ Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-05
 **Traces to:** [FR-04, FR-05, FR-09]
 
 ### TASK-005: Repository verdicts взаимоисключающие
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-06.
 Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-06
 **Depends on:** [TASK-004]
 
 **Checklist:**
-- [ ] реализовать BEH-06: Repository verdicts взаимоисключающие
-- [ ] проверка группы: tests/plan_fields/contracts/test_repository_owner_verdict.py (kind: contract) зелёные на BEH-06
+- [x] реализовать BEH-06: Repository verdicts взаимоисключающие
+- [x] проверка группы: tests/plan_fields/contracts/test_repository_owner_verdict.py (kind: contract) зелёные на BEH-06
 
 **Traces to:** [FR-04, FR-09]
 
