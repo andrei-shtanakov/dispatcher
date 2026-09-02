@@ -109,15 +109,15 @@ Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-08
 **Traces to:** [FR-05, FR-09]
 
 ### TASK-008: Исходный owner и provenance сохраняются без изменений
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-09.
 Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-09
 **Depends on:** [TASK-007]
 
 **Checklist:**
-- [ ] реализовать BEH-09: Исходный owner и provenance сохраняются без изменений
-- [ ] проверка группы: tests/plan_fields/fleet/test_owner_repo_self_explainability.py (kind: integration) зелёные на BEH-09
+- [x] реализовать BEH-09: Исходный owner и provenance сохраняются без изменений
+- [x] проверка группы: tests/plan_fields/fleet/test_owner_repo_self_explainability.py (kind: integration) зелёные на BEH-09
 
 **Traces to:** [FR-06]
 
