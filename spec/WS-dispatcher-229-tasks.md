@@ -57,15 +57,15 @@ Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-04
 **Traces to:** [FR-02, FR-04]
 
 ### TASK-004: Известный внешний репозиторий остаётся валидным repo-owner
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-05.
 Source: workstreams/WS-dispatcher-229/spec/15-behaviour-spec.md#BEH-05
 **Depends on:** [TASK-003]
 
 **Checklist:**
-- [ ] реализовать BEH-05: Известный внешний репозиторий остаётся валидным repo-owner
-- [ ] проверка группы: tests/plan_fields/fleet/test_owner_repo_verdicts.py (kind: integration) зелёные на BEH-05
+- [x] реализовать BEH-05: Известный внешний репозиторий остаётся валидным repo-owner
+- [x] проверка группы: tests/plan_fields/fleet/test_owner_repo_verdicts.py (kind: integration) зелёные на BEH-05
 
 **Traces to:** [FR-04, FR-05, FR-09]
 
