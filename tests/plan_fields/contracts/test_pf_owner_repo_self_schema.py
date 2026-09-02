@@ -152,3 +152,33 @@ def test_contract_dir_is_the_vendored_pin_this_test_reads() -> None:
     # sanity: the registry this test asserts against is the actual vendored
     # contract shipped with plan-fields, not an incidental fixture copy.
     assert (Path(CONTRACT_DIR) / "PINNED.txt").exists()
+
+
+def test_reporters_do_not_rederive_repo_owner_classification() -> None:
+    """BEH-11: все fleet-reporters разделяют ОДНУ классификацию (FR-05, NFR-02).
+
+    Архитектурная проверка вместо перечисления живых reporters: чтение кодов
+    `PF-OWNER-REPO-*` обратно в вердикт разрешено ровно одному модулю —
+    `plan_fields/views.py`; эмитирует их ровно один — `plan_fields/fleet_api.py`.
+    Reporter (web/TUI/VSCode/MCP или будущий), классифицирующий владельца
+    самостоятельно — по кодам или повторной нормализацией `owner_ref.raw`, —
+    обязан упомянуть код и покраснит этот тест, пока не перейдёт на общий
+    helper `repo_owner_verdicts`.
+    """
+    repo_root = Path(__file__).resolve().parents[3]
+    allowed = {
+        repo_root / "packages/plan-fields/src/plan_fields/views.py",
+        repo_root / "packages/plan-fields/src/plan_fields/fleet_api.py",
+    }
+    offenders: list[str] = []
+    for scope in ("dispatcher", "packages/plan-fields/src"):
+        for py in sorted((repo_root / scope).rglob("*.py")):
+            if py in allowed or "__pycache__" in py.parts:
+                continue
+            text = py.read_text(encoding="utf-8")
+            if "PF-OWNER-REPO-SELF" in text or "PF-OWNER-REPO-UNKNOWN" in text:
+                offenders.append(str(py.relative_to(repo_root)))
+    assert not offenders, (
+        "классификация repo-owner перевыведена вне общего helper: "
+        f"{offenders} — используйте plan_fields.repo_owner_verdicts"
+    )
