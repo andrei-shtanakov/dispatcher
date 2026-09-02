@@ -94,7 +94,7 @@ def test_fleet_emission_is_unconditional_no_gate_coupling_in_source() -> None:
     import_lines = [
         line
         for line in fleet_api_path.read_text(encoding="utf-8").splitlines()
-        if line.startswith("import ") or line.startswith("from ")
+        if line.strip().startswith(("import ", "from "))
     ]
 
     offenders = [
