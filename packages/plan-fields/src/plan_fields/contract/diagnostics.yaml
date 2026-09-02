@@ -110,6 +110,12 @@ codes:
     escalation: second_independent_snapshot
     summary: "a syntactically valid repo:<key> owner does not resolve to a non-member repository in the frozen workspace manifest"
 
+  PF-OWNER-REPO-SELF:
+    default_severity: warning
+    scope: cross_repo
+    escalation: never
+    summary: "a repo:<key> owner's canonical identity equals the item's own source repository — self-ownership names the repo the item already lives in and hands responsibility to no external principal"
+
   PF-DAG-GRAMMAR:
     default_severity: warning
     scope: intra_repo

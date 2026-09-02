@@ -504,7 +504,7 @@ def test_the_manifest_shape_and_its_exclusion_note_are_pinned() -> None:
     # the normative surface is pinned here so a re-vendor is a deliberate, reviewed
     # edit rather than a fingerprint that quietly follows whatever is on disk
     assert manifest["tree_sha256"] == (
-        "6f8b23066fd0bbad4e5c6b5cd3cce3ab8b3a3f81302f3e83adcaf565e609ea2c"
+        "0103c8e126f74d7e305a418200e161c5913dba9b373c98e30a1d6c1fe7ea4995"
     )
     note = manifest["surface_note"]
     for excluded in ("manifest.json", "drift-control.md", "PINNED.txt"):
