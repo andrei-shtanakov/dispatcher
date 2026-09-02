@@ -14,7 +14,7 @@ approved_at: '2026-09-02T06:07:39Z'
 
 ## Milestone 1: PF-OWNER-REPO-SELF: диагностика владельца repo:<свой> в plan_fields (dispatcher#229)
 
-Сгенерировано task_bridge из behaviour-spec бандла WS-dispatcher-229 (шаг 3 плана развития конвейера; группировка задач — по Feature-секциям). Draft: исполнение только после человеческого approve.
+Сгенерировано task_bridge из behaviour-spec бандла WS-dispatcher-229 (шаг 3 плана развития конвейера; группировка задач — по Feature-секциям). Человеческий approve дан владельцем 2026-09-02 (`spec approve tasks`, лейн devtools#110); requirements и behaviour-spec бандла проштампованы approved после прохождения ревью-контура. Charter бандла остаётся `draft` намеренно — по собственному правилу Q-01 (blocking: включение `PF-OWNER-REPO-SELF` в обязательный governance gate — отдельное продуктовое решение); исполнение задач идёт во временном режиме FR-10: severity `warning`, без нового обязательного gate.
 
 ### TASK-001: Канонический ключ собственного репозитория определяется как self-owner
 P2 | TODO   Est: 0.5d

@@ -1,6 +1,6 @@
 ---
 spec_stage: requirements
-status: draft
+status: approved
 owner_role: product
 traces_to: [charter]
 upstream_hashes:
