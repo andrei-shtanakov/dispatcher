@@ -554,6 +554,20 @@ underestimated inside its own acceptance criterion measures the wrong thing.
 
 ### 9.2 Where the red/green evidence comes from
 
+> **Superseded premise (2026-09-21, deployer#256).** The paragraph below describes
+> deployer as of 2026-08-22, when this design was written. It stopped being true on
+> **2026-09-01**: deployer gained `.github/workflows/ci.yml` (job `test`, running
+> `uv run --frozen pytest -q` on every PR and push to `master`), added by the devtools
+> wave after the kapelle#57 incident — commit `c836cbc`. The forge *does* now emit a
+> red-then-green signal for deployer's suite.
+>
+> What this does **not** change: §9.2's conclusion stands on a second, independent leg —
+> the evidence must be part of what the run *records*, so that acceptance does not depend
+> on reading a forge signal out of band. The DAG keeps running the suite inside the run.
+> What it **does** change: the acceptance criterion may no longer be justified by "deployer
+> emits no such signal". If a future pass wants to read the PR check as the green, that is
+> now a real option and must be argued on its merits, not excluded by this premise.
+
 deployer's CI runs **no tests**: its only workflow is the governance caller
 (`deployer/.github/workflows/governance.yml`), a pinned reference to the umbrella's
 reusable gate. So the forge produces no red-then-green signal, and the steward verdict
