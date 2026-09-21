@@ -2365,7 +2365,7 @@ Slice 0's dispatcher *server* half is done when Task 8 lands. Three things are t
 
 1. **The one-launch invariant is still a working agreement, not a mechanism** (spec §5.4.1). The durable lock binds `RunController` only; a terminal, a second controller instance, or a service tick can still launch against the same `RepoKey`.
 2. **Logs are read outside dispatcher** (spec §10). Cheap to close later — maestro writes them to `<run_dir>/logs` (`maestro/maestro/run_publish.py:59`) — but it is not in this plan.
-3. **Pass 1 cannot run on dispatcher alone.** It needs deployer's `tasks.yaml` and the pilot fix, which are a separate plan in a separate repository, and the red/green evidence comes from the run because deployer's CI runs no tests (spec §9.2).
+3. **Pass 1 cannot run on dispatcher alone.** It needs deployer's `tasks.yaml` and the pilot fix, which are a separate plan in a separate repository, and the red/green evidence comes from the run (spec §9.2). *(2026-09-21, deployer#256: the "because deployer's CI runs no tests" half of this sentence went stale on 2026-09-01 — deployer now runs `pytest` in CI. The evidence still comes from the run, for the reason §9.2 now states; see the superseded-premise note there.)*
 
 ## What the whole-branch review found that the per-task reviews could not
 
