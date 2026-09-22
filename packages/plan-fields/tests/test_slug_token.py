@@ -49,9 +49,14 @@ def test_id_grammar_boundaries_delimit_the_token(text: str) -> None:
     "text",
     [
         "benchmark-2.1",  # dot followed by an id char continues the id
+        "benchmark-2._x",  # …any id char, `_` and `-` included (review of PR #270)
+        "benchmark-2.-x",
+        "benchmark-2..x",
         "benchmark-2_x",
         "benchmark-2-x",
         "v1.benchmark-2",
+        "pre_.benchmark-2",
+        "a-.benchmark-2",
         "benchmark-2x",
         "",
     ],

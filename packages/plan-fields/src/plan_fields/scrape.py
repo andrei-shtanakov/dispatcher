@@ -44,11 +44,12 @@ _TAG_RE = re.compile(r'(?:(?<=\s)|^)@([a-z][a-z_-]*):(?:"([^"]*)"|(\S+))')
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 # A token boundary by the same grammar: an id character on either side means the
 # slug is only a piece of a longer id (`benchmark-2` inside `benchmark-20`). The
-# dot is special — it continues an id only when an id character follows/precedes
-# it (`benchmark-2.1`, `v1.benchmark-2`); a lone dot is prose punctuation
-# (`… benchmark-2.`), otherwise every sentence-final mention would be invisible.
-_TOKEN_BEFORE = r"(?<![a-z0-9_-])(?<![a-z0-9]\.)"
-_TOKEN_AFTER = r"(?![a-z0-9_-])(?!\.[a-z0-9])"
+# dot is special — it continues an id only when ANY id character (letter, digit,
+# `.`, `_`, `-`) sits on its other side (`benchmark-2.1`, `benchmark-2._x`,
+# `v1.benchmark-2`); a lone dot is prose punctuation (`… benchmark-2.`),
+# otherwise every sentence-final mention would be invisible.
+_TOKEN_BEFORE = r"(?<![a-z0-9_-])(?<![a-z0-9._-]\.)"
+_TOKEN_AFTER = r"(?![a-z0-9_-])(?!\.[a-z0-9._-])"
 
 
 @dataclass(frozen=True)
