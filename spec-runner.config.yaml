@@ -33,5 +33,18 @@ spec_governance: strict
 # task_timeout_minutes, лимит последовательных провалов; точечный потолок
 # при нужде — `budget authorize` (на записи).
 
+# --- Формат/линт-гейт до выхода задачи на ревью (inbox #251, devtools) ---
+# Прогон WS-dispatcher-229: агент дважды забывал `ruff format` (PR #236, #245),
+# и класс «забытый формат» ловило только терминальное ревью фикс-коммитом.
+# `format_check` — отдельный read-only гейт завершения (spec-runner #351), не
+# склейка в `lint`; оба блокирующие: красный гейт локально — задача не
+# доходит до integration-PR.
 commands:
   test: "uv run pytest tests/ -v"
+  lint: "uv run ruff check ."
+  format_check: "uv run ruff format --check ."
+
+hooks:
+  post_done:
+    run_lint: true
+    lint_blocking: true
