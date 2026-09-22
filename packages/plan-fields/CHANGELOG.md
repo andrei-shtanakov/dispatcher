@@ -1,5 +1,22 @@
 # Changelog — plan-fields
 
+## 0.11.0 — 2026-09-22
+
+Acceptance of a cross-repo request matches the slug as a TOKEN (dispatcher#254,
+from devtools).
+
+- `mentions_slug(text, slug) -> bool` is new public API (in `scrape`, beside
+  `scrape_items`): whether `slug` occurs in `text` as a whole id token, bounded
+  by the id grammar (ADR-ECO-005 PF-2B, `[a-z0-9][a-z0-9._-]`). `benchmark-2`
+  no longer matches an item that only says `benchmark-20`. The dot continues an
+  id only when an id character follows/precedes it, so a sentence-final
+  `benchmark-2.` still mentions `benchmark-2`. A slug outside the grammar never
+  matches (`False`, never an exception).
+- This is the shared rule under ADR-ECO-006 acceptance: consumers call it on
+  each `ScrapedItem.raw_text` instead of a private substring test or a private
+  token regex — two private rules once gave two answers about one derived fact
+  (devtools#125, rounds 4–5).
+
 ## 0.10.0 — 2026-08-26
 
 Re-vendored the plan-fields v3 contract to r2 (canon commit `dc12b0e`) and

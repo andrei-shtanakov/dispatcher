@@ -70,6 +70,14 @@ installability is proven on every change to the package.
   keeps a repeated key — e.g. two `@blocked_by:` on one item. This is what operational consumers
   (Robin's movement tracker, devtools' fleet check) build on before the fleet
   `@id` backfill (PF-2B) — `parse_todo` would drop every un-`@id`'d item.
+- `plan_fields.mentions_slug(text, slug)` → `bool`: whether `slug` occurs in
+  `text` as a whole id **token** (boundaries by the id grammar, PF-2B), never as
+  a substring — `benchmark-2` is not mentioned by `benchmark-20`. This is the
+  one acceptance rule for a cross-repo request (ADR-ECO-006): a request is
+  accepted when `any(mentions_slug(i.raw_text, slug) for i in scrape_items(todo))`.
+  Consumers must not keep a private substring/token rule beside it — two
+  private rules once gave two answers about one derived fact. A slug outside
+  the grammar never matches (`False`, never raises).
 - `plan_fields.parse_todo(text, repo, ...)` → canonical plan-fields JSON
   (nodes with checkbox status, `todo://` identity, `@owner`, `@blocked_by`
   references/edges, and the freshness triple `source_ref` / `observed_at` /

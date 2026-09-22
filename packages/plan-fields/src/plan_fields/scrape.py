@@ -37,6 +37,18 @@ _HEADING_RE = re.compile(r"^#{1,6}\s+(.+)")
 # mistaken for a real tag (and neither its value nor the surrounding text is
 # corrupted). This boundary is what operational consumers already relied on.
 _TAG_RE = re.compile(r'(?:(?<=\s)|^)@([a-z][a-z_-]*):(?:"([^"]*)"|(\S+))')
+# The id grammar (ADR-ECO-005 PF-2B): `[a-z0-9][a-z0-9._-]{0,63}`. Kept in
+# lockstep with `parser.ITEM_ID_RE` — the parser cannot be imported here (it is
+# built on this module), so the grammar is restated, and `mentions_slug` is the
+# one place that turns it into a token boundary.
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+# A token boundary by the same grammar: an id character on either side means the
+# slug is only a piece of a longer id (`benchmark-2` inside `benchmark-20`). The
+# dot is special — it continues an id only when an id character follows/precedes
+# it (`benchmark-2.1`, `v1.benchmark-2`); a lone dot is prose punctuation
+# (`… benchmark-2.`), otherwise every sentence-final mention would be invisible.
+_TOKEN_BEFORE = r"(?<![a-z0-9_-])(?<![a-z0-9]\.)"
+_TOKEN_AFTER = r"(?![a-z0-9_-])(?!\.[a-z0-9])"
 
 
 @dataclass(frozen=True)
@@ -104,6 +116,25 @@ def last_tag_is_quoted(raw_text: str, key: str) -> bool:
         if m.group(1) == key:
             quoted = m.group(2) is not None  # group 2 = the quoted alternative
     return bool(quoted)
+
+
+def mentions_slug(text: str, slug: str) -> bool:
+    """Whether `slug` occurs in `text` as a whole id TOKEN, never as a substring.
+
+    The shared acceptance rule for a cross-repo request (ADR-ECO-006): an issue's
+    `slug:` is accepted when it appears on a checkbox item — as a token bounded
+    by the id grammar, so `benchmark-2` is NOT accepted by an item that only
+    says `benchmark-20` (dispatcher#254). Consumers call this on each
+    `ScrapedItem.raw_text` (or on a raw line) instead of keeping a private
+    regex: two private rules gave two answers about one derived fact once.
+
+    A `slug` outside the id grammar cannot be an id token, so it never matches —
+    `False`, not an exception: a malformed request body reads as "not accepted",
+    never as a crash in a tool that must not fail."""
+    if not _SLUG_RE.fullmatch(slug):
+        return False
+    pattern = _TOKEN_BEFORE + re.escape(slug) + _TOKEN_AFTER
+    return re.search(pattern, text) is not None
 
 
 def scrape_items(text: str) -> list[ScrapedItem]:
