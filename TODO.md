@@ -533,7 +533,7 @@
 
 - [x] PR-B1: store + admission + single-live-run гейт + оба escape — ветка `feat/launchpad-b1` смержена (8 задач SDD, финальное ревью + fix-волна чисты) (PR #200) @owner:github:andrei-shtanakov @id:launchpad-b1
 - [x] PR-B2: ре-вендор plan-fields с `@dag` + inventory reader — план `docs/superpowers/plans/2026-08-26-launchpad-b2-inventory.md` (PR #204) @owner:github:andrei-shtanakov @id:launchpad-b2
-- [ ] PR-C: `/api/launchpad` + структурные 409 + UI (в работе — ветка `feat/launchpad-c`, план `docs/superpowers/plans/2026-08-27-launchpad-c-api-ui.md`) @owner:github:andrei-shtanakov @id:launchpad-c
+- [ ] PR-C: `/api/launchpad` + структурные 409 + UI (в работе — ветка `feat/launchpad-c`, план `docs/superpowers/plans/2026-08-27-launchpad-c-api-ui.md`) @owner:github:andrei-shtanakov @id:launchpad-c @epic:eco.tooling
       Наследует записанные хвосты B1: ~~персистентность отказов lock-семьи
       (launch_busy/lock_malformed/lock_io_unreadable сейчас эфемерны by
       design)~~ (неверно — уже персистятся: PR #200 добавил
@@ -553,18 +553,18 @@
       `run_state_unreadable` (owner override на ревью B1), а не
       предполагавшееся in-flight.~~ (все три поправлены в спеке этой веткой,
       задача 1, feat/launchpad-c).
-- [ ] `snapshot_id` в submit v2 нигде не эхоится @owner:github:andrei-shtanakov @id:launchpad-snapshot-id-echo
+- [ ] `snapshot_id` в submit v2 нигде не эхоится @owner:github:andrei-shtanakov @id:launchpad-snapshot-id-echo @epic:eco.tooling
       Спека зовёт его audit echo — либо поле в `LaunchRecord`, либо правка спеки.
-- [ ] Capture укладывается в ≤3 git-подпроцесса на файл `dags/` за submit и на репо за assembly (B2 M8) @owner:github:andrei-shtanakov @id:launchpad-perf-capture
+- [ ] Capture укладывается в ≤3 git-подпроцесса на файл `dags/` за submit и на репо за assembly (B2 M8) @owner:github:andrei-shtanakov @id:launchpad-perf-capture @epic:eco.tooling
       Оптимизация — только когда замер покажет вред, риды ассемблера уже
       once-per-assembly.
-- [ ] §10 живая приёмка среза launchpad @owner:github:andrei-shtanakov @id:launchpad-live-acceptance
+- [ ] §10 живая приёмка среза launchpad @owner:github:andrei-shtanakov @id:launchpad-live-acceptance @epic:eco.tooling
       Один боевой прогон реального пункта бэклога через панель — записанные
       `work_id`, полная `seen_revision`, ровно один `request_id`, `run_branch`
       созданный рантаймом, дефолтная ветка не сдвинута, терминальный исход в
       Recent completed. Ведёт владелец, после мержа.
-- [ ] Флейк `test_run_end_through_the_resolution_path_also_binds_to_the_checkout` (fake-maestro subprocess timing; выстреливал в плане B1 и падает и standalone ~25-50% — замер 2026-08-26 на fbaed1c и HEAD, симптом: поздняя строка `run` от исходного launch-процесса перекрывает `run-end` в cwd-логе) @owner:github:andrei-shtanakov @id:flake-run-end-checkout
-- [ ] Флейк `test_revendor_script.py::test_a_signal_mid_run_leaves_the_working_copy_alone[SIGINT]` (периодически в полном прогоне, standalone зелёный) @owner:github:andrei-shtanakov @id:flake-revendor-sigint
+- [ ] Флейк `test_run_end_through_the_resolution_path_also_binds_to_the_checkout` (fake-maestro subprocess timing; выстреливал в плане B1 и падает и standalone ~25-50% — замер 2026-08-26 на fbaed1c и HEAD, симптом: поздняя строка `run` от исходного launch-процесса перекрывает `run-end` в cwd-логе) @owner:github:andrei-shtanakov @id:flake-run-end-checkout @epic:eco.tooling
+- [ ] Флейк `test_revendor_script.py::test_a_signal_mid_run_leaves_the_working_copy_alone[SIGINT]` (периодически в полном прогоне, standalone зелёный) @owner:github:andrei-shtanakov @id:flake-revendor-sigint @epic:eco.tooling
 
 ## Waits graph (спека docs/superpowers/specs/2026-08-26-waits-graph-design.md)
 
