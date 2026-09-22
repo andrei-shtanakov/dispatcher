@@ -27,7 +27,12 @@ from plan_fields.fleet_api import (
 )
 from plan_fields.parser import parse_dag, parse_owner, parse_todo
 from plan_fields.registry import EpicsRegistry, apply_registry, load_registry
-from plan_fields.scrape import ScrapedItem, last_tag_is_quoted, scrape_items
+from plan_fields.scrape import (
+    ScrapedItem,
+    last_tag_is_quoted,
+    mentions_slug,
+    scrape_items,
+)
 from plan_fields.validator import load_schema, run_conformance, validate_document
 from plan_fields.views import (
     REPO_OWNER_EXTERNAL,
@@ -37,7 +42,7 @@ from plan_fields.views import (
     repo_owner_verdicts,
 )
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 __all__ = [
     "REPO_OWNER_EXTERNAL",
@@ -60,6 +65,7 @@ __all__ = [
     "load_registry",
     "load_schema",
     "manifest_index",
+    "mentions_slug",
     "parse_dag",
     "parse_defect",
     "parse_epic",
