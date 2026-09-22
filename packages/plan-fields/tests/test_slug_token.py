@@ -78,3 +78,11 @@ def test_is_accepted_shape_over_scraped_items() -> None:
     todo = "# Plan\n- [ ] ship benchmark-20 @id:benchmark-20\nprose says benchmark-2\n"
     accepted = any(mentions_slug(i.raw_text, "benchmark-2") for i in scrape_items(todo))
     assert accepted is False
+
+
+def test_slug_grammar_is_the_parser_id_grammar() -> None:
+    # scrape cannot import parser (parser is built on scrape), so the grammar is
+    # restated there; this pins the two copies together
+    from plan_fields import parser, scrape
+
+    assert scrape._SLUG_RE.pattern == parser.ITEM_ID_RE.pattern
