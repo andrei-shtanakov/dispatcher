@@ -976,7 +976,7 @@
       Красный advisory = нужен осознанный re-vendor PR, а не правка хэша руками.
       Попутно: `PINNED.txt` исключён из манифеста и до сих пор не сверялся ничем.
 
-- [x] Формат/линт-гейт в контуре spec-runner: `ruff format --check` + `ruff check` до выхода задачи на ревью @owner:github:andrei-shtanakov @id:spec-runner-lint-hook @epic:eco.spec-toolchain (PR #269)
+- [x] Формат/линт-гейт в контуре spec-runner: `ruff format --check` + `ruff check` до выхода задачи на ревью — PR #269 @owner:github:andrei-shtanakov @id:spec-runner-lint-hook @epic:eco.spec-toolchain
       Принятие inbox-issue #251 от devtools (ADR-ECO-006). Прогон WS-dispatcher-229
       (2026-09-02, 13/13 закрыт): агент-кодер дважды забыл `ruff format` — PR #236 и
       #245; оба раза класс «забытый формат» ловило только терминальное ревью и чинил
