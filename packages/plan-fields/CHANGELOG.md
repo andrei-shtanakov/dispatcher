@@ -7,7 +7,7 @@ from devtools).
 
 - `mentions_slug(text, slug) -> bool` is new public API (in `scrape`, beside
   `scrape_items`): whether `slug` occurs in `text` as a whole id token, bounded
-  by the id grammar (ADR-ECO-005 PF-2B, `[a-z0-9][a-z0-9._-]`). `benchmark-2`
+  by the id grammar (ADR-ECO-005 PF-2B, `[a-z0-9][a-z0-9._-]{0,63}`). `benchmark-2`
   no longer matches an item that only says `benchmark-20`. The dot continues an
   id only when an id character follows/precedes it, so a sentence-final
   `benchmark-2.` still mentions `benchmark-2`. A slug outside the grammar never
