@@ -8,6 +8,7 @@ source's status, never absorbed into a shorter list.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from dispatcher.core import read_api
@@ -15,6 +16,7 @@ from dispatcher.core.collectors.base import SourceReadError, coerce_str
 from dispatcher.core.collectors.maestro import classified_runs, waiting_tasks
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.human_queue import (
+    HumanQueueView,
     HumanWait,
     MaestroVerbAct,
     OpenArtifactAct,
@@ -22,6 +24,7 @@ from dispatcher.core.human_queue import (
     RunViewAct,
     SourceResult,
     SourceStatus,
+    assemble,
     proven_since,
 )
 from dispatcher.core.models import OrchestrationRunInfo, ProjectSnapshot
@@ -242,3 +245,61 @@ def _backlog_wait(wait: BacklogWait) -> HumanWait:
         since_basis=None,
         act=OpenArtifactAct(path=wait.artifact_path),
     )
+
+
+# A2 connects these (parent spec §3.3). Listed, not omitted, so the API
+# cannot be read as the whole queue while they are missing (spec §3.4).
+_FORGE_PLACEHOLDERS = (
+    SourceResult(
+        name="forge_labelled_prs",
+        status=SourceStatus(state="not_connected", detail="arrives in slice A2"),
+    ),
+    SourceResult(
+        name="forge_candidate_prs",
+        status=SourceStatus(state="not_connected", detail="arrives in slice A2"),
+    ),
+)
+
+
+def _unavailable(name: str, exc: Exception) -> SourceResult:
+    return SourceResult(
+        name=name,
+        status=SourceStatus(state="unavailable", detail=f"{type(exc).__name__}: {exc}"),
+    )
+
+
+def _guarded(name: str, adapter: Callable[[], SourceResult]) -> SourceResult:
+    """One source failing must not take the others down (spec §4.1)."""
+    try:
+        return adapter()
+    except Exception as exc:  # noqa: BLE001 — isolation IS the contract
+        return _unavailable(name, exc)
+
+
+def build_human_queue(
+    config: DispatcherConfig, cache: SnapshotService, *, now: str
+) -> HumanQueueView:
+    """Every A1 source, each isolated, assembled into one view."""
+    # LaunchRecords are only an enrichment for maestro (run_view instead of
+    # maestro_verb, spec §3.2). A failing store read makes dispatcher_runs
+    # unavailable and leaves maestro to be read with no records — never the
+    # other way round (spec §4.1, acceptance 7).
+    records: list[LaunchRecord] = []
+    try:
+        listing = read_store(config)
+    except Exception as exc:  # noqa: BLE001 — isolation IS the contract
+        store = _unavailable("dispatcher_runs", exc)
+    else:
+        store = _guarded("dispatcher_runs", lambda: from_run_store(listing))
+        records = listing[0] if listing is not None else []
+    results = [
+        store,
+        _guarded(
+            "maestro",
+            lambda: from_maestro(config.effective_maestro_home, records),
+        ),
+        # Looked up through the module at call time so tests can patch it.
+        _guarded("impresario", lambda: from_impresario(cache)),
+        *_FORGE_PLACEHOLDERS,
+    ]
+    return assemble(results, now=now)

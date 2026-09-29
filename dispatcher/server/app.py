@@ -34,6 +34,8 @@ from dispatcher.core.epics import (
     build_view,
 )
 from dispatcher.core.governance import BundleGovernance
+from dispatcher.core.human_queue import HumanQueueView
+from dispatcher.core.human_queue_sources import build_human_queue
 from dispatcher.core.launchpad import LaunchpadSnapshot, assemble_snapshot
 from dispatcher.core.models import (
     ContractStatus,
@@ -469,6 +471,16 @@ def create_app(
         """
         now = datetime.now(timezone.utc).isoformat()
         return build_waits(config, now=now)
+
+    @app.get("/api/human-queue", response_model=HumanQueueView)
+    def human_queue() -> HumanQueueView:
+        """Every wait for a human dispatcher can see, completeness per source.
+
+        Always HTTP 200 — an unreadable source is content, not a transport
+        error (spec 2026-09-29-human-queue-a1-design §4.1).
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        return build_human_queue(config, cache, now=now)
 
     @app.get("/api/epics/{epic_id}", response_model=EpicDetail)
     def epic_detail(epic_id: str) -> EpicDetail:
