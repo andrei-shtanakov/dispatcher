@@ -1,6 +1,7 @@
 # Human queue, slice A1 — dispatcher's own and local sources
 
-**Status:** 2026-09-29, r2 for the local review loop (r1 findings applied).
+**Status:** 2026-09-29, r3 — converged after three local review rounds; owner review on
+PR #272 applied (RunStore isolation from the maestro source).
 **Parent:** `docs/superpowers/specs/2026-09-29-human-control-plane-design.md` (§3, slice A,
 step A1 of §7). This document narrows that one; where it deviates, the deviation is
 named in §9.
@@ -115,6 +116,11 @@ view already drives verbs with the correct checkout). Otherwise
 `{"kind": "maestro_verb", "verb": "retry" | "approve", "task_id", "run_id",
 "repo_key"}`; B decides how to render it (it needs a checkout to run from, which
 `repo_key` alone does not give — slice-0 finding on verb `cwd`).
+
+The `LaunchRecord`s are an **optional enrichment**, not a precondition of this source.
+The store is read once per assembly; if that read fails, `dispatcher_runs` is
+`unavailable` and maestro is still read, with no records — its waits keep
+`maestro_verb` acts.
 
 **Wait age.** `since: null` for both reasons. maestro's `tasks` table carries
 `created_at`, `started_at`, `completed_at` and no time of entering a status
@@ -274,7 +280,9 @@ invariant of §4.1 and is tested without the filesystem.
    give null; a non-ok bundle makes the source `partial`; `mirror-not-detected` →
    `not_configured`; `mirror-anchors-missing` → `unavailable`.
 7. One adapter raising → that source `unavailable`, HTTP 200, and the other sources
-   keep both their status and their waits.
+   keep both their status and their waits. This includes the RunStore read failing:
+   `dispatcher_runs` is `unavailable`, `maestro` stays `ok` with its waits as
+   `maestro_verb`.
 8. `complete` is false in A1 with both forge sources `not_connected`.
 9. Two inputs with one key → one wait, reasons unioned.
 10. Ordering: known ages oldest first, then unknown ages by key.

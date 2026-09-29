@@ -647,8 +647,8 @@ git commit -m "feat(human-queue): model, proven_since and assemble"
 - Test: `tests/test_human_queue_sources.py` (extend)
 
 **Interfaces:**
-- Consumes: Task 1 `LaunchRecord.unknown_at`; Task 2 `waiting_tasks`; Task 3 models and `proven_since`; existing `classified_runs(home, snap)`, `RunStore.list()`, `DispatcherConfig.run_state_dir`.
-- Produces: `from_run_store(config: DispatcherConfig) -> SourceResult`; `from_maestro(home: Path, records: list[LaunchRecord]) -> SourceResult`; `launch_records(config: DispatcherConfig) -> list[LaunchRecord]`.
+- Consumes: Task 1 `LaunchRecord.unknown_at`; Task 2 `waiting_tasks` and `classified_runs(..., report_missing_state=True)`; Task 3 models and `proven_since`; existing `RunStore.list()`, `DispatcherConfig.run_state_dir`.
+- Produces: `StoreListing = tuple[list[LaunchRecord], list[str]]`; `read_store(config: DispatcherConfig) -> StoreListing | None` (one `RunStore.list()`; None when `run_state_dir` is unset); `from_run_store(listing: StoreListing | None) -> SourceResult` (pure); `from_maestro(home: Path, records: list[LaunchRecord]) -> SourceResult`. The store is read once per assembly and the same listing feeds both adapters (Task 6).
 
 - [ ] **Step 1: Write the failing tests** (append to `tests/test_human_queue_sources.py`; merge the imports into the file's import block)
 
@@ -662,7 +662,7 @@ from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.human_queue_sources import (
     from_maestro,
     from_run_store,
-    launch_records,
+    read_store,
 )
 from dispatcher.core.run_identity import RepoKey
 from dispatcher.core.run_store import RunStore
@@ -684,7 +684,7 @@ def _config(tmp_path: Path, *, control_plane: bool = True) -> DispatcherConfig:
 
 
 def test_run_store_off_is_not_configured(tmp_path: Path) -> None:
-    result = from_run_store(_config(tmp_path, control_plane=False))
+    result = from_run_store(read_store(_config(tmp_path, control_plane=False)))
     assert result.status.state == "not_configured"
     assert result.waits == []
 
@@ -695,7 +695,7 @@ def test_launch_unknown_is_a_wait_aged_by_unknown_at(tmp_path: Path) -> None:
     store = RunStore(config.run_state_dir)
     store.reserve(_REQ, _KEY, known_runs=[], window_start="t", work_id="w1")
     record = store.mark_unknown(_REQ, "no run appeared")
-    result = from_run_store(config)
+    result = from_run_store(read_store(config))
     assert result.status.state == "ok"
     [wait] = result.waits
     assert wait.key == f"dispatcher-run:{_REQ}"
@@ -715,7 +715,7 @@ def test_record_without_unknown_at_has_unknown_age(tmp_path: Path) -> None:
     raw = json.loads(path.read_text())
     raw.pop("unknown_at")
     path.write_text(json.dumps(raw))
-    [wait] = from_run_store(config).waits
+    [wait] = from_run_store(read_store(config)).waits
     assert (wait.since, wait.since_basis) == (None, None)
 
 
@@ -726,7 +726,7 @@ def test_unreadable_record_makes_source_partial(tmp_path: Path) -> None:
     store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
     store.mark_unknown(_REQ, "no run appeared")
     (config.run_state_dir / "requests" / "broken.json").write_text("{not json")
-    result = from_run_store(config)
+    result = from_run_store(read_store(config))
     assert result.status.state == "partial"
     assert "broken.json" in (result.status.detail or "")
     assert len(result.waits) == 1
@@ -855,7 +855,9 @@ def test_run_launched_by_dispatcher_routes_to_run_view(tmp_path: Path) -> None:
     store = RunStore(config.run_state_dir)
     store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
     store.mark_materialized(_REQ, "01RUN")
-    [wait] = from_maestro(home, launch_records(config)).waits
+    listing = read_store(config)
+    assert listing is not None
+    [wait] = from_maestro(home, listing[0]).waits
     assert wait.act.model_dump() == {"kind": "run_view", "request_id": _REQ}
 ```
 
@@ -913,24 +915,31 @@ def _status(problems: list[str]) -> SourceStatus:
     return SourceStatus(state="ok")
 
 
-def launch_records(config: DispatcherConfig) -> list[LaunchRecord]:
-    """Readable launch records, or [] when the control plane is off."""
+#: `RunStore.list()`'s answer: readable records, unreadable filenames.
+StoreListing = tuple[list[LaunchRecord], list[str]]
+
+
+def read_store(config: DispatcherConfig) -> StoreListing | None:
+    """One read of dispatcher's RunStore; None when the control plane is off.
+
+    Read once per assembly: the same listing feeds `from_run_store` and the
+    maestro join, so the two cannot see different store states.
+    """
     if config.run_state_dir is None:
-        return []
-    records, _ = RunStore(config.run_state_dir).list()
-    return records
+        return None
+    return RunStore(config.run_state_dir).list()
 
 
-def from_run_store(config: DispatcherConfig) -> SourceResult:
+def from_run_store(listing: StoreListing | None) -> SourceResult:
     """`launch_unknown` records (spec §3.1)."""
-    if config.run_state_dir is None:
+    if listing is None:
         return SourceResult(
             name="dispatcher_runs",
             status=SourceStatus(
                 state="not_configured", detail="run_state_dir is not set"
             ),
         )
-    records, unreadable = RunStore(config.run_state_dir).list()
+    records, unreadable = listing
     problems = [f"unreadable: {', '.join(unreadable)}"] if unreadable else []
     waits = [_launch_unknown_wait(r) for r in records if r.state == "launch_unknown"]
     return SourceResult(name="dispatcher_runs", status=_status(problems), waits=waits)
@@ -1380,6 +1389,41 @@ async def test_a_raising_adapter_is_unavailable_not_a_500(
         "dispatcher_runs",
         "maestro",
     ]
+
+
+async def test_a_failing_run_store_does_not_hide_maestro_waits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The store read is an enrichment for maestro, not its precondition."""
+    config = _config(tmp_path)
+    db = make_maestro_run(
+        tmp_path / "mhome", _ACME, "01RUN", started_at="2026-09-01T00:00:00"
+    )
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("T-1", "t", "needs_review", "claude_code", "2026-09-01", None, None),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    def boom(_self: RunStore) -> object:
+        raise RuntimeError("store exploded")
+
+    monkeypatch.setattr(RunStore, "list", boom)
+    async with _client(config) as client:
+        resp = await client.get("/api/human-queue")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["sources"]["dispatcher_runs"]["state"] == "unavailable"
+    assert "store exploded" in body["sources"]["dispatcher_runs"]["detail"]
+    assert body["sources"]["maestro"]["state"] == "ok"
+    [wait] = body["waits"]
+    assert wait["source"] == "maestro"
+    assert wait["act"]["kind"] == "maestro_verb"
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -1406,28 +1450,44 @@ _FORGE_PLACEHOLDERS = (
 )
 
 
+def _unavailable(name: str, exc: Exception) -> SourceResult:
+    return SourceResult(
+        name=name,
+        status=SourceStatus(
+            state="unavailable", detail=f"{type(exc).__name__}: {exc}"
+        ),
+    )
+
+
 def _guarded(name: str, adapter: Callable[[], SourceResult]) -> SourceResult:
     """One source failing must not take the others down (spec §4.1)."""
     try:
         return adapter()
     except Exception as exc:  # noqa: BLE001 — isolation IS the contract
-        return SourceResult(
-            name=name,
-            status=SourceStatus(
-                state="unavailable", detail=f"{type(exc).__name__}: {exc}"
-            ),
-        )
+        return _unavailable(name, exc)
 
 
 def build_human_queue(
     config: DispatcherConfig, cache: SnapshotService, *, now: str
 ) -> HumanQueueView:
     """Every A1 source, each isolated, assembled into one view."""
+    # LaunchRecords are only an enrichment for maestro (run_view instead of
+    # maestro_verb, spec §3.2). A failing store read makes dispatcher_runs
+    # unavailable and leaves maestro to be read with no records — never the
+    # other way round (spec §4.1, acceptance 7).
+    records: list[LaunchRecord] = []
+    try:
+        listing = read_store(config)
+    except Exception as exc:  # noqa: BLE001 — isolation IS the contract
+        store = _unavailable("dispatcher_runs", exc)
+    else:
+        store = _guarded("dispatcher_runs", lambda: from_run_store(listing))
+        records = listing[0] if listing is not None else []
     results = [
-        _guarded("dispatcher_runs", lambda: from_run_store(config)),
+        store,
         _guarded(
             "maestro",
-            lambda: from_maestro(config.effective_maestro_home, launch_records(config)),
+            lambda: from_maestro(config.effective_maestro_home, records),
         ),
         # Looked up through the module at call time so tests can patch it.
         _guarded("impresario", lambda: from_impresario(cache)),
@@ -1456,6 +1516,8 @@ Add the route right after the `/api/waits` route:
         now = datetime.now(timezone.utc).isoformat()
         return build_human_queue(config, cache, now=now)
 ```
+
+Note on the two isolation tests: they cover both directions — a failing independent source (impresario), and a failing source whose data another source uses as enrichment (the RunStore feeding the maestro join).
 
 Note on the monkeypatch test: the lambda calls `from_impresario` by its module-global name at call time, so patching `human_queue_sources.from_impresario` reaches it. Do not bind the function early (e.g., `functools.partial(from_impresario, cache)`), or the test stops proving isolation.
 
@@ -1489,7 +1551,7 @@ git commit -m "feat(human-queue): GET /api/human-queue with isolated sources"
 | 4 | `test_launch_unknown_is_a_wait_aged_by_unknown_at`, `test_record_without_unknown_at_has_unknown_age`, `test_repeated_mark_on_a_legacy_record_does_not_invent_an_age` |
 | 5 | `test_run_store_off_is_not_configured` |
 | 6 | `test_impresario_waits_and_their_ages`, `test_non_ok_bundle_makes_source_partial_keeps_ok_waits`, `test_unscanned_mirror` |
-| 7 | `test_a_raising_adapter_is_unavailable_not_a_500` |
+| 7 | `test_a_raising_adapter_is_unavailable_not_a_500`, `test_a_failing_run_store_does_not_hide_maestro_waits` |
 | 8 | `test_queue_over_local_sources_is_partial_by_construction`, `test_complete_only_when_every_source_is_ok_or_off` |
 | 9 | `test_same_key_merges_and_unions_reasons` |
 | 10 | `test_known_ages_first_oldest_first_then_unknown_by_key`, `test_since_sorts_by_instant_not_text` |
