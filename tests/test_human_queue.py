@@ -72,11 +72,25 @@ def test_since_sorts_by_instant_not_text() -> None:
 
 def test_same_key_merges_and_unions_reasons() -> None:
     first = _wait("pr:7", reason="proposal_gate")
-    second = _wait("pr:7", reason="backlog_gate")
+    # Second record differs in source, title, and since; merge must keep first's
+    second = HumanWait(
+        key="pr:7",
+        reasons=["backlog_gate"],
+        source="other_source",
+        repo="other_repo",
+        ref="pr:7",
+        title="different_title",
+        since="2026-09-28T00:00:00+00:00",
+        since_basis="different_basis",
+        act=OpenArtifactAct(path="pr:7.yaml"),
+    )
     view = assemble([_ok("a", first), _ok("b", second)], now=_NOW)
     assert len(view.waits) == 1
     assert view.waits[0].reasons == ["backlog_gate", "proposal_gate"]
-    assert view.waits[0].source == "impresario"
+    # Merge keeps first record's non-reason fields
+    assert view.waits[0].source == first.source
+    assert view.waits[0].title == first.title
+    assert view.waits[0].since == first.since
 
 
 @pytest.mark.parametrize(
