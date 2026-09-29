@@ -851,3 +851,57 @@ def test_racing_rejection_cannot_clobber_another_attempts_record(tmp_path):
     assert survived.repo_key == key_a.as_text()
     assert survived.state == "reserved"
     assert store.holds_lock(key_a) is not None
+
+
+def test_mark_unknown_stamps_when_the_wait_began(tmp_path: Path) -> None:
+    from datetime import datetime
+
+    store = _store(tmp_path)
+    store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
+    record = store.mark_unknown(_REQ, "no run appeared within the timeout")
+    assert record.unknown_at is not None
+    assert datetime.fromisoformat(record.unknown_at).tzinfo is not None
+    stored = store.get(_REQ)
+    assert stored is not None and stored.unknown_at == record.unknown_at
+
+
+def test_repeated_mark_unknown_keeps_the_first_stamp(tmp_path: Path) -> None:
+    """The wait did not restart; moving the stamp would make it look younger."""
+    store = _store(tmp_path)
+    store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
+    first = store.mark_unknown(_REQ, "first")
+    time.sleep(0.01)
+    second = store.mark_unknown(_REQ, "second")
+    assert second.unknown_at == first.unknown_at
+    assert second.reason == "second"
+
+
+def _strip_unknown_at(store: RunStore, request_id: str) -> None:
+    """Make the record look written before `unknown_at` existed."""
+    path = store._record_path(request_id)  # noqa: SLF001 — simulating an old record
+    raw = json.loads(path.read_text())
+    raw.pop("unknown_at")
+    path.write_text(json.dumps(raw))
+
+
+def test_record_written_before_unknown_at_reads_none(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
+    store.mark_unknown(_REQ, "no run appeared within the timeout")
+    _strip_unknown_at(store, _REQ)
+    stored = store.get(_REQ)
+    assert stored is not None and stored.unknown_at is None
+
+
+def test_repeated_mark_on_a_legacy_record_does_not_invent_an_age(
+    tmp_path: Path,
+) -> None:
+    """The record entered launch_unknown before the field existed; the time
+    of a later repeat is not the start of the wait."""
+    store = _store(tmp_path)
+    store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
+    store.mark_unknown(_REQ, "first")
+    _strip_unknown_at(store, _REQ)
+    again = store.mark_unknown(_REQ, "second")
+    assert again.unknown_at is None
+    assert again.reason == "second"

@@ -175,6 +175,11 @@ class LaunchRecord(BaseModel):
     ack_at: str | None = None
     ack_reason: str | None = None
     prior_run_id: str | None = None
+    #: When the record entered `launch_unknown` (human-queue A1 spec §3.1) —
+    #: the proven start of a human wait. Stamped once by `mark_unknown`;
+    #: None on records written before this field existed. The file mtime is
+    #: NOT a substitute: every write refreshes it.
+    unknown_at: str | None = None
 
 
 class RunStore:
@@ -695,8 +700,24 @@ class RunStore:
         )
 
     def mark_unknown(self, request_id: str, reason: str) -> LaunchRecord:
-        """The lock is deliberately NOT released (spec §5.2.1)."""
-        return self._transition(request_id, state="launch_unknown", reason=reason)
+        """The lock is deliberately NOT released (spec §5.2.1).
+
+        Stamps `unknown_at` only on ENTRY into `launch_unknown`. A repeated
+        mark keeps what the record has — including None on a record that
+        entered the state before the field existed: the time of the repeat
+        is not the start of the wait (human-queue A1 spec §3.1).
+        """
+        existing = self.get(request_id)
+        if existing is None:
+            raise RunStoreError(f"no launch record for {request_id}")
+        stamp = (
+            existing.unknown_at
+            if existing.state == "launch_unknown"
+            else datetime.now(UTC).isoformat()
+        )
+        return self._transition(
+            request_id, state="launch_unknown", reason=reason, unknown_at=stamp
+        )
 
     def mark_terminal(self, request_id: str, outcome: str) -> LaunchRecord:
         """The run finished; like `mark_materialized`, this releases the
