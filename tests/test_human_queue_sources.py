@@ -13,11 +13,20 @@ from conftest import make_maestro_run
 from dispatcher.core.collectors.maestro import classified_runs, waiting_tasks
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.human_queue_sources import (
+    from_impresario_report,
     from_maestro,
     from_run_store,
     read_store,
 )
 from dispatcher.core.models import ProjectSnapshot
+from dispatcher.core.product_proposals import (
+    BacklogWait,
+    Diagnostic,
+    GateWait,
+    LoopWait,
+    ProductProposalsReport,
+    ProposalBundle,
+)
 from dispatcher.core.run_identity import RepoKey
 from dispatcher.core.run_store import RunStore
 
@@ -305,3 +314,82 @@ def test_record_without_run_id_does_not_route_to_run_view(tmp_path: Path) -> Non
     assert listing is not None
     [wait] = from_maestro(home, listing[0]).waits
     assert wait.act.model_dump()["kind"] == "maestro_verb"
+
+
+# -- impresario ---------------------------------------------------------------
+
+
+def _report(**kw: object) -> ProductProposalsReport:
+    return ProductProposalsReport(mirror_path="/m", **kw)  # type: ignore[arg-type]
+
+
+_LOOP = LoopWait(
+    loop_id="L1",
+    iteration=3,
+    proposal_id="PP-1",
+    reason="creator stuck",
+    stopped_at="2026-09-20T08:00:00Z",
+    bundle_path="pilot/pp-1",
+)
+_GATE = GateWait(
+    proposal_id="PP-2",
+    gate_id="qg5_business",
+    gate_label="Gate A",
+    authority="business_owner",
+    artifact_ref="proposal://PP-2",
+    bundle_path="pilot/pp-2",
+    version=4,
+    proposal_updated_at="2026-09-21T00:00:00Z",
+)
+_BACKLOG = BacklogWait(
+    backlog_id="BL-1",
+    artifact_ref="backlog://BL-1",
+    artifact_path="backlogs/bl-1/backlog.yaml",
+    version=2,
+    backlog_updated_at="2026-09-22T00:00:00Z",
+)
+
+
+def test_impresario_waits_and_their_ages() -> None:
+    result = from_impresario_report(
+        _report(needs_human=[_LOOP], waits=[_GATE], backlog_waits=[_BACKLOG])
+    )
+    assert result.status.state == "ok"
+    by_key = {w.key: w for w in result.waits}
+    loop = by_key["impresario-loop:L1:3"]
+    assert loop.reasons == ["loop_needs_human"]
+    assert loop.since == "2026-09-20T08:00:00+00:00"
+    gate = by_key["impresario-gate:PP-2:qg5_business:4"]
+    assert (gate.since, gate.since_basis) == (None, None)
+    assert gate.act.model_dump() == {"kind": "open_artifact", "path": "pilot/pp-2"}
+    backlog = by_key["impresario-qg4:BL-1:2"]
+    assert backlog.reasons == ["backlog_gate"]
+    assert (backlog.since, backlog.since_basis) == (None, None)
+
+
+def test_non_ok_bundle_makes_source_partial_keeps_ok_waits() -> None:
+    bad = ProposalBundle(path="pilot/pp-9", state="unreadable")
+    result = from_impresario_report(
+        _report(needs_human=[_LOOP], bundles=[bad], attention=True)
+    )
+    assert result.status.state == "partial"
+    assert "pilot/pp-9" in (result.status.detail or "")
+    assert [w.key for w in result.waits] == ["impresario-loop:L1:3"]
+
+
+@pytest.mark.parametrize(
+    ("code", "state"),
+    [
+        # SnapshotService lists every collector; an unobserved impresario
+        # arrives as this diagnostic, not as a lookup error (spec §3.3).
+        ("mirror-not-detected", "not_configured"),
+        # Detected, then its anchors vanished before the scan.
+        ("mirror-anchors-missing", "unavailable"),
+    ],
+)
+def test_unscanned_mirror(code: str, state: str) -> None:
+    result = from_impresario_report(
+        _report(diagnostics=[Diagnostic(code=code, message="m")], attention=True)
+    )
+    assert result.status.state == state
+    assert result.waits == []

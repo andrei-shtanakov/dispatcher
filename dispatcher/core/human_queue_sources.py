@@ -10,12 +10,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from dispatcher.core import read_api
 from dispatcher.core.collectors.base import SourceReadError, coerce_str
 from dispatcher.core.collectors.maestro import classified_runs, waiting_tasks
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.human_queue import (
     HumanWait,
     MaestroVerbAct,
+    OpenArtifactAct,
     Reason,
     RunViewAct,
     SourceResult,
@@ -23,7 +25,14 @@ from dispatcher.core.human_queue import (
     proven_since,
 )
 from dispatcher.core.models import OrchestrationRunInfo, ProjectSnapshot
+from dispatcher.core.product_proposals import (
+    BacklogWait,
+    GateWait,
+    LoopWait,
+    ProductProposalsReport,
+)
 from dispatcher.core.run_store import LaunchRecord, RunStore
+from dispatcher.core.service import SnapshotService
 
 _UNKNOWN_BASIS = "dispatcher launch record: entered launch_unknown"
 
@@ -143,4 +152,93 @@ def _maestro_wait(
         since=None,
         since_basis=None,
         act=act,
+    )
+
+
+_LOOP_BASIS = "impresario loop stop.at"
+_NOT_OBSERVED = SourceResult(
+    name="impresario",
+    status=SourceStatus(state="not_configured", detail="no impresario mirror observed"),
+)
+
+
+def from_impresario(cache: SnapshotService) -> SourceResult:
+    """The existing impresario read model, re-shaped (spec §3.3)."""
+    try:
+        report = read_api.product_proposals(cache, "impresario")
+    except read_api.ReadLookupError:
+        # Unreachable in practice: SnapshotService lists every collector.
+        return _NOT_OBSERVED
+    return from_impresario_report(report)
+
+
+def from_impresario_report(report: ProductProposalsReport) -> SourceResult:
+    codes = sorted({d.code for d in report.diagnostics})
+    if "mirror-not-detected" in codes:
+        return _NOT_OBSERVED
+    if "mirror-anchors-missing" in codes:
+        return SourceResult(
+            name="impresario",
+            status=SourceStatus(state="unavailable", detail=", ".join(codes)),
+        )
+    waits = [
+        *(_loop_wait(w) for w in report.needs_human),
+        *(_gate_wait(w) for w in report.waits),
+        *(_backlog_wait(w) for w in report.backlog_waits),
+    ]
+    problems: list[str] = []
+    if report.attention:
+        bad = [b.path for b in report.bundles if b.state != "ok"]
+        bad += [b.path for b in report.backlog_bundles if b.state != "ok"]
+        if bad:
+            problems.append(f"non-ok bundles: {', '.join(bad)}")
+        if codes:
+            problems.append(f"diagnostics: {', '.join(codes)}")
+        if not problems:
+            problems.append("report flagged attention")
+    return SourceResult(name="impresario", status=_status(problems), waits=waits)
+
+
+def _loop_wait(wait: LoopWait) -> HumanWait:
+    since, basis = proven_since(wait.stopped_at, _LOOP_BASIS)
+    return HumanWait(
+        key=f"impresario-loop:{wait.loop_id}:{wait.iteration}",
+        reasons=["loop_needs_human"],
+        source="impresario",
+        repo="impresario",
+        ref=wait.loop_id,
+        title=f"{wait.proposal_id}: {wait.reason}",
+        since=since,
+        since_basis=basis,
+        act=OpenArtifactAct(path=wait.bundle_path),
+    )
+
+
+def _gate_wait(wait: GateWait) -> HumanWait:
+    # proposal_updated_at is NOT a wait start (core/product_proposals.py:129).
+    return HumanWait(
+        key=f"impresario-gate:{wait.proposal_id}:{wait.gate_id}:{wait.version}",
+        reasons=["proposal_gate"],
+        source="impresario",
+        repo="impresario",
+        ref=wait.proposal_id,
+        title=f"{wait.proposal_id}: {wait.gate_label} ({wait.authority})",
+        since=None,
+        since_basis=None,
+        act=OpenArtifactAct(path=wait.bundle_path),
+    )
+
+
+def _backlog_wait(wait: BacklogWait) -> HumanWait:
+    # backlog_updated_at is left out until spec §8 question 1 is answered.
+    return HumanWait(
+        key=f"impresario-qg4:{wait.backlog_id}:{wait.version}",
+        reasons=["backlog_gate"],
+        source="impresario",
+        repo="impresario",
+        ref=wait.backlog_id,
+        title=f"{wait.backlog_id}: {wait.gate_label} ({wait.authority})",
+        since=None,
+        since_basis=None,
+        act=OpenArtifactAct(path=wait.artifact_path),
     )
