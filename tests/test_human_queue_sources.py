@@ -271,3 +271,37 @@ def test_run_launched_by_dispatcher_routes_to_run_view(tmp_path: Path) -> None:
     assert listing is not None
     [wait] = from_maestro(home, listing[0]).waits
     assert wait.act.model_dump() == {"kind": "run_view", "request_id": _REQ}
+
+
+def test_run_id_under_another_repo_key_does_not_route_to_run_view(
+    tmp_path: Path,
+) -> None:
+    """The join is (repo_key, run_id): the same run_id elsewhere is not a match."""
+    config = _config(tmp_path)
+    assert config.run_state_dir is not None
+    home = tmp_path / "mhome"
+    db = make_maestro_run(home, _ACME, "01RUN", started_at="2026-09-01T00:00:00")
+    _add_task(db, "T-1", "needs_review", "2026-09-01T00:00:00")
+    other = RepoKey(host="github.com", owner="acme", repo="other")
+    store = RunStore(config.run_state_dir)
+    store.reserve(_REQ, other, known_runs=[], window_start="t")
+    store.mark_materialized(_REQ, "01RUN")
+    listing = read_store(config)
+    assert listing is not None
+    [wait] = from_maestro(home, listing[0]).waits
+    assert wait.act.model_dump()["kind"] == "maestro_verb"
+
+
+def test_record_without_run_id_does_not_route_to_run_view(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    assert config.run_state_dir is not None
+    home = tmp_path / "mhome"
+    db = make_maestro_run(home, _ACME, "01RUN", started_at="2026-09-01T00:00:00")
+    _add_task(db, "T-1", "needs_review", "2026-09-01T00:00:00")
+    store = RunStore(config.run_state_dir)
+    store.reserve(_REQ, _KEY, known_runs=[], window_start="t")
+    store.mark_unknown(_REQ, "no run appeared")
+    listing = read_store(config)
+    assert listing is not None
+    [wait] = from_maestro(home, listing[0]).waits
+    assert wait.act.model_dump()["kind"] == "maestro_verb"
