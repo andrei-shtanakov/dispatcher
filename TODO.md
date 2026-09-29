@@ -641,6 +641,13 @@
       (`live`/`published`/`stale`/`unavailable`), обе машины отдельно. Сырой JSON
       github-checker в браузер не транслируется. План пишется после мержа PR-1.
 
+## Человеческий контур DarkFactory (спека docs/superpowers/specs/2026-09-29-human-control-plane-design.md)
+
+- [ ] Очередь «ждёт человека», срез A1: `GET /api/human-queue` над собственными и локальными источниками (RunStore, maestro run DB полным запросом, impresario) с полнотой по источнику @owner:github:andrei-shtanakov @id:human-queue-a1 @epic:eco.governance-plane
+      Спека `docs/superpowers/specs/2026-09-29-human-queue-a1-design.md`, план
+      `docs/superpowers/plans/2026-09-29-human-queue-a1.md` (пара — PR #272). Форж-источники — срез A2
+      (нужна read-команда в github-checker), вид «Мой ход» — срез B, стоп-кран — D.
+
 ## Хвосты качества
 
 - [x] Проход 1 слайса 0 ПРИНЯТ — deployer#40 @owner:github:andrei-shtanakov @id:df-slice0-pass1-acceptance
