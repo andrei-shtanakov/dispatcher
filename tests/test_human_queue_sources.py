@@ -393,3 +393,20 @@ def test_unscanned_mirror(code: str, state: str) -> None:
     )
     assert result.status.state == state
     assert result.waits == []
+
+
+def test_null_title_or_agent_type_never_renders_as_none(tmp_path: Path) -> None:
+    home = tmp_path / "mhome"
+    db = make_maestro_run(home, _ACME, "01RUN", started_at="2026-09-01T00:00:00")
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("T-null", None, "needs_review", None, "2026-09-01T00:00:00", None, None),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    result = from_maestro(home, [])
+    assert [w.ref for w in result.waits] == ["01RUN/T-null"]
+    assert "None" not in result.waits[0].title

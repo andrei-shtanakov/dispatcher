@@ -151,7 +151,7 @@ def _maestro_wait(
         source="maestro",
         repo=info.repo_key,
         ref=f"{run_id}/{task_id}",
-        title=f"{row['title']} [{row['agent_type']}]",
+        title=f"{coerce_str(row['title'])} [{coerce_str(row['agent_type'])}]",
         since=None,
         since_basis=None,
         act=act,
@@ -176,6 +176,11 @@ def from_impresario(cache: SnapshotService) -> SourceResult:
 
 
 def from_impresario_report(report: ProductProposalsReport) -> SourceResult:
+    """Map an impresario product-proposals report to a `SourceResult`.
+
+    Mirror diagnostics decide the source state; waits are only emitted from a
+    trustworthy mirror.
+    """
     codes = sorted({d.code for d in report.diagnostics})
     if "mirror-not-detected" in codes:
         return _NOT_OBSERVED

@@ -29,6 +29,8 @@ _COMPLETE_STATES = frozenset({"ok", "not_configured"})
 
 
 class SourceStatus(BaseModel):
+    """Health of one queue source: `ok`, or why its waits may be missing."""
+
     state: SourceState
     detail: str | None = None
 
@@ -63,6 +65,13 @@ Act = Annotated[
 
 
 class HumanWait(BaseModel):
+    """One item waiting on a human, in the wire shape shared with later slices.
+
+    Invariants: `since` and `since_basis` are both set or both null; a set
+    `since` is a timezone-aware ISO-8601 time from a proven wait start only;
+    the `key` formats are a public contract (spec §4.1).
+    """
+
     key: str
     reasons: list[Reason]
     source: str
@@ -84,6 +93,8 @@ class HumanWait(BaseModel):
 
 
 class HumanQueueView(BaseModel):
+    """The merged human queue: waits, per-source status, completeness."""
+
     waits: list[HumanWait]
     sources: dict[str, SourceStatus]
     complete: bool
@@ -91,6 +102,8 @@ class HumanQueueView(BaseModel):
 
 
 class SourceResult(BaseModel):
+    """One adapter's output: its name, status and the waits it found."""
+
     name: str
     status: SourceStatus
     waits: list[HumanWait] = Field(default_factory=list)
