@@ -242,3 +242,25 @@ def test_main_service_path_includes_the_claude_bin_dir(tmp_path: Path) -> None:
     path_value = loaded["EnvironmentVariables"]["PATH"]
     assert path_value.startswith(env["HOME"] + "/.local/bin:")
     assert "/usr/local/bin" in path_value
+
+
+def test_main_service_path_includes_the_gh_bin_dir(tmp_path: Path) -> None:
+    """Live 2026-09-30: the human queue's forge source ran `github-checker
+    pr-search`, which shells out to `gh` — on Apple silicon Homebrew puts it
+    in /opt/homebrew/bin, absent from the hard-coded service PATH, so the
+    source read `unavailable` ("cannot resolve owner"). The directory of the
+    invoking user's `gh` must be on the service PATH."""
+    checkout, env, config, _ = _fixture(tmp_path)
+    gh_dir = tmp_path / "brew" / "bin"
+    gh_dir.mkdir(parents=True)
+    gh = gh_dir / "gh"
+    gh.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    gh.chmod(0o755)
+    env = {**env, "PATH": f"{gh_dir}:{env['PATH']}"}
+    _install(checkout, env, config)
+    plist = Path(env["HOME"]) / "Library/LaunchAgents/dev.atp.dispatcher.plist"
+    with plist.open("rb") as stream:
+        loaded = plistlib.load(stream)
+    path_value = loaded["EnvironmentVariables"]["PATH"]
+    assert path_value.startswith(env["HOME"] + "/.local/bin:")
+    assert str(gh_dir) in path_value.split(":")

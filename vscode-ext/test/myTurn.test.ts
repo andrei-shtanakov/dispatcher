@@ -343,3 +343,42 @@ describe("human merge (A2)", () => {
     expect(p.kind).toBe("refused");
   });
 });
+
+describe("maestro verb carries the server's environment", () => {
+  const opts = { baseUrl: "http://127.0.0.1:8787", impresarioPath: null };
+
+  it("prefixes MAESTRO_HOME / ATP_CATALOG and uses the server's binary", () => {
+    const p = prepareAct(
+      {
+        kind: "maestro_verb",
+        verb: "retry",
+        task_id: "T-1",
+        run_id: "01RUN",
+        repo_key: "github.com/acme/app",
+        maestro_home: "/Users/me/.maestro",
+        atp_catalog: "/ws/atp platform/catalog.toml",
+        maestro_cli: "/ws/maestro/.venv/bin/maestro",
+      },
+      opts,
+    );
+    expect(p.kind === "terminal" && p.text).toBe(
+      "MAESTRO_HOME=/Users/me/.maestro ATP_CATALOG='/ws/atp platform/catalog.toml' " +
+        "/ws/maestro/.venv/bin/maestro retry T-1 --run 01RUN",
+    );
+  });
+
+  it("refuses control characters in the environment too", () => {
+    const p = prepareAct(
+      {
+        kind: "maestro_verb",
+        verb: "retry",
+        task_id: "T-1",
+        run_id: "01RUN",
+        repo_key: "r",
+        maestro_home: "/x\nrm -rf /",
+      },
+      opts,
+    );
+    expect(p.kind).toBe("refused");
+  });
+});

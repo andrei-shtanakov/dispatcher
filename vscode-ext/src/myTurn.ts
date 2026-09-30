@@ -212,7 +212,8 @@ export function prepareAct(
     };
   }
   if (act.kind === "maestro_verb") {
-    const ids = [act.task_id, act.run_id, act.repo_key];
+    const env = [act.maestro_home ?? "", act.atp_catalog ?? "", act.maestro_cli ?? ""];
+    const ids = [act.task_id, act.run_id, act.repo_key, ...env];
     if (ids.some((v) => CONTROL.test(v))) {
       // A newline in a terminal-typed line would execute it on its own.
       return {
@@ -223,12 +224,17 @@ export function prepareAct(
     return {
       kind: "terminal",
       name: `maestro · ${act.repo_key}`,
-      text: `maestro ${act.verb} ${shellWord(act.task_id)} --run ${shellWord(act.run_id)}`,
+      text: maestroCommand(act),
       note:
         `Typed in, not executed. Run it from a checkout of ${act.repo_key} ` +
-        "(maestro resolves the run's repository from the current directory), " +
-        "with the MAESTRO_HOME and ATP_CATALOG your dispatcher config uses — " +
-        "otherwise maestro looks in a different home or cannot route a model.",
+        "(maestro resolves the run's repository from the current directory)." +
+        (act.maestro_home
+          ? " MAESTRO_HOME is the one dispatcher reads."
+          : " This server did not send its MAESTRO_HOME — set it as your " +
+            "dispatcher config does, or maestro looks elsewhere.") +
+        (act.atp_catalog
+          ? " ATP_CATALOG is the one dispatcher uses."
+          : " No ATP_CATALOG came from the server; retry needs one."),
     };
   }
   if (act.kind === "human_merge") {
@@ -284,4 +290,25 @@ function prepareHumanMerge(act: {
         ? " The PR head could not be read, so no --expect-head pin was added."
         : ""),
   };
+}
+
+/** `[MAESTRO_HOME=… ATP_CATALOG=…] <maestro> <verb> <task> --run <run>`. */
+function maestroCommand(act: {
+  verb: string;
+  task_id: string;
+  run_id: string;
+  maestro_home?: string;
+  atp_catalog?: string | null;
+  maestro_cli?: string | null;
+}): string {
+  const parts: string[] = [];
+  if (act.maestro_home) {
+    parts.push(`MAESTRO_HOME=${shellWord(act.maestro_home)}`);
+  }
+  if (act.atp_catalog) {
+    parts.push(`ATP_CATALOG=${shellWord(act.atp_catalog)}`);
+  }
+  parts.push(act.maestro_cli ? shellWord(act.maestro_cli) : "maestro");
+  parts.push(act.verb, shellWord(act.task_id), "--run", shellWord(act.run_id));
+  return parts.join(" ");
 }

@@ -55,7 +55,7 @@ Clicking a wait runs `dispatcher.myTurnAct`, mapped from the typed `act`:
 | `act.kind` | What the extension does |
 |---|---|
 | `run_view` | Opens `<dispatcher.url>/#launchpad/<request_id>` in the browser — the run view where `/resolve` and the verbs live |
-| `maestro_verb` | Opens a terminal named `maestro · <repo_key>` with `maestro <verb> <task_id> --run <run_id>` typed in and **not** executed, and says that it must run from a checkout of `<repo_key>` (maestro resolves the run's repository from its cwd — slice-0 finding) with the `MAESTRO_HOME` and `ATP_CATALOG` the dispatcher config uses (the server injects both for its own verbs, `core/run_controller.py` `_verb_env`; the act does not carry them yet — A2 item) |
+| `maestro_verb` | Opens a terminal named `maestro · <repo_key>` with `maestro <verb> <task_id> --run <run_id>` typed in and **not** executed, and says that it must run from a checkout of `<repo_key>` (maestro resolves the run's repository from its cwd — slice-0 finding) with the `MAESTRO_HOME` and `ATP_CATALOG` the dispatcher config uses — since #281 the act carries `maestro_home`, `atp_catalog`, `maestro_cli` and the command is prefixed with them (`MAESTRO_HOME=… ATP_CATALOG=… <cli> <verb> …`) |
 | `open_artifact` | Opens the file (or reveals the folder) under the observed impresario mirror's path when the overview knows it; otherwise copies the mirror-relative path to the clipboard and says so |
 
 No act writes anything, calls a POST endpoint, or runs a process.
