@@ -450,15 +450,31 @@ export function activate(context: vscode.ExtensionContext): void {
     return entry?.path ?? null;
   }
 
-  /** Prepare a wait's act (spec §3) — opens or types, never executes. */
+  /** Prepare a wait's act (spec §3) — opens or types, never executes.
+   * Every outcome is visible: a failure becomes a message, never silence. */
   async function myTurnAct(wait: HumanWait): Promise<void> {
+    try {
+      await prepareAndOpen(wait);
+    } catch (err) {
+      void vscode.window.showErrorMessage(
+        `My turn: could not open "${wait.title}": ${errorText(err)}`,
+      );
+    }
+  }
+
+  async function prepareAndOpen(wait: HumanWait): Promise<void> {
     const prepared = prepareAct(wait.act, {
       baseUrl: readConfig().url,
       impresarioPath: impresarioPath(),
     });
     switch (prepared.kind) {
       case "url":
-        await vscode.env.openExternal(vscode.Uri.parse(prepared.url));
+        if (!(await vscode.env.openExternal(vscode.Uri.parse(prepared.url)))) {
+          await vscode.env.clipboard.writeText(prepared.url);
+          void vscode.window.showWarningMessage(
+            `could not open the browser — copied ${prepared.url}`,
+          );
+        }
         return;
       case "terminal": {
         const terminal = vscode.window.createTerminal({ name: prepared.name });
@@ -478,7 +494,9 @@ export function activate(context: vscode.ExtensionContext): void {
             `not found under the impresario mirror: ${prepared.path}`,
           );
         } else if (stat.type === vscode.FileType.Directory) {
-          await vscode.commands.executeCommand("revealInExplorer", uri);
+          // revealInExplorer is a silent no-op outside the workspace; the
+          // OS file manager works for any path.
+          await vscode.commands.executeCommand("revealFileInOS", uri);
         } else {
           await vscode.window.showTextDocument(uri);
         }

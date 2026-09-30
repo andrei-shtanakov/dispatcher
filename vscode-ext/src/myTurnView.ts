@@ -2,6 +2,7 @@
 
 import * as vscode from "vscode";
 import type { HumanQueueView, HumanWait } from "./api";
+import { offlineItem } from "./tree";
 import {
   type GroupKey,
   REASON_LABEL,
@@ -24,7 +25,8 @@ export type MyTurnNode =
   | { kind: "bannerLine"; text: string }
   | { kind: "group"; reason: GroupKey; waits: HumanWait[] }
   | { kind: "wait"; wait: HumanWait }
-  | { kind: "text"; text: string; icon: string };
+  | { kind: "text"; text: string; icon: string }
+  | { kind: "offline" };
 
 export class MyTurnProvider implements vscode.TreeDataProvider<MyTurnNode> {
   private readonly changed = new vscode.EventEmitter<void>();
@@ -64,6 +66,8 @@ export class MyTurnProvider implements vscode.TreeDataProvider<MyTurnNode> {
       }
       case "wait":
         return this.waitItem(node.wait);
+      case "offline":
+        return offlineItem();
       case "text": {
         const item = new vscode.TreeItem(node.text);
         item.iconPath = new vscode.ThemeIcon(node.icon);
@@ -107,7 +111,7 @@ export class MyTurnProvider implements vscode.TreeDataProvider<MyTurnNode> {
       return [];
     }
     if (this.state.kind === "offline") {
-      return [{ kind: "text", text: "server unreachable", icon: "debug-disconnected" }];
+      return [{ kind: "offline" }];
     }
     if (this.state.kind === "unavailable") {
       return [

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { HumanQueueView, HumanWait, SourceStatus } from "../src/api";
+import type {
+  HumanQueueView,
+  HumanWait,
+  SourceStatus,
+  WaitAct as WaitActAlias,
+} from "../src/api";
 import {
   ageLabel,
   emptyText,
@@ -236,6 +241,15 @@ describe("acts are prepared, never executed", () => {
       opts,
     );
     expect(refused.kind).toBe("refused");
+  });
+
+  it("refuses an act kind this build does not know", () => {
+    const p = prepareAct(
+      { kind: "merge_pr", pr: 7 } as unknown as WaitActAlias,
+      opts,
+    );
+    expect(p.kind).toBe("refused");
+    expect(p.kind === "refused" && p.note).toContain("merge_pr");
   });
 
   it("opens an artifact under the mirror when it is known", () => {

@@ -216,6 +216,15 @@ export function prepareAct(
         "otherwise maestro looks in a different home or cannot route a model.",
     };
   }
+  if (act.kind !== "open_artifact") {
+    // A newer server may serve an act this build predates: say so, never
+    // fall through into another act's handling.
+    const kind = (act as { kind?: unknown }).kind;
+    return {
+      kind: "refused",
+      note: `act "${String(kind)}" is not supported by this extension build — update it`,
+    };
+  }
   if (opts.impresarioPath !== null && safeRelative(act.path)) {
     const root = opts.impresarioPath.replace(/\/+$/, "");
     return { kind: "file", path: `${root}/${act.path}` };
