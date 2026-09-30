@@ -99,6 +99,22 @@
     }
   },
   {
+    "name": "human merge, an empty head is unknown, never pinned",
+    "act": {
+      "kind": "human_merge",
+      "repo": "acme/widget",
+      "number": 10,
+      "url": "https://github.com/acme/widget/pull/10",
+      "head_sha": ""
+    },
+    "expected": {
+      "kind": "command",
+      "text": "sh devtools/human-merge.sh widget 10",
+      "url": "https://github.com/acme/widget/pull/10",
+      "note": "Typed in, not executed. Run it from the workspace root under YOUR gh profile — the merge is the human act that signs. The PR head could not be read, so no --expect-head pin was added."
+    }
+  },
+  {
     "name": "human merge, control character refused",
     "act": {
       "kind": "human_merge",

@@ -19,8 +19,8 @@ which overrides the default 8787.
 
 ### Web panel
 
-The dashboard is a tab strip over nine screens, in this order: `Launchpad` ·
-`Sync` · `Projects` · `Errors` · `Models` · `Contracts` · `Epics` ·
+The dashboard is a tab strip over ten screens, in this order: `Launchpad` ·
+`My turn` · `Sync` · `Projects` · `Errors` · `Models` · `Contracts` · `Epics` ·
 `Waits (partial)` · `Roadmap`. `Launchpad` is the default — the screen the
 panel opens on, and where an unknown address falls back to.
 

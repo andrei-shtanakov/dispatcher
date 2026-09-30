@@ -120,7 +120,7 @@ def _human_merge(act: HumanMergeAct) -> PreparedAct:
         "profile — the merge is the human act that signs."
         + (
             " The PR head could not be read, so no --expect-head pin was added."
-            if act.head_sha is None
+            if not act.head_sha
             else ""
         )
     )

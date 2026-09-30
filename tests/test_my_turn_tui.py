@@ -113,3 +113,25 @@ async def test_enter_copies_the_command_and_runs_nothing(
         await pilot.press("enter")
         await pilot.pause()
     assert copied == ["sh devtools/human-merge.sh deployer 7"]
+
+
+@pytest.mark.anyio
+async def test_a_failed_refresh_still_reads_the_queue(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Review on #286: the queue's sources are isolated — a failure of the
+    shared refresh must not leave «My turn» on an answer it never got."""
+    app = DispatcherApp(DispatcherConfig(roots=(tmp_path,)))
+    monkeypatch.setattr(app, "_read_queue", lambda: None)
+
+    def boom():
+        raise RuntimeError("snapshots down")
+
+    monkeypatch.setattr(app._service, "get", boom)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        tabs = app.query_one(TabbedContent)
+        assert str(tabs.get_tab("tab-my-turn").label) == "My turn · ?"
+        table = app.query_one("#my-turn-table", DataTable)
+        assert "human queue not read" in str(table.get_row_at(0)[2])

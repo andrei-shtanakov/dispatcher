@@ -227,14 +227,39 @@ testCase('an incomplete queue names its sources and is never empty', async () =>
     `count, got ${text(env, 'my-turn-count')}`);
 });
 
+testCase('a failed read after an incomplete one drops the old banner', async () => {
+  let fail = false;
+  const env = await bootOpen(() => fail ? FAILS() : ok(view([], {
+    complete: false,
+    sources: {forge_labelled_prs: {state: 'unavailable', detail: 'gh'}},
+  })));
+  check(!env.document.getElementById('my-turn-incomplete').hidden, 'precondition: banner up');
+  fail = true;
+  await openScreen(env, 'sync');
+  await openScreen(env, 'my-turn');
+  await drain();
+  const banner = env.document.getElementById('my-turn-incomplete');
+  check(banner.hidden && banner.textContent === '',
+    `the old answer's banner is gone, got "${banner.textContent}"`);
+  check(text(env, 'my-turn-count') === 'not read', 'says not read');
+});
+
 testCase('a complete empty queue is a real zero', async () => {
   const env = await bootOpen(() => ok(view([])));
   check(body(env).textContent.includes('nothing waits for you'), 'confident zero');
   check(env.document.getElementById('my-turn-incomplete').hidden, 'no banner');
 });
 
-testCase('a failed read says not read, never nothing waits', async () => {
+function FAILS() { throw new Error('transport down'); }
+
+testCase('an error body is refused, not rendered as a queue', async () => {
   const env = await bootOpen(() => resp(503, {detail: 'down'}));
+  check(text(env, 'my-turn-count') === 'not read', `got ${text(env, 'my-turn-count')}`);
+  check(body(env).textContent.includes('not a human queue'), body(env).textContent);
+});
+
+testCase('a failed read says not read, never nothing waits', async () => {
+  const env = await bootOpen(FAILS);
   check(text(env, 'my-turn-count') === 'not read', `got ${text(env, 'my-turn-count')}`);
   check(body(env).textContent.includes('human queue unavailable'), 'the row says so');
   check(!body(env).textContent.includes('nothing waits'), 'never a confident zero');

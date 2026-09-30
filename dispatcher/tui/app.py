@@ -244,9 +244,9 @@ class DispatcherApp(App[None]):
         self.query_one("#sync-table", DataTable).add_columns(
             "host", "age", "repo", "verdict", "reason", "branch", "↑/↓"
         )
-        self.query_one("#my-turn-table", DataTable).add_columns(
-            "age", "reason", "wait", "what to do (enter copies)"
-        )
+        my_turn = self.query_one("#my-turn-table", DataTable)
+        my_turn.add_columns("age", "reason", "wait", "what to do (enter copies)")
+        my_turn.add_row("", "", Text("not read yet", style="dim"), "")
         self.query_one("#roadmap-summary-table", DataTable).add_columns(
             "project", "done", "readiness", "lagging", "contract drift"
         )
@@ -300,6 +300,10 @@ class DispatcherApp(App[None]):
     @work(thread=True, exclusive=True)
     def _collect(self) -> None:
         """Collect snapshots and contracts off the event loop."""
+        # «My turn» first and on its own: its sources are isolated, so a
+        # failure of the refresh below must not leave the tab showing an
+        # answer it never got (review on #286).
+        self.call_from_thread(self._apply_queue, self._read_queue())
         try:
             snapshots, warnings = self._service.get()
             projects = {
@@ -318,8 +322,6 @@ class DispatcherApp(App[None]):
                 self.notify, f"refresh failed: {err}", severity="error"
             )
             return
-        queue = self._read_queue()
-        self.call_from_thread(self._apply_queue, queue)
         self.call_from_thread(
             self._apply,
             snapshots,

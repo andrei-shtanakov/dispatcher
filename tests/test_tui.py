@@ -106,13 +106,12 @@ async def test_r_binding_recollects(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(app._service, "get", counting_get)
     async with app.run_test() as pilot:
         await _settled(app, pilot)
-        # The initial collect reads the snapshot cache; «My turn» (B2) reads
-        # it again through build_human_queue — a cache hit, not a re-collect.
-        first = len(calls)
-        assert first >= 1
+        # One collect = the snapshot read + «My turn»'s impresario source
+        # reading the same cache (B2) — a cache hit, not a re-collect.
+        assert len(calls) == 2
         await pilot.press("r")
         await _settled(app, pilot)
-        assert len(calls) > first
+        assert len(calls) == 4
 
 
 async def test_collect_failure_keeps_last_data(tmp_path: Path, monkeypatch) -> None:

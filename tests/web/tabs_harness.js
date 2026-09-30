@@ -1485,7 +1485,7 @@ testCase('a SUCCESSFUL load still stamps, on every unconditional screen',
   // ordinary path stop stamping. One entry per LOADERS screen, so a loader
   // that forgets to return LOAD_PAINTED is caught by name.
   await withPage(async page => {
-    for (const screen of ['sync', 'projects', 'errors', 'models',
+    for (const screen of ['my-turn', 'sync', 'projects', 'errors', 'models',
       'contracts', 'epics', 'waits', 'roadmap']) {
       parkUpdated(page);
       await openScreen(page, screen);
@@ -1505,6 +1505,13 @@ testCase('a SUCCESSFUL load still stamps, on every unconditional screen',
  * second is superseded by a filter click, not a tick — both have their own
  * cases below. */
 const STALE_DRILL = {
+  'my-turn': p => {
+    const d = deferrable();
+    overridePrefix(p, '/api/human-queue', d.route);
+    return {count: () => d.pending.length, settle: i => d.settle(i, {
+      waits: [], sources: {}, complete: true, generated_at: '2026-09-30T00:00:00Z',
+    })};
+  },
   sync: p => {
     const d = deferrable();
     overrideRoute(p, '/api/sync', d.route);
@@ -1587,6 +1594,7 @@ testCase('a superseded load stamps nothing — on every loader a tick can '
  * on purpose: breaking its boot request hides the conditional tab, so that
  * screen has its own case further down. */
 const BREAK_ROUTE = {
+  'my-turn': p => overridePrefix(p, '/api/human-queue', FAILS),
   sync: p => overrideRoute(p, '/api/sync', FAILS),
   projects: p => overrideRoute(p, '/api/overview', FAILS),
   errors: p => overridePrefix(p, '/api/errors', FAILS),

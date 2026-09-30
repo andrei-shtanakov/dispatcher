@@ -2836,11 +2836,21 @@ async function loadMyTurn() {
   try {
     const view = await get("/api/human-queue");
     if (screenGenStale("my-turn", gen)) return LOAD_STALE;
+    // `get` does not look at the HTTP status: an error body must be refused
+    // here, before it is half-rendered as a queue.
+    if (!view || !Array.isArray(view.waits) || typeof view.sources !== "object") {
+      throw new Error("the answer is not a human queue");
+    }
     renderMyTurn(view);
     return LOAD_PAINTED;
   } catch (err) {
     if (screenGenStale("my-turn", gen)) return LOAD_STALE;
-    // Never an empty queue: an unread queue says it was not read.
+    // Never an empty queue: an unread queue says it was not read. The
+    // previous answer's incompleteness banner belongs to that answer — left
+    // up, it would describe a read that is no longer on screen (NFR-02).
+    const banner = document.getElementById("my-turn-incomplete");
+    banner.hidden = true;
+    banner.innerHTML = "";
     document.getElementById("my-turn-count").textContent = "not read";
     document.querySelector("#my-turn tbody").innerHTML =
       `<tr><td colspan="4" class="err">human queue unavailable: ${esc(String(err))}</td></tr>`;

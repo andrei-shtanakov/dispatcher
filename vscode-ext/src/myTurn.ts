@@ -277,8 +277,9 @@ function prepareHumanMerge(act: {
       note: "the PR's identifiers are unusable; not preparing a command",
     };
   }
-  const pin =
-    act.head_sha !== null ? ` --expect-head ${shellWord(act.head_sha)}` : "";
+  // An empty sha is as unknown as a null one: never pin `--expect-head ''`
+  // (parity with dispatcher/core/prepared_acts.py, review on #286).
+  const pin = act.head_sha ? ` --expect-head ${shellWord(act.head_sha)}` : "";
   return {
     kind: "human_merge",
     url: act.url,
@@ -286,7 +287,7 @@ function prepareHumanMerge(act: {
     note:
       "Typed in, not executed. Run it from the workspace root under YOUR gh " +
       "profile — the merge is the human act that signs." +
-      (act.head_sha === null
+      (!act.head_sha
         ? " The PR head could not be read, so no --expect-head pin was added."
         : ""),
   };
