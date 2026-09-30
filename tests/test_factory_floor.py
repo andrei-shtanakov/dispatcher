@@ -224,3 +224,25 @@ def test_a_dispatcher_launched_stale_run_still_gets_the_cli_run_end(
     assert (run.stale, run.request_id) == (True, _REQ)
     assert run.act is not None
     assert "request_id" not in run.act.model_dump()
+
+
+def test_unreadable_logs_make_activity_unknown_not_stale(tmp_path: Path) -> None:
+    db = _run(
+        "01LOCKED",
+        "2026-08-24T07:00:00+00:00",
+        active=datetime(2026, 8, 24, 8, 0, tzinfo=timezone.utc),
+        tmp_path=tmp_path,
+    )
+    logs = db.parent / "logs"
+    logs.mkdir()
+    logs.chmod(0)
+    try:
+        if os.access(logs, os.R_OK):
+            pytest.skip("running as a user that ignores directory permissions")
+        view = build_factory_floor(_config(tmp_path), now=_NOW)
+    finally:
+        logs.chmod(0o755)
+    [run] = view.in_flight
+    assert (run.last_activity_at, run.stale) == (None, False)
+    assert view.sources["maestro"].state == "partial"
+    assert "cannot list" in (view.sources["maestro"].detail or "")

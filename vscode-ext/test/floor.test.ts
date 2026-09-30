@@ -88,7 +88,9 @@ describe("factory floor wording (review on #282)", () => {
   });
 
   it("never claims 'not launched by dispatcher' when its records were not read", () => {
-    expect(launchLine(run("a"), true)).toBe("not launched by dispatcher");
+    expect(launchLine(run("a"), true)).toBe(
+      "no dispatcher launch record carries this run id",
+    );
     expect(launchLine(run("a"), false)).toContain("unknown");
     expect(launchLine(run("a", { request_id: "rc-1" }), false)).toBe(
       "launched by dispatcher: rc-1",

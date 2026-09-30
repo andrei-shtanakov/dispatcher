@@ -128,7 +128,12 @@ def _in_flight(
         if status is None or info.run_id is None:
             continue
         started, _ = proven_since(info.started_at, "run started")
-        activity = _last_activity(_db.parent)
+        activity, unreadable = _last_activity(_db.parent)
+        if unreadable is not None:
+            # An activity we could not fully read is unknown — never stale —
+            # and the hole is named, not swallowed (review on #282).
+            snap.warnings.append(f"run {info.run_id}: {unreadable}")
+            activity = None
         # Not `started_at`: a run dispatcher launches is never `running` (the
         # holder is written only by maestro's service tick), so age from the
         # start would call a live 25-hour run abandoned. A live run writes.
@@ -187,14 +192,21 @@ def _instant(value: str | None) -> datetime:
     )
 
 
-def _last_activity(run_dir: Path) -> str | None:
-    """Newest mtime of the run's own files, as tz-aware ISO-8601."""
+def _last_activity(run_dir: Path) -> tuple[str | None, str | None]:
+    """(newest mtime of the run's own files as tz-aware ISO-8601, problem).
+
+    An absent `logs/` is normal; one that exists but cannot be listed is a
+    problem — a newer log inside it could be exactly the activity that
+    proves the run alive.
+    """
     candidates = [run_dir / "state.db", run_dir / "state.db-wal"]
     logs = run_dir / "logs"
     try:
         candidates.extend(p for p in logs.iterdir() if p.is_file())
-    except OSError:
+    except (FileNotFoundError, NotADirectoryError):
         pass
+    except OSError as err:
+        return None, f"cannot list {logs}: {err}"
     newest: float | None = None
     for path in candidates:
         try:
@@ -202,6 +214,6 @@ def _last_activity(run_dir: Path) -> str | None:
         except OSError:
             continue
         newest = mtime if newest is None else max(newest, mtime)
-    return (
-        None if newest is None else datetime.fromtimestamp(newest, tz=UTC).isoformat()
-    )
+    if newest is None:
+        return None, None
+    return datetime.fromtimestamp(newest, tz=UTC).isoformat(), None

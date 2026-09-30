@@ -84,8 +84,10 @@ export function launchLine(run: InFlightRun, recordsRead: boolean): string {
   if (run.request_id) {
     return `launched by dispatcher: ${run.request_id}`;
   }
+  // A launch still in `launch_unknown` has no run_id yet, so "no record
+  // joined" is all that can be said — never "not launched by dispatcher".
   return recordsRead
-    ? "not launched by dispatcher"
+    ? "no dispatcher launch record carries this run id"
     : "launch record unknown — dispatcher's records were not fully read";
 }
 
