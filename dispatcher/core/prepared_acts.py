@@ -58,6 +58,7 @@ def shell_word(value: str) -> str:
 def prepare_act(act: Act) -> PreparedAct:
     """What clicking (or selecting) a wait offers. Executes nothing."""
     if act.kind == "run_view":
+        # No control-character check needed: the id is percent-encoded.
         return PreparedAct(
             kind="link",
             url=f"#launchpad/{quote(act.request_id, safe='')}",
@@ -67,6 +68,13 @@ def prepare_act(act: Act) -> PreparedAct:
         return _maestro_verb(act)
     if act.kind == "human_merge":
         return _human_merge(act)
+    if _CONTROL.search(act.path):
+        # Same refusal as every other act (review on #286): the TUI copies
+        # this text, and a newline in a pasted line runs on its own.
+        return PreparedAct(
+            kind="refused",
+            note="the artifact path contains control characters; not preparing it",
+        )
     return PreparedAct(
         kind="path",
         text=act.path,

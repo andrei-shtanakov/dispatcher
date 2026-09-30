@@ -2778,10 +2778,10 @@ function myTurnActCell(p) {
   if (!p) return `<span class="err">no prepared act — server predates B2</span>`;
   const note = p.note ? `<div class="sub">${esc(p.note)}</div>` : "";
   if (p.kind === "command") {
-    // Escaping stops an attribute break-out, not a `javascript:` URL — so
-    // only an https link is ever made clickable.
-    const pr = typeof p.url === "string" && p.url.startsWith("https://")
-      ? ` <a href="${esc(p.url)}" target="_blank" rel="noopener">PR</a>` : "";
+    // The PR link goes through safeLink, the page's one sink for producer
+    // URLs (review on #286): a placeholder here, the element appended after
+    // the rows are in the DOM — never an href interpolated into markup.
+    const pr = p.url ? ` <span class="my-turn-pr"></span>` : "";
     return `<code>${esc(p.text)}</code>${pr}${note}`;
   }
   if (p.kind === "link") {
@@ -2822,13 +2822,23 @@ function renderMyTurn(view) {
   const unknown = view.waits.filter(w => w.since === null);
   const empty = view.complete ? "nothing waits for you"
     : "no known waits — queue incomplete";
-  document.querySelector("#my-turn tbody").innerHTML = count === 0
+  const tbody = document.querySelector("#my-turn tbody");
+  tbody.innerHTML = count === 0
     ? `<tr><td colspan="4">${empty}</td></tr>`
     : known.map(row).join("")
       + (unknown.length
         ? `<tr><td colspan="4" class="sub">age unknown (${unknown.length})</td></tr>`
           + unknown.map(row).join("")
         : "");
+  // Placeholders appear in row order, one per command that carries a url.
+  const urls = [...known, ...unknown]
+    .map(w => w.prepared)
+    .filter(p => p && p.kind === "command" && p.url)
+    .map(p => p.url);
+  tbody.querySelectorAll(".my-turn-pr").forEach((slot, i) => {
+    const link = safeLink(urls[i], "PR");
+    if (link !== null) slot.appendChild(link);
+  });
 }
 
 async function loadMyTurn() {

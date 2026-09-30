@@ -69,3 +69,8 @@ def test_shell_word_quotes_only_what_a_shell_would_touch() -> None:
     assert shell_word("/ws/a-b_c.d:e@f") == "/ws/a-b_c.d:e@f"
     assert shell_word("$HOME") == "'$HOME'"
     assert shell_word("it's") == "'it'\\''s'"
+
+
+def test_an_artifact_path_with_a_control_character_is_refused() -> None:
+    got = prepare_act(OpenArtifactAct(path="decisions/x.md\nrm -rf /"))
+    assert (got.kind, got.text) == ("refused", None)
