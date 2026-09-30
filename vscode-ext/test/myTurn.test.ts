@@ -143,6 +143,16 @@ describe("grouping", () => {
     expect(groups[2].waits.map((w) => w.key)).toEqual(["g1", "g2"]);
   });
 
+  it("never drops a wait whose reason this build does not know", () => {
+    // A newer server (A2) serves reasons an installed .vsix predates.
+    const w = wait("pr", {
+      reasons: ["pr_human_merge" as unknown as "proposal_gate"],
+    });
+    const groups = groupWaits(view([wait("g1"), w]));
+    expect(groups.map((g) => g.reason)).toEqual(["proposal_gate", "other"]);
+    expect(groups[1].waits.map((x) => x.key)).toEqual(["pr"]);
+  });
+
   it("places a multi-reason wait by its first reason", () => {
     const w = wait("x", { reasons: ["backlog_gate", "proposal_gate"] });
     expect(groupWaits(view([w])).map((g) => g.reason)).toEqual([
@@ -197,6 +207,8 @@ describe("acts are prepared, never executed", () => {
     expect(p.text).toBe("maestro retry T-1 --run 01RUN");
     expect(p.name).toBe("maestro · github.com/acme/app");
     expect(p.note).toContain("github.com/acme/app");
+    expect(p.note).toContain("MAESTRO_HOME");
+    expect(p.note).toContain("ATP_CATALOG");
   });
 
   it("quotes ids a shell would split, and refuses control characters", () => {

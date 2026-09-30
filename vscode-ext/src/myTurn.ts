@@ -22,13 +22,14 @@ export const REASON_ORDER: readonly WaitReason[] = [
   "backlog_gate",
 ];
 
-export const REASON_LABEL: Record<WaitReason, string> = {
+export const REASON_LABEL: Record<GroupKey, string> = {
   launch_unknown: "Launch outcome unknown",
   run_needs_review: "Run task needs review",
   run_awaiting_approval: "Run task awaits approval",
   loop_needs_human: "Product loop needs a human",
   proposal_gate: "Proposal gate",
   backlog_gate: "Backlog gate (QG-4)",
+  other: "Other reasons",
 };
 
 const HOUR_MS = 3_600_000;
@@ -42,8 +43,11 @@ export interface MyTurnStatus {
   tooltip: string;
 }
 
+/** A known reason, or "other" for reasons this build predates. */
+export type GroupKey = WaitReason | "other";
+
 export interface MyTurnGroup {
-  reason: WaitReason;
+  reason: GroupKey;
   waits: HumanWait[];
 }
 
@@ -136,12 +140,20 @@ export function incompleteLines(view: HumanQueueView): string[] {
     );
 }
 
-/** Non-empty groups in REASON_ORDER; server order kept inside a group. */
+/** Non-empty groups in REASON_ORDER, then "other"; server order kept
+ * inside a group. A reason this build does not know (a newer server) lands
+ * in "other" — a served wait is never dropped from the tree. */
 export function groupWaits(view: HumanQueueView): MyTurnGroup[] {
-  return REASON_ORDER.map((reason) => ({
+  const known = new Set<string>(REASON_ORDER);
+  const groups: MyTurnGroup[] = REASON_ORDER.map((reason) => ({
     reason,
     waits: view.waits.filter((w) => w.reasons[0] === reason),
-  })).filter((group) => group.waits.length > 0);
+  }));
+  groups.push({
+    reason: "other",
+    waits: view.waits.filter((w) => !known.has(w.reasons[0])),
+  });
+  return groups.filter((group) => group.waits.length > 0);
 }
 
 /** The empty-list text, or null when there are waits to show. */
@@ -198,8 +210,10 @@ export function prepareAct(
       name: `maestro · ${act.repo_key}`,
       text: `maestro ${act.verb} ${shellWord(act.task_id)} --run ${shellWord(act.run_id)}`,
       note:
-        `Typed in, not executed. Run it from a checkout of ${act.repo_key}: ` +
-        "maestro resolves the run's repository from the current directory.",
+        `Typed in, not executed. Run it from a checkout of ${act.repo_key} ` +
+        "(maestro resolves the run's repository from the current directory), " +
+        "with the MAESTRO_HOME and ATP_CATALOG your dispatcher config uses — " +
+        "otherwise maestro looks in a different home or cannot route a model.",
     };
   }
   if (opts.impresarioPath !== null && safeRelative(act.path)) {

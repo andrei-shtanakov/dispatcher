@@ -30,7 +30,10 @@ Root nodes, in order:
    `not_connected` forge lines; until then the banner is always there, by design.
 2. **One group per reason**, in the fixed order `launch_unknown`, `run_needs_review`,
    `run_awaiting_approval`, `loop_needs_human`, `proposal_gate`, `backlog_gate`; only
-   non-empty groups appear. A wait is placed by `reasons[0]` (the server sorts
+   non-empty groups appear, followed by **"Other reasons"** for any reason this build
+   does not know — the extension is installed separately from the server, and A2 adds
+   reasons (`pr_human_merge`, `bundle_candidate`); a served wait is never dropped from
+   the tree. A wait is placed by `reasons[0]` (the server sorts
    `reasons`); its description lists every reason when there are several. Inside a
    group the server's order is kept (known ages oldest first, then unknown ages).
 3. **Empty states** — no waits and complete: "nothing waits for you"; no waits and
@@ -52,7 +55,7 @@ Clicking a wait runs `dispatcher.myTurnAct`, mapped from the typed `act`:
 | `act.kind` | What the extension does |
 |---|---|
 | `run_view` | Opens `<dispatcher.url>/#launchpad/<request_id>` in the browser — the run view where `/resolve` and the verbs live |
-| `maestro_verb` | Opens a terminal named `maestro · <repo_key>` with `maestro <verb> <task_id> --run <run_id>` typed in and **not** executed, and says that it must run from a checkout of `<repo_key>` (maestro resolves the run's repository from its cwd — slice-0 finding) |
+| `maestro_verb` | Opens a terminal named `maestro · <repo_key>` with `maestro <verb> <task_id> --run <run_id>` typed in and **not** executed, and says that it must run from a checkout of `<repo_key>` (maestro resolves the run's repository from its cwd — slice-0 finding) with the `MAESTRO_HOME` and `ATP_CATALOG` the dispatcher config uses (the server injects both for its own verbs, `core/run_controller.py` `_verb_env`; the act does not carry them yet — A2 item) |
 | `open_artifact` | Opens the file (or reveals the folder) under the observed impresario mirror's path when the overview knows it; otherwise copies the mirror-relative path to the clipboard and says so |
 
 No act writes anything, calls a POST endpoint, or runs a process.
@@ -85,7 +88,8 @@ Clicking it focuses the view.
 1. Status text: `⏳ 3`, `⏳ 3 · ?` when incomplete, `⏳ ?` when unread.
 2. Overdue: a wait older than the threshold is overdue; a wait with `since: null` is
    never overdue; the threshold is honoured exactly.
-3. Grouping follows the fixed reason order and keeps server order inside a group.
+3. Grouping follows the fixed reason order and keeps server order inside a group; an
+   unknown reason lands in "Other reasons", never dropped.
 4. Banner lists exactly the sources that are neither `ok` nor `not_configured`.
 5. Empty + incomplete never produces the "nothing waits" text.
 6. Act mapping: run_view → URL with `#launchpad/<request_id>` (trailing slash on the

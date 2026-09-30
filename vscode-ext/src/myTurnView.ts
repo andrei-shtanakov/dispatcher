@@ -1,8 +1,9 @@
 /** "My turn" tree and status item: thin adapters over myTurn.ts. */
 
 import * as vscode from "vscode";
-import type { HumanQueueView, HumanWait, WaitReason } from "./api";
+import type { HumanQueueView, HumanWait } from "./api";
 import {
+  type GroupKey,
   REASON_LABEL,
   emptyText,
   groupWaits,
@@ -21,7 +22,7 @@ export type MyTurnState =
 export type MyTurnNode =
   | { kind: "banner"; lines: string[] }
   | { kind: "bannerLine"; text: string }
-  | { kind: "group"; reason: WaitReason; waits: HumanWait[] }
+  | { kind: "group"; reason: GroupKey; waits: HumanWait[] }
   | { kind: "wait"; wait: HumanWait }
   | { kind: "text"; text: string; icon: string };
 
