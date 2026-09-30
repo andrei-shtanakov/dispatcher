@@ -113,6 +113,18 @@ def _validate_benchmarks_url(raw: object) -> str:
 DEFAULT_FORGE_MERGE_LABEL = "human-merge-required"
 
 
+def _forge_merge_label(data: dict) -> str | None:
+    """The human queue's forge label; "" (or blank) turns the source off.
+
+    Any non-string is a load-time error: `str(False)` would search for a
+    label called "False", find nothing, and the queue would read as green.
+    """
+    raw = data.get("forge_merge_label", DEFAULT_FORGE_MERGE_LABEL)
+    if not isinstance(raw, str):
+        raise ValueError(f"forge_merge_label must be a string, got: {raw!r}")
+    return raw.strip() or None
+
+
 def load_config(config_path: Path | None = None) -> DispatcherConfig:
     """Load dispatcher.toml; absent file yields defaults."""
     data: dict = {}
@@ -178,10 +190,7 @@ def load_config(config_path: Path | None = None) -> DispatcherConfig:
         run_state_dir=run_state_dir,
         maestro_cli=maestro_cli,
         atp_catalog=atp_catalog,
-        forge_merge_label=str(
-            data.get("forge_merge_label", DEFAULT_FORGE_MERGE_LABEL)
-        ).strip()
-        or None,
+        forge_merge_label=_forge_merge_label(data),
     )
 
 

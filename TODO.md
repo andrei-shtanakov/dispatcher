@@ -657,6 +657,7 @@
 
 ## Хвосты качества
 
+- [ ] github-checker `contracts/actions/v1/README.md` в трёх местах ещё говорит «eight verbs» после pr-search (#48); вендоренную копию не править — исправить у продюсера и перевендорить (ревью dispatcher#280) @owner:github:andrei-shtanakov @id:gc-actions-readme-nine-verbs @epic:eco.tooling
 - [ ] Нестабильный `tests/test_run_controller.py::test_run_end_through_the_resolution_path_also_binds_to_the_checkout`: на чистом master падает ~в половине одиночных прогонов (`RunRejectedError: cannot run maestro run-end`), замечено 2026-09-30 при A2 @owner:github:andrei-shtanakov @id:flaky-run-end-checkout-binding @epic:eco.tooling
 - [x] Проход 1 слайса 0 ПРИНЯТ — deployer#40 @owner:github:andrei-shtanakov @id:df-slice0-pass1-acceptance
       Принят вторым прогоном 2026-08-24 (`01M0T5HA1PW0J0GWTCGMZVFWW0`, запрос выдан

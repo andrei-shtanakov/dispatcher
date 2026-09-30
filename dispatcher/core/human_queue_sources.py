@@ -426,6 +426,8 @@ def build_human_queue(
         ),
         # Looked up through the module at call time so tests can patch it.
         _guarded("impresario", lambda: from_impresario(cache)),
-        forge.read() if forge is not None else _FORGE_OFF,
+        # Guarded like every other source: a failure inside the reader (a
+        # thread that cannot start) is this source's `unavailable`, not a 500.
+        _guarded(FORGE_SOURCE, forge.read) if forge is not None else _FORGE_OFF,
     ]
     return assemble(results, now=now)

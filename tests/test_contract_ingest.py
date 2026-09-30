@@ -32,6 +32,7 @@ from dispatcher.core.contract import (
     IssueRef,
     LocalStatus,
     PrDetail,
+    PrRef,
     ReviewThread,
     _describe_untrusted,
     _schema,
@@ -1251,6 +1252,7 @@ _NESTED_MODELS = [
     (ReviewThread, "review_thread"),
     (IssueRef, "issue_ref"),
     (PrDetail, "pr_detail"),
+    (PrRef, "pr_ref"),
 ]
 
 

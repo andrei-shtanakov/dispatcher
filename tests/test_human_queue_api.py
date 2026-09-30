@@ -204,3 +204,23 @@ async def test_the_forge_source_joins_the_queue_when_a_label_is_set(
     assert wait["key"] == "pr:acme/widget#7"
     assert wait["act"]["kind"] == "human_merge"
     assert labels == ["human-merge-required"]  # later polls served from cache
+
+
+async def test_a_forge_reader_that_raises_is_unavailable_not_a_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dataclasses
+
+    def boom(self: object) -> object:
+        raise RuntimeError("cannot start thread")
+
+    monkeypatch.setattr(human_queue_sources.ForgeReader, "read", boom)
+    config = dataclasses.replace(
+        _config(tmp_path), forge_merge_label="human-merge-required"
+    )
+    async with _client(config) as client:
+        resp = await client.get("/api/human-queue")
+    assert resp.status_code == 200
+    forge = resp.json()["sources"]["forge_labelled_prs"]
+    assert forge["state"] == "unavailable"
+    assert "cannot start thread" in forge["detail"]
