@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "result_kind": "action",
+  "action": "merged-prs",
+  "dir": "/repos/widget",
+  "ok": true,
+  "error": null,
+  "merges": [
+    {
+      "repo": "acme/widget",
+      "number": 7,
+      "title": "pr 7",
+      "url": "https://github.com/acme/widget/pull/7",
+      "merged_at": "2026-09-30T09:15:33Z",
+      "merged_by": "ai-prosto"
+    },
+    {
+      "repo": "acme/gadget",
+      "number": 3,
+      "title": "pr 3",
+      "url": "https://github.com/acme/gadget/pull/3",
+      "merged_at": "2026-09-30T08:00:00Z",
+      "merged_by": null
+    }
+  ]
+}

@@ -267,8 +267,21 @@ export interface InFlightRun {
   act: RunEndAct | null;
 }
 
+/** A PR the agent merged inside the window (slice C2). */
+export interface AgentMerge {
+  repo: string;
+  number: number;
+  title: string;
+  url: string;
+  merged_at: string;
+}
+
 export interface FactoryFloorView {
   in_flight: InFlightRun[];
+  // Optional: a server older than C2 does not send them.
+  agent_merges?: AgentMerge[];
+  agent_merge_login?: string | null;
+  merges_window_hours?: number;
   sources: Record<string, SourceStatus>;
   complete: boolean;
   generated_at: string;

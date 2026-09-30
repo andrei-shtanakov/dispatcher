@@ -1461,6 +1461,7 @@ _CANONICAL = {
     "issue-create": "issue-create-created",
     "propose-pr": "propose-pr-created",
     "pr-search": "pr-search-found",
+    "merged-prs": "merged-prs-found",
 }
 DROP = object()
 
@@ -1991,3 +1992,42 @@ def test_pr_search_rejects_a_control_character_in_the_label(tmp_path: Path) -> N
     runner = ActionRunner(DispatcherConfig(roots=(tmp_path,)))
     with pytest.raises(ActionRejectedError):
         runner.pr_search("human\nmerge")
+
+
+# --- merged-prs (factory floor C2) ----------------------------------------
+
+
+def test_merged_prs_runs_from_dispatchers_own_clone_and_projects_merges(
+    tmp_path: Path,
+) -> None:
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)),
+        command=scripted_checker(tmp_path, {"merged-prs": v1("merged-prs")}),
+    )
+    outcome = runner.merged_prs("2026-09-29T12:00:00+00:00")
+    assert outcome.ok is True
+    assert outcome.merges is not None
+    assert [m["merged_by"] for m in outcome.merges] == ["ai-prosto", None]
+    [call] = read_calls(tmp_path)
+    from dispatcher.core.actions import _OWN_CHECKOUT
+
+    assert f"merged-prs {_OWN_CHECKOUT} " in call
+    assert "--since 2026-09-29T12:00:00+00:00" in call
+
+
+def test_merged_prs_unread_is_null_not_empty(tmp_path: Path) -> None:
+    import json as _json
+
+    unread = _json.loads((VENDORED_FIXTURES / "merged-prs-unread.json").read_text())
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)),
+        command=contract_checker(tmp_path, unread),
+    )
+    outcome = runner.merged_prs("2026-09-29T12:00:00+00:00")
+    assert (outcome.ok, outcome.merges) == (False, None)
+
+
+def test_merged_prs_rejects_a_control_character(tmp_path: Path) -> None:
+    runner = ActionRunner(DispatcherConfig(roots=(tmp_path,)))
+    with pytest.raises(ActionRejectedError):
+        runner.merged_prs("2026-09-29\n")

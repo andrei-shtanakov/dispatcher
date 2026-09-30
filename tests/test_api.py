@@ -1744,6 +1744,7 @@ _ACTION_OUTCOME_WIRE_KEYS = sorted(
         "created",
         "issue",
         "prs",  # additive: pr-search (human queue A2); null on every other verb
+        "merges",  # additive: merged-prs (factory floor C2)
         "phase",
     ]
 )

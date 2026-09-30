@@ -8,13 +8,13 @@ source's status, never absorbed into a shorter list.
 
 from __future__ import annotations
 
-import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
 
 from dispatcher.core import read_api
 from dispatcher.core.actions import ActionOutcome
+from dispatcher.core.background_reader import BackgroundReader, spawn_daemon
 from dispatcher.core.collectors.base import SourceReadError, coerce_str
 from dispatcher.core.collectors.maestro import classified_runs, waiting_tasks
 from dispatcher.core.discovery import DispatcherConfig
@@ -338,21 +338,16 @@ _FORGE_PENDING = SourceResult(
 
 
 def _spawn_daemon(fn: Callable[[], None]) -> None:
-    threading.Thread(target=fn, name="forge-pr-search", daemon=True).start()
+    spawn_daemon(fn, "forge-pr-search")
 
 
-class ForgeReader:
+class ForgeReader(BackgroundReader[SourceResult]):
     """The forge source, refreshed in the background (spec A2 §1).
 
     `read()` never waits on GitHub: a search plus two reads per PR can
-    outlast a client's request timeout, and a queue that flapped to
-    `unavailable` once per TTL window would be worse than a slightly old
-    one. It returns the last result at once and, when that is older than
-    the TTL, starts ONE background refresh — a refresh already in flight is
-    never doubled by the next poll. Before the first search completes the
-    source says so (`unavailable`, "in progress"), never an empty list.
-    Failures are cached like successes: an outage is not re-searched per
-    poll.
+    outlast a client's request timeout. Before the first search completes
+    the source says so (`unavailable`, "in progress"), never an empty list.
+    A raising search is this source's `unavailable`, cached like a success.
     """
 
     def __init__(
@@ -364,38 +359,15 @@ class ForgeReader:
         clock: Callable[[], float] = time.monotonic,
         spawn: Callable[[Callable[[], None]], None] = _spawn_daemon,
     ) -> None:
-        self._search, self._label = search, label
-        self._ttl, self._clock, self._spawn = ttl, clock, spawn
-        self._lock = threading.Lock()
-        self._at: float | None = None
-        self._result: SourceResult | None = None
-        self._inflight = False
-
-    def read(self) -> SourceResult:
-        """The last known result; kicks off a refresh when it is stale."""
-        with self._lock:
-            stale = self._at is None or self._clock() - self._at >= self._ttl
-            start = stale and not self._inflight
-            if start:
-                self._inflight = True
-        if start:
-            try:
-                self._spawn(self._refresh)
-            except Exception:  # noqa: BLE001 — a failed spawn must not wedge
-                with self._lock:
-                    self._inflight = False
-                raise
-        with self._lock:
-            return self._result if self._result is not None else _FORGE_PENDING
-
-    def _refresh(self) -> None:
-        result = _guarded(
-            FORGE_SOURCE,
-            lambda: from_pr_search(self._search(self._label), self._label),
+        super().__init__(
+            lambda: _guarded(
+                FORGE_SOURCE, lambda: from_pr_search(search(label), label)
+            ),
+            _FORGE_PENDING,
+            ttl=ttl,
+            clock=clock,
+            spawn=spawn,
         )
-        with self._lock:
-            self._result, self._at = result, self._clock()
-            self._inflight = False
 
 
 def _unavailable(name: str, exc: Exception) -> SourceResult:

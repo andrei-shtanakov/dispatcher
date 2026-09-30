@@ -1,17 +1,17 @@
 {
   "contract": "github-checker-actions",
   "contract_version": 1,
-  "producer_commit": "1283a74b45c6a0fe2711cbdc914be48846537103",
+  "producer_commit": "85168e4a434c7438bd245f77b0fed0cbf4b49579",
   "surface_note": "sha256 of every vendored file; excludes PINNED.txt and this manifest",
-  "tree_sha256": "ee53c7c32ba4e5bf98616a0d3dbf4bd8e2d50d78c7d74517f6b4c7273cd417b4",
+  "tree_sha256": "18bbc524c36c8d6ae5dabc5746aa3f6f83bb8bd7437a55cac67a8468125b595e",
   "surface": [
     {
       "path": "README.md",
-      "sha256": "d320384c36b9c2b2218687c55d71c5cb80ce35adbd35756eacf622683c39219b"
+      "sha256": "c29e4e637e3d6d3659ccd03c70ee81e7de371aba78b59835008e3f69f1271cb5"
     },
     {
       "path": "actions.schema.json",
-      "sha256": "bf2fe49e2c96e93b23400eae951812cef2e5feb324144d5a6fbceeff5dad351a"
+      "sha256": "3dbfd92f8d32f9cafef274ab9f5855a070762aa71bcebbe64ab8c7a8f56d8012"
     },
     {
       "path": "fixtures/cli-error-no-verb.json",
@@ -84,6 +84,18 @@
     {
       "path": "fixtures/merge-unknown.json",
       "sha256": "f89c341d3239108bb219480bd6be747f68f4daf5834ae8964f92f1e91af325a7"
+    },
+    {
+      "path": "fixtures/merged-prs-found.json",
+      "sha256": "6c47d0dc15bcb35a7741bc3cb3903ae698ff3de4a8902cee20ad8a38387909eb"
+    },
+    {
+      "path": "fixtures/merged-prs-none.json",
+      "sha256": "967d99d6dcae27c15b8e4d79a274595721f6af32669fe6b2c6bc04715996413f"
+    },
+    {
+      "path": "fixtures/merged-prs-unread.json",
+      "sha256": "7377a85ba668ff0447fd413264da4c15693f37a207519d26983aa91ebc6e7251"
     },
     {
       "path": "fixtures/open-pr-already-open.json",

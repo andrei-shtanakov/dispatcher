@@ -1,5 +1,5 @@
 source: github-checker contracts/actions/v1
-commit: 1283a74b45c6a0fe2711cbdc914be48846537103
+commit: 85168e4a434c7438bd245f77b0fed0cbf4b49579
 vendored: 2026-09-30
 note: pinned copy (repo-boundaries vendoring, ADR-ECO-003). Do not edit here —
   re-vendor with scripts/revendor_github_checker_actions.sh, which derives every

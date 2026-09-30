@@ -75,6 +75,11 @@ class DispatcherConfig:
     # configs hermetic — the source runs `gh` over the network. load_config
     # defaults it to "human-merge-required"; an empty string turns it off.
     forge_merge_label: str | None = None
+    # The account whose merges the factory floor lists as the agent's (spec
+    # C2; ADR-ECO-011 — the agent merges from its own account). None → that
+    # section is off (`not_configured`), hermetic like forge_merge_label.
+    # load_config defaults it to "ai-prosto"; an empty string turns it off.
+    agent_merge_login: str | None = None
 
     @property
     def effective_maestro_home(self) -> Path:
@@ -111,17 +116,23 @@ def _validate_benchmarks_url(raw: object) -> str:
 
 
 DEFAULT_FORGE_MERGE_LABEL = "human-merge-required"
+DEFAULT_AGENT_MERGE_LOGIN = "ai-prosto"
 
 
 def _forge_merge_label(data: dict) -> str | None:
-    """The human queue's forge label; "" (or blank) turns the source off.
+    """The human queue's forge label; "" (or blank) turns the source off."""
+    return _optional_str(data, "forge_merge_label", DEFAULT_FORGE_MERGE_LABEL)
+
+
+def _optional_str(data: dict, key: str, default: str) -> str | None:
+    """A string setting with a default; "" (or blank) turns its source off.
 
     Any non-string is a load-time error: `str(False)` would search for a
-    label called "False", find nothing, and the queue would read as green.
+    label (or login) called "False", find nothing, and read as green.
     """
-    raw = data.get("forge_merge_label", DEFAULT_FORGE_MERGE_LABEL)
+    raw = data.get(key, default)
     if not isinstance(raw, str):
-        raise ValueError(f"forge_merge_label must be a string, got: {raw!r}")
+        raise ValueError(f"{key} must be a string, got: {raw!r}")
     return raw.strip() or None
 
 
@@ -191,6 +202,9 @@ def load_config(config_path: Path | None = None) -> DispatcherConfig:
         maestro_cli=maestro_cli,
         atp_catalog=atp_catalog,
         forge_merge_label=_forge_merge_label(data),
+        agent_merge_login=_optional_str(
+            data, "agent_merge_login", DEFAULT_AGENT_MERGE_LOGIN
+        ),
     )
 
 
