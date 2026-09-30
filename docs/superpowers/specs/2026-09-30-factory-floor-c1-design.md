@@ -21,12 +21,14 @@ start, so the human-queue rule against mtime as `since` does not apply.
 It is an observation, not a wait: nothing here enters the human queue. A stale run carries
 a prepared `maestro_run_end` act (`run_id`, `repo_key`, `maestro_home`, `maestro_cli`);
 the outcome — `superseded` or `cancelled` — is the human's choice at the moment of acting,
-because ending a run is a decision nothing may infer (maestro `run-end`). When dispatcher
-launched the run and its record carries a `checkout`, the act also carries `request_id`
-and the consumer routes to the run view instead: its `run-end` verb ends the run **and**
-terminalizes the launch record (`run_controller` `mark_terminal`). Records written before
-`checkout` existed are refused by those verbs, so they get the CLI line (their record stays
-open — the Launchpad finding in §3).
+because ending a run is a decision nothing may infer (maestro `run-end`). The act is the CLI
+line for **every** stale run, including ones dispatcher launched: the web run view offers
+`run-end` only inside the `launch_unknown` resolution flow, records predating `checkout`
+are refused by the run verbs, and the extension executes nothing itself — so the CLI is
+the one path a human can always take (review rounds 2–3 on #282). For a launched run the
+consequence is named, not hidden: dispatcher's launch record stays `materialized` (the
+Launchpad finding in §3). `--reason` is a documented `run-end` option ("Free-form detail
+stored with the outcome").
 
 Degradation as in the human queue: `dispatcher_runs` / `maestro` statuses, `complete`,
 HTTP 200 always.

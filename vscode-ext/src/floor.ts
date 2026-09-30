@@ -111,13 +111,3 @@ export function prepareRunEnd(act: RunEndAct, outcome: RunEndOutcome): PreparedR
       `checkout of ${act.repo_key}. Ending a run is a decision; nothing infers it.`,
   };
 }
-
-/** Where a dispatcher-launched run is ended: its own run view, whose
- * `/resolve` also closes the launch record (a raw CLI run-end would not). */
-export function runViewUrl(act: RunEndAct, baseUrl: string): string | null {
-  if (!act.request_id) {
-    return null;
-  }
-  const base = baseUrl.replace(/\/+$/, "");
-  return `${base}/#launchpad/${encodeURIComponent(act.request_id)}`;
-}

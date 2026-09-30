@@ -253,7 +253,6 @@ export interface RunEndAct {
   repo_key: string;
   maestro_home: string;
   maestro_cli: string | null;
-  request_id?: string | null;
 }
 
 export interface InFlightRun {

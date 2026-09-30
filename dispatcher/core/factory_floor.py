@@ -47,10 +47,6 @@ class RunEndAct(BaseModel):
     repo_key: str
     maestro_home: str
     maestro_cli: str | None = None
-    # Set when dispatcher launched the run and its record can act: the run
-    # view's `run-end` verb ends the run AND terminalizes the launch record,
-    # which a raw CLI `run-end` would leave open. Consumers route there.
-    request_id: str | None = None
 
 
 class InFlightRun(BaseModel):
@@ -160,12 +156,6 @@ def _in_flight(
                             None
                             if config.maestro_cli is None
                             else str(config.maestro_cli)
-                        ),
-                        # Only a record with a checkout: the run view's verbs
-                        # refuse records written before that field existed,
-                        # so routing those there would be a dead end.
-                        request_id=(
-                            record.request_id if record and record.checkout else None
                         ),
                     )
                     if stale

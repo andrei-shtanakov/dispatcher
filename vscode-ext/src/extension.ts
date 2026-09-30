@@ -15,7 +15,7 @@ import type {
 import { prepareAct } from "./myTurn";
 import { MyTurnProvider, createMyTurnStatus } from "./myTurnView";
 import { FloorProvider } from "./floorView";
-import { prepareRunEnd, runViewUrl } from "./floor";
+import { prepareRunEnd } from "./floor";
 import type { RunEndOutcome } from "./floor";
 import { createStatusBar } from "./status";
 import type { OnboardingView } from "./onboarding";
@@ -548,11 +548,6 @@ export function activate(context: vscode.ExtensionContext): void {
     if (run.act === null) {
       return;
     }
-    const viewUrl = runViewUrl(run.act, readConfig().url);
-    if (viewUrl !== null) {
-      await vscode.env.openExternal(vscode.Uri.parse(viewUrl));
-      return;
-    }
     const outcome = await vscode.window.showQuickPick(
       [
         { label: "superseded", description: "another run did this work" },
@@ -571,7 +566,12 @@ export function activate(context: vscode.ExtensionContext): void {
     const terminal = vscode.window.createTerminal({ name: prepared.name });
     terminal.show();
     terminal.sendText(prepared.text, false); // typed in, NOT executed
-    void vscode.window.showInformationMessage(prepared.note);
+    void vscode.window.showInformationMessage(
+      run.request_id
+        ? `${prepared.note} dispatcher's launch record ${run.request_id} stays ` +
+            "open after a CLI run-end (known gap, TODO launchpad-active-stale-records)."
+        : prepared.note,
+    );
   }
 
   const timer = setInterval(() => void poll(), readConfig().pollSeconds * 1000);
