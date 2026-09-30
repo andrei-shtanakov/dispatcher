@@ -40,9 +40,11 @@ HTTP 200 always.
 ## 2. VSCode
 
 View "Factory floor": "Stale — likely abandoned" first, then "In flight"; label
-`<repo> · <work_id or run_id>`, description `status · age`. Clicking a stale run asks for
-the outcome, then types `MAESTRO_HOME=… <cli> run-end <id> --outcome <o> --reason ` into a
-terminal — not executed, the reason left for the human to write.
+`<repo> · <work_id or run_id>`, description `status · started … · idle …`. Clicking a
+stale run asks for the outcome, then for the reason (input box, required, one line), and
+types `MAESTRO_HOME=… <cli> run-end <id> --outcome <o> --reason '<reason>'` into a terminal —
+not executed. The reason is always single-quoted by the extension: free text typed after a
+bare `--reason` reached zsh as syntax on 2026-09-30 (`(…)` glob qualifier, `;`) — #284.
 
 ## 3. Out of C1
 
