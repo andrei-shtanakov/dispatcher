@@ -643,7 +643,7 @@
 
 ## Человеческий контур DarkFactory (спека docs/superpowers/specs/2026-09-29-human-control-plane-design.md)
 
-- [ ] Очередь «ждёт человека», срез A1: `GET /api/human-queue` над собственными и локальными источниками (RunStore, maestro run DB полным запросом, impresario) с полнотой по источнику @owner:github:andrei-shtanakov @id:human-queue-a1 @epic:eco.governance-plane
+- [x] Очередь «ждёт человека», срез A1 (PR #273): `GET /api/human-queue` над собственными и локальными источниками (RunStore, maestro run DB полным запросом, impresario) с полнотой по источнику @owner:github:andrei-shtanakov @id:human-queue-a1 @epic:eco.governance-plane
       Спека `docs/superpowers/specs/2026-09-29-human-queue-a1-design.md`, план
       `docs/superpowers/plans/2026-09-29-human-queue-a1.md` (пара — PR #272). Форж-источники — срез A2
       (нужна read-команда в github-checker), вид «Мой ход» — срез B, стоп-кран — D.
