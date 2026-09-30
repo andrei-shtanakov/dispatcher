@@ -4,6 +4,9 @@ import {
   floorEmptyText,
   floorGroups,
   launchLine,
+  mergeDescription,
+  mergeLabel,
+  mergesSection,
   prepareRunEnd,
   runDescription,
   runAge,
@@ -119,5 +122,60 @@ describe("factory floor wording (review on #282)", () => {
     expect(launchLine(run("a", { request_id: "rc-1" }), false)).toBe(
       "launched by dispatcher: rc-1",
     );
+  });
+});
+
+describe("agent merges (C2)", () => {
+  const MERGE = {
+    repo: "andrei-shtanakov/dispatcher",
+    number: 284,
+    title: "fix(vscode): run-end asks for the reason",
+    url: "https://github.com/andrei-shtanakov/dispatcher/pull/284",
+    merged_at: "2026-09-30T09:15:33Z",
+  };
+  const ok = { state: "ok" as const, detail: null };
+
+  function withMerges(extra: Partial<FactoryFloorView>): FactoryFloorView {
+    return { ...view([]), agent_merge_login: "ai-prosto", merges_window_hours: 24, ...extra };
+  }
+
+  it("labels the section with the login, window and count", () => {
+    const section = mergesSection(
+      withMerges({ agent_merges: [MERGE], sources: { agent_merges: ok } }),
+    );
+    expect(section?.label).toBe("Merged by ai-prosto · 24h (1)");
+    expect(section?.merges).toEqual([MERGE]);
+  });
+
+  it("shows a read zero as zero", () => {
+    const section = mergesSection(withMerges({ agent_merges: [], sources: { agent_merges: ok } }));
+    expect(section?.label).toBe("Merged by ai-prosto · 24h (0)");
+  });
+
+  it("hides an unread or unconfigured section instead of claiming zero", () => {
+    const unread = { state: "unavailable" as const, detail: "first merged-prs in progress" };
+    expect(mergesSection(withMerges({ agent_merges: [], sources: { agent_merges: unread } }))).toBeNull();
+    expect(mergesSection(withMerges({ agent_merge_login: null, sources: { agent_merges: ok } }))).toBeNull();
+    // a server older than C2 sends none of the fields
+    expect(mergesSection(view([]))).toBeNull();
+  });
+
+  it("renders a merge as repo#n and its age", () => {
+    expect(mergeLabel(MERGE)).toBe("dispatcher#284 · fix(vscode): run-end asks for the reason");
+    expect(mergeDescription(MERGE, NOW)).toBe("2h ago");
+    expect(mergeDescription({ ...MERGE, merged_at: "garbled" }, NOW)).toBe("merged, time unknown");
+  });
+
+  it("an unread merges section does not make an empty floor uncertain", () => {
+    const v = withMerges({
+      complete: false,
+      sources: { maestro: ok, agent_merges: { state: "unavailable", detail: "x" } },
+    });
+    expect(floorEmptyText(v)).toBe("nothing is running");
+    const runsUnread = withMerges({
+      complete: false,
+      sources: { maestro: { state: "partial", detail: "x" }, agent_merges: ok },
+    });
+    expect(floorEmptyText(runsUnread)).toBe("no known runs — sources incomplete");
   });
 });

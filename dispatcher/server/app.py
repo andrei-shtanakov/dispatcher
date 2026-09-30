@@ -33,7 +33,11 @@ from dispatcher.core.epics import (
     build_detail,
     build_view,
 )
-from dispatcher.core.factory_floor import FactoryFloorView, build_factory_floor
+from dispatcher.core.factory_floor import (
+    AgentMergesReader,
+    FactoryFloorView,
+    build_factory_floor,
+)
 from dispatcher.core.governance import BundleGovernance
 from dispatcher.core.human_queue import HumanQueueView
 from dispatcher.core.human_queue_sources import ForgeReader, build_human_queue
@@ -254,6 +258,12 @@ def create_app(
     forge = (
         ForgeReader(actions.pr_search, config.forge_merge_label)
         if config.forge_merge_label
+        else None
+    )
+    # Same reason for the factory floor's agent merges (slice C2).
+    agent_merges = (
+        AgentMergesReader(actions.merged_prs, config.agent_merge_login)
+        if config.agent_merge_login
         else None
     )
     spec_runner_config_actions = SpecRunnerConfigActionRunner(config)
@@ -482,11 +492,14 @@ def create_app(
 
     @app.get("/api/factory-floor", response_model=FactoryFloorView)
     def factory_floor() -> FactoryFloorView:
-        """Maestro runs that have not ended, stale ones first (slice C1).
+        """Maestro runs that have not ended, stale ones first (slice C1), and
+        what the agent merged in the last 24 h (slice C2).
 
         Always HTTP 200 — an unreadable source is content, not an error.
         """
-        return build_factory_floor(config, now=datetime.now(timezone.utc))
+        return build_factory_floor(
+            config, now=datetime.now(timezone.utc), merges=agent_merges
+        )
 
     @app.get("/api/human-queue", response_model=HumanQueueView)
     def human_queue() -> HumanQueueView:

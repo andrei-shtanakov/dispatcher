@@ -143,6 +143,23 @@ class PrRef(BaseModel):
     labeled_at: str | None
 
 
+class MergedPr(BaseModel):
+    """One merged PR from `merged-prs` (`$defs/merged_pr`).
+
+    `merged_by` is required-and-nullable: null is the producer's "the
+    merging account no longer exists", never a default.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo: str
+    number: int
+    title: str
+    url: str
+    merged_at: str
+    merged_by: str | None
+
+
 class PrDetail(BaseModel):
     """One PR's reviewable state (`$defs/pr_detail`).
 
@@ -226,6 +243,7 @@ class ActionPayload(BaseModel):
     created: bool | None = None
     issue: IssueRef | None = None
     prs: list[PrRef] | None = None
+    merges: list[MergedPr] | None = None
 
 
 class CliError(BaseModel):

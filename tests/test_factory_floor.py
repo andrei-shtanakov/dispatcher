@@ -10,8 +10,13 @@ import httpx
 import pytest
 from conftest import make_maestro_run, write_holder
 
+from dispatcher.core.actions import ActionOutcome
 from dispatcher.core.discovery import DispatcherConfig
-from dispatcher.core.factory_floor import build_factory_floor
+from dispatcher.core.factory_floor import (
+    AgentMergesReader,
+    build_factory_floor,
+    from_merged_prs,
+)
 from dispatcher.core.run_identity import RepoKey
 from dispatcher.core.run_store import RunStore
 from dispatcher.server.app import create_app
@@ -278,3 +283,135 @@ def test_a_wal_holding_pages_is_activity(tmp_path: Path) -> None:
     _touch(wal, _RECENT)
     [run] = build_factory_floor(_config(tmp_path), now=_NOW).in_flight
     assert run.stale is False
+
+
+# --- C2: what the agent merged in the last 24 h --------------------------
+
+
+def _merge(number: int, by: str | None, at: str, repo: str = "acme/app") -> dict:
+    return {
+        "repo": repo,
+        "number": number,
+        "title": f"pr {number}",
+        "url": f"https://github.com/{repo}/pull/{number}",
+        "merged_at": at,
+        "merged_by": by,
+    }
+
+
+def _merged(merges: list[dict] | None, *, ok: bool = True) -> ActionOutcome:
+    return ActionOutcome(
+        action="merged-prs",
+        dir="dispatcher",
+        ok=ok,
+        error=None if ok else "search counted 3 merges but returned 2",
+        merges=merges,
+        phase="readable_result",
+    )
+
+
+def _sync(fn):
+    fn()
+
+
+def _reader(search, **kw) -> AgentMergesReader:
+    return AgentMergesReader(
+        search, "ai-prosto", wall=lambda: _NOW, clock=lambda: 0.0, spawn=_sync, **kw
+    )
+
+
+def test_only_the_agents_merges_newest_first() -> None:
+    result = from_merged_prs(
+        _merged(
+            [
+                _merge(1, "ai-prosto", "2026-09-30T08:00:00Z"),
+                _merge(2, "andrei-shtanakov", "2026-09-30T09:00:00Z"),
+                _merge(3, "AI-Prosto", "2026-09-30T10:00:00Z", "acme/lib"),
+                _merge(4, None, "2026-09-30T11:00:00Z"),
+            ]
+        ),
+        "ai-prosto",
+    )
+    assert result.status.state == "ok"
+    # a human's merge and a deleted account's merge are not the agent's
+    assert [(m.repo, m.number) for m in result.merges] == [
+        ("acme/lib", 3),
+        ("acme/app", 1),
+    ]
+
+
+def test_an_unread_search_is_unavailable_not_no_merges() -> None:
+    for outcome in (_merged(None, ok=False), _merged([], ok=False)):
+        result = from_merged_prs(outcome, "ai-prosto")
+        assert result.status.state == "unavailable"
+        assert result.merges == []
+
+
+def test_the_reader_searches_the_last_24_hours() -> None:
+    asked: list[str] = []
+
+    def search(since: str) -> ActionOutcome:
+        asked.append(since)
+        return _merged([])
+
+    result = _reader(search).read()
+    assert result.status.state == "ok"
+    assert asked == ["2026-09-29T12:00:00+00:00"]
+
+
+def test_a_raising_search_is_unavailable() -> None:
+    def search(since: str) -> ActionOutcome:
+        raise RuntimeError("github down")
+
+    result = _reader(search).read()
+    assert result.status.state == "unavailable"
+    assert "github down" in (result.status.detail or "")
+
+
+def test_before_the_first_search_lands_it_says_in_progress() -> None:
+    pending: list = []
+    reader = AgentMergesReader(
+        lambda since: _merged([]),
+        "ai-prosto",
+        clock=lambda: 0.0,
+        spawn=pending.append,
+    )
+    first = reader.read()
+    assert first.status.state == "unavailable"
+    assert "in progress" in (first.status.detail or "")
+
+
+def test_the_view_carries_the_merges_and_their_completeness(tmp_path: Path) -> None:
+    reader = _reader(
+        lambda since: _merged([_merge(9, "ai-prosto", "2026-09-30T09:15:33Z")])
+    )
+    view = build_factory_floor(_config(tmp_path), now=_NOW, merges=reader)
+    assert [m.number for m in view.agent_merges] == [9]
+    assert (view.agent_merge_login, view.merges_window_hours) == ("ai-prosto", 24)
+    assert view.sources["agent_merges"].state == "ok"
+    assert view.complete is True
+
+
+def test_an_unread_merges_section_makes_the_view_incomplete(tmp_path: Path) -> None:
+    reader = _reader(lambda since: _merged(None, ok=False))
+    view = build_factory_floor(_config(tmp_path), now=_NOW, merges=reader)
+    assert view.agent_merges == []
+    assert view.sources["agent_merges"].state == "unavailable"
+    assert view.complete is False
+
+
+def test_no_login_is_not_configured(tmp_path: Path) -> None:
+    view = build_factory_floor(_config(tmp_path), now=_NOW)
+    assert view.sources["agent_merges"].state == "not_configured"
+    assert view.agent_merge_login is None
+    assert view.complete is True
+
+
+def test_a_reader_that_cannot_start_is_unavailable_not_a_500(tmp_path: Path) -> None:
+    def no_threads(fn):
+        raise RuntimeError("can't start new thread")
+
+    reader = AgentMergesReader(lambda since: _merged([]), "ai-prosto", spawn=no_threads)
+    view = build_factory_floor(_config(tmp_path), now=_NOW, merges=reader)
+    assert view.sources["agent_merges"].state == "unavailable"
+    assert "new thread" in (view.sources["agent_merges"].detail or "")

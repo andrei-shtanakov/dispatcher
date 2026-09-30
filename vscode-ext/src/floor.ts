@@ -1,6 +1,6 @@
-/** Factory floor view-model (spec 2026-09-30-factory-floor-c1-design). vscode-free. */
+/** Factory floor view-model (specs 2026-09-30-factory-floor-c1/c2-design). vscode-free. */
 
-import type { FactoryFloorView, InFlightRun, RunEndAct } from "./api";
+import type { AgentMerge, FactoryFloorView, InFlightRun, RunEndAct } from "./api";
 import { shortRepo } from "./myTurn";
 
 export type RunEndOutcome = "superseded" | "cancelled";
@@ -34,13 +34,51 @@ export function floorGroups(view: FactoryFloorView): FloorGroup[] {
   return groups.filter((g) => g.runs.length > 0);
 }
 
+const RUN_SOURCES = ["maestro", "dispatcher_runs"];
+
+/** Whether the runs list is complete — judged by the run sources only: an
+ * unread merges section must not make "nothing is running" uncertain. */
+function runsComplete(view: FactoryFloorView): boolean {
+  const known = RUN_SOURCES.map((k) => view.sources[k]).filter((s) => s !== undefined);
+  if (known.length === 0) {
+    return view.complete;
+  }
+  return known.every((s) => s.state === "ok" || s.state === "not_configured");
+}
+
 export function floorEmptyText(view: FactoryFloorView): string | null {
   if (view.in_flight.length > 0) {
     return null;
   }
-  return view.complete
-    ? "nothing is running"
-    : "no known runs — sources incomplete";
+  return runsComplete(view) ? "nothing is running" : "no known runs — sources incomplete";
+}
+
+export interface MergesSection {
+  label: string;
+  merges: AgentMerge[];
+}
+
+/** The agent's merges, or null when that section was not read — its
+ * absence is then explained by the "sources incomplete" banner, never
+ * shown as "merged nothing". */
+export function mergesSection(view: FactoryFloorView): MergesSection | null {
+  const login = view.agent_merge_login;
+  if (!login || view.sources["agent_merges"]?.state !== "ok") {
+    return null;
+  }
+  const merges = view.agent_merges ?? [];
+  const hours = view.merges_window_hours ?? 24;
+  return { label: `Merged by ${login} · ${hours}h (${merges.length})`, merges };
+}
+
+export function mergeLabel(merge: AgentMerge): string {
+  const repo = merge.repo.split("/").pop() ?? merge.repo;
+  return `${repo}#${merge.number} · ${merge.title}`;
+}
+
+export function mergeDescription(merge: AgentMerge, now: Date): string {
+  const when = ago(merge.merged_at, now);
+  return when === "unknown" ? "merged, time unknown" : `${when} ago`;
 }
 
 function ago(iso: string | null, now: Date): string {

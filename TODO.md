@@ -653,14 +653,14 @@
 - [x] Очередь, срез A2 (PR #280): PR с `human-merge-required` и candidate-PR через read-команду github-checker @owner:github:andrei-shtanakov @id:human-queue-a2 @epic:eco.governance-plane
       Владелец разрешил 2026-09-30 вести PR в github-checker напрямую (исключение из правила границ). В A2 же: уточнить docstring `from_impresario_report`, проверять уникальность имён источников; нести в `maestro_verb` эффективные `MAESTRO_HOME`/`ATP_CATALOG`, чтобы подготовленная в VSCode команда не зависела от окружения (ревью #274).
 - [x] «Цех», срез C1 (PR #282): `GET /api/factory-floor` + вид VSCode — незавершённые прогоны maestro, зависшие первыми, подготовленный `run-end` @owner:github:andrei-shtanakov @id:factory-floor-c1 @epic:eco.governance-plane
-- [ ] «Цех», срез C2: мержи агента за сутки (`merged_by: ai-prosto`) — нужна команда github-checker на GraphQL-поиске @owner:github:andrei-shtanakov @id:factory-floor-c2 @epic:eco.governance-plane @blocked_by:todo://dispatcher/factory-floor-c1
+- [x] «Цех», срез C2: мержи агента за сутки (`merged_by: ai-prosto`) — github-checker `merged-prs` (#49), контракт перевендорен на 85168e4, секция в `/api/factory-floor` и в VSCode @owner:github:andrei-shtanakov @id:factory-floor-c2 @epic:eco.governance-plane @blocked_by:todo://dispatcher/factory-floor-c1
 - [ ] Launchpad «active» показывает записи в `materialized`, чей прогон maestro давно завершён (4 из 5 на 2026-09-30) — записи не переводятся в терминальное состояние @owner:github:andrei-shtanakov @id:launchpad-active-stale-records @epic:eco.tooling
 - [ ] Стоп-кран (срез D): отложен 2026-09-30 — четыре репо + D0 под админской учёткой владельца, на полдня не ложится @owner:github:andrei-shtanakov @id:darkfactory-halt @epic:eco.governance-plane @trigger:"владелец выделил время на D0 (песочница, §6.4 документа направления)"
 - [ ] spec-runner-vscode: кнопка Approve пишет `status: approved` + `approved_by` из `git config` — в DarkFactory-репо это обход решения 2; issue соседу не заведён @owner:github:andrei-shtanakov @id:spec-runner-vscode-approve-bypass @epic:eco.governance-plane @trigger:"spec-runner-vscode используется как интерфейс S7→S8"
 
 ## Хвосты качества
 
-- [ ] github-checker `contracts/actions/v1/README.md` в трёх местах ещё говорит «eight verbs» после pr-search (#48); вендоренную копию не править — исправить у продюсера и перевендорить (ревью dispatcher#280) @owner:github:andrei-shtanakov @id:gc-actions-readme-nine-verbs @epic:eco.tooling
+- [x] github-checker `contracts/actions/v1/README.md` в трёх местах ещё говорит «eight verbs» — исправлено у продюсера в #49, перевендорено после pr-search (#48); вендоренную копию не править — исправить у продюсера и перевендорить (ревью dispatcher#280) @owner:github:andrei-shtanakov @id:gc-actions-readme-nine-verbs @epic:eco.tooling
 - [ ] Нестабильный `tests/test_run_controller.py::test_run_end_through_the_resolution_path_also_binds_to_the_checkout`: на чистом master падает ~в половине одиночных прогонов (`RunRejectedError: cannot run maestro run-end`), замечено 2026-09-30 при A2 @owner:github:andrei-shtanakov @id:flaky-run-end-checkout-binding @epic:eco.tooling
 - [x] Проход 1 слайса 0 ПРИНЯТ — deployer#40 @owner:github:andrei-shtanakov @id:df-slice0-pass1-acceptance
       Принят вторым прогоном 2026-08-24 (`01M0T5HA1PW0J0GWTCGMZVFWW0`, запрос выдан

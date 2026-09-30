@@ -202,6 +202,21 @@ def test_forge_merge_label_defaults_on_and_can_be_turned_off(tmp_path: Path) -> 
     assert DispatcherConfig(roots=(tmp_path,)).forge_merge_label is None
 
 
+def test_agent_merge_login_defaults_on_and_can_be_turned_off(tmp_path: Path) -> None:
+    """The factory floor's agent merges (C2): the same on/off rules."""
+    from dispatcher.core.discovery import DispatcherConfig, load_config
+
+    cfg = tmp_path / "dispatcher.toml"
+    cfg.write_text(f'roots = ["{tmp_path}"]\n')
+    assert load_config(cfg).agent_merge_login == "ai-prosto"
+    cfg.write_text(f'roots = ["{tmp_path}"]\nagent_merge_login = ""\n')
+    assert load_config(cfg).agent_merge_login is None
+    cfg.write_text(f'roots = ["{tmp_path}"]\nagent_merge_login = 0\n')
+    with pytest.raises(ValueError, match="agent_merge_login must be a string"):
+        load_config(cfg)
+    assert DispatcherConfig(roots=(tmp_path,)).agent_merge_login is None
+
+
 def test_a_non_string_forge_merge_label_is_a_load_error(tmp_path: Path) -> None:
     from dispatcher.core.discovery import load_config
 

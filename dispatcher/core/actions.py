@@ -95,6 +95,7 @@ class ActionOutcome(BaseModel):
     created: bool | None = None
     issue: dict[str, Any] | None = None
     prs: list[dict[str, Any]] | None = None
+    merges: list[dict[str, Any]] | None = None
     # Which side of the fork this outcome was decided on. Not cosmetic: it is
     # what stops "nothing ran" and "it ran and we could not read the answer"
     # from being told apart by Python's exception hierarchy, which is the
@@ -168,7 +169,7 @@ def project_outcome(ingested: Ingested, *, action: str, dir_name: str) -> Action
             fields[name] = (
                 None if nested is None else nested.model_dump(exclude_unset=True)
             )
-    for name in ("matches", "malformed", "prs"):
+    for name in ("matches", "malformed", "prs", "merges"):
         if name in sent:
             # `exclude_unset` here is knowingly unpinned: `issue_ref`
             # declares all six of its fields required, so today it can
@@ -670,6 +671,27 @@ class ActionRunner:
             outcome.ok,
             outcome.phase,
             len(prs) if isinstance(prs, list) else "unknown",
+        )
+        return outcome
+
+    def merged_prs(self, since: str) -> ActionOutcome:
+        """PRs merged since *since* across this repo's owner. A read, no lock.
+
+        Owner resolved from dispatcher's own checkout, as for `pr-search`
+        (factory floor C2)."""
+        try:
+            reject_control_chars(since=since)
+        except ActionRejectedError as err:
+            _audit.info("action=merged-prs since=%r ok=False rejected=%s", since, err)
+            raise
+        outcome = self._invoke("merged-prs", _OWN_CHECKOUT, "--since", since)
+        merges = outcome.merges
+        _audit.info(
+            "action=merged-prs since=%r ok=%s phase=%s merges=%s",
+            since,
+            outcome.ok,
+            outcome.phase,
+            len(merges) if isinstance(merges, list) else "unknown",
         )
         return outcome
 

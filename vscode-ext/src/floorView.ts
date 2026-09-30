@@ -1,11 +1,14 @@
 /** "Factory floor" tree: a thin adapter over floor.ts. */
 
 import * as vscode from "vscode";
-import type { FactoryFloorView, InFlightRun } from "./api";
+import type { AgentMerge, FactoryFloorView, InFlightRun } from "./api";
 import {
   floorEmptyText,
   floorGroups,
   launchLine,
+  mergeDescription,
+  mergeLabel,
+  mergesSection,
   runDescription,
   runLabel,
 } from "./floor";
@@ -22,6 +25,8 @@ type FloorNode =
   | { kind: "line"; text: string }
   | { kind: "group"; label: string; stale: boolean; runs: InFlightRun[] }
   | { kind: "run"; run: InFlightRun }
+  | { kind: "merges"; label: string; merges: AgentMerge[] }
+  | { kind: "merge"; merge: AgentMerge }
   | { kind: "text"; text: string; icon: string }
   | { kind: "offline" };
 
@@ -62,6 +67,18 @@ export class FloorProvider implements vscode.TreeDataProvider<FloorNode> {
       }
       case "run":
         return this.runItem(node.run, this.recordsRead());
+      case "merges": {
+        const item = new vscode.TreeItem(
+          node.label,
+          node.merges.length > 0
+            ? vscode.TreeItemCollapsibleState.Collapsed
+            : vscode.TreeItemCollapsibleState.None,
+        );
+        item.iconPath = new vscode.ThemeIcon("git-merge");
+        return item;
+      }
+      case "merge":
+        return this.mergeItem(node.merge);
       case "text": {
         const item = new vscode.TreeItem(node.text);
         item.iconPath = new vscode.ThemeIcon(node.icon);
@@ -103,6 +120,19 @@ export class FloorProvider implements vscode.TreeDataProvider<FloorNode> {
     return item;
   }
 
+  private mergeItem(merge: AgentMerge): vscode.TreeItem {
+    const item = new vscode.TreeItem(mergeLabel(merge));
+    item.description = mergeDescription(merge, new Date());
+    item.tooltip = `${merge.repo}#${merge.number}\nmerged: ${merge.merged_at}\n${merge.url}`;
+    item.iconPath = new vscode.ThemeIcon("git-pull-request");
+    item.command = {
+      command: "vscode.open",
+      title: "Open PR",
+      arguments: [vscode.Uri.parse(merge.url)],
+    };
+    return item;
+  }
+
   getChildren(node?: FloorNode): FloorNode[] {
     if (node !== undefined) {
       if (node.kind === "banner") {
@@ -110,6 +140,9 @@ export class FloorProvider implements vscode.TreeDataProvider<FloorNode> {
       }
       if (node.kind === "group") {
         return node.runs.map((run) => ({ kind: "run", run }));
+      }
+      if (node.kind === "merges") {
+        return node.merges.map((merge) => ({ kind: "merge", merge }));
       }
       return [];
     }
@@ -134,8 +167,11 @@ export class FloorProvider implements vscode.TreeDataProvider<FloorNode> {
     }
     const empty = floorEmptyText(view);
     if (empty !== null) {
-      roots.push({ kind: "text", text: empty, icon: view.complete ? "check" : "question" });
-      return roots;
+      roots.push({
+        kind: "text",
+        text: empty,
+        icon: empty === "nothing is running" ? "check" : "question",
+      });
     }
     roots.push(
       ...floorGroups(view).map(
@@ -147,6 +183,11 @@ export class FloorProvider implements vscode.TreeDataProvider<FloorNode> {
         }),
       ),
     );
+    // After the runs: what the agent did is context, the runs are the work.
+    const merges = mergesSection(view);
+    if (merges !== null) {
+      roots.push({ kind: "merges", label: merges.label, merges: merges.merges });
+    }
     return roots;
   }
 
