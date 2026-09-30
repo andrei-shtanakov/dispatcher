@@ -1460,6 +1460,7 @@ _CANONICAL = {
     "issue-lookup": "issue-lookup-one",
     "issue-create": "issue-create-created",
     "propose-pr": "propose-pr-created",
+    "pr-search": "pr-search-found",
 }
 DROP = object()
 
@@ -1947,3 +1948,46 @@ def test_the_audit_sweep_spans_every_phase() -> None:
         PHASE_LAUNCHED_UNREADABLE,
         PHASE_READABLE,
     }
+
+
+# --- pr-search (human queue A2) ------------------------------------------
+
+
+def test_pr_search_runs_from_dispatchers_own_clone_and_projects_prs(
+    tmp_path: Path,
+) -> None:
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)),
+        command=scripted_checker(tmp_path, {"pr-search": v1("pr-search")}),
+    )
+    outcome = runner.pr_search("human-merge-required")
+    assert outcome.ok is True
+    assert outcome.prs is not None
+    assert [p["number"] for p in outcome.prs] == [7, 3]
+    # null survives the projection: head unknown is not head absent
+    assert outcome.prs[1]["head_sha"] is None
+    [call] = read_calls(tmp_path)
+    assert "pr-search" in call and "--label human-merge-required" in call
+    # the owner is resolved from dispatcher's own clone, not a workspace dir
+    from dispatcher.core.actions import _OWN_CHECKOUT
+
+    assert f"pr-search {_OWN_CHECKOUT} " in call
+
+
+def test_pr_search_unread_is_null_not_empty(tmp_path: Path) -> None:
+    import json as _json
+
+    unread = _json.loads((VENDORED_FIXTURES / "pr-search-unread.json").read_text())
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)),
+        command=contract_checker(tmp_path, unread),
+    )
+    outcome = runner.pr_search("human-merge-required")
+    assert outcome.ok is False
+    assert outcome.prs is None
+
+
+def test_pr_search_rejects_a_control_character_in_the_label(tmp_path: Path) -> None:
+    runner = ActionRunner(DispatcherConfig(roots=(tmp_path,)))
+    with pytest.raises(ActionRejectedError):
+        runner.pr_search("human\nmerge")

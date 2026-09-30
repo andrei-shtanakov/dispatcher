@@ -62,9 +62,11 @@ async def test_queue_over_local_sources_is_partial_by_construction(
     assert body["sources"]["dispatcher_runs"]["state"] == "ok"
     assert body["sources"]["maestro"]["state"] == "ok"
     assert body["sources"]["impresario"]["state"] == "not_configured"
-    assert body["sources"]["forge_labelled_prs"]["state"] == "not_connected"
-    assert body["sources"]["forge_candidate_prs"]["state"] == "not_connected"
-    assert body["complete"] is False
+    # No forge_merge_label in a bare DispatcherConfig: the forge source is
+    # off, not missing — so a queue over healthy local sources is complete.
+    assert body["sources"]["forge_labelled_prs"]["state"] == "not_configured"
+    assert "forge_candidate_prs" not in body["sources"]
+    assert body["complete"] is True
 
 
 async def test_a_raising_adapter_is_unavailable_not_a_500(
@@ -148,3 +150,77 @@ async def test_a_failing_run_store_does_not_hide_maestro_waits(
     [wait] = body["waits"]
     assert wait["source"] == "maestro"
     assert wait["act"]["kind"] == "maestro_verb"
+
+
+async def test_the_forge_source_joins_the_queue_when_a_label_is_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dispatcher.core.actions import ActionOutcome, ActionRunner
+
+    labels: list[str] = []
+
+    def fake_search(self: ActionRunner, label: str) -> ActionOutcome:
+        labels.append(label)
+        return ActionOutcome(
+            action="pr-search",
+            dir="dispatcher",
+            ok=True,
+            phase="readable_result",
+            prs=[
+                {
+                    "repo": "acme/widget",
+                    "number": 7,
+                    "title": "needs a human",
+                    "url": "https://github.com/acme/widget/pull/7",
+                    "head_sha": "a" * 40,
+                    "head_ref": "feat/x",
+                    "labeled_at": "2026-09-21T08:30:00Z",
+                }
+            ],
+        )
+
+    monkeypatch.setattr(ActionRunner, "pr_search", fake_search)
+    import dataclasses
+
+    config = dataclasses.replace(
+        _config(tmp_path), forge_merge_label="human-merge-required"
+    )
+    import time as _time
+
+    async with _client(config) as client:
+        # The search runs in the background (the first answer may still say
+        # "in progress" — pinned deterministically in the unit tests), so
+        # poll until it lands.
+        deadline = _time.monotonic() + 5
+        while True:
+            body = (await client.get("/api/human-queue")).json()
+            if body["sources"]["forge_labelled_prs"]["state"] == "ok":
+                break
+            assert _time.monotonic() < deadline, "background search never landed"
+            _time.sleep(0.02)
+        await client.get("/api/human-queue")
+
+    [wait] = [w for w in body["waits"] if w["source"] == "forge_labelled_prs"]
+    assert wait["key"] == "pr:acme/widget#7"
+    assert wait["act"]["kind"] == "human_merge"
+    assert labels == ["human-merge-required"]  # later polls served from cache
+
+
+async def test_a_forge_reader_that_raises_is_unavailable_not_a_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dataclasses
+
+    def boom(self: object) -> object:
+        raise RuntimeError("cannot start thread")
+
+    monkeypatch.setattr(human_queue_sources.ForgeReader, "read", boom)
+    config = dataclasses.replace(
+        _config(tmp_path), forge_merge_label="human-merge-required"
+    )
+    async with _client(config) as client:
+        resp = await client.get("/api/human-queue")
+    assert resp.status_code == 200
+    forge = resp.json()["sources"]["forge_labelled_prs"]
+    assert forge["state"] == "unavailable"
+    assert "cannot start thread" in forge["detail"]

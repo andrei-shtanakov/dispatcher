@@ -21,6 +21,7 @@ Reason = Literal[
     "loop_needs_human",
     "proposal_gate",
     "backlog_gate",
+    "pr_human_merge",
 ]
 
 # `not_configured` = the feature is off, so nothing can wait there; it is not
@@ -59,8 +60,21 @@ class OpenArtifactAct(BaseModel):
     path: str
 
 
+class HumanMergeAct(BaseModel):
+    """A PR the policy reserves for a human; merged with devtools
+    `human-merge.sh`, pinned to `head_sha` (None: the head could not be
+    read — the consumer must not invent a pin)."""
+
+    kind: Literal["human_merge"] = "human_merge"
+    repo: str  # owner/name
+    number: int
+    url: str
+    head_sha: str | None
+
+
 Act = Annotated[
-    RunViewAct | MaestroVerbAct | OpenArtifactAct, Field(discriminator="kind")
+    RunViewAct | MaestroVerbAct | OpenArtifactAct | HumanMergeAct,
+    Field(discriminator="kind"),
 ]
 
 

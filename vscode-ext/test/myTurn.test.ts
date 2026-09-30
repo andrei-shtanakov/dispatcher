@@ -13,7 +13,9 @@ import {
   isOverdue,
   myTurnStatus,
   prepareAct,
+  shortRepo,
   waitDescription,
+  waitLabel,
 } from "../src/myTurn";
 
 const NOW = new Date("2026-09-30T12:00:00Z");
@@ -126,8 +128,8 @@ describe("age and description", () => {
     const w = wait("a", { reasons: ["backlog_gate", "proposal_gate"] });
     const d = waitDescription(w, NOW);
     expect(d).toContain("age unknown");
-    expect(d).toContain("impresario");
     expect(d).toContain("backlog_gate + proposal_gate");
+    expect(waitLabel(w)).toBe("impresario · title a");
   });
 });
 
@@ -151,7 +153,7 @@ describe("grouping", () => {
   it("never drops a wait whose reason this build does not know", () => {
     // A newer server (A2) serves reasons an installed .vsix predates.
     const w = wait("pr", {
-      reasons: ["pr_human_merge" as unknown as "proposal_gate"],
+      reasons: ["bundle_candidate" as unknown as "proposal_gate"],
     });
     const groups = groupWaits(view([wait("g1"), w]));
     expect(groups.map((g) => g.reason)).toEqual(["proposal_gate", "other"]);
@@ -276,5 +278,68 @@ describe("acts are prepared, never executed", () => {
       { ...opts, impresarioPath: "/ws/impresario" },
     );
     expect(absolute.kind).toBe("clipboard");
+  });
+});
+
+describe("labels lead with the repo", () => {
+  it("shortens repo keys to their last segment", () => {
+    expect(shortRepo("github.com/andrei-shtanakov/deployer")).toBe("deployer");
+    expect(shortRepo("acme/widget")).toBe("widget");
+    expect(shortRepo("impresario")).toBe("impresario");
+    expect(shortRepo(null)).toBeNull();
+  });
+
+  it("puts the repo before a title that may be cut off", () => {
+    const w = wait("m", {
+      repo: "github.com/andrei-shtanakov/deployer",
+      title: "Failing test: a short entrypoint must not match a longer filename",
+    });
+    expect(waitLabel(w).startsWith("deployer · Failing test")).toBe(true);
+    expect(waitDescription(w, NOW)).not.toContain("deployer");
+  });
+});
+
+describe("human merge (A2)", () => {
+  const opts = { baseUrl: "http://127.0.0.1:8787", impresarioPath: null };
+  const act = {
+    kind: "human_merge" as const,
+    repo: "andrei-shtanakov/dispatcher",
+    number: 275,
+    url: "https://github.com/andrei-shtanakov/dispatcher/pull/275",
+    head_sha: "a".repeat(40),
+  };
+
+  it("groups PRs first", () => {
+    const groups = groupWaits(
+      view([
+        wait("g", { reasons: ["proposal_gate"] }),
+        wait("p", { reasons: ["pr_human_merge"] }),
+      ]),
+    );
+    expect(groups[0].reason).toBe("pr_human_merge");
+  });
+
+  it("prepares the PR link and a pinned human-merge command", () => {
+    const p = prepareAct(act, opts);
+    expect(p.kind).toBe("human_merge");
+    if (p.kind !== "human_merge") return;
+    expect(p.url).toBe(act.url);
+    expect(p.command).toBe(
+      `sh devtools/human-merge.sh dispatcher 275 --expect-head ${"a".repeat(40)}`,
+    );
+    expect(p.note).toContain("YOUR gh");
+  });
+
+  it("never invents a pin when the head is unknown", () => {
+    const p = prepareAct({ ...act, head_sha: null }, opts);
+    expect(p.kind === "human_merge" && p.command).toBe(
+      "sh devtools/human-merge.sh dispatcher 275",
+    );
+    expect(p.kind === "human_merge" && p.note).toContain("no --expect-head");
+  });
+
+  it("refuses control characters in the PR identifiers", () => {
+    const p = prepareAct({ ...act, head_sha: "abc\nrm -rf /" }, opts);
+    expect(p.kind).toBe("refused");
   });
 });

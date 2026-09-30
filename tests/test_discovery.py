@@ -184,3 +184,28 @@ def test_non_table_benchmarks_section_is_a_load_time_error(tmp_path: Path) -> No
     path = _write(tmp_path, "benchmarks = 5\n")
     with pytest.raises(ValueError, match=r"\[benchmarks\] must be a TOML table"):
         load_config(path)
+
+
+def test_forge_merge_label_defaults_on_and_can_be_turned_off(tmp_path: Path) -> None:
+    """The human queue's forge source (A2): on by default for a real
+    config, off for a bare DispatcherConfig and for an explicit empty
+    string — an empty label must never become a search for "" ."""
+    from dispatcher.core.discovery import DispatcherConfig, load_config
+
+    cfg = tmp_path / "dispatcher.toml"
+    cfg.write_text(f'roots = ["{tmp_path}"]\n')
+    assert load_config(cfg).forge_merge_label == "human-merge-required"
+    cfg.write_text(f'roots = ["{tmp_path}"]\nforge_merge_label = "  "\n')
+    assert load_config(cfg).forge_merge_label is None
+    cfg.write_text(f'roots = ["{tmp_path}"]\nforge_merge_label = "needs-me"\n')
+    assert load_config(cfg).forge_merge_label == "needs-me"
+    assert DispatcherConfig(roots=(tmp_path,)).forge_merge_label is None
+
+
+def test_a_non_string_forge_merge_label_is_a_load_error(tmp_path: Path) -> None:
+    from dispatcher.core.discovery import load_config
+
+    cfg = tmp_path / "dispatcher.toml"
+    cfg.write_text(f'roots = ["{tmp_path}"]\nforge_merge_label = false\n')
+    with pytest.raises(ValueError, match="must be a string"):
+        load_config(cfg)

@@ -509,6 +509,25 @@ export function activate(context: vscode.ExtensionContext): void {
       case "refused":
         void vscode.window.showWarningMessage(prepared.note);
         return;
+      case "human_merge": {
+        // Review first, merge second: both are offered, neither is done.
+        const open = "Open PR in browser";
+        const type = "Type human-merge command (not executed)";
+        const pick = await vscode.window.showQuickPick([open, type], {
+          title: wait.title,
+        });
+        if (pick === open) {
+          await vscode.env.openExternal(vscode.Uri.parse(prepared.url));
+        } else if (pick === type) {
+          const terminal = vscode.window.createTerminal({
+            name: "human-merge",
+          });
+          terminal.show();
+          terminal.sendText(prepared.command, false); // typed in, NOT executed
+          void vscode.window.showInformationMessage(prepared.note);
+        }
+        return;
+      }
     }
   }
 

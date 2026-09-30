@@ -67,6 +67,10 @@ _WHITELIST = frozenset({"pull", "open-pr", "post-merge-sync"})
 _audit = logging.getLogger("dispatcher.actions")
 
 
+#: dispatcher's own clone — what `pr-search` resolves the fleet owner from.
+_OWN_CHECKOUT = Path(__file__).resolve().parents[2]
+
+
 class ActionOutcome(BaseModel):
     """What one whitelist action did; mirrors github-checker's ActionResult."""
 
@@ -90,6 +94,7 @@ class ActionOutcome(BaseModel):
     malformed: list[dict[str, Any]] | None = None
     created: bool | None = None
     issue: dict[str, Any] | None = None
+    prs: list[dict[str, Any]] | None = None
     # Which side of the fork this outcome was decided on. Not cosmetic: it is
     # what stops "nothing ran" and "it ran and we could not read the answer"
     # from being told apart by Python's exception hierarchy, which is the
@@ -163,7 +168,7 @@ def project_outcome(ingested: Ingested, *, action: str, dir_name: str) -> Action
             fields[name] = (
                 None if nested is None else nested.model_dump(exclude_unset=True)
             )
-    for name in ("matches", "malformed"):
+    for name in ("matches", "malformed", "prs"):
         if name in sent:
             # `exclude_unset` here is knowingly unpinned: `issue_ref`
             # declares all six of its fields required, so today it can
@@ -643,6 +648,28 @@ class ActionRunner:
             pr,
             outcome.ok,
             outcome.phase,
+        )
+        return outcome
+
+    def pr_search(self, label: str) -> ActionOutcome:
+        """Open PRs labelled *label* across this repo's owner. A read, no lock.
+
+        github-checker resolves the owner from the clone it is pointed at;
+        dispatcher's own checkout is that clone, so no workspace directory is
+        involved (human queue A2)."""
+        try:
+            reject_control_chars(label=label)
+        except ActionRejectedError as err:
+            _audit.info("action=pr-search label=%r ok=False rejected=%s", label, err)
+            raise
+        outcome = self._invoke("pr-search", _OWN_CHECKOUT, "--label", label)
+        prs = outcome.prs
+        _audit.info(
+            "action=pr-search label=%r ok=%s phase=%s prs=%s",
+            label,
+            outcome.ok,
+            outcome.phase,
+            len(prs) if isinstance(prs, list) else "unknown",
         )
         return outcome
 

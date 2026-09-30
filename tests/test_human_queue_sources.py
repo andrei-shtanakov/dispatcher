@@ -10,11 +10,15 @@ from pathlib import Path
 import pytest
 from conftest import make_maestro_run
 
+from dispatcher.core.actions import ActionOutcome
 from dispatcher.core.collectors.maestro import classified_runs, waiting_tasks
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.human_queue_sources import (
+    FORGE_SOURCE,
+    ForgeReader,
     from_impresario_report,
     from_maestro,
+    from_pr_search,
     from_run_store,
     read_store,
 )
@@ -410,3 +414,152 @@ def test_null_title_or_agent_type_never_renders_as_none(tmp_path: Path) -> None:
     result = from_maestro(home, [])
     assert [w.ref for w in result.waits] == ["01RUN/T-null"]
     assert "None" not in result.waits[0].title
+
+
+# -- forge (A2) --------------------------------------------------------------
+
+
+_LABEL = "human-merge-required"
+
+
+def _pr(number: int, **extra: object) -> dict[str, object]:
+    return {
+        "repo": "acme/widget",
+        "number": number,
+        "title": f"pr {number}",
+        "url": f"https://github.com/acme/widget/pull/{number}",
+        "head_sha": "a" * 40,
+        "head_ref": "feat/x",
+        "labeled_at": "2026-09-21T08:30:00Z",
+        **extra,
+    }
+
+
+def _search(prs: list[dict[str, object]] | None, *, ok: bool = True) -> ActionOutcome:
+    return ActionOutcome(
+        action="pr-search",
+        dir="dispatcher",
+        ok=ok,
+        prs=prs,
+        error=None if ok else "gh search prs failed",
+        phase="readable_result",
+    )
+
+
+def test_labelled_prs_become_human_merge_waits() -> None:
+    result = from_pr_search(
+        _search([_pr(7), _pr(3, labeled_at=None, head_sha=None)]), _LABEL
+    )
+    assert result.name == FORGE_SOURCE
+    assert result.status.state == "ok"
+    by_key = {w.key: w for w in result.waits}
+    seven = by_key["pr:acme/widget#7"]
+    assert seven.reasons == ["pr_human_merge"]
+    assert seven.since == "2026-09-21T08:30:00+00:00"
+    assert seven.since_basis == f"label {_LABEL} added"
+    assert seven.act.model_dump() == {
+        "kind": "human_merge",
+        "repo": "acme/widget",
+        "number": 7,
+        "url": "https://github.com/acme/widget/pull/7",
+        "head_sha": "a" * 40,
+    }
+    three = by_key["pr:acme/widget#3"]
+    assert (three.since, three.since_basis) == (None, None)
+    assert three.act.model_dump()["head_sha"] is None  # never an invented pin
+
+
+def test_an_empty_search_is_a_confirmed_empty_source() -> None:
+    result = from_pr_search(_search([]), _LABEL)
+    assert result.status.state == "ok"
+    assert result.waits == []
+
+
+def test_an_unread_search_is_unavailable_not_empty() -> None:
+    result = from_pr_search(_search(None, ok=False), _LABEL)
+    assert result.status.state == "unavailable"
+    assert "gh search prs failed" in (result.status.detail or "")
+    assert result.waits == []
+
+
+def _sync(fn):
+    """A spawner that runs the refresh inline — deterministic tests."""
+    fn()
+
+
+def test_the_forge_reader_caches_within_the_ttl() -> None:
+    calls: list[str] = []
+    now = [100.0]
+
+    def search(label: str) -> ActionOutcome:
+        calls.append(label)
+        return _search([_pr(len(calls))])
+
+    reader = ForgeReader(search, _LABEL, ttl=60.0, clock=lambda: now[0], spawn=_sync)
+    first = reader.read()
+    assert [w.key for w in first.waits] == ["pr:acme/widget#1"]
+    now[0] = 159.0
+    assert reader.read() is first
+    assert calls == [_LABEL]
+    now[0] = 160.0
+    assert [w.key for w in reader.read().waits] == ["pr:acme/widget#2"]
+    assert calls == [_LABEL, _LABEL]
+
+
+def test_read_never_waits_and_never_doubles_a_refresh() -> None:
+    """The request path returns at once; the next poll does not start a
+    second search while the first is still running (review on #280)."""
+    pending: list = []
+    reader = ForgeReader(
+        lambda label: _search([_pr(1)]),
+        _LABEL,
+        ttl=60.0,
+        clock=lambda: 0.0,
+        spawn=pending.append,  # refreshes queue up instead of running
+    )
+    first = reader.read()
+    assert first.status.state == "unavailable"
+    assert "in progress" in (first.status.detail or "")
+    reader.read()
+    assert len(pending) == 1  # still in flight: no second search
+    pending.pop()()  # the background search finishes
+    assert [w.key for w in reader.read().waits] == ["pr:acme/widget#1"]
+
+
+def test_a_stale_result_is_served_while_it_refreshes() -> None:
+    pending: list = []
+    now = [0.0]
+    reader = ForgeReader(
+        lambda label: _search([_pr(int(now[0]) + 1)]),
+        _LABEL,
+        ttl=60.0,
+        clock=lambda: now[0],
+        spawn=pending.append,
+    )
+    reader.read()
+    pending.pop()()
+    now[0] = 61.0
+    stale = reader.read()  # stale: refresh starts, old answer served
+    assert [w.key for w in stale.waits] == ["pr:acme/widget#1"]
+    assert len(pending) == 1
+
+
+def test_a_raising_search_is_unavailable_and_cached() -> None:
+    calls: list[str] = []
+
+    def search(label: str) -> ActionOutcome:
+        calls.append(label)
+        raise RuntimeError("github down")
+
+    reader = ForgeReader(search, _LABEL, ttl=60.0, clock=lambda: 0.0, spawn=_sync)
+    result = reader.read()
+    assert result.status.state == "unavailable"
+    assert "github down" in (result.status.detail or "")
+    reader.read()
+    assert calls == [_LABEL]  # an outage is not re-searched on every poll
+
+
+def test_an_ok_false_answer_with_a_list_is_not_believed() -> None:
+    result = from_pr_search(_search([_pr(1)], ok=False), _LABEL)
+    assert result.status.state == "unavailable"
+    assert result.waits == []

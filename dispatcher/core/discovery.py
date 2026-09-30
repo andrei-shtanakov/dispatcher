@@ -70,6 +70,11 @@ class DispatcherConfig:
     # in any configuration. None → `submit` refuses with `accepted: false`
     # instead of launching a child that cannot resolve a model.
     atp_catalog: Path | None = None
+    # The label the human queue searches open PRs by (spec A2). None → the
+    # forge source is off (`not_configured`), which keeps tests and embedded
+    # configs hermetic — the source runs `gh` over the network. load_config
+    # defaults it to "human-merge-required"; an empty string turns it off.
+    forge_merge_label: str | None = None
 
     @property
     def effective_maestro_home(self) -> Path:
@@ -103,6 +108,21 @@ def _validate_benchmarks_url(raw: object) -> str:
             f"benchmarks.url must not carry query/fragment/userinfo: {raw!r}"
         )
     return raw.rstrip("/")
+
+
+DEFAULT_FORGE_MERGE_LABEL = "human-merge-required"
+
+
+def _forge_merge_label(data: dict) -> str | None:
+    """The human queue's forge label; "" (or blank) turns the source off.
+
+    Any non-string is a load-time error: `str(False)` would search for a
+    label called "False", find nothing, and the queue would read as green.
+    """
+    raw = data.get("forge_merge_label", DEFAULT_FORGE_MERGE_LABEL)
+    if not isinstance(raw, str):
+        raise ValueError(f"forge_merge_label must be a string, got: {raw!r}")
+    return raw.strip() or None
 
 
 def load_config(config_path: Path | None = None) -> DispatcherConfig:
@@ -170,6 +190,7 @@ def load_config(config_path: Path | None = None) -> DispatcherConfig:
         run_state_dir=run_state_dir,
         maestro_cli=maestro_cli,
         atp_catalog=atp_catalog,
+        forge_merge_label=_forge_merge_label(data),
     )
 
 

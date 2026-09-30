@@ -1,8 +1,10 @@
 # contracts/actions/v1
 
-The JSON one headless action verb prints on stdout. Eight verbs are in scope:
+The JSON one headless action verb prints on stdout. Nine verbs are in scope:
 `pull`, `open-pr`, `propose-pr`, `pr-detail`, `merge`, `post-merge-sync`,
-`issue-lookup`, `issue-create`. `snapshot` has its own shape and belongs to
+`issue-lookup`, `issue-create`, `pr-search`. `pr-search.prs` follows the
+`issue-lookup.matches` rule: `[]` is a confirmed empty search, `null` a search
+that was not read exhaustively. `snapshot` has its own shape and belongs to
 `snapshot/v1`; the interactive TUI prints no envelope at all.
 
 Consumers **vendor a pinned copy** of `actions.schema.json` inward. Nothing
