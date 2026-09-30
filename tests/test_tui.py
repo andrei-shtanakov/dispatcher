@@ -46,13 +46,14 @@ async def _settled(app: DispatcherApp, pilot) -> None:
     await pilot.pause()
 
 
-async def test_app_boots_with_eight_tabs(tmp_path: Path) -> None:
+async def test_app_boots_with_nine_tabs(tmp_path: Path) -> None:
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await _settled(app, pilot)
-        assert len(app.query(TabPane)) == 8
+        assert len(app.query(TabPane)) == 9
         for table_id in (
             "sync-table",
+            "my-turn-table",
             "roadmap-summary-table",
             "projects-table",
             "errors-table",
@@ -105,10 +106,12 @@ async def test_r_binding_recollects(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(app._service, "get", counting_get)
     async with app.run_test() as pilot:
         await _settled(app, pilot)
-        assert len(calls) == 1  # initial collect on mount
+        # One collect = the snapshot read + «My turn»'s impresario source
+        # reading the same cache (B2) — a cache hit, not a re-collect.
+        assert len(calls) == 2
         await pilot.press("r")
         await _settled(app, pilot)
-        assert len(calls) == 2
+        assert len(calls) == 4
 
 
 async def test_collect_failure_keeps_last_data(tmp_path: Path, monkeypatch) -> None:
@@ -1045,12 +1048,12 @@ def _add_config_project(tmp_path: Path) -> Path:
     return repo
 
 
-async def test_boots_with_eight_tabs_incl_config(tmp_path: Path) -> None:
+async def test_boots_with_nine_tabs_incl_config(tmp_path: Path) -> None:
     _add_config_project(tmp_path)
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await _settled(app, pilot)
-        assert len(app.query(TabPane)) == 8
+        assert len(app.query(TabPane)) == 9
         table = app.query_one("#config-table", DataTable)
         assert table.row_count == 1  # steward listed
 

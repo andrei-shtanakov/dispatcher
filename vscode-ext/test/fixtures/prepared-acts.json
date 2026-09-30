@@ -1,0 +1,131 @@
+[
+  {
+    "name": "maestro retry, full environment",
+    "act": {
+      "kind": "maestro_verb",
+      "repo_key": "github.com/acme/app",
+      "verb": "retry",
+      "task_id": "t-1",
+      "run_id": "01RUN",
+      "maestro_home": "/Users/me/.maestro",
+      "atp_catalog": "/ws/atp/catalog.toml",
+      "maestro_cli": "/ws/maestro/.venv/bin/maestro"
+    },
+    "expected": {
+      "kind": "command",
+      "text": "MAESTRO_HOME=/Users/me/.maestro ATP_CATALOG=/ws/atp/catalog.toml /ws/maestro/.venv/bin/maestro retry t-1 --run 01RUN",
+      "note": "Typed in, not executed. Run it from a checkout of github.com/acme/app (maestro resolves the run's repository from the current directory). MAESTRO_HOME is the one dispatcher reads. ATP_CATALOG is the one dispatcher uses."
+    }
+  },
+  {
+    "name": "maestro approve, no environment from the server",
+    "act": {
+      "kind": "maestro_verb",
+      "repo_key": "github.com/acme/app",
+      "verb": "approve",
+      "task_id": "t-2",
+      "run_id": "01RUN",
+      "maestro_home": ""
+    },
+    "expected": {
+      "kind": "command",
+      "text": "maestro approve t-2 --run 01RUN",
+      "note": "Typed in, not executed. Run it from a checkout of github.com/acme/app (maestro resolves the run's repository from the current directory). This server did not send its MAESTRO_HOME — set it as your dispatcher config does, or maestro looks elsewhere. No ATP_CATALOG came from the server; retry needs one."
+    }
+  },
+  {
+    "name": "maestro, values a shell would split",
+    "act": {
+      "kind": "maestro_verb",
+      "repo_key": "github.com/acme/app",
+      "verb": "retry",
+      "task_id": "it's",
+      "run_id": "01 RUN",
+      "maestro_home": "/Users/me/My Home",
+      "atp_catalog": null,
+      "maestro_cli": null
+    },
+    "expected": {
+      "kind": "command",
+      "text": "MAESTRO_HOME='/Users/me/My Home' maestro retry 'it'\\''s' --run '01 RUN'",
+      "note": "Typed in, not executed. Run it from a checkout of github.com/acme/app (maestro resolves the run's repository from the current directory). MAESTRO_HOME is the one dispatcher reads. No ATP_CATALOG came from the server; retry needs one."
+    }
+  },
+  {
+    "name": "maestro, a newline in an id is refused",
+    "act": {
+      "kind": "maestro_verb",
+      "repo_key": "github.com/acme/app",
+      "verb": "retry",
+      "task_id": "t\nrm -rf /",
+      "run_id": "01RUN",
+      "maestro_home": "/h"
+    },
+    "expected": {
+      "kind": "refused",
+      "note": "the wait's ids contain control characters; not preparing a command"
+    }
+  },
+  {
+    "name": "human merge pinned to the head",
+    "act": {
+      "kind": "human_merge",
+      "repo": "acme/widget",
+      "number": 7,
+      "url": "https://github.com/acme/widget/pull/7",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "expected": {
+      "kind": "command",
+      "text": "sh devtools/human-merge.sh widget 7 --expect-head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "url": "https://github.com/acme/widget/pull/7",
+      "note": "Typed in, not executed. Run it from the workspace root under YOUR gh profile — the merge is the human act that signs."
+    }
+  },
+  {
+    "name": "human merge, head unknown",
+    "act": {
+      "kind": "human_merge",
+      "repo": "acme/widget",
+      "number": 8,
+      "url": "https://github.com/acme/widget/pull/8",
+      "head_sha": null
+    },
+    "expected": {
+      "kind": "command",
+      "text": "sh devtools/human-merge.sh widget 8",
+      "url": "https://github.com/acme/widget/pull/8",
+      "note": "Typed in, not executed. Run it from the workspace root under YOUR gh profile — the merge is the human act that signs. The PR head could not be read, so no --expect-head pin was added."
+    }
+  },
+  {
+    "name": "human merge, an empty head is unknown, never pinned",
+    "act": {
+      "kind": "human_merge",
+      "repo": "acme/widget",
+      "number": 10,
+      "url": "https://github.com/acme/widget/pull/10",
+      "head_sha": ""
+    },
+    "expected": {
+      "kind": "command",
+      "text": "sh devtools/human-merge.sh widget 10",
+      "url": "https://github.com/acme/widget/pull/10",
+      "note": "Typed in, not executed. Run it from the workspace root under YOUR gh profile — the merge is the human act that signs. The PR head could not be read, so no --expect-head pin was added."
+    }
+  },
+  {
+    "name": "human merge, control character refused",
+    "act": {
+      "kind": "human_merge",
+      "repo": "acme/wid\u001bget",
+      "number": 9,
+      "url": "https://github.com/acme/widget/pull/9",
+      "head_sha": null
+    },
+    "expected": {
+      "kind": "refused",
+      "note": "the PR's identifiers are unusable; not preparing a command"
+    }
+  }
+]

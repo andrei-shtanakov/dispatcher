@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -31,6 +31,8 @@ from dispatcher.core.benchmark_service import BenchmarkService
 from dispatcher.core.benchmarks import BenchmarksStatus
 from dispatcher.core.contracts import check_contracts
 from dispatcher.core.discovery import DispatcherConfig
+from dispatcher.core.human_queue import HumanQueueView
+from dispatcher.core.human_queue_sources import ForgeReader, build_human_queue
 from dispatcher.core.models import ContractStatus, ErrorEvent, ProjectSnapshot
 from dispatcher.core.onboarding import build_onboarding
 from dispatcher.core.product_proposals import ProductProposalsReport
@@ -56,6 +58,8 @@ from dispatcher.core.sync_service import SyncService, SyncStatus
 from dispatcher.core.tracking import TrackAction, decide
 from dispatcher.tui.config_edit import ConfigEditScreen
 from dispatcher.tui.detail import ErrorMessageScreen, ProjectDetailScreen
+from dispatcher.tui.my_turn import MyTurnRow, tab_label
+from dispatcher.tui.my_turn import rows as my_turn_rows
 
 MSG_LIMIT = 160  # same message truncation threshold as the web UI
 ERRORS_LIMIT = 50  # same errors-feed cap as the web UI
@@ -198,12 +202,23 @@ class DispatcherApp(App[None]):
         self._errors_project: str | None = None
         self._errors_service: str | None = None
         self._shown_errors: list[ErrorEvent] = []
+        # «My turn» (B2): the same background forge reader the web app uses,
+        # so a 10 s refresh never becomes a GitHub search every 10 s.
+        self._forge = (
+            ForgeReader(self._action_runner.pr_search, config.forge_merge_label)
+            if config.forge_merge_label
+            else None
+        )
+        self._queue: HumanQueueView | None = None
+        self._my_turn_rows: list[MyTurnRow] = []
 
     def compose(self) -> ComposeResult:
         yield Header()
         with TabbedContent():
             with TabPane("Sync", id="tab-sync"):
                 yield DataTable(id="sync-table", cursor_type="row")
+            with TabPane("My turn", id="tab-my-turn"):
+                yield DataTable(id="my-turn-table", cursor_type="row")
             with TabPane("Projects", id="tab-projects"):
                 yield DataTable(id="projects-table", cursor_type="row")
             with TabPane("Errors", id="tab-errors"):
@@ -229,6 +244,9 @@ class DispatcherApp(App[None]):
         self.query_one("#sync-table", DataTable).add_columns(
             "host", "age", "repo", "verdict", "reason", "branch", "↑/↓"
         )
+        my_turn = self.query_one("#my-turn-table", DataTable)
+        my_turn.add_columns("age", "reason", "wait", "what to do (enter copies)")
+        my_turn.add_row("", "", Text("not read yet", style="dim"), "")
         self.query_one("#roadmap-summary-table", DataTable).add_columns(
             "project", "done", "readiness", "lagging", "contract drift"
         )
@@ -282,6 +300,10 @@ class DispatcherApp(App[None]):
     @work(thread=True, exclusive=True)
     def _collect(self) -> None:
         """Collect snapshots and contracts off the event loop."""
+        # «My turn» first and on its own: its sources are isolated, so a
+        # failure of the refresh below must not leave the tab showing an
+        # answer it never got (review on #286).
+        self.call_from_thread(self._apply_queue, self._read_queue())
         try:
             snapshots, warnings = self._service.get()
             projects = {
@@ -311,6 +333,27 @@ class DispatcherApp(App[None]):
             configs,
             benchmarks,
         )
+
+    def _read_queue(self) -> HumanQueueView | None:
+        """The human queue, or None when it could not be assembled — shown
+        as "not read", never as an empty queue."""
+        try:
+            now = datetime.now(UTC).isoformat()
+            return build_human_queue(
+                self._config, self._service, now=now, forge=self._forge
+            )
+        except Exception:  # noqa: BLE001 — a hole, not a crash
+            return None
+
+    def _apply_queue(self, queue: HumanQueueView | None) -> None:
+        self._queue = queue
+        self.query_one(TabbedContent).get_tab("tab-my-turn").label = tab_label(queue)
+        table = self.query_one("#my-turn-table", DataTable)
+        table.clear()
+        self._my_turn_rows = my_turn_rows(queue, datetime.now(UTC))
+        for row in self._my_turn_rows:
+            cells = (row.age, row.reason, row.wait, row.todo)
+            table.add_row(*(Text(c, style=row.style) for c in cells))
 
     def _apply(
         self,
@@ -710,7 +753,11 @@ class DispatcherApp(App[None]):
         self._render_errors()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        if event.data_table.id == "projects-table":
+        if event.data_table.id == "my-turn-table":
+            idx = event.cursor_row
+            if 0 <= idx < len(self._my_turn_rows):
+                self._my_turn_selected(self._my_turn_rows[idx])
+        elif event.data_table.id == "projects-table":
             name = str(event.row_key.value)
             snap = self._snapshot(name)
             if snap is not None and snap.detected:
@@ -725,6 +772,20 @@ class DispatcherApp(App[None]):
                 self.push_screen(
                     ConfigEditScreen(self._configs[idx], self._config_runner)
                 )
+
+    def _my_turn_selected(self, row: MyTurnRow) -> None:
+        """Copies the act's text — never runs it (spec B2 §3)."""
+        prepared = row.prepared
+        if prepared is None:
+            return
+        if prepared.kind == "refused":
+            self.notify(prepared.note, severity="warning")
+            return
+        text = prepared.url if prepared.kind == "link" else prepared.text
+        if not text:
+            return
+        self.copy_to_clipboard(text)
+        self.notify(f"copied, not run: {text}\n{prepared.note}", timeout=10)
 
     @work(thread=True, group="project-detail", exclusive=True)
     def _open_project_detail(self, snap: ProjectSnapshot) -> None:
