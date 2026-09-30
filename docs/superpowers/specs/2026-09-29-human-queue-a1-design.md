@@ -195,6 +195,10 @@ class MaestroVerbAct(BaseModel):
     task_id: str
     run_id: str
     repo_key: str
+    # added in #281: the env run_controller pins for the same verbs
+    maestro_home: str
+    atp_catalog: str | None = None
+    maestro_cli: str | None = None
 
 class OpenArtifactAct(BaseModel):
     kind: Literal["open_artifact"] = "open_artifact"

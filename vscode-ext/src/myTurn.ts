@@ -229,9 +229,12 @@ export function prepareAct(
         `Typed in, not executed. Run it from a checkout of ${act.repo_key} ` +
         "(maestro resolves the run's repository from the current directory)." +
         (act.maestro_home
-          ? " MAESTRO_HOME/ATP_CATALOG are the ones dispatcher uses."
-          : " This server did not send its MAESTRO_HOME and ATP_CATALOG — set " +
-            "them as your dispatcher config does, or maestro looks elsewhere."),
+          ? " MAESTRO_HOME is the one dispatcher reads."
+          : " This server did not send its MAESTRO_HOME — set it as your " +
+            "dispatcher config does, or maestro looks elsewhere.") +
+        (act.atp_catalog
+          ? " ATP_CATALOG is the one dispatcher uses."
+          : " No ATP_CATALOG came from the server; retry needs one."),
     };
   }
   if (act.kind === "human_merge") {

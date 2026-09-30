@@ -94,10 +94,16 @@ generate() {
     # missing one is not an error — but where it IS installed, its directory
     # goes on the service PATH: Homebrew on Apple silicon uses
     # /opt/homebrew/bin, which the fixed list below does not contain.
-    local gh_dir=""
-    if gh_path="$(command -v gh)"; then
-        gh_dir="$(dirname "$gh_path"):"
-    fi
+    local gh_dir="" tool
+    # Same for github-checker (pr-search), wherever the operator installed it.
+    for tool in gh github-checker; do
+        if tool_path="$(command -v "$tool")"; then
+            case ":$HOME/.local/bin:$gh_dir" in
+                *":$(dirname "$tool_path"):"*) ;;
+                *) gh_dir="${gh_dir}$(dirname "$tool_path"):" ;;
+            esac
+        fi
+    done
     cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"

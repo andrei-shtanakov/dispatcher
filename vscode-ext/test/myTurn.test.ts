@@ -215,6 +215,7 @@ describe("acts are prepared, never executed", () => {
     expect(p.name).toBe("maestro · github.com/acme/app");
     expect(p.note).toContain("github.com/acme/app");
     expect(p.note).toContain("MAESTRO_HOME");
+    expect(p.note).toContain("ATP_CATALOG");
   });
 
   it("quotes ids a shell would split, and refuses control characters", () => {
