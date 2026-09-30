@@ -13,6 +13,7 @@ describe("manifest", () => {
       (v: { id: string }) => v.id,
     );
     expect(views).toEqual([
+      "dispatcherMyTurn",
       "dispatcherProjects",
       "dispatcherErrors",
       "dispatcherRoadmap",
@@ -34,6 +35,20 @@ describe("manifest", () => {
     expect(commands).toContain("dispatcher.openPr");
     expect(commands).toContain("dispatcher.track");
     expect(commands).toContain("dispatcher.ignore");
+    expect(commands).toContain("dispatcher.myTurnAct");
+  });
+
+  it("ships the My-turn overdue threshold (parent spec §8, decision 5)", () => {
+    const props = manifest.contributes.configuration.properties;
+    expect(props["dispatcher.myTurnOverdueHours"].default).toBe(24);
+    // Wait-bound command: reachable from the tree only, never the palette.
+    const palette = manifest.contributes.menus.commandPalette as Array<{
+      command: string;
+      when: string;
+    }>;
+    expect(
+      palette.find((m) => m.command === "dispatcher.myTurnAct")?.when,
+    ).toBe("false");
   });
 
   it("ships spec §5 defaults", () => {

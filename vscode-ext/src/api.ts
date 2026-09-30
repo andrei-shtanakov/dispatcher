@@ -184,6 +184,57 @@ export interface SpecRunnerConfigEntry {
   extra_explicit: boolean;
 }
 
+// Human queue (GET /api/human-queue — spec 2026-09-29-human-queue-a1-design §4).
+export type SourceState =
+  | "ok"
+  | "partial"
+  | "unavailable"
+  | "not_configured"
+  | "not_connected";
+
+export interface SourceStatus {
+  state: SourceState;
+  detail: string | null;
+}
+
+export type WaitReason =
+  | "launch_unknown"
+  | "run_needs_review"
+  | "run_awaiting_approval"
+  | "loop_needs_human"
+  | "proposal_gate"
+  | "backlog_gate";
+
+export type WaitAct =
+  | { kind: "run_view"; request_id: string }
+  | {
+      kind: "maestro_verb";
+      verb: "retry" | "approve";
+      task_id: string;
+      run_id: string;
+      repo_key: string;
+    }
+  | { kind: "open_artifact"; path: string };
+
+export interface HumanWait {
+  key: string;
+  reasons: WaitReason[];
+  source: string;
+  repo: string | null;
+  ref: string;
+  title: string;
+  since: string | null;
+  since_basis: string | null;
+  act: WaitAct;
+}
+
+export interface HumanQueueView {
+  waits: HumanWait[];
+  sources: Record<string, SourceStatus>;
+  complete: boolean;
+  generated_at: string;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -280,6 +331,10 @@ export class ApiClient {
 
   benchmarks(): Promise<BenchmarksStatusResponse> {
     return this.get("/api/benchmarks");
+  }
+
+  humanQueue(): Promise<HumanQueueView> {
+    return this.get("/api/human-queue");
   }
 
   pull(dir: string): Promise<ActionOutcome> {

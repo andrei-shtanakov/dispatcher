@@ -4,7 +4,15 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import { ApiClient, ApiError } from "./api";
 import { ServerManager } from "./server";
-import type { ActionOutcome, SpecRunnerConfigEntry, SyncStatusResponse } from "./api";
+import type {
+  ActionOutcome,
+  HumanWait,
+  OverviewResponse,
+  SpecRunnerConfigEntry,
+  SyncStatusResponse,
+} from "./api";
+import { prepareAct } from "./myTurn";
+import { MyTurnProvider, createMyTurnStatus } from "./myTurnView";
 import { createStatusBar } from "./status";
 import type { OnboardingView } from "./onboarding";
 import { composeProjectDoc } from "./productProposals";
@@ -33,6 +41,7 @@ interface Config {
   projectDir: string;
   autoStart: boolean;
   pollSeconds: number;
+  myTurnOverdueHours: number;
 }
 
 function readConfig(): Config {
@@ -42,6 +51,7 @@ function readConfig(): Config {
     projectDir: cfg.get<string>("projectDir", ""),
     autoStart: cfg.get<boolean>("autoStart", true),
     pollSeconds: Math.max(5, cfg.get<number>("pollSeconds", 10)),
+    myTurnOverdueHours: Math.max(0, cfg.get<number>("myTurnOverdueHours", 24)),
   };
 }
 
@@ -85,6 +95,12 @@ export function activate(context: vscode.ExtensionContext): void {
     true,
   );
   const status = createStatusBar();
+  const overdueHours = (): number => readConfig().myTurnOverdueHours;
+  const myTurn = new MyTurnProvider(overdueHours);
+  const myTurnStatus = createMyTurnStatus(overdueHours);
+  // The overview carries the impresario mirror path an `open_artifact` act
+  // resolves against; the last good one is enough (spec §3).
+  let lastOverview: OverviewResponse | null = null;
 
   let polling = false;
   let lastSync: SyncStatusResponse | null = null;
@@ -108,21 +124,37 @@ export function activate(context: vscode.ExtensionContext): void {
         sync.setData(null);
         benchmarks.setData(null);
         status.update(null);
+        myTurn.setState({ kind: "offline" });
+        myTurnStatus.update(null);
         await server.ensureRunning();
         return;
       }
       projects.setData(overview.projects);
+      lastOverview = overview;
       // мгновенный базовый статус с ПОСЛЕДНИМ известным вердиктом:
       // медленный /api/sync не задерживает статус-бар и не мигает им
       status.update(overview, lastSync);
       server.markOnline();
-      const [events, roadmapData, syncData, benchData] =
+      const [events, roadmapData, syncData, benchData, queueData] =
         await Promise.allSettled([
           api.errors(),
           api.roadmap(),
           api.sync(),
           api.benchmarks(),
+          api.humanQueue(),
         ]);
+      // An older server without /api/human-queue, or a failing read, is
+      // «unavailable» — never an empty queue (spec §2).
+      if (queueData.status === "fulfilled") {
+        myTurn.setState({ kind: "view", view: queueData.value });
+        myTurnStatus.update(queueData.value);
+      } else {
+        myTurn.setState({
+          kind: "unavailable",
+          detail: errorText(queueData.reason),
+        });
+        myTurnStatus.update(null);
+      }
       errors.setData(events.status === "fulfilled" ? events.value : null);
       roadmap.setData(
         roadmapData.status === "fulfilled" ? roadmapData.value : null,
@@ -411,6 +443,75 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   }
 
+  function impresarioPath(): string | null {
+    const entry = lastOverview?.projects.find(
+      (p) => p.name === "impresario" && p.detected,
+    );
+    return entry?.path ?? null;
+  }
+
+  /** Prepare a wait's act (spec §3) — opens or types, never executes.
+   * Every outcome is visible: a failure becomes a message, never silence. */
+  async function myTurnAct(wait: HumanWait): Promise<void> {
+    try {
+      await prepareAndOpen(wait);
+    } catch (err) {
+      void vscode.window.showErrorMessage(
+        `My turn: could not open "${wait.title}": ${errorText(err)}`,
+      );
+    }
+  }
+
+  async function prepareAndOpen(wait: HumanWait): Promise<void> {
+    const prepared = prepareAct(wait.act, {
+      baseUrl: readConfig().url,
+      impresarioPath: impresarioPath(),
+    });
+    switch (prepared.kind) {
+      case "url":
+        if (!(await vscode.env.openExternal(vscode.Uri.parse(prepared.url)))) {
+          await vscode.env.clipboard.writeText(prepared.url);
+          void vscode.window.showWarningMessage(
+            `could not open the browser — copied ${prepared.url}`,
+          );
+        }
+        return;
+      case "terminal": {
+        const terminal = vscode.window.createTerminal({ name: prepared.name });
+        terminal.show();
+        terminal.sendText(prepared.text, false); // typed in, NOT executed
+        void vscode.window.showInformationMessage(prepared.note);
+        return;
+      }
+      case "file": {
+        const uri = vscode.Uri.file(prepared.path);
+        const stat = await vscode.workspace.fs.stat(uri).then(
+          (s) => s,
+          () => null,
+        );
+        if (stat === null) {
+          void vscode.window.showWarningMessage(
+            `not found under the impresario mirror: ${prepared.path}`,
+          );
+        } else if (stat.type === vscode.FileType.Directory) {
+          // revealInExplorer is a silent no-op outside the workspace; the
+          // OS file manager works for any path.
+          await vscode.commands.executeCommand("revealFileInOS", uri);
+        } else {
+          await vscode.window.showTextDocument(uri);
+        }
+        return;
+      }
+      case "clipboard":
+        await vscode.env.clipboard.writeText(prepared.text);
+        void vscode.window.showInformationMessage(prepared.note);
+        return;
+      case "refused":
+        void vscode.window.showWarningMessage(prepared.note);
+        return;
+    }
+  }
+
   const timer = setInterval(() => void poll(), readConfig().pollSeconds * 1000);
 
   context.subscriptions.push(
@@ -419,7 +520,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerTreeDataProvider("dispatcherRoadmap", roadmap),
     vscode.window.registerTreeDataProvider("dispatcherSync", sync),
     vscode.window.registerTreeDataProvider("dispatcherBenchmarks", benchmarks),
+    vscode.window.registerTreeDataProvider("dispatcherMyTurn", myTurn),
     status.item,
+    myTurnStatus.item,
+    vscode.commands.registerCommand(
+      "dispatcher.myTurnAct",
+      (wait: HumanWait) => void myTurnAct(wait),
+    ),
     vscode.commands.registerCommand("dispatcher.refresh", () => void poll()),
     vscode.commands.registerCommand(
       "dispatcher.pull",
@@ -476,6 +583,7 @@ export function activate(context: vscode.ExtensionContext): void {
     { dispose: () => errors.dispose() },
     { dispose: () => roadmap.dispose() },
     { dispose: () => sync.dispose() },
+    { dispose: () => myTurn.dispose() },
   );
 
   void poll();

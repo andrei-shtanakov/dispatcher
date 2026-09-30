@@ -31,6 +31,10 @@
     "views": {
       "dispatcher": [
         {
+          "id": "dispatcherMyTurn",
+          "name": "My turn"
+        },
+        {
           "id": "dispatcherProjects",
           "name": "Projects"
         },
@@ -93,13 +97,17 @@
       {
         "command": "dispatcher.projectOnboarding",
         "title": "Dispatcher: Project Onboarding"
+      },
+      {
+        "command": "dispatcher.myTurnAct",
+        "title": "Dispatcher: Prepare My-Turn Act"
       }
     ],
     "menus": {
       "view/title": [
         {
           "command": "dispatcher.refresh",
-          "when": "view == dispatcherProjects || view == dispatcherErrors || view == dispatcherRoadmap || view == dispatcherSync",
+          "when": "view == dispatcherProjects || view == dispatcherErrors || view == dispatcherRoadmap || view == dispatcherSync || view == dispatcherMyTurn",
           "group": "navigation"
         }
       ],
@@ -160,6 +168,10 @@
         {
           "command": "dispatcher.ignore",
           "when": "false"
+        },
+        {
+          "command": "dispatcher.myTurnAct",
+          "when": "false"
         }
       ]
     },
@@ -186,6 +198,12 @@
           "default": 10,
           "minimum": 5,
           "description": "Refresh interval in seconds."
+        },
+        "dispatcher.myTurnOverdueHours": {
+          "type": "number",
+          "default": 24,
+          "minimum": 0,
+          "description": "A wait older than this many hours turns the My-turn status item red. Waits of unknown age never do."
         }
       }
     }

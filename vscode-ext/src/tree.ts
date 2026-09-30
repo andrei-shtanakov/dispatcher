@@ -38,7 +38,8 @@ export type ProjectNode =
   | { kind: "line"; text: string }
   | { kind: "offline" };
 
-function offlineItem(): vscode.TreeItem {
+/** The shared "server unreachable" node; clicking it starts the server. */
+export function offlineItem(): vscode.TreeItem {
   const item = new vscode.TreeItem("server unreachable");
   item.iconPath = new vscode.ThemeIcon("debug-disconnected");
   item.command = {

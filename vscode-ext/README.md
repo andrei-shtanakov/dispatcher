@@ -8,8 +8,13 @@ extension's own initiative.
 
 ## Features
 
-- **Dispatcher activity-bar container** with four views, refreshed on a
+- **Dispatcher activity-bar container** with these views, refreshed on a
   poll interval:
+  - **My turn** — every wait for a human the server's `/api/human-queue`
+    sees, grouped by reason, oldest first, with a "queue incomplete" banner
+    naming each unread source. Clicking a wait *prepares* its act and never
+    executes it: a run opens in the browser, a maestro verb is typed into a
+    terminal without Enter, an artifact opens from the impresario mirror.
   - **Projects** — every discovered project with health/error state; a
     context action opens the per-project onboarding document.
   - **Errors** — collector and project errors, with a command to show the
@@ -18,6 +23,9 @@ extension's own initiative.
   - **Sync** — per-repo sync verdicts with inline **Pull** / **Open PR**
     actions, plus auto-discovered repo proposals with **Track** / **Ignore**.
 - **Status-bar item** summarising the fleet-wide sync verdict at a glance.
+- **My-turn status item** — `⏳ N` waits, `⏳ N · ?` when the queue is
+  incomplete, `⏳ ?` when it could not be read; red when a wait of known age
+  is older than `dispatcher.myTurnOverdueHours` (default 24).
 - **Project onboarding document** (`Dispatcher: Project Onboarding`) — a
   rendered markdown overview of one project: plan state, governance,
   product-proposal gates (`gate_waiting` / `needs_human`), and sync facts.

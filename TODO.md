@@ -647,6 +647,13 @@
       Спека `docs/superpowers/specs/2026-09-29-human-queue-a1-design.md`, план
       `docs/superpowers/plans/2026-09-29-human-queue-a1.md` (пара — PR #272). Форж-источники — срез A2
       (нужна read-команда в github-checker), вид «Мой ход» — срез B, стоп-кран — D.
+- [x] «Мой ход» в VSCode, срез B1 (PR #274): вид `dispatcherMyTurn` + статус `⏳ N · ?` поверх `/api/human-queue`, действия только подготавливаются @owner:github:andrei-shtanakov @id:my-turn-vscode-b1 @epic:eco.governance-plane
+      Спека `docs/superpowers/specs/2026-09-30-my-turn-vscode-design.md` (спека и код одним PR — решение владельца 2026-09-30).
+- [ ] «Мой ход» в вебе и TUI, срез B2: вкладка веб-оболочки (реестр вкладок + протокол загрузчиков) и TUI-вкладка @owner:github:andrei-shtanakov @id:my-turn-web-tui-b2 @epic:eco.governance-plane @blocked_by:todo://dispatcher/my-turn-vscode-b1
+- [ ] Очередь, срез A2: PR с `human-merge-required` и candidate-PR через read-команду github-checker @owner:github:andrei-shtanakov @id:human-queue-a2 @epic:eco.governance-plane
+      Владелец разрешил 2026-09-30 вести PR в github-checker напрямую (исключение из правила границ). В A2 же: уточнить docstring `from_impresario_report`, проверять уникальность имён источников; нести в `maestro_verb` эффективные `MAESTRO_HOME`/`ATP_CATALOG`, чтобы подготовленная в VSCode команда не зависела от окружения (ревью #274).
+- [ ] Стоп-кран (срез D): отложен 2026-09-30 — четыре репо + D0 под админской учёткой владельца, на полдня не ложится @owner:github:andrei-shtanakov @id:darkfactory-halt @epic:eco.governance-plane @trigger:"владелец выделил время на D0 (песочница, §6.4 документа направления)"
+- [ ] spec-runner-vscode: кнопка Approve пишет `status: approved` + `approved_by` из `git config` — в DarkFactory-репо это обход решения 2; issue соседу не заведён @owner:github:andrei-shtanakov @id:spec-runner-vscode-approve-bypass @epic:eco.governance-plane @trigger:"spec-runner-vscode используется как интерфейс S7→S8"
 
 ## Хвосты качества
 
