@@ -140,8 +140,18 @@ def from_merged_prs(outcome: ActionOutcome, login: str) -> AgentMergesResult:
         if isinstance(m.get("merged_by"), str)
         and str(m["merged_by"]).casefold() == wanted
     ]
-    merges.sort(key=lambda m: _instant(m.merged_at), reverse=True)
+    merges.sort(key=lambda m: _merge_instant(m.merged_at), reverse=True)
     return AgentMergesResult(status=SourceStatus(state="ok"), merges=merges)
+
+
+def _merge_instant(value: str) -> datetime:
+    """Newest-first sort key; a time that does not parse sorts last instead
+    of failing a search that did succeed (review on #285)."""
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return datetime.min.replace(tzinfo=UTC)
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
 
 
 def _spawn_merges(fn: Callable[[], None]) -> None:

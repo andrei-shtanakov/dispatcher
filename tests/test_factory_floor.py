@@ -415,3 +415,20 @@ def test_a_reader_that_cannot_start_is_unavailable_not_a_500(tmp_path: Path) -> 
     view = build_factory_floor(_config(tmp_path), now=_NOW, merges=reader)
     assert view.sources["agent_merges"].state == "unavailable"
     assert "new thread" in (view.sources["agent_merges"].detail or "")
+
+
+def test_a_garbled_merge_time_sorts_last_not_unavailable() -> None:
+    """Review on #285: one bad merged_at must not blank a search that
+    succeeded."""
+    result = from_merged_prs(
+        _merged(
+            [
+                _merge(1, "ai-prosto", "garbled"),
+                _merge(2, "ai-prosto", "2026-09-30T08:00:00Z"),
+                _merge(3, "ai-prosto", "2026-09-30T08:30:00"),
+            ]
+        ),
+        "ai-prosto",
+    )
+    assert result.status.state == "ok"
+    assert [m.number for m in result.merges] == [3, 2, 1]
