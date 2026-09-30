@@ -647,7 +647,7 @@
       Спека `docs/superpowers/specs/2026-09-29-human-queue-a1-design.md`, план
       `docs/superpowers/plans/2026-09-29-human-queue-a1.md` (пара — PR #272). Форж-источники — срез A2
       (нужна read-команда в github-checker), вид «Мой ход» — срез B, стоп-кран — D.
-- [ ] «Мой ход» в VSCode, срез B1: вид `dispatcherMyTurn` + статус `⏳ N · ?` поверх `/api/human-queue`, действия только подготавливаются @owner:github:andrei-shtanakov @id:my-turn-vscode-b1 @epic:eco.governance-plane
+- [x] «Мой ход» в VSCode, срез B1 (PR #274): вид `dispatcherMyTurn` + статус `⏳ N · ?` поверх `/api/human-queue`, действия только подготавливаются @owner:github:andrei-shtanakov @id:my-turn-vscode-b1 @epic:eco.governance-plane
       Спека `docs/superpowers/specs/2026-09-30-my-turn-vscode-design.md` (спека и код одним PR — решение владельца 2026-09-30).
 - [ ] «Мой ход» в вебе и TUI, срез B2: вкладка веб-оболочки (реестр вкладок + протокол загрузчиков) и TUI-вкладка @owner:github:andrei-shtanakov @id:my-turn-web-tui-b2 @epic:eco.governance-plane @blocked_by:todo://dispatcher/my-turn-vscode-b1
 - [ ] Очередь, срез A2: PR с `human-merge-required` и candidate-PR через read-команду github-checker @owner:github:andrei-shtanakov @id:human-queue-a2 @epic:eco.governance-plane
