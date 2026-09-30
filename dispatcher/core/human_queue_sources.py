@@ -8,6 +8,7 @@ source's status, never absorbed into a shorter list.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -273,7 +274,9 @@ def from_pr_search(outcome: ActionOutcome, label: str) -> SourceResult:
     non-exhaustive or unreadable search, or github-checker not runnable —
     is `unavailable`, never an empty queue.
     """
-    if outcome.prs is None:
+    if outcome.prs is None or not outcome.ok:
+        # A list on an ok:false answer is not believed either: the producer
+        # said the search failed, whatever else it sent.
         detail = outcome.error or f"pr-search did not answer ({outcome.phase})"
         return SourceResult(
             name=FORGE_SOURCE, status=SourceStatus(state="unavailable", detail=detail)
@@ -309,11 +312,28 @@ def _pr_wait(pr: dict[str, object], basis: str) -> HumanWait:
     )
 
 
-class ForgeReader:
-    """The forge source with a TTL cache (spec A2 §3).
+_FORGE_PENDING = SourceResult(
+    name=FORGE_SOURCE,
+    status=SourceStatus(state="unavailable", detail="first pr-search in progress"),
+)
 
-    Failures are cached too: a GitHub outage must not turn every poll into
-    a fresh search. The label is fixed per reader.
+
+def _spawn_daemon(fn: Callable[[], None]) -> None:
+    threading.Thread(target=fn, name="forge-pr-search", daemon=True).start()
+
+
+class ForgeReader:
+    """The forge source, refreshed in the background (spec A2 §1).
+
+    `read()` never waits on GitHub: a search plus two reads per PR can
+    outlast a client's request timeout, and a queue that flapped to
+    `unavailable` once per TTL window would be worse than a slightly old
+    one. It returns the last result at once and, when that is older than
+    the TTL, starts ONE background refresh — a refresh already in flight is
+    never doubled by the next poll. Before the first search completes the
+    source says so (`unavailable`, "in progress"), never an empty list.
+    Failures are cached like successes: an outage is not re-searched per
+    poll.
     """
 
     def __init__(
@@ -323,23 +343,40 @@ class ForgeReader:
         *,
         ttl: float = FORGE_TTL_SECONDS,
         clock: Callable[[], float] = time.monotonic,
+        spawn: Callable[[Callable[[], None]], None] = _spawn_daemon,
     ) -> None:
         self._search, self._label = search, label
-        self._ttl, self._clock = ttl, clock
+        self._ttl, self._clock, self._spawn = ttl, clock, spawn
+        self._lock = threading.Lock()
         self._at: float | None = None
         self._result: SourceResult | None = None
+        self._inflight = False
 
     def read(self) -> SourceResult:
-        """The cached source result, refreshed when older than the TTL."""
-        now = self._clock()
-        if self._result is not None and self._at is not None:
-            if now - self._at < self._ttl:
-                return self._result
+        """The last known result; kicks off a refresh when it is stale."""
+        with self._lock:
+            stale = self._at is None or self._clock() - self._at >= self._ttl
+            start = stale and not self._inflight
+            if start:
+                self._inflight = True
+        if start:
+            try:
+                self._spawn(self._refresh)
+            except Exception:  # noqa: BLE001 — a failed spawn must not wedge
+                with self._lock:
+                    self._inflight = False
+                raise
+        with self._lock:
+            return self._result if self._result is not None else _FORGE_PENDING
+
+    def _refresh(self) -> None:
         result = _guarded(
-            FORGE_SOURCE, lambda: from_pr_search(self._search(self._label), self._label)
+            FORGE_SOURCE,
+            lambda: from_pr_search(self._search(self._label), self._label),
         )
-        self._at, self._result = now, result
-        return result
+        with self._lock:
+            self._result, self._at = result, self._clock()
+            self._inflight = False
 
 
 def _unavailable(name: str, exc: Exception) -> SourceResult:

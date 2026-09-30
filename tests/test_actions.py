@@ -1968,6 +1968,10 @@ def test_pr_search_runs_from_dispatchers_own_clone_and_projects_prs(
     assert outcome.prs[1]["head_sha"] is None
     [call] = read_calls(tmp_path)
     assert "pr-search" in call and "--label human-merge-required" in call
+    # the owner is resolved from dispatcher's own clone, not a workspace dir
+    from dispatcher.core.actions import _OWN_CHECKOUT
+
+    assert f"pr-search {_OWN_CHECKOUT} " in call
 
 
 def test_pr_search_unread_is_null_not_empty(tmp_path: Path) -> None:

@@ -82,6 +82,8 @@ export class MyTurnProvider implements vscode.TreeDataProvider<MyTurnNode> {
     const item = new vscode.TreeItem(waitLabel(wait));
     item.description = waitDescription(wait, now);
     item.tooltip = [
+      // The label shows only the repo's last segment; the full key is here.
+      ...(wait.repo ? [`repo: ${wait.repo}`] : []),
       wait.key,
       wait.since_basis ? `since: ${wait.since} (${wait.since_basis})` : "age unknown",
       `act: ${wait.act.kind}`,

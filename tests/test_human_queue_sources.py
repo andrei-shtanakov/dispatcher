@@ -482,6 +482,11 @@ def test_an_unread_search_is_unavailable_not_empty() -> None:
     assert result.waits == []
 
 
+def _sync(fn):
+    """A spawner that runs the refresh inline — deterministic tests."""
+    fn()
+
+
 def test_the_forge_reader_caches_within_the_ttl() -> None:
     calls: list[str] = []
     now = [100.0]
@@ -490,14 +495,53 @@ def test_the_forge_reader_caches_within_the_ttl() -> None:
         calls.append(label)
         return _search([_pr(len(calls))])
 
-    reader = ForgeReader(search, _LABEL, ttl=60.0, clock=lambda: now[0])
+    reader = ForgeReader(search, _LABEL, ttl=60.0, clock=lambda: now[0], spawn=_sync)
     first = reader.read()
+    assert [w.key for w in first.waits] == ["pr:acme/widget#1"]
     now[0] = 159.0
     assert reader.read() is first
     assert calls == [_LABEL]
     now[0] = 160.0
     assert [w.key for w in reader.read().waits] == ["pr:acme/widget#2"]
     assert calls == [_LABEL, _LABEL]
+
+
+def test_read_never_waits_and_never_doubles_a_refresh() -> None:
+    """The request path returns at once; the next poll does not start a
+    second search while the first is still running (review on #280)."""
+    pending: list = []
+    reader = ForgeReader(
+        lambda label: _search([_pr(1)]),
+        _LABEL,
+        ttl=60.0,
+        clock=lambda: 0.0,
+        spawn=pending.append,  # refreshes queue up instead of running
+    )
+    first = reader.read()
+    assert first.status.state == "unavailable"
+    assert "in progress" in (first.status.detail or "")
+    reader.read()
+    assert len(pending) == 1  # still in flight: no second search
+    pending.pop()()  # the background search finishes
+    assert [w.key for w in reader.read().waits] == ["pr:acme/widget#1"]
+
+
+def test_a_stale_result_is_served_while_it_refreshes() -> None:
+    pending: list = []
+    now = [0.0]
+    reader = ForgeReader(
+        lambda label: _search([_pr(int(now[0]) + 1)]),
+        _LABEL,
+        ttl=60.0,
+        clock=lambda: now[0],
+        spawn=pending.append,
+    )
+    reader.read()
+    pending.pop()()
+    now[0] = 61.0
+    stale = reader.read()  # stale: refresh starts, old answer served
+    assert [w.key for w in stale.waits] == ["pr:acme/widget#1"]
+    assert len(pending) == 1
 
 
 def test_a_raising_search_is_unavailable_and_cached() -> None:
@@ -507,9 +551,15 @@ def test_a_raising_search_is_unavailable_and_cached() -> None:
         calls.append(label)
         raise RuntimeError("github down")
 
-    reader = ForgeReader(search, _LABEL, ttl=60.0, clock=lambda: 0.0)
+    reader = ForgeReader(search, _LABEL, ttl=60.0, clock=lambda: 0.0, spawn=_sync)
     result = reader.read()
     assert result.status.state == "unavailable"
     assert "github down" in (result.status.detail or "")
     reader.read()
     assert calls == [_LABEL]  # an outage is not re-searched on every poll
+
+
+def test_an_ok_false_answer_with_a_list_is_not_believed() -> None:
+    result = from_pr_search(_search([_pr(1)], ok=False), _LABEL)
+    assert result.status.state == "unavailable"
+    assert result.waits == []

@@ -185,12 +185,22 @@ async def test_the_forge_source_joins_the_queue_when_a_label_is_set(
     config = dataclasses.replace(
         _config(tmp_path), forge_merge_label="human-merge-required"
     )
+    import time as _time
+
     async with _client(config) as client:
-        first = (await client.get("/api/human-queue")).json()
+        # The search runs in the background (the first answer may still say
+        # "in progress" — pinned deterministically in the unit tests), so
+        # poll until it lands.
+        deadline = _time.monotonic() + 5
+        while True:
+            body = (await client.get("/api/human-queue")).json()
+            if body["sources"]["forge_labelled_prs"]["state"] == "ok":
+                break
+            assert _time.monotonic() < deadline, "background search never landed"
+            _time.sleep(0.02)
         await client.get("/api/human-queue")
 
-    assert first["sources"]["forge_labelled_prs"]["state"] == "ok"
-    [wait] = [w for w in first["waits"] if w["source"] == "forge_labelled_prs"]
+    [wait] = [w for w in body["waits"] if w["source"] == "forge_labelled_prs"]
     assert wait["key"] == "pr:acme/widget#7"
     assert wait["act"]["kind"] == "human_merge"
-    assert labels == ["human-merge-required"]  # second poll served from the cache
+    assert labels == ["human-merge-required"]  # later polls served from cache
