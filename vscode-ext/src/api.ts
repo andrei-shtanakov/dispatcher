@@ -214,6 +214,9 @@ export type WaitAct =
       task_id: string;
       run_id: string;
       repo_key: string;
+      maestro_home?: string;
+      atp_catalog?: string | null;
+      maestro_cli?: string | null;
     }
   | { kind: "open_artifact"; path: string }
   | {

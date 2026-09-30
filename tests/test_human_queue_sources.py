@@ -180,6 +180,9 @@ def test_waits_from_every_non_terminal_run_not_only_the_newest(tmp_path: Path) -
         "task_id": "T-old",
         "run_id": "01OLD",
         "repo_key": "github.com/acme/app",
+        "maestro_home": str(home),
+        "atp_catalog": None,
+        "maestro_cli": None,
     }
     assert by_ref["01NEW/T-000"].act.model_dump()["verb"] == "approve"
     assert all(w.since is None for w in result.waits)
@@ -563,3 +566,21 @@ def test_an_ok_false_answer_with_a_list_is_not_believed() -> None:
     result = from_pr_search(_search([_pr(1)], ok=False), _LABEL)
     assert result.status.state == "unavailable"
     assert result.waits == []
+
+
+def test_a_maestro_verb_carries_the_servers_maestro_environment(
+    tmp_path: Path,
+) -> None:
+    """Review on #274: the prepared command must run against the home the
+    wait was read from, with the catalog `retry` needs — the same env
+    run_controller pins for its own verbs."""
+    home = tmp_path / "mhome"
+    db = make_maestro_run(home, _ACME, "01RUN", started_at="2026-09-01T00:00:00")
+    _add_task(db, "T-1", "needs_review", "2026-09-01T00:00:00")
+    catalog = tmp_path / "catalog.toml"
+    cli = tmp_path / "bin" / "maestro"
+    [wait] = from_maestro(home, [], atp_catalog=catalog, maestro_cli=cli).waits
+    act = wait.act.model_dump()
+    assert act["maestro_home"] == str(home)
+    assert act["atp_catalog"] == str(catalog)
+    assert act["maestro_cli"] == str(cli)

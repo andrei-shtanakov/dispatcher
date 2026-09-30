@@ -90,6 +90,14 @@ generate() {
     cfg="$(resolve_config "${1:-}")"
     uv="$(command -v uv)" || die "uv not on PATH — launchd needs its absolute path"
     port="$(config_port "$cfg")"
+    # `gh` is optional (only the human queue's forge source needs it), so a
+    # missing one is not an error — but where it IS installed, its directory
+    # goes on the service PATH: Homebrew on Apple silicon uses
+    # /opt/homebrew/bin, which the fixed list below does not contain.
+    local gh_dir=""
+    if gh_path="$(command -v gh)"; then
+        gh_dir="$(dirname "$gh_path"):"
+    fi
     cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -108,7 +116,7 @@ generate() {
   </array>
   <key>WorkingDirectory</key><string>$REPO_ROOT</string>
   <key>EnvironmentVariables</key>
-  <dict><key>PATH</key><string>$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
+  <dict><key>PATH</key><string>$HOME/.local/bin:${gh_dir}/usr/local/bin:/usr/bin:/bin</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>$LOG_DIR/out.log</string>

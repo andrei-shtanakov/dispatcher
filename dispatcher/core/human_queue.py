@@ -44,13 +44,22 @@ class RunViewAct(BaseModel):
 
 
 class MaestroVerbAct(BaseModel):
-    """A maestro verb for a run dispatcher did not launch; B renders it."""
+    """A maestro verb for a run dispatcher did not launch; B renders it.
+
+    `maestro_home`, `atp_catalog` and `maestro_cli` are the environment
+    dispatcher itself pins for the same verbs (`run_controller._verb_env`):
+    the wait was read from `maestro_home`, so the command must look there
+    too, and `retry` needs the catalog. None = not configured on the server.
+    """
 
     kind: Literal["maestro_verb"] = "maestro_verb"
     verb: Literal["retry", "approve"]
     task_id: str
     run_id: str
     repo_key: str
+    maestro_home: str
+    atp_catalog: str | None = None
+    maestro_cli: str | None = None
 
 
 class OpenArtifactAct(BaseModel):

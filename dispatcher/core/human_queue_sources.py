@@ -105,8 +105,23 @@ def _launch_unknown_wait(record: LaunchRecord) -> HumanWait:
     )
 
 
-def from_maestro(home: Path, records: list[LaunchRecord]) -> SourceResult:
-    """Waiting tasks of every non-terminal run (spec §3.2)."""
+def from_maestro(
+    home: Path,
+    records: list[LaunchRecord],
+    *,
+    atp_catalog: Path | None = None,
+    maestro_cli: Path | None = None,
+) -> SourceResult:
+    """Waiting tasks of every non-terminal run (spec §3.2).
+
+    *atp_catalog* / *maestro_cli* ride along in each `maestro_verb` act so
+    the prepared command runs in the environment the wait was read from.
+    """
+    env = {
+        "maestro_home": str(home),
+        "atp_catalog": None if atp_catalog is None else str(atp_catalog),
+        "maestro_cli": None if maestro_cli is None else str(maestro_cli),
+    }
     snap = ProjectSnapshot(name="maestro", path=str(home))
     runs = classified_runs(home, snap, report_missing_state=True)
     # classified_runs reports enumeration failures, unreadable runs and (with
@@ -125,7 +140,7 @@ def from_maestro(home: Path, records: list[LaunchRecord]) -> SourceResult:
         except SourceReadError as err:
             problems.append(f"run {info.run_id}: {err}")
             continue
-        waits.extend(_maestro_wait(info, row, launched) for row in rows)
+        waits.extend(_maestro_wait(info, row, launched, env) for row in rows)
     return SourceResult(name="maestro", status=_status(problems), waits=waits)
 
 
@@ -133,6 +148,7 @@ def _maestro_wait(
     info: OrchestrationRunInfo,
     row: dict[str, object],
     launched: dict[tuple[str, str], str],
+    env: dict[str, str | None],
 ) -> HumanWait:
     status = coerce_str(row["status"])
     reason, verb = _MAESTRO_WAITS[status]
@@ -147,6 +163,9 @@ def _maestro_wait(
             task_id=task_id,
             run_id=run_id,
             repo_key=info.repo_key,
+            maestro_home=env["maestro_home"] or "",
+            atp_catalog=env["atp_catalog"],
+            maestro_cli=env["maestro_cli"],
         )
     )
     return HumanWait(
@@ -422,7 +441,12 @@ def build_human_queue(
         store,
         _guarded(
             "maestro",
-            lambda: from_maestro(config.effective_maestro_home, records),
+            lambda: from_maestro(
+                config.effective_maestro_home,
+                records,
+                atp_catalog=config.atp_catalog,
+                maestro_cli=config.maestro_cli,
+            ),
         ),
         # Looked up through the module at call time so tests can patch it.
         _guarded("impresario", lambda: from_impresario(cache)),
