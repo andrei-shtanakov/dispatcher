@@ -558,7 +558,22 @@ export function activate(context: vscode.ExtensionContext): void {
     if (outcome === undefined) {
       return;
     }
-    const prepared = prepareRunEnd(run.act, outcome.label as RunEndOutcome);
+    // Asked here, not typed after the fact: free text pasted after a bare
+    // `--reason` reaches the shell unquoted (observed live 2026-09-30).
+    const reason = await vscode.window.showInputBox({
+      title: `Why is run ${run.run_id} ${outcome.label}?`,
+      prompt: "Stored with the outcome. One line; it will be quoted for you.",
+      validateInput: (value) =>
+        value.trim() === "" ? "a reason is required" : undefined,
+    });
+    if (reason === undefined) {
+      return;
+    }
+    const prepared = prepareRunEnd(
+      run.act,
+      outcome.label as RunEndOutcome,
+      reason,
+    );
     if (prepared.kind === "refused") {
       void vscode.window.showWarningMessage(prepared.note);
       return;

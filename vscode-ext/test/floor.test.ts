@@ -66,16 +66,40 @@ describe("factory floor", () => {
   });
 
   it("prepares run-end with the outcome the human chose, never executed", () => {
-    const p = prepareRunEnd(ACT, "superseded");
+    const p = prepareRunEnd(ACT, "superseded", "done elsewhere");
     expect(p.kind === "terminal" && p.text).toBe(
       "MAESTRO_HOME=/Users/me/.maestro /ws/maestro/.venv/bin/maestro run-end " +
-        "01M0SARX --outcome superseded --reason ",
+        "01M0SARX --outcome superseded --reason 'done elsewhere'",
     );
     expect(p.kind === "terminal" && p.note).toContain("deployer");
   });
 
+  it("quotes a reason the shell would otherwise split or glob", () => {
+    // The exact reason that broke live on 2026-09-30: zsh read `(...)` as a
+    // glob qualifier and `;` as a second command.
+    const reason = "died at start (tasks never ran); work completed by 01M0SE57";
+    const p = prepareRunEnd(ACT, "superseded", reason);
+    expect(p.kind === "terminal" && p.text).toContain(
+      "--reason 'died at start (tasks never ran); work completed by 01M0SE57'",
+    );
+  });
+
+  it("escapes a single quote inside the reason", () => {
+    const p = prepareRunEnd(ACT, "cancelled", "wasn't needed");
+    expect(p.kind === "terminal" && p.text).toContain(
+      "--reason 'wasn'\\''t needed'",
+    );
+  });
+
+  it("refuses an empty reason and control characters in it", () => {
+    expect(prepareRunEnd(ACT, "cancelled", "   ").kind).toBe("refused");
+    expect(prepareRunEnd(ACT, "cancelled", "a\nrm -rf /").kind).toBe("refused");
+  });
+
   it("refuses control characters", () => {
-    expect(prepareRunEnd({ ...ACT, run_id: "x\nrm" }, "cancelled").kind).toBe("refused");
+    expect(prepareRunEnd({ ...ACT, run_id: "x\nrm" }, "cancelled", "r").kind).toBe(
+      "refused",
+    );
   });
 });
 

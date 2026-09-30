@@ -15,6 +15,12 @@ const SHELL_SAFE = /^[A-Za-z0-9._:/@-]+$/;
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f]/;
 
+/** Always single-quoted: free text must never reach the shell as syntax
+ * (a `(…)` is a zsh glob qualifier, a `;` a second command). */
+function quoted(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 function shellWord(value: string): string {
   return SHELL_SAFE.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`;
 }
@@ -96,10 +102,21 @@ export type PreparedRunEnd =
   | { kind: "refused"; note: string };
 
 /** `MAESTRO_HOME=… <cli> run-end <id> --outcome <o>` — typed, never run. */
-export function prepareRunEnd(act: RunEndAct, outcome: RunEndOutcome): PreparedRunEnd {
+export function prepareRunEnd(
+  act: RunEndAct,
+  outcome: RunEndOutcome,
+  reason: string,
+): PreparedRunEnd {
   const values = [act.run_id, act.repo_key, act.maestro_home, act.maestro_cli ?? ""];
   if (values.some((v) => CONTROL.test(v))) {
     return { kind: "refused", note: "the run's identifiers contain control characters" };
+  }
+  const why = reason.trim();
+  if (why === "" || CONTROL.test(why)) {
+    return {
+      kind: "refused",
+      note: "a reason is required, on one line — it is stored with the outcome",
+    };
   }
   const cli = act.maestro_cli ? shellWord(act.maestro_cli) : "maestro";
   return {
@@ -107,9 +124,9 @@ export function prepareRunEnd(act: RunEndAct, outcome: RunEndOutcome): PreparedR
     name: `maestro · ${act.repo_key}`,
     text:
       `MAESTRO_HOME=${shellWord(act.maestro_home)} ${cli} run-end ` +
-      `${shellWord(act.run_id)} --outcome ${outcome} --reason `,
+      `${shellWord(act.run_id)} --outcome ${outcome} --reason ${quoted(why)}`,
     note:
-      `Typed in, not executed — add a reason after --reason, then run it from a ` +
-      `checkout of ${act.repo_key}. Ending a run is a decision; nothing infers it.`,
+      `Typed in, not executed — run it from a checkout of ${act.repo_key}. ` +
+      "Ending a run is a decision; nothing infers it.",
   };
 }
