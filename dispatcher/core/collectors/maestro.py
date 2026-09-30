@@ -51,6 +51,10 @@ _TASKS_SQL = (
     "started_at, completed_at FROM tasks "
     "ORDER BY created_at DESC LIMIT 50"
 )
+_WAITING_TASKS_SQL = (
+    "SELECT id, title, status, agent_type FROM tasks "
+    "WHERE status IN ('needs_review', 'awaiting_approval') ORDER BY id"
+)
 _COSTS_SQL = (
     "SELECT task_id, SUM(estimated_cost_usd) AS cost FROM task_costs GROUP BY task_id"
 )
@@ -180,7 +184,10 @@ class MaestroCollector:
 
 
 def classified_runs(
-    home: Path | None, snap: ProjectSnapshot
+    home: Path | None,
+    snap: ProjectSnapshot,
+    *,
+    report_missing_state: bool = False,
 ) -> list[tuple[OrchestrationRunInfo, Path]]:
     """Every run under `home`, classified once, with its `state.db`.
 
@@ -188,6 +195,12 @@ def classified_runs(
     work (tasks, logs, freshness sources) on top; the control plane
     (`core/run_controller.py`) uses this alone, so a request's status and the
     dashboard's can never disagree.
+
+    `report_missing_state` (human-queue A1 spec §3.2): a run directory
+    without `state.db` is skipped silently by default, because the control
+    plane models it as a transient in-flight launch (`RUN_IN_FLIGHT`) and
+    must keep doing so. The human queue passes True: for it the directory
+    is a wait it cannot read, and silence would shorten the queue.
     """
     if home is None:
         return []
@@ -201,9 +214,23 @@ def classified_runs(
         for run_dir in _subdirs(project_dir / "runs", snap):
             db = run_dir / "state.db"
             if not db.is_file():
+                if report_missing_state:
+                    snap.warnings.append(
+                        f"run {run_dir.name}: no state.db in {run_dir} "
+                        "(in flight or damaged)"
+                    )
                 continue
             out.append((_classify_run(db, repo_key, run_dir.name, holder, snap), db))
     return out
+
+
+def waiting_tasks(db: Path) -> list[dict[str, object]]:
+    """Every task in one run DB that waits for a human.
+
+    Raises `SourceReadError` on any read failure — the caller decides how
+    that degrades; an unreadable DB must never read as "nothing waits".
+    """
+    return read_rows(db, _WAITING_TASKS_SQL)
 
 
 def _project_dirs(projects: Path, snap: ProjectSnapshot) -> list[tuple[str, Path]]:
