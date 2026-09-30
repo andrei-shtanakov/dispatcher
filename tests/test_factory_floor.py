@@ -246,3 +246,35 @@ def test_unreadable_logs_make_activity_unknown_not_stale(tmp_path: Path) -> None
     assert (run.last_activity_at, run.stale) == (None, False)
     assert view.sources["maestro"].state == "partial"
     assert "cannot list" in (view.sources["maestro"].detail or "")
+
+
+def test_an_empty_wal_touched_by_a_reader_is_not_activity(tmp_path: Path) -> None:
+    """Live 2026-09-30: maestro opens every sibling run DB while resolving
+    one, which refreshes an EMPTY -wal's mtime — a month-old orphan looked
+    active. Only a WAL holding pages is a live writer."""
+    db = _run(
+        "01ORPH",
+        "2026-08-24T07:00:00+00:00",
+        active=datetime(2026, 8, 24, 8, 0, tzinfo=timezone.utc),
+        tmp_path=tmp_path,
+    )
+    wal = db.parent / "state.db-wal"
+    wal.write_bytes(b"")
+    _touch(wal, _RECENT)
+    [run] = build_factory_floor(_config(tmp_path), now=_NOW).in_flight
+    assert run.stale is True
+    assert run.last_activity_at == "2026-08-24T08:00:00+00:00"
+
+
+def test_a_wal_holding_pages_is_activity(tmp_path: Path) -> None:
+    db = _run(
+        "01LIVEW",
+        "2026-08-24T07:00:00+00:00",
+        active=datetime(2026, 8, 24, 8, 0, tzinfo=timezone.utc),
+        tmp_path=tmp_path,
+    )
+    wal = db.parent / "state.db-wal"
+    wal.write_bytes(b"\x00" * 4096)
+    _touch(wal, _RECENT)
+    [run] = build_factory_floor(_config(tmp_path), now=_NOW).in_flight
+    assert run.stale is False
