@@ -165,6 +165,7 @@
      the top of the page script below). -->
 <nav id="tablist" role="tablist" aria-label="Разделы">
   <button id="tab-launchpad" role="tab" type="button" tabindex="0" aria-controls="screen-launchpad" aria-selected="true">Launchpad</button>
+  <button id="tab-my-turn" role="tab" type="button" tabindex="-1" aria-controls="screen-my-turn" aria-selected="false">My turn</button>
   <button id="tab-sync" role="tab" type="button" tabindex="-1" aria-controls="screen-sync" aria-selected="false">Sync</button>
   <button id="tab-projects" role="tab" type="button" tabindex="-1" aria-controls="screen-projects" aria-selected="false">Projects</button>
   <button id="tab-errors" role="tab" type="button" tabindex="-1" aria-controls="screen-errors" aria-selected="false">Errors</button>
@@ -247,6 +248,18 @@
     <div id="lp-diagnostics-body"></div>
   </details>
 </section>
+</div>
+
+<!-- «My turn» (spec 2026-09-30-my-turn-b2-design): every wait for a human,
+     known age oldest first, then "age unknown". Commands are shown to be
+     copied, never run from here — the human act signs under the human's own
+     identity, not the web process's. -->
+<div id="screen-my-turn" class="screen" role="tabpanel" aria-labelledby="tab-my-turn" hidden>
+<section><h2>My turn <span id="my-turn-count" class="sub"></span></h2>
+  <ul id="my-turn-incomplete" class="warn" hidden></ul>
+  <div class="tablewrap"><table id="my-turn">
+    <thead><tr><th>Age</th><th>Reason</th><th>Wait</th><th>What to do</th>
+      </tr></thead><tbody></tbody></table></div></section>
 </div>
 
 <div id="screen-sync" class="screen" role="tabpanel" aria-labelledby="tab-sync" hidden>
@@ -503,6 +516,7 @@ function screenGenStale(screen, gen) {
 // being rejected by the router before the screen is ready to use it.
 const SCREENS = [
   {id: "launchpad", label: "Launchpad", sub: true},
+  {id: "my-turn", label: "My turn"},
   {id: "sync", label: "Sync"},
   {id: "projects", label: "Projects", sub: true},
   {id: "errors", label: "Errors"},
@@ -542,8 +556,9 @@ let lpLastScreenShown = null;
 // Whether the eco-profile is configured, i.e. whether `Benchmarks` is a
 // screen at all. Decided by the one `/api/benchmarks` request at page load
 // and re-decided by that screen's own loader while it is active; `false`
-// until an answer arrives, so an unconfigured stand shows exactly nine tabs
-// and never flashes a tenth.
+// until an answer arrives, so an unconfigured stand shows exactly ten tabs
+// (design §3.1's nine plus «My turn», B2) and never flashes the conditional
+// one — still called "the tenth" below, after the design's numbering.
 let benchmarksAvailable = false;
 
 /** Screens currently offered — the tenth is conditional (design §3.1). */
@@ -2723,11 +2738,122 @@ async function loadBenchmarks() {
   }
 }
 
+// ---- «My turn» (spec 2026-09-30-my-turn-b2-design) ------------------------
+//
+// Renders the human queue the server assembled: nothing is re-classified or
+// re-ordered here (the server already puts known ages oldest first, then the
+// unknown ones). Each wait's `prepared` act carries the words every surface
+// shows — the command text is built server-side from typed fields and is
+// checked against the VSCode extension by a shared fixture (FR-06).
+// Unknown is never zero: an incomplete queue names its missing sources.
+
+const MY_TURN_REASON = {
+  launch_unknown: "Launch outcome unknown",
+  run_needs_review: "Run task needs review",
+  run_awaiting_approval: "Run task awaits approval",
+  loop_needs_human: "Product loop needs a human",
+  proposal_gate: "Proposal gate",
+  backlog_gate: "Backlog gate (QG-4)",
+  pr_human_merge: "PR awaits your merge",
+};
+
+/** Same buckets as the VSCode tree: <1h, hours under two days, then days. */
+function myTurnAge(since) {
+  if (since === null || since === undefined) return "age unknown";
+  const start = Date.parse(since);
+  if (Number.isNaN(start)) return "age unknown";
+  const hours = Math.floor((Date.now() - start) / 3600000);
+  if (hours < 1) return "<1h";
+  return hours < 48 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
+}
+
+function myTurnShortRepo(repo) {
+  if (!repo) return null;
+  const parts = repo.split("/").filter(p => p !== "");
+  return parts.length ? parts[parts.length - 1] : null;
+}
+
+/** The "What to do" cell. Text only — nothing on this page runs it. */
+function myTurnActCell(p) {
+  if (!p) return `<span class="err">no prepared act — server predates B2</span>`;
+  const note = p.note ? `<div class="sub">${esc(p.note)}</div>` : "";
+  if (p.kind === "command") {
+    // Escaping stops an attribute break-out, not a `javascript:` URL — so
+    // only an https link is ever made clickable.
+    const pr = typeof p.url === "string" && p.url.startsWith("https://")
+      ? ` <a href="${esc(p.url)}" target="_blank" rel="noopener">PR</a>` : "";
+    return `<code>${esc(p.text)}</code>${pr}${note}`;
+  }
+  if (p.kind === "link") {
+    // Dispatcher's own views only: a page-relative fragment.
+    if (typeof p.url !== "string" || !p.url.startsWith("#")) {
+      return `<span class="err">unexpected link — not shown</span>`;
+    }
+    return `<a href="${esc(p.url)}">open run view</a>${note}`;
+  }
+  if (p.kind === "path") return `<code>${esc(p.text)}</code>${note}`;
+  return `<span class="err">${esc(p.note || "nothing safe to prepare")}</span>`;
+}
+
+function renderMyTurn(view) {
+  const incomplete = Object.entries(view.sources || {})
+    .filter(([, st]) => st.state !== "ok" && st.state !== "not_configured")
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, st]) => st.detail ? `${name}: ${st.state} — ${st.detail}`
+      : `${name}: ${st.state}`);
+  const list = document.getElementById("my-turn-incomplete");
+  list.hidden = incomplete.length === 0;
+  list.innerHTML = incomplete.length
+    ? `<li>queue incomplete — these sources were not fully read:</li>`
+      + incomplete.map(l => `<li>${esc(l)}</li>`).join("")
+    : "";
+  const count = view.waits.length;
+  document.getElementById("my-turn-count").textContent =
+    view.complete ? `${count} wait(s) for you` : `${count} known · incomplete`;
+  const row = w => {
+    const repo = myTurnShortRepo(w.repo);
+    const reasons = w.reasons.map(r => MY_TURN_REASON[r] || r).join(" + ");
+    const basis = w.since_basis ? ` title="since ${esc(w.since)} (${esc(w.since_basis)})"` : "";
+    return `<tr><td${basis}>${esc(myTurnAge(w.since))}</td><td>${esc(reasons)}</td>
+      <td>${repo ? `<b>${esc(repo)}</b> · ` : ""}${esc(w.title)}</td>
+      <td>${myTurnActCell(w.prepared)}</td></tr>`;
+  };
+  const known = view.waits.filter(w => w.since !== null);
+  const unknown = view.waits.filter(w => w.since === null);
+  const empty = view.complete ? "nothing waits for you"
+    : "no known waits — queue incomplete";
+  document.querySelector("#my-turn tbody").innerHTML = count === 0
+    ? `<tr><td colspan="4">${empty}</td></tr>`
+    : known.map(row).join("")
+      + (unknown.length
+        ? `<tr><td colspan="4" class="sub">age unknown (${unknown.length})</td></tr>`
+          + unknown.map(row).join("")
+        : "");
+}
+
+async function loadMyTurn() {
+  const gen = nextScreenGen("my-turn");
+  try {
+    const view = await get("/api/human-queue");
+    if (screenGenStale("my-turn", gen)) return LOAD_STALE;
+    renderMyTurn(view);
+    return LOAD_PAINTED;
+  } catch (err) {
+    if (screenGenStale("my-turn", gen)) return LOAD_STALE;
+    // Never an empty queue: an unread queue says it was not read.
+    document.getElementById("my-turn-count").textContent = "not read";
+    document.querySelector("#my-turn tbody").innerHTML =
+      `<tr><td colspan="4" class="err">human queue unavailable: ${esc(String(err))}</td></tr>`;
+    return LOAD_FAILED;
+  }
+}
+
 // `launchpad: null` is the registry saying so out loud: the Launchpad drives
 // itself on LP_REFRESH_MS with its own sequence/idempotency discipline
 // (lpIssueFetch), and must not be double-driven from here.
 const LOADERS = {
   launchpad: null,
+  "my-turn": loadMyTurn,
   sync: loadSync,
   projects: loadProjects,
   errors: loadErrors,
@@ -5067,7 +5193,7 @@ function lpRenderFetchError(err, fallback) {
   // background Launchpad poll (spec §9.1) failed would be a false claim
   // about a screen that read fine.
   //
-  // So the Launchpad occupies the same seat as the nine registry screens
+  // So the Launchpad occupies the same seat as the other registry screens
   // even though `LOADERS.launchpad` is null: it drives its own fetch, and
   // reports the result in the one vocabulary. A future change to what an
   // outcome MEANS reaches this panel without anyone remembering to come

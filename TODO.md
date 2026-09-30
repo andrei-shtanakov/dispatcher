@@ -649,7 +649,7 @@
       (нужна read-команда в github-checker), вид «Мой ход» — срез B, стоп-кран — D.
 - [x] «Мой ход» в VSCode, срез B1 (PR #274): вид `dispatcherMyTurn` + статус `⏳ N · ?` поверх `/api/human-queue`, действия только подготавливаются @owner:github:andrei-shtanakov @id:my-turn-vscode-b1 @epic:eco.governance-plane
       Спека `docs/superpowers/specs/2026-09-30-my-turn-vscode-design.md` (спека и код одним PR — решение владельца 2026-09-30).
-- [ ] «Мой ход» в вебе и TUI, срез B2: вкладка веб-оболочки (реестр вкладок + протокол загрузчиков) и TUI-вкладка @owner:github:andrei-shtanakov @id:my-turn-web-tui-b2 @epic:eco.governance-plane @blocked_by:todo://dispatcher/my-turn-vscode-b1
+- [x] «Мой ход» в вебе и TUI, срез B2: вкладка веб-оболочки (реестр вкладок + протокол загрузчиков) и TUI-вкладка; слова команд — серверное поле `prepared`, паритет с VSCode закреплён общей фикстурой @owner:github:andrei-shtanakov @id:my-turn-web-tui-b2 @epic:eco.governance-plane @blocked_by:todo://dispatcher/my-turn-vscode-b1
 - [x] Очередь, срез A2 (PR #280): PR с `human-merge-required` и candidate-PR через read-команду github-checker @owner:github:andrei-shtanakov @id:human-queue-a2 @epic:eco.governance-plane
       Владелец разрешил 2026-09-30 вести PR в github-checker напрямую (исключение из правила границ). В A2 же: уточнить docstring `from_impresario_report`, проверять уникальность имён источников; нести в `maestro_verb` эффективные `MAESTRO_HOME`/`ATP_CATALOG`, чтобы подготовленная в VSCode команда не зависела от окружения (ревью #274).
 - [x] «Цех», срез C1 (PR #282): `GET /api/factory-floor` + вид VSCode — незавершённые прогоны maestro, зависшие первыми, подготовленный `run-end` @owner:github:andrei-shtanakov @id:factory-floor-c1 @epic:eco.governance-plane
@@ -661,7 +661,7 @@
 ## Хвосты качества
 
 - [x] github-checker `contracts/actions/v1/README.md` в трёх местах ещё говорит «eight verbs» — исправлено у продюсера в #49, перевендорено после pr-search (#48); вендоренную копию не править — исправить у продюсера и перевендорить (ревью dispatcher#280) @owner:github:andrei-shtanakov @id:gc-actions-readme-nine-verbs @epic:eco.tooling
-- [ ] Нестабильный `tests/test_run_controller.py::test_run_end_through_the_resolution_path_also_binds_to_the_checkout`: на чистом master падает ~в половине одиночных прогонов (`RunRejectedError: cannot run maestro run-end`), замечено 2026-09-30 при A2 @owner:github:andrei-shtanakov @id:flaky-run-end-checkout-binding @epic:eco.tooling
+- [ ] Нестабильный `tests/test_run_controller.py::test_run_end_through_the_resolution_path_also_binds_to_the_checkout`: на чистом master падает ~в половине одиночных прогонов (`RunRejectedError: cannot run maestro run-end`), замечено 2026-09-30 при A2; там же при B2 под полным прогоном упал `test_launch_that_exits_nonzero_without_publishing_is_a_refusal` (отдельно 4/4 зелёный на ветке и на master) @owner:github:andrei-shtanakov @id:flaky-run-end-checkout-binding @epic:eco.tooling
 - [x] Проход 1 слайса 0 ПРИНЯТ — deployer#40 @owner:github:andrei-shtanakov @id:df-slice0-pass1-acceptance
       Принят вторым прогоном 2026-08-24 (`01M0T5HA1PW0J0GWTCGMZVFWW0`, запрос выдан
       из консоли). Пункт `todo://deployer/envrc-context-ignore` пронесён контуром от

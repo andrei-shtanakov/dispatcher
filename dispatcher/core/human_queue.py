@@ -11,7 +11,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, computed_field, model_validator
+
+from dispatcher.core.prepared_acts import PreparedAct, prepare_act
 
 SourceState = Literal["ok", "partial", "unavailable", "not_configured", "not_connected"]
 Reason = Literal[
@@ -104,6 +106,12 @@ class HumanWait(BaseModel):
     since: str | None
     since_basis: str | None
     act: Act
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def prepared(self) -> PreparedAct:
+        """The act in the words every surface shows (spec B2 §1)."""
+        return prepare_act(self.act)
 
     @model_validator(mode="after")
     def _since_is_proven_and_sortable(self) -> HumanWait:

@@ -46,13 +46,13 @@ if (!HTML_PATH) {
   process.exit(2);
 }
 
-// The nine UNCONDITIONAL screens, in registry order. Literal on purpose: the
+// The ten UNCONDITIONAL screens, in registry order. Literal on purpose: the
 // order of the tab strip is a contract of design §3.1, and a list derived
 // from the page could not fail. `benchmarks` is Task 7's conditional tenth
 // and is deliberately NOT here: this list is what an unconfigured stand
 // shows, so the count assertions below stay meaningful.
 const SCREEN_IDS = [
-  'launchpad', 'sync', 'projects', 'errors', 'models',
+  'launchpad', 'my-turn', 'sync', 'projects', 'errors', 'models',
   'contracts', 'epics', 'waits', 'roadmap',
 ];
 // The case that makes the paragraph above true rather than merely intended:
@@ -183,6 +183,9 @@ function defaultRoutes() {
     // overriding the route was really exercising the FAILURE path (a
     // missing route is a rejected fetch) while looking like a good read.
     [u => u.startsWith('/api/waits'), () => ok(WAITS_VIEW)],
+    [u => u.startsWith('/api/human-queue'), () => ok({
+      waits: [], sources: {}, complete: true, generated_at: '2026-09-30T00:00:00Z',
+    })],
     [u => u.startsWith('/api/benchmarks'), () => ok({
       fetch_in_flight: false,
       report: {status: 'unconfigured', url: null, fetched_at: null,
@@ -348,7 +351,7 @@ testCase('a malformed nested segment falls back to Launchpad', async () => {
 // accepting 200 arbitrary characters they had no use for.
 //
 // Driven through the real router (a boot hash), not by calling parseHash.
-const SUBLESS_SCREENS = ['sync', 'errors', 'models', 'contracts', 'epics',
+const SUBLESS_SCREENS = ['my-turn', 'sync', 'errors', 'models', 'contracts', 'epics',
   'waits', 'roadmap'];
 
 testCase('a nested segment on a screen that has none falls back to Launchpad',
@@ -429,7 +432,7 @@ testCase('arrow keys move FOCUS along the strip and open nothing', async () => {
   await withPage(async page => {
     el(page, '#tab-launchpad').focus();
     await press(page, 'ArrowRight');
-    check(focusedTab(page) === 'sync', `ArrowRight focused sync, got ${focusedTab(page)}`);
+    check(focusedTab(page) === 'my-turn', `ArrowRight focused my-turn, got ${focusedTab(page)}`);
     check(openScreenId(page) === 'launchpad',
       `launchpad is still the open screen, got ${openScreenId(page)}`);
     await press(page, 'ArrowLeft');
@@ -459,8 +462,8 @@ testCase('arrowing across the strip fires no loader', async () => {
     const before = page.calls.length;
     el(page, '#tab-launchpad').focus();
     for (let i = 0; i < 5; i++) await press(page, 'ArrowRight');
-    check(focusedTab(page) === 'contracts',
-      `five ArrowRights reached contracts, got ${focusedTab(page)}`);
+    check(focusedTab(page) === 'models',
+      `five ArrowRights reached models, got ${focusedTab(page)}`);
     check(page.calls.length === before,
       `no fetch while arrowing, got ${page.calls.length - before}`);
     check(openScreenId(page) === 'launchpad', 'and no screen opened');
@@ -487,12 +490,12 @@ testCase('the roving tabindex follows focus, and activation resets it to the '
       `one tab stop at boot, got [${tabStops(page).join(',')}]`);
     el(page, '#tab-launchpad').focus();
     await press(page, 'ArrowRight');
-    check(tabStops(page).join(',') === 'sync',
+    check(tabStops(page).join(',') === 'my-turn',
       `the tab stop moved with focus, got [${tabStops(page).join(',')}]`);
     check(el(page, '#tab-launchpad').attributes.tabindex === '-1',
       'the screen that is still open is out of the tab order while unfocused');
     await press(page, 'Enter');
-    check(tabStops(page).join(',') === 'sync',
+    check(tabStops(page).join(',') === 'my-turn',
       `after activation only the selected tab stops, got [${tabStops(page).join(',')}]`);
     // The selected tab and the tab stop are set in one loop, so they cannot
     // drift: open a third screen by CLICK and the stop follows the selection.
@@ -2106,8 +2109,8 @@ const configuredBenchmarksRoutes = {routes: [
 testCase('no Benchmarks tab when the profile is unconfigured', async () => {
   await withPage(page => {
     check(el(page, '#tab-benchmarks').hidden, 'the benchmarks tab is hidden');
-    check(visibleTabs(page).length === 9,
-      `nine visible tabs, got ${visibleTabs(page).length}`);
+    check(visibleTabs(page).length === 10,
+      `ten visible tabs, got ${visibleTabs(page).length}`);
     check(el(page, '#screen-benchmarks').hidden, 'and its panel stays closed');
   });
 });
@@ -2131,7 +2134,7 @@ testCase('the visible tabs are exactly SCREEN_IDS, in that order', async () => {
   // pin nothing and a reordered strip would ship green.
   await withPage(page => {
     check(tabIds(page).join(',') === SCREEN_IDS.join(','),
-      `nine tabs in registry order, got ${tabIds(page).join(',')}`);
+      `ten tabs in registry order, got ${tabIds(page).join(',')}`);
   });
   await withPage(page => {
     const expected = [...SCREEN_IDS, 'benchmarks'].join(',');
@@ -2143,8 +2146,8 @@ testCase('the visible tabs are exactly SCREEN_IDS, in that order', async () => {
 testCase('a configured profile adds the Benchmarks tab last', async () => {
   await withPage(async page => {
     const tabs = visibleTabs(page);
-    check(tabs.length === 10, `ten visible tabs, got ${tabs.length}`);
-    check(tabs.length === 10 && tabs[tabs.length - 1].attributes.id === 'tab-benchmarks',
+    check(tabs.length === 11, `eleven visible tabs, got ${tabs.length}`);
+    check(tabs.length === 11 && tabs[tabs.length - 1].attributes.id === 'tab-benchmarks',
       'benchmarks is last');
     await openScreen(page, 'benchmarks');
     check(!el(page, '#screen-benchmarks').hidden, 'the benchmarks panel opened');
@@ -2226,8 +2229,8 @@ testCase('losing the profile drops the active Benchmarks screen to Launchpad',
     check(!el(page, '#screen-launchpad').hidden, 'fell back to launchpad');
     check(el(page, '#screen-benchmarks').hidden, 'the panel closed behind it');
     check(el(page, '#tab-benchmarks').hidden, 'the tab is hidden again');
-    check(visibleTabs(page).length === 9,
-      `back to nine visible tabs, got ${visibleTabs(page).length}`);
+    check(visibleTabs(page).length === 10,
+      `back to ten visible tabs, got ${visibleTabs(page).length}`);
   }, configuredBenchmarksRoutes);
 });
 
@@ -2279,15 +2282,15 @@ testCase('a profile change does not steal focus from a tab that survives',
   // arrowed onto a different tab while Benchmarks is still the open screen;
   // the profile going away must not yank them off it.
   //
-  // Focus is parked on `sync`, deliberately NOT on `launchpad`: parking it
+  // Focus is parked on `my-turn`, deliberately NOT on `launchpad`: parking it
   // where the rescue would land anyway makes this case pass with or without
   // the gate, which is how the first draft of it went vacuous.
   await withPage(async page => {
     await openScreen(page, 'benchmarks');
     el(page, '#tab-benchmarks').focus();
     await press(page, 'ArrowRight');   // wraps onto launchpad…
-    await press(page, 'ArrowRight');   // …and on to sync
-    check(focusedTab(page) === 'sync',
+    await press(page, 'ArrowRight');   // …and on to my-turn
+    check(focusedTab(page) === 'my-turn',
       `precondition: focus is on a tab that will survive, got ${focusedTab(page)}`);
     check(openScreenId(page) === 'benchmarks',
       `precondition: benchmarks is still the open screen, got ${openScreenId(page)}`);
@@ -2296,7 +2299,7 @@ testCase('a profile change does not steal focus from a tab that survives',
     page.timers.byPeriod(10000).cb();
     await drain();
 
-    check(focusedTab(page) === 'sync',
+    check(focusedTab(page) === 'my-turn',
       `focus stayed where the operator put it, got ${focusedTab(page)}`);
   }, configuredBenchmarksRoutes);
 });
@@ -2607,7 +2610,7 @@ testCase('no call site reaches a loader except through runLoader', () => {
   }
   // The other half of the pairing: `applyOutcome` is what a call site used
   // to have to remember, so the places allowed to reach it are counted —
-  // `runLoader` for the nine registry screens, and the Launchpad's own two
+  // `runLoader` for the ten registry screens, and the Launchpad's own two
   // report points, which exist because it has no registry entry to be run
   // through. Three, named; a fourth is a new way to report an outcome.
   const applyDef = firstRealMatch(SCAN, declRe('applyOutcome'));
