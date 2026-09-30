@@ -1462,6 +1462,8 @@ _CANONICAL = {
     "propose-pr": "propose-pr-created",
     "pr-search": "pr-search-found",
     "merged-prs": "merged-prs-found",
+    "halt-read": "halt-read-on",
+    "halt-set": "halt-set-on",
 }
 DROP = object()
 
@@ -2031,3 +2033,45 @@ def test_merged_prs_rejects_a_control_character(tmp_path: Path) -> None:
     runner = ActionRunner(DispatcherConfig(roots=(tmp_path,)))
     with pytest.raises(ActionRejectedError):
         runner.merged_prs("2026-09-29\n")
+
+
+# --- halt-read / halt-set (D1) --------------------------------------------
+
+
+def _repo(tmp_path: Path, name: str = "app") -> Path:
+    repo = tmp_path / name
+    (repo / ".git").mkdir(parents=True)
+    return repo
+
+
+def test_halt_read_projects_the_read_state(tmp_path: Path) -> None:
+    _repo(tmp_path)
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)),
+        command=scripted_checker(tmp_path, {"halt-read": v1("halt-read")}),
+    )
+    outcome = runner.halt_read("app")
+    assert outcome.ok is True
+    assert outcome.halt == {"state": "on", "ruleset_id": 24244139, "detail": None}
+
+
+def test_halt_set_passes_the_state_and_projects_changed(tmp_path: Path) -> None:
+    _repo(tmp_path)
+    runner = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)),
+        command=scripted_checker(tmp_path, {"halt-set": v1("halt-set")}),
+    )
+    outcome = runner.halt_set("app", "on")
+    assert (outcome.ok, outcome.changed) == (True, True)
+    [call] = read_calls(tmp_path)
+    assert "halt-set" in call and "--state on" in call
+
+
+def test_halt_set_refuses_a_bad_state_and_a_busy_repo(tmp_path: Path) -> None:
+    _repo(tmp_path)
+    runner = ActionRunner(DispatcherConfig(roots=(tmp_path,)))
+    with pytest.raises(ActionRejectedError):
+        runner.halt_set("app", "pause")
+    with runner._hold("merge", "app"):
+        with pytest.raises(ActionBusyError):
+            runner.halt_set("app", "on")

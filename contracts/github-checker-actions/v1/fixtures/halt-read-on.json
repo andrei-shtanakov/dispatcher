@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "result_kind": "action",
+  "dir": "/repos/widget",
+  "action": "halt-read",
+  "ok": true,
+  "error": null,
+  "halt": {
+    "state": "on",
+    "ruleset_id": 24244139,
+    "detail": null
+  }
+}

@@ -96,6 +96,8 @@ class ActionOutcome(BaseModel):
     issue: dict[str, Any] | None = None
     prs: list[dict[str, Any]] | None = None
     merges: list[dict[str, Any]] | None = None
+    changed: bool | None = None  # halt-set: did the read-back state move
+    halt: dict[str, Any] | None = None  # halt-read / halt-set: the READ state
     # Which side of the fork this outcome was decided on. Not cosmetic: it is
     # what stops "nothing ran" and "it ran and we could not read the answer"
     # from being told apart by Python's exception hierarchy, which is the
@@ -104,6 +106,7 @@ class ActionOutcome(BaseModel):
 
 
 _PLAIN_PROJECTED = (
+    "changed",
     "detail",
     "error",
     "pr_url",
@@ -159,7 +162,7 @@ def project_outcome(ingested: Ingested, *, action: str, dir_name: str) -> Action
     for name in _PLAIN_PROJECTED:
         if name in sent:
             fields[name] = getattr(ingested, name)
-    for name in ("pr_detail", "issue"):
+    for name in ("pr_detail", "issue", "halt"):
         if name in sent:
             nested = getattr(ingested, name)
             # `exclude_unset` for the same reason as above, one level
@@ -671,6 +674,35 @@ class ActionRunner:
             outcome.ok,
             outcome.phase,
             len(prs) if isinstance(prs, list) else "unknown",
+        )
+        return outcome
+
+    def halt_read(self, repo_dir: str) -> ActionOutcome:
+        """The DarkFactory halt of one workspace repo. A read takes no lock."""
+        outcome = self._invoke("halt-read", self._target(repo_dir))
+        _audit.info(
+            "action=halt-read repo=%s ok=%s phase=%s state=%s",
+            repo_dir,
+            outcome.ok,
+            outcome.phase,
+            (outcome.halt or {}).get("state", "unknown"),
+        )
+        return outcome
+
+    def halt_set(self, repo_dir: str, state: str) -> ActionOutcome:
+        """Write the halt of one workspace repo, holding it like a merge."""
+        if state not in ("on", "off"):
+            raise ActionRejectedError(f"halt state must be on|off, got {state!r}")
+        with self._hold("halt-set", repo_dir) as target:
+            outcome = self._invoke("halt-set", target, "--state", state)
+        _audit.info(
+            "action=halt-set repo=%s want=%s ok=%s phase=%s changed=%s state=%s",
+            repo_dir,
+            state,
+            outcome.ok,
+            outcome.phase,
+            outcome.changed,
+            (outcome.halt or {}).get("state", "unknown"),
         )
         return outcome
 

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "result_kind": "action",
+  "dir": "/repos/widget",
+  "action": "halt-read",
+  "ok": true,
+  "error": null,
+  "halt": {
+    "state": "missing",
+    "ruleset_id": null,
+    "detail": "no ruleset named darkfactory-halt"
+  }
+}

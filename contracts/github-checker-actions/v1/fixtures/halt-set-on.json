@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "result_kind": "action",
+  "dir": "/repos/widget",
+  "action": "halt-set",
+  "ok": true,
+  "error": null,
+  "changed": true,
+  "halt": {
+    "state": "on",
+    "ruleset_id": 24244139,
+    "detail": null
+  }
+}

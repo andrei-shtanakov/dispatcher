@@ -286,7 +286,7 @@
       }
     },
     "action_result": {
-      "description": "result_kind=action: one of the ten verbs answered, and its own required fields apply.",
+      "description": "result_kind=action: one of the twelve verbs answered, and its own required fields apply.",
       "type": "object",
       "properties": {
         "result_kind": {
@@ -326,6 +326,12 @@
         },
         {
           "$ref": "#/$defs/verb_merged_prs"
+        },
+        {
+          "$ref": "#/$defs/verb_halt_read"
+        },
+        {
+          "$ref": "#/$defs/verb_halt_set"
         }
       ]
     },
@@ -1092,6 +1098,139 @@
           "items": {
             "$ref": "#/$defs/merged_pr"
           }
+        }
+      }
+    },
+    "halt_status": {
+      "type": "object",
+      "required": [
+        "state",
+        "ruleset_id",
+        "detail"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "enum": [
+            "on",
+            "off",
+            "missing",
+            "misconfigured",
+            "unknown"
+          ],
+          "description": "The halt as READ back. Only on/off are healthy; missing = never armed; misconfigured = a ruleset of that name that is not the canonical halt (including a bypass list the reader cannot see — non-admin tokens get null); unknown = the read failed."
+        },
+        "ruleset_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "verb_halt_read": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "result_kind",
+        "action",
+        "dir",
+        "ok",
+        "error",
+        "halt"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "result_kind": {
+          "const": "action"
+        },
+        "dir": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "action": {
+          "const": "halt-read"
+        },
+        "halt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/halt_status"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "verb_halt_set": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "result_kind",
+        "action",
+        "dir",
+        "ok",
+        "error",
+        "changed",
+        "halt"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "result_kind": {
+          "const": "action"
+        },
+        "dir": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "action": {
+          "const": "halt-set"
+        },
+        "changed": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Did the read-back state move. null: the write failed AND the read-back failed — the write may still have landed; read again, never assume."
+        },
+        "halt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/halt_status"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     }

@@ -39,6 +39,16 @@ from dispatcher.core.factory_floor import (
     build_factory_floor,
 )
 from dispatcher.core.governance import BundleGovernance
+from dispatcher.core.halt import (
+    HaltApplier,
+    HaltBusyError,
+    HaltReader,
+    HaltRejectedError,
+    HaltRequest,
+    HaltStore,
+    HaltView,
+    build_halt_view,
+)
 from dispatcher.core.human_queue import HumanQueueView
 from dispatcher.core.human_queue_sources import ForgeReader, build_human_queue
 from dispatcher.core.launchpad import LaunchpadSnapshot, assemble_snapshot
@@ -137,6 +147,14 @@ class ActionRequest(BaseModel):
     """POST /api/actions/{pull|create-pr} body."""
 
     dir: str
+
+
+class HaltSetRequest(BaseModel):
+    """POST /api/halt body: halt or lift the listed repos (null = the fleet)."""
+
+    state: str
+    repos: list[str] | None = None
+    reason: str
 
 
 class TaskRequest(BaseModel):
@@ -258,6 +276,24 @@ def create_app(
     forge = (
         ForgeReader(actions.pr_search, config.forge_merge_label)
         if config.forge_merge_label
+        else None
+    )
+    # The halt (D1): read back from GitHub in the background; requests are
+    # recorded under run_state_dir. Both need an explicit halt_fleet.
+    halt_reader = (
+        HaltReader(config.halt_fleet, actions.halt_read) if config.halt_fleet else None
+    )
+    halt_store = (
+        HaltStore(config.run_state_dir) if config.run_state_dir is not None else None
+    )
+    halt_applier = (
+        HaltApplier(
+            config.halt_fleet,
+            actions.halt_set,
+            halt_store,
+            on_applied=halt_reader.invalidate,
+        )
+        if halt_reader is not None and halt_store is not None
         else None
     )
     # Same reason for the factory floor's agent merges (slice C2).
@@ -500,6 +536,43 @@ def create_app(
         return build_factory_floor(
             config, now=datetime.now(timezone.utc), merges=agent_merges
         )
+
+    @app.get("/api/halt", response_model=HaltView)
+    def halt_view() -> HaltView:
+        """The fleet's halt as read back from GitHub (D1). Always HTTP 200."""
+        return build_halt_view(
+            config.halt_fleet,
+            halt_reader,
+            halt_store,
+            now=datetime.now(timezone.utc).isoformat(),
+            applying=None if halt_applier is None else halt_applier.applying,
+        )
+
+    @app.post("/api/halt", response_model=HaltRequest, status_code=202)
+    def halt_set(
+        request: HaltSetRequest,
+        x_action_token: str | None = Header(default=None),
+    ) -> HaltRequest:
+        """Halt or lift, by explicit human act (D1). Recorded, then written
+        repo by repo in the background; GET /api/halt shows the read-back."""
+        if x_action_token != action_token:
+            raise HTTPException(status_code=403, detail="bad or missing action token")
+        if halt_applier is None:
+            raise HTTPException(
+                status_code=422,
+                detail="the halt needs halt_fleet and run_state_dir configured",
+            )
+        try:
+            return halt_applier.start(
+                request.state,
+                request.repos,
+                request.reason,
+                now=datetime.now(timezone.utc),
+            )
+        except HaltRejectedError as err:
+            raise HTTPException(status_code=422, detail=str(err)) from err
+        except HaltBusyError as err:
+            raise HTTPException(status_code=409, detail=str(err)) from err
 
     @app.get("/api/human-queue", response_model=HumanQueueView)
     def human_queue() -> HumanQueueView:

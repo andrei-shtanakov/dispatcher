@@ -1,17 +1,17 @@
 {
   "contract": "github-checker-actions",
   "contract_version": 1,
-  "producer_commit": "85168e4a434c7438bd245f77b0fed0cbf4b49579",
+  "producer_commit": "75ab36044c607f37b75417023e577566a162b233",
   "surface_note": "sha256 of every vendored file; excludes PINNED.txt and this manifest",
-  "tree_sha256": "18bbc524c36c8d6ae5dabc5746aa3f6f83bb8bd7437a55cac67a8468125b595e",
+  "tree_sha256": "b89b142f79cc99554546fe2d682e0fe41f64bdaf4f83b24f53bbede46e5ef2e7",
   "surface": [
     {
       "path": "README.md",
-      "sha256": "c29e4e637e3d6d3659ccd03c70ee81e7de371aba78b59835008e3f69f1271cb5"
+      "sha256": "529194f9e91ab49d026978de8fc5430ca52a51fe1f31f227dffd28c2d04b5fda"
     },
     {
       "path": "actions.schema.json",
-      "sha256": "3dbfd92f8d32f9cafef274ab9f5855a070762aa71bcebbe64ab8c7a8f56d8012"
+      "sha256": "525390b93e1ac0c9a741b511524f047d2de4d73eaacd1092533c05863e1e8209"
     },
     {
       "path": "fixtures/cli-error-no-verb.json",
@@ -24,6 +24,34 @@
     {
       "path": "fixtures/contract-error.json",
       "sha256": "3c03ea2df853e0790890615b0d099da9d8180fca5eeab17901105c6c542a0a92"
+    },
+    {
+      "path": "fixtures/halt-read-misconfigured.json",
+      "sha256": "6e6a0ef187c5dbb8e6faa292c43900a174fcb592a5f63db48ff9444675520750"
+    },
+    {
+      "path": "fixtures/halt-read-missing.json",
+      "sha256": "3d0b202d37ad08261f87ed01fee11451419afdd1d34a4e6315e40e96a97d590b"
+    },
+    {
+      "path": "fixtures/halt-read-on.json",
+      "sha256": "8a9dbd7c3e56106e2a0dcb4fa575f219d6c0d45c93f7da3b2533adf7613d505b"
+    },
+    {
+      "path": "fixtures/halt-read-unknown.json",
+      "sha256": "47638656dfb89017aac0c8a5d91a82c981c1c92929ff2a1b4bf526c4ef3088e4"
+    },
+    {
+      "path": "fixtures/halt-set-on.json",
+      "sha256": "b43e92a0c1accc0500430a1451563f64b21aba50064df2c55eaf3cf8e8c1669d"
+    },
+    {
+      "path": "fixtures/halt-set-refused.json",
+      "sha256": "a59d3b42031aa696eeb4c080325dd459e37ad78fef17fa2ad2a92b1cd6213cc7"
+    },
+    {
+      "path": "fixtures/halt-set-unknown.json",
+      "sha256": "543568cea18015ec460ecf15c05fe7cec40c364154dc3b92814e034ab86383ee"
     },
     {
       "path": "fixtures/issue-create-conflict.json",

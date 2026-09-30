@@ -65,6 +65,15 @@ class BackgroundReader(Generic[T]):
         with self._lock:
             return self._value if self._value is not None else self._pending
 
+    def invalidate(self) -> None:
+        """Make the next `read()` start a refresh (e.g. after a write).
+
+        The last value is still served until that refresh lands — stale but
+        labelled by its own content, never replaced by "in progress".
+        """
+        with self._lock:
+            self._at = None
+
     def _refresh(self) -> None:
         value = self._fetch()
         with self._lock:

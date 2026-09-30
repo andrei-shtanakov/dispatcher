@@ -287,6 +287,48 @@ export interface FactoryFloorView {
   generated_at: string;
 }
 
+// Halt (GET/POST /api/halt — spec 2026-09-30-halt-d1-design).
+export type HaltState = "on" | "off" | "missing" | "misconfigured" | "unknown";
+
+export interface RepoHalt {
+  repo: string;
+  state: HaltState;
+  ruleset_id: number | null;
+  detail: string | null;
+}
+
+export interface HaltResult {
+  repo: string;
+  ok: boolean;
+  changed: boolean | null;
+  state: HaltState;
+  error: string | null;
+}
+
+export interface HaltRequest {
+  request_id: string;
+  at: string;
+  target: "on" | "off";
+  scope: "fleet" | "repos";
+  repos: string[];
+  fleet_at_request: string[];
+  reason: string;
+  principal: string;
+  results: HaltResult[];
+}
+
+export interface HaltView {
+  fleet: RepoHalt[];
+  applying: string | null;
+  halted: number;
+  unhealthy: string[];
+  deviations: string[];
+  last_request: HaltRequest | null;
+  sources: Record<string, SourceStatus>;
+  complete: boolean;
+  generated_at: string;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -391,6 +433,20 @@ export class ApiClient {
 
   factoryFloor(): Promise<FactoryFloorView> {
     return this.get("/api/factory-floor");
+  }
+
+  halt(): Promise<HaltView> {
+    return this.get("/api/halt");
+  }
+
+  /** Halt or lift (`repos` null = the whole fleet). Recorded, then applied
+   * in the background — the answer carries no results yet. */
+  setHalt(
+    state: "on" | "off",
+    repos: string[] | null,
+    reason: string,
+  ): Promise<HaltRequest> {
+    return this.postWithToken("/api/halt", { state, repos, reason });
   }
 
   pull(dir: string): Promise<ActionOutcome> {

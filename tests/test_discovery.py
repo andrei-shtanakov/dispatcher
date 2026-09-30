@@ -224,3 +224,18 @@ def test_a_non_string_forge_merge_label_is_a_load_error(tmp_path: Path) -> None:
     cfg.write_text(f'roots = ["{tmp_path}"]\nforge_merge_label = false\n')
     with pytest.raises(ValueError, match="must be a string"):
         load_config(cfg)
+
+
+def test_halt_fleet_is_an_explicit_list(tmp_path: Path) -> None:
+    """D1: the halt acts only on listed repos; off by default."""
+    from dispatcher.core.discovery import load_config
+
+    cfg = tmp_path / "dispatcher.toml"
+    cfg.write_text(f'roots = ["{tmp_path}"]\n')
+    assert load_config(cfg).halt_fleet == ()
+    cfg.write_text(f'roots = ["{tmp_path}"]\nhalt_fleet = ["a", "b"]\n')
+    assert load_config(cfg).halt_fleet == ("a", "b")
+    for bad in ('"a"', '["a", 1]', '["a", "a"]', '[""]'):
+        cfg.write_text(f'roots = ["{tmp_path}"]\nhalt_fleet = {bad}\n')
+        with pytest.raises(ValueError, match="halt_fleet"):
+            load_config(cfg)
