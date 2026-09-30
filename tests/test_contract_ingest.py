@@ -29,6 +29,7 @@ from dispatcher.core.contract import (
     CliError,
     ContractError,
     ContractViolation,
+    HaltStatus,
     IssueRef,
     LocalStatus,
     MergedPr,
@@ -44,7 +45,7 @@ from dispatcher.core.contract import (
 VENDORED_ROOT = (
     Path(__file__).parent.parent / "contracts" / "github-checker-actions" / "v1"
 )
-PRODUCER_COMMIT = "85168e4a434c7438bd245f77b0fed0cbf4b49579"
+PRODUCER_COMMIT = "75ab36044c607f37b75417023e577566a162b233"
 _EXCLUDED_NAMES = {"PINNED.txt", "manifest.json"}
 
 
@@ -105,9 +106,9 @@ def test_the_manifest_covers_every_vendored_file() -> None:
     assert listed == on_disk
 
 
-def test_all_forty_fixtures_are_present() -> None:
-    """The normative surface includes all 40 fixtures, not a subset."""
-    assert len(list((VENDORED_ROOT / "fixtures").glob("*.json"))) == 40
+def test_all_forty_seven_fixtures_are_present() -> None:
+    """The normative surface includes all 47 fixtures, not a subset."""
+    assert len(list((VENDORED_ROOT / "fixtures").glob("*.json"))) == 47
 
 
 def test_the_tree_hash_is_recomputed_not_merely_stored() -> None:
@@ -661,7 +662,7 @@ def test_every_verb_in_the_schema_is_discoverable_for_diagnosis() -> None:
         for branch in schema["$defs"]["action_result"]["oneOf"]
     }
     assert set(_verb_defs().values()) == from_schema
-    assert len(_verb_defs()) == 10
+    assert len(_verb_defs()) == 12
 
 
 def test_an_unknown_verb_is_diagnosed_as_an_unknown_verb() -> None:
@@ -996,6 +997,13 @@ _FIXTURE_STEMS = [
     "cli-error",
     "cli-error-no-verb",
     "contract-error",
+    "halt-read-misconfigured",
+    "halt-read-missing",
+    "halt-read-on",
+    "halt-read-unknown",
+    "halt-set-on",
+    "halt-set-refused",
+    "halt-set-unknown",
     "issue-create-conflict",
     "issue-create-created",
     "issue-create-no-readback",
@@ -1051,7 +1059,7 @@ def test_the_sweep_covers_every_fixture_by_name() -> None:
     failure mode a sweep cannot report about itself. Cardinality alone is
     not enough: thirty-four is satisfied by the wrong thirty-four, so the
     identities are pinned and cross-checked against what is on disk."""
-    assert len(VENDORED_FIXTURES) == 40
+    assert len(VENDORED_FIXTURES) == 47
     # Sorted by stem, not by path: `fixtures/cli-error-no-verb.json` sorts
     # before `fixtures/cli-error.json` ('-' < '.'), and the identity of the
     # set is what is being pinned, not the manifest's ordering.
@@ -1087,7 +1095,7 @@ def test_every_nested_object_round_trips_key_for_key(path: Path) -> None:
     payload = json.loads(path.read_text())
     ingested = ingest(path.read_text(), returncode=_expected_exit(payload))
     dumped = ingested.model_dump(exclude_unset=True)
-    for key in ("local", "pr_detail", "issue"):
+    for key in ("local", "pr_detail", "issue", "halt"):
         if isinstance(payload.get(key), dict):
             assert set(dumped[key]) == set(payload[key]), key
     for key in ("matches", "malformed", "prs", "merges"):
@@ -1258,6 +1266,7 @@ _NESTED_MODELS = [
     (PrDetail, "pr_detail"),
     (PrRef, "pr_ref"),
     (MergedPr, "merged_pr"),
+    (HaltStatus, "halt_status"),
 ]
 
 
@@ -1295,7 +1304,7 @@ def test_the_action_payload_defaults_no_producer_fact_either() -> None:
     must therefore be absent-able, i.e. default to `None`."""
     defs = _schema_defs()
     verbs = [name for name in defs if name.startswith("verb_")]
-    assert len(verbs) == 10
+    assert len(verbs) == 12
     always_required = set.intersection(*(set(defs[v]["required"]) for v in verbs))
     assert always_required == {
         "schema_version",

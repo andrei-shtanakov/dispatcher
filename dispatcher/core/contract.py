@@ -160,6 +160,20 @@ class MergedPr(BaseModel):
     merged_by: str | None
 
 
+class HaltStatus(BaseModel):
+    """The DarkFactory halt of one repository as READ (`$defs/halt_status`).
+
+    Only `on` / `off` are healthy; `ruleset_id` and `detail` are
+    required-and-nullable.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    state: Literal["on", "off", "missing", "misconfigured", "unknown"]
+    ruleset_id: int | None
+    detail: str | None
+
+
 class PrDetail(BaseModel):
     """One PR's reviewable state (`$defs/pr_detail`).
 
@@ -244,6 +258,8 @@ class ActionPayload(BaseModel):
     issue: IssueRef | None = None
     prs: list[PrRef] | None = None
     merges: list[MergedPr] | None = None
+    changed: bool | None = None
+    halt: HaltStatus | None = None
 
 
 class CliError(BaseModel):

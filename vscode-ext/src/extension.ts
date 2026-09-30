@@ -11,11 +11,13 @@ import type {
   OverviewResponse,
   SpecRunnerConfigEntry,
   SyncStatusResponse,
+  HaltView,
 } from "./api";
 import { prepareAct } from "./myTurn";
 import { MyTurnProvider, createMyTurnStatus } from "./myTurnView";
 import { FloorProvider } from "./floorView";
 import { prepareRunEnd } from "./floor";
+import { haltSummary, reasonProblem } from "./halt";
 import type { RunEndOutcome } from "./floor";
 import { createStatusBar } from "./status";
 import type { OnboardingView } from "./onboarding";
@@ -150,6 +152,13 @@ export function activate(context: vscode.ExtensionContext): void {
           api.humanQueue(),
           api.factoryFloor(),
         ]);
+      // The halt is polled beside the floor; an older server (404) shows
+      // no halt node rather than a false "off".
+      try {
+        floor.setHalt(await api.halt());
+      } catch (err) {
+        floor.setHalt(err instanceof ApiError && err.status === 404 ? undefined : null);
+      }
       floor.setState(
         floorData.status === "fulfilled"
           ? { kind: "view", view: floorData.value }
@@ -544,6 +553,81 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   /** Prepare `run-end` for a stale run — the outcome is the human's call. */
+  /** Halt or lift, by explicit human act (spec D1): action, scope, reason,
+   * confirmation — then the server records it and applies it in the
+   * background; the floor's halt node shows the read-back. */
+  async function haltCommand(): Promise<void> {
+    const api = client();
+    let view: HaltView;
+    try {
+      view = await api.halt();
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Halt: cannot read the halt — ${errorText(err)}`);
+      return;
+    }
+    if (view.sources["forge_halt"]?.state === "not_configured") {
+      void vscode.window.showWarningMessage(
+        "Halt: halt_fleet is empty in dispatcher.toml — nothing can be halted.",
+      );
+      return;
+    }
+    if (view.fleet.length === 0) {
+      // Never act blind, and never ask "halt 0 repos?" (review #287).
+      void vscode.window.showWarningMessage(
+        "Halt: the fleet's halt is still being read — try again in a moment.",
+      );
+      return;
+    }
+    const action = await vscode.window.showQuickPick(
+      [
+        { label: "$(debug-stop) Halt", description: "nothing lands on the default branch except by an admin", target: "on" as const },
+        { label: "$(debug-start) Lift", description: "merges land again", target: "off" as const },
+      ],
+      { title: `Halt · ${haltSummary(view).label}` },
+    );
+    if (!action) {
+      return;
+    }
+    const scope = await vscode.window.showQuickPick(
+      [
+        { label: `Whole fleet (${view.fleet.length} repos)`, repos: null as string[] | null },
+        ...view.fleet.map((r) => ({ label: r.repo, description: r.state, repos: [r.repo] })),
+      ],
+      { title: `${action.target === "on" ? "Halt" : "Lift"} — which repos?` },
+    );
+    if (!scope) {
+      return;
+    }
+    const reason = await vscode.window.showInputBox({
+      title: "Reason (recorded with the request)",
+      prompt: "one line — why the factory stops, or why it may resume",
+      validateInput: (v) => reasonProblem(v),
+    });
+    if (reason === undefined || reasonProblem(reason) !== null) {
+      return;
+    }
+    const count = scope.repos === null ? view.fleet.length : scope.repos.length;
+    const verb = action.target === "on" ? "Halt" : "Lift the halt on";
+    const confirm = await vscode.window.showWarningMessage(
+      `${verb} ${count} repo(s)? Runs already admitted keep working on their branches.`,
+      { modal: true },
+      verb,
+    );
+    if (confirm !== verb) {
+      return;
+    }
+    try {
+      const request = await api.setHalt(action.target, scope.repos, reason.trim());
+      void vscode.window.showInformationMessage(
+        `Halt request ${request.request_id.slice(0, 8)} recorded; applying repo by repo. ` +
+          "The Factory floor shows what GitHub reads back.",
+      );
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Halt: ${errorText(err)}`);
+    }
+    void poll();
+  }
+
   async function floorRunEnd(run: InFlightRun): Promise<void> {
     if (run.act === null) {
       return;
@@ -599,6 +683,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerTreeDataProvider("dispatcherBenchmarks", benchmarks),
     vscode.window.registerTreeDataProvider("dispatcherMyTurn", myTurn),
     vscode.window.registerTreeDataProvider("dispatcherFloor", floor),
+    vscode.commands.registerCommand("dispatcher.halt", () => void haltCommand()),
     vscode.commands.registerCommand(
       "dispatcher.floorRunEnd",
       (run: InFlightRun) => void floorRunEnd(run),

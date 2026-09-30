@@ -47,6 +47,9 @@ class BackgroundReader(Generic[T]):
         self._at: float | None = None
         self._value: T | None = None
         self._inflight = False
+        # Bumped by invalidate(): a refresh that STARTED before the bump may
+        # have read the old world, so it must not count as fresh.
+        self._generation = 0
 
     def read(self) -> T:
         """The last known value; kicks off a refresh when it is stale."""
@@ -65,8 +68,24 @@ class BackgroundReader(Generic[T]):
         with self._lock:
             return self._value if self._value is not None else self._pending
 
+    def invalidate(self) -> None:
+        """Make the next `read()` start a refresh (e.g. after a write).
+
+        The last value is still served until that refresh lands — stale but
+        labelled by its own content, never replaced by "in progress".
+        """
+        with self._lock:
+            self._at = None
+            self._generation += 1
+
     def _refresh(self) -> None:
+        with self._lock:
+            started = self._generation
         value = self._fetch()
         with self._lock:
-            self._value, self._at = value, self._clock()
+            self._value = value
+            # Invalidated mid-flight (e.g. a halt landed while the fleet was
+            # being read): serve this value, but refresh again on the next
+            # read instead of trusting it for a whole TTL (review #287).
+            self._at = self._clock() if self._generation == started else None
             self._inflight = False

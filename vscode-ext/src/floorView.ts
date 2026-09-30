@@ -1,7 +1,8 @@
 /** "Factory floor" tree: a thin adapter over floor.ts. */
 
 import * as vscode from "vscode";
-import type { AgentMerge, FactoryFloorView, InFlightRun } from "./api";
+import type { AgentMerge, FactoryFloorView, HaltView, InFlightRun } from "./api";
+import { haltLines, haltSummary } from "./halt";
 import {
   floorEmptyText,
   floorGroups,
@@ -21,6 +22,7 @@ export type FloorState =
   | { kind: "unavailable"; detail: string };
 
 type FloorNode =
+  | { kind: "halt"; view: HaltView | null }
   | { kind: "banner"; lines: string[] }
   | { kind: "line"; text: string }
   | { kind: "group"; label: string; stale: boolean; runs: InFlightRun[] }
@@ -34,6 +36,14 @@ export class FloorProvider implements vscode.TreeDataProvider<FloorNode> {
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this.changed.event;
   private state: FloorState = { kind: "offline" };
+  // undefined: not polled yet or the server predates D1 — no halt node.
+  private halt: HaltView | null | undefined = undefined;
+
+  /** null = the halt could not be read: shown as unknown, never as off. */
+  setHalt(halt: HaltView | null | undefined): void {
+    this.halt = halt;
+    this.changed.fire();
+  }
 
   setState(state: FloorState): void {
     this.state = state;
@@ -44,6 +54,28 @@ export class FloorProvider implements vscode.TreeDataProvider<FloorNode> {
     switch (node.kind) {
       case "offline":
         return offlineItem();
+      case "halt": {
+        const summary = haltSummary(node.view);
+        const item = new vscode.TreeItem(
+          summary.label,
+          node.view && node.view.fleet.length > 0
+            ? vscode.TreeItemCollapsibleState.Collapsed
+            : vscode.TreeItemCollapsibleState.None,
+        );
+        const icon = {
+          halted: ["debug-stop", "errorForeground"],
+          clear: ["pass", undefined],
+          unhealthy: ["warning", "list.warningForeground"],
+          unknown: ["question", "list.warningForeground"],
+          "off-config": ["circle-slash", undefined],
+        }[summary.tone] as [string, string | undefined];
+        item.iconPath = new vscode.ThemeIcon(
+          icon[0],
+          icon[1] ? new vscode.ThemeColor(icon[1]) : undefined,
+        );
+        item.tooltip = "Read back from GitHub — the ruleset, not the request.";
+        return item;
+      }
       case "banner": {
         const item = new vscode.TreeItem(
           "sources incomplete",
@@ -138,6 +170,9 @@ export class FloorProvider implements vscode.TreeDataProvider<FloorNode> {
       if (node.kind === "banner") {
         return node.lines.map((text) => ({ kind: "line", text }));
       }
+      if (node.kind === "halt") {
+        return node.view ? haltLines(node.view).map((text) => ({ kind: "line", text })) : [];
+      }
       if (node.kind === "group") {
         return node.runs.map((run) => ({ kind: "run", run }));
       }
@@ -154,6 +189,9 @@ export class FloorProvider implements vscode.TreeDataProvider<FloorNode> {
     }
     const view = this.state.view;
     const roots: FloorNode[] = [];
+    if (this.halt !== undefined) {
+      roots.push({ kind: "halt", view: this.halt });
+    }
     if (!view.complete) {
       roots.push({
         kind: "banner",

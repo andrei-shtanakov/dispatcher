@@ -80,6 +80,11 @@ class DispatcherConfig:
     # section is off (`not_configured`), hermetic like forge_merge_label.
     # load_config defaults it to "ai-prosto"; an empty string turns it off.
     agent_merge_login: str | None = None
+    # The repos the DarkFactory halt covers (spec D1): directory names in the
+    # workspace root, as ActionRunner resolves them. Explicit on purpose —
+    # a halt acts only on repos someone listed. Empty → the halt is off
+    # (`not_configured`) and nothing can be toggled.
+    halt_fleet: tuple[str, ...] = ()
 
     @property
     def effective_maestro_home(self) -> Path:
@@ -134,6 +139,19 @@ def _optional_str(data: dict, key: str, default: str) -> str | None:
     if not isinstance(raw, str):
         raise ValueError(f"{key} must be a string, got: {raw!r}")
     return raw.strip() or None
+
+
+def _halt_fleet(data: dict) -> tuple[str, ...]:
+    """`halt_fleet = ["repo-dir", ...]`; anything but a list of strings is a
+    load-time error — a halt that silently covers fewer repos than listed
+    is the failure this setting exists to prevent."""
+    raw = data.get("halt_fleet", [])
+    if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+        raise ValueError(f"halt_fleet must be a list of strings, got: {raw!r}")
+    names = [x.strip() for x in raw]
+    if any(not n for n in names) or len(set(names)) != len(names):
+        raise ValueError(f"halt_fleet has an empty or repeated entry: {raw!r}")
+    return tuple(names)
 
 
 def load_config(config_path: Path | None = None) -> DispatcherConfig:
@@ -202,6 +220,7 @@ def load_config(config_path: Path | None = None) -> DispatcherConfig:
         maestro_cli=maestro_cli,
         atp_catalog=atp_catalog,
         forge_merge_label=_forge_merge_label(data),
+        halt_fleet=_halt_fleet(data),
         agent_merge_login=_optional_str(
             data, "agent_merge_login", DEFAULT_AGENT_MERGE_LOGIN
         ),

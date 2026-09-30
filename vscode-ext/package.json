@@ -109,6 +109,11 @@
       {
         "command": "dispatcher.floorRunEnd",
         "title": "Dispatcher: Prepare run-end for a stale run"
+      },
+      {
+        "command": "dispatcher.halt",
+        "title": "Dispatcher: Halt / lift the factory…",
+        "icon": "$(debug-stop)"
       }
     ],
     "menus": {
@@ -116,6 +121,11 @@
         {
           "command": "dispatcher.refresh",
           "when": "view == dispatcherProjects || view == dispatcherErrors || view == dispatcherRoadmap || view == dispatcherSync || view == dispatcherMyTurn || view == dispatcherFloor",
+          "group": "navigation"
+        },
+        {
+          "command": "dispatcher.halt",
+          "when": "view == dispatcherFloor",
           "group": "navigation"
         }
       ],
