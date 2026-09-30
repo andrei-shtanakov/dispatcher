@@ -10,7 +10,11 @@
 `report_missing_state=True`), with its start time, the dispatcher launch record joined by
 `(repo_key, run_id)` when there is one, and a **stale** flag: not `running` and **no
 observed activity for 24 h** — `last_activity_at`, the newest mtime of the run's own files
-(`state.db`, its WAL, `logs/*`). Not the start time: a run dispatcher launches is never
+(`state.db`, its WAL **only when non-empty**, `logs/*` — opening a WAL database refreshes an
+empty `-wal`, and maestro opens every sibling run while resolving one). Known limit (review
+on #283): a writer that crashed leaves a non-empty WAL, and the next connection's
+checkpoint-on-close moves it into `state.db` — one false "active" window of 24 h after such
+a read, never a false "abandoned". Not the start time: a run dispatcher launches is never
 `running` (the holder is written only by maestro's service tick), so aging from the start
 would call a live 25-hour run abandoned (review on #282). `running` is never stale; an
 unknown activity time is never stale either. **Only `interrupted` can be stale:**

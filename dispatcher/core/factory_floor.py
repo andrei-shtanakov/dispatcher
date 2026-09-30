@@ -198,8 +198,21 @@ def _last_activity(run_dir: Path) -> tuple[str | None, str | None]:
     An absent `logs/` is normal; one that exists but cannot be listed is a
     problem — a newer log inside it could be exactly the activity that
     proves the run alive.
+
+    The WAL counts only when it holds pages. Merely OPENING a WAL database
+    refreshes an empty `-wal`'s mtime (and `-shm`'s), and maestro opens every
+    sibling run while resolving one — observed live 2026-09-30: `run-end` on
+    one deployer run made a month-old orphan look active. A writer that is
+    alive keeps uncheckpointed pages in the WAL; a checkpoint on close moves
+    them into `state.db`, whose own mtime then carries the activity.
     """
-    candidates = [run_dir / "state.db", run_dir / "state.db-wal"]
+    candidates = [run_dir / "state.db"]
+    wal = run_dir / "state.db-wal"
+    try:
+        if wal.stat().st_size > 0:
+            candidates.append(wal)
+    except OSError:
+        pass
     logs = run_dir / "logs"
     try:
         candidates.extend(p for p in logs.iterdir() if p.is_file())
