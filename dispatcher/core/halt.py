@@ -16,6 +16,7 @@ are shown as deviations, not as covered.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import uuid
@@ -102,9 +103,11 @@ class HaltStore:
 
     def append(self, request: HaltRequest) -> None:
         """Record one request; a failure to record raises — an unrecorded
-        halt request must not be applied."""
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._path.open("a", encoding="utf-8") as fh:
+        halt request must not be applied. Same modes as RunStore's tree
+        (0700 / 0600): the journal carries reasons and the fleet."""
+        self._path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(self._path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
             fh.write(request.model_dump_json() + "\n")
 
     def last(self) -> tuple[HaltRequest | None, str | None]:
@@ -135,8 +138,11 @@ def read_fleet(
     for repo in fleet:
         try:
             outcome = read(repo)
-        except ActionRejectedError as err:
-            out.append(RepoHalt(repo=repo, state="unknown", detail=str(err)))
+        except Exception as err:  # noqa: BLE001 — one repo's read, never the reader
+            # BackgroundReader requires a fetch that never raises; a repo
+            # whose read raised is `unknown`, and the rest are still read.
+            detail = str(err) if isinstance(err, ActionRejectedError) else repr(err)
+            out.append(RepoHalt(repo=repo, state="unknown", detail=detail))
             continue
         out.append(_repo_halt(repo, outcome))
     return out
@@ -252,6 +258,11 @@ def _deviations(
             for repo in fleet
             if repo not in last.fleet_at_request
         ]
+    out += [
+        f"{repo}: left halt_fleet after the last request — its halt is no longer read"
+        for repo in last.repos
+        if repo not in fleet
+    ]
     by_repo = {r.repo: r for r in repos}
     for repo in last.repos:
         seen = by_repo.get(repo)

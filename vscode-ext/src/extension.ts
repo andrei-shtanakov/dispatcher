@@ -571,6 +571,13 @@ export function activate(context: vscode.ExtensionContext): void {
       );
       return;
     }
+    if (view.fleet.length === 0) {
+      // Never act blind, and never ask "halt 0 repos?" (review #287).
+      void vscode.window.showWarningMessage(
+        "Halt: the fleet's halt is still being read — try again in a moment.",
+      );
+      return;
+    }
     const action = await vscode.window.showQuickPick(
       [
         { label: "$(debug-stop) Halt", description: "nothing lands on the default branch except by an admin", target: "on" as const },

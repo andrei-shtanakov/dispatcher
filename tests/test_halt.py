@@ -319,3 +319,62 @@ async def test_a_bad_request_is_422_and_touches_nothing(tmp_path: Path) -> None:
         )
     assert resp.status_code == 422
     assert not (tmp_path / "state" / "halt-requests.jsonl").exists()
+
+
+def test_a_repo_that_left_the_fleet_while_halted_stays_visible(tmp_path: Path) -> None:
+    """Review #287: dropping a halted repo from halt_fleet must not make its
+    halt disappear from view."""
+    forge = Forge({"alpha": "off", "beta": "off"})
+    store = HaltStore(tmp_path)
+    HaltApplier(_FLEET, forge.write, store, spawn=_sync).start(
+        "on", None, "x", now=_NOW
+    )
+    shrunk = ("alpha",)
+    reader = HaltReader(shrunk, forge.read, clock=lambda: 0.0, spawn=_sync)
+    view = build_halt_view(shrunk, reader, store, now="t")
+    assert view.deviations == [
+        "beta: left halt_fleet after the last request — its halt is no longer read"
+    ]
+
+
+def test_a_read_that_raises_is_unknown_and_the_rest_are_read() -> None:
+    def read(repo: str) -> ActionOutcome:
+        if repo == "alpha":
+            raise RuntimeError("boom")
+        return _outcome("off")
+
+    got = read_fleet(_FLEET, read)
+    assert [(r.repo, r.state) for r in got] == [("alpha", "unknown"), ("beta", "off")]
+
+
+def test_the_journal_is_private(tmp_path: Path) -> None:
+    import stat
+
+    state = tmp_path / "state"
+    store = HaltStore(state)
+    HaltApplier(
+        _FLEET, Forge({"alpha": "off", "beta": "off"}).write, store, spawn=_sync
+    ).start("on", None, "x", now=_NOW)
+    assert stat.S_IMODE((state / "halt-requests.jsonl").stat().st_mode) == 0o600
+    assert stat.S_IMODE(state.stat().st_mode) == 0o700
+
+
+def test_an_invalidation_during_a_refresh_is_not_lost() -> None:
+    """Review #287: a halt applied while the fleet was being read must not
+    leave that (pre-halt) read trusted for a whole TTL."""
+    pending: list = []
+    holder: list[HaltReader] = []
+    calls = [0]
+
+    def read(repo: str) -> ActionOutcome:
+        calls[0] += 1
+        if calls[0] == 1:
+            holder[0].invalidate()  # the halt lands mid-read
+        return _outcome("off")
+
+    reader = HaltReader(_FLEET, read, clock=lambda: 0.0, spawn=pending.append)
+    holder.append(reader)
+    reader.read()
+    pending.pop()()  # the in-flight read completes after the invalidation
+    assert reader.read() is not None  # its value is served…
+    assert len(pending) == 1  # …but a fresh read has already started

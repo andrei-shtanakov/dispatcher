@@ -1095,7 +1095,7 @@ def test_every_nested_object_round_trips_key_for_key(path: Path) -> None:
     payload = json.loads(path.read_text())
     ingested = ingest(path.read_text(), returncode=_expected_exit(payload))
     dumped = ingested.model_dump(exclude_unset=True)
-    for key in ("local", "pr_detail", "issue"):
+    for key in ("local", "pr_detail", "issue", "halt"):
         if isinstance(payload.get(key), dict):
             assert set(dumped[key]) == set(payload[key]), key
     for key in ("matches", "malformed", "prs", "merges"):
