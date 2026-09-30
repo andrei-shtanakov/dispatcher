@@ -47,6 +47,10 @@ class RunEndAct(BaseModel):
     repo_key: str
     maestro_home: str
     maestro_cli: str | None = None
+    # Set when dispatcher launched the run and its record can act: the run
+    # view's `run-end` verb ends the run AND terminalizes the launch record,
+    # which a raw CLI `run-end` would leave open. Consumers route there.
+    request_id: str | None = None
 
 
 class InFlightRun(BaseModel):
@@ -132,7 +136,10 @@ def _in_flight(
         # Not `started_at`: a run dispatcher launches is never `running` (the
         # holder is written only by maestro's service tick), so age from the
         # start would call a live 25-hour run abandoned. A live run writes.
-        stale = status != "running" and _older_than(activity, now, STALE_HOURS)
+        # Only `interrupted` can be abandoned: `running` has a live holder,
+        # and `suspended` is a run deliberately parked for a human — however
+        # long it waits, that is a wait, never an orphan (review on #282).
+        stale = status == "interrupted" and _older_than(activity, now, STALE_HOURS)
         record = by_run.get((info.repo_key, info.run_id))
         out.append(
             InFlightRun(
@@ -153,6 +160,12 @@ def _in_flight(
                             None
                             if config.maestro_cli is None
                             else str(config.maestro_cli)
+                        ),
+                        # Only a record with a checkout: the run view's verbs
+                        # refuse records written before that field existed,
+                        # so routing those there would be a dead end.
+                        request_id=(
+                            record.request_id if record and record.checkout else None
                         ),
                     )
                     if stale

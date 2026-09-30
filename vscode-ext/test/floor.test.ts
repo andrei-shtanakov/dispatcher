@@ -5,6 +5,7 @@ import {
   floorGroups,
   launchLine,
   prepareRunEnd,
+  runViewUrl,
   runDescription,
   runAge,
   runLabel,
@@ -93,5 +94,14 @@ describe("factory floor wording (review on #282)", () => {
     expect(launchLine(run("a", { request_id: "rc-1" }), false)).toBe(
       "launched by dispatcher: rc-1",
     );
+  });
+});
+
+describe("dispatcher-launched runs end through their run view", () => {
+  it("routes to #launchpad/<request_id>, never a raw run-end", () => {
+    expect(runViewUrl({ ...ACT, request_id: "rc-1" }, "http://127.0.0.1:8787/")).toBe(
+      "http://127.0.0.1:8787/#launchpad/rc-1",
+    );
+    expect(runViewUrl(ACT, "http://127.0.0.1:8787")).toBeNull();
   });
 });

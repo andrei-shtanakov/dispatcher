@@ -15,7 +15,7 @@ import type {
 import { prepareAct } from "./myTurn";
 import { MyTurnProvider, createMyTurnStatus } from "./myTurnView";
 import { FloorProvider } from "./floorView";
-import { prepareRunEnd } from "./floor";
+import { prepareRunEnd, runViewUrl } from "./floor";
 import type { RunEndOutcome } from "./floor";
 import { createStatusBar } from "./status";
 import type { OnboardingView } from "./onboarding";
@@ -546,6 +546,11 @@ export function activate(context: vscode.ExtensionContext): void {
   /** Prepare `run-end` for a stale run — the outcome is the human's call. */
   async function floorRunEnd(run: InFlightRun): Promise<void> {
     if (run.act === null) {
+      return;
+    }
+    const viewUrl = runViewUrl(run.act, readConfig().url);
+    if (viewUrl !== null) {
+      await vscode.env.openExternal(vscode.Uri.parse(viewUrl));
       return;
     }
     const outcome = await vscode.window.showQuickPick(

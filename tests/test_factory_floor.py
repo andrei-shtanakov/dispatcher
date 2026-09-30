@@ -75,6 +75,7 @@ def test_only_unfinished_runs_stale_first_with_a_prepared_run_end(
         "repo_key": "github.com/acme/app",
         "maestro_home": str(home),
         "maestro_cli": str(tmp_path / "bin" / "maestro"),
+        "request_id": None,
     }
     assert (new.stale, new.act) == (False, None)
 
@@ -179,3 +180,70 @@ async def test_the_endpoint_answers_200(tmp_path: Path) -> None:
         resp = await client.get("/api/factory-floor")
     assert resp.status_code == 200
     assert resp.json()["sources"]["maestro"]["state"] == "ok"
+
+
+def test_a_suspended_run_is_waiting_not_abandoned(tmp_path: Path) -> None:
+    """Review on #282: `suspended` is a run parked for a human. However long
+    it has been idle, it must never be offered a run-end."""
+    db = make_maestro_run(
+        tmp_path / "mhome",
+        _ACME,
+        "01PARKED",
+        started_at="2026-08-01T00:00:00+00:00",
+        suspended_at="2026-08-01T01:00:00+00:00",
+    )
+    _touch(db, datetime(2026, 8, 1, 1, 0, tzinfo=timezone.utc))
+    [run] = build_factory_floor(_config(tmp_path), now=_NOW).in_flight
+    assert (run.status, run.stale, run.act) == ("suspended", False, None)
+
+
+def test_a_dispatcher_launched_stale_run_routes_to_its_run_view(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    assert config.run_state_dir is not None
+    _run(
+        "01ORPH",
+        "2026-08-24T07:00:00+00:00",
+        active=datetime(2026, 8, 24, 8, 0, tzinfo=timezone.utc),
+        tmp_path=tmp_path,
+    )
+    store = RunStore(config.run_state_dir)
+    store.reserve(
+        _REQ,
+        RepoKey(host="github.com", owner="acme", repo="app"),
+        known_runs=[],
+        window_start="t",
+        checkout=str(tmp_path / "ws" / "app"),
+    )
+    store.mark_materialized(_REQ, "01ORPH")
+    [run] = build_factory_floor(config, now=_NOW).in_flight
+    assert run.stale is True
+    assert run.act is not None and run.act.request_id == _REQ
+
+
+def test_a_record_without_checkout_gets_the_cli_not_a_dead_end(
+    tmp_path: Path,
+) -> None:
+    """Records written before `checkout` existed are refused by the run
+    view's verbs — routing there would strand the human (the real orphan
+    01M0SARX is exactly this)."""
+    config = _config(tmp_path)
+    assert config.run_state_dir is not None
+    _run(
+        "01OLDREC",
+        "2026-08-24T07:00:00+00:00",
+        active=datetime(2026, 8, 24, 8, 0, tzinfo=timezone.utc),
+        tmp_path=tmp_path,
+    )
+    store = RunStore(config.run_state_dir)
+    store.reserve(
+        _REQ,
+        RepoKey(host="github.com", owner="acme", repo="app"),
+        known_runs=[],
+        window_start="t",
+    )
+    store.mark_materialized(_REQ, "01OLDREC")
+    [run] = build_factory_floor(config, now=_NOW).in_flight
+    assert run.request_id == _REQ  # still shown as dispatcher-launched
+    assert run.act is not None and run.act.request_id is None

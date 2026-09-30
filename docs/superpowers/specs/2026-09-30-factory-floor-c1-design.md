@@ -13,13 +13,20 @@ observed activity for 24 h** — `last_activity_at`, the newest mtime of the run
 (`state.db`, its WAL, `logs/*`). Not the start time: a run dispatcher launches is never
 `running` (the holder is written only by maestro's service tick), so aging from the start
 would call a live 25-hour run abandoned (review on #282). `running` is never stale; an
-unknown activity time is never stale either. mtime here is observed activity, not a wait
+unknown activity time is never stale either. **Only `interrupted` can be stale:**
+`suspended` is a run parked for a human, and however long it waits it is a wait, never an
+orphan (review on #282). mtime here is observed activity, not a wait
 start, so the human-queue rule against mtime as `since` does not apply.
 
 It is an observation, not a wait: nothing here enters the human queue. A stale run carries
 a prepared `maestro_run_end` act (`run_id`, `repo_key`, `maestro_home`, `maestro_cli`);
 the outcome — `superseded` or `cancelled` — is the human's choice at the moment of acting,
-because ending a run is a decision nothing may infer (maestro `run-end`).
+because ending a run is a decision nothing may infer (maestro `run-end`). When dispatcher
+launched the run and its record carries a `checkout`, the act also carries `request_id`
+and the consumer routes to the run view instead: its `run-end` verb ends the run **and**
+terminalizes the launch record (`run_controller` `mark_terminal`). Records written before
+`checkout` existed are refused by those verbs, so they get the CLI line (their record stays
+open — the Launchpad finding in §3).
 
 Degradation as in the human queue: `dispatcher_runs` / `maestro` statuses, `complete`,
 HTTP 200 always.
