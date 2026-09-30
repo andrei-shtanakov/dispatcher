@@ -1743,6 +1743,7 @@ _ACTION_OUTCOME_WIRE_KEYS = sorted(
         "malformed",
         "created",
         "issue",
+        "prs",  # additive: pr-search (human queue A2); null on every other verb
         "phase",
     ]
 )

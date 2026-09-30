@@ -14,6 +14,7 @@ import type {
 
 /** Group order of the tree — fixed, not derived from the data. */
 export const REASON_ORDER: readonly WaitReason[] = [
+  "pr_human_merge",
   "launch_unknown",
   "run_needs_review",
   "run_awaiting_approval",
@@ -29,6 +30,7 @@ export const REASON_LABEL: Record<GroupKey, string> = {
   loop_needs_human: "Product loop needs a human",
   proposal_gate: "Proposal gate",
   backlog_gate: "Backlog gate (QG-4)",
+  pr_human_merge: "PR awaits your merge",
   other: "Other reasons",
 };
 
@@ -56,7 +58,8 @@ export type PreparedAct =
   | { kind: "terminal"; name: string; text: string; note: string }
   | { kind: "file"; path: string }
   | { kind: "clipboard"; text: string; note: string }
-  | { kind: "refused"; note: string };
+  | { kind: "refused"; note: string }
+  | { kind: "human_merge"; url: string; command: string; note: string };
 
 /** Milliseconds the wait has lasted, or null when its start is unknown. */
 export function waitAgeMs(wait: HumanWait, now: Date): number | null {
@@ -89,11 +92,23 @@ export function isOverdue(
   return age !== null && age > thresholdHours * HOUR_MS;
 }
 
+/** The last path segment of a repo key (`github.com/o/deployer` → `deployer`). */
+export function shortRepo(repo: string | null): string | null {
+  if (!repo) {
+    return null;
+  }
+  const parts = repo.split("/").filter((p) => p !== "");
+  return parts.length > 0 ? parts[parts.length - 1] : null;
+}
+
+/** Tree label: the repo first, so a long title cannot hide whose wait it is. */
+export function waitLabel(wait: HumanWait): string {
+  const repo = shortRepo(wait.repo);
+  return repo ? `${repo} · ${wait.title}` : wait.title;
+}
+
 export function waitDescription(wait: HumanWait, now: Date): string {
   const parts = [ageLabel(wait, now)];
-  if (wait.repo) {
-    parts.push(wait.repo);
-  }
   if (wait.reasons.length > 1) {
     parts.push(wait.reasons.join(" + "));
   }
@@ -216,6 +231,9 @@ export function prepareAct(
         "otherwise maestro looks in a different home or cannot route a model.",
     };
   }
+  if (act.kind === "human_merge") {
+    return prepareHumanMerge(act);
+  }
   if (act.kind !== "open_artifact") {
     // A newer server may serve an act this build predates: say so, never
     // fall through into another act's handling.
@@ -236,5 +254,34 @@ export function prepareAct(
       opts.impresarioPath === null
         ? "impresario mirror path unknown — copied the mirror-relative path"
         : "path is not a plain relative path — copied it instead of opening",
+  };
+}
+
+function prepareHumanMerge(act: {
+  repo: string;
+  number: number;
+  url: string;
+  head_sha: string | null;
+}): PreparedAct {
+  const name = shortRepo(act.repo) ?? "";
+  const values = [act.repo, act.url, act.head_sha ?? ""];
+  if (name === "" || values.some((v) => CONTROL.test(v))) {
+    return {
+      kind: "refused",
+      note: "the PR's identifiers are unusable; not preparing a command",
+    };
+  }
+  const pin =
+    act.head_sha !== null ? ` --expect-head ${shellWord(act.head_sha)}` : "";
+  return {
+    kind: "human_merge",
+    url: act.url,
+    command: `sh devtools/human-merge.sh ${shellWord(name)} ${act.number}${pin}`,
+    note:
+      "Typed in, not executed. Run it from the workspace root under YOUR gh " +
+      "profile — the merge is the human act that signs." +
+      (act.head_sha === null
+        ? " The PR head could not be read, so no --expect-head pin was added."
+        : ""),
   };
 }

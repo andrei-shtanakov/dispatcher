@@ -8,14 +8,17 @@ source's status, never absorbed into a shorter list.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from pathlib import Path
 
 from dispatcher.core import read_api
+from dispatcher.core.actions import ActionOutcome
 from dispatcher.core.collectors.base import SourceReadError, coerce_str
 from dispatcher.core.collectors.maestro import classified_runs, waiting_tasks
 from dispatcher.core.discovery import DispatcherConfig
 from dispatcher.core.human_queue import (
+    HumanMergeAct,
     HumanQueueView,
     HumanWait,
     MaestroVerbAct,
@@ -252,18 +255,91 @@ def _backlog_wait(wait: BacklogWait) -> HumanWait:
     )
 
 
-# A2 connects these (parent spec §3.3). Listed, not omitted, so the API
-# cannot be read as the whole queue while they are missing (spec §3.4).
-_FORGE_PLACEHOLDERS = (
-    SourceResult(
-        name="forge_labelled_prs",
-        status=SourceStatus(state="not_connected", detail="arrives in slice A2"),
-    ),
-    SourceResult(
-        name="forge_candidate_prs",
-        status=SourceStatus(state="not_connected", detail="arrives in slice A2"),
-    ),
+FORGE_SOURCE = "forge_labelled_prs"
+#: pr-search answers are reused this long: the queue is polled every few
+#: seconds, and one search plus two reads per PR must not run that often.
+FORGE_TTL_SECONDS = 60.0
+
+_FORGE_OFF = SourceResult(
+    name=FORGE_SOURCE,
+    status=SourceStatus(state="not_configured", detail="forge_merge_label is not set"),
 )
+
+
+def from_pr_search(outcome: ActionOutcome, label: str) -> SourceResult:
+    """PRs the policy reserves for a human (spec A2 §2).
+
+    Only a list the producer stated is believed: `prs` null — a failed,
+    non-exhaustive or unreadable search, or github-checker not runnable —
+    is `unavailable`, never an empty queue.
+    """
+    if outcome.prs is None:
+        detail = outcome.error or f"pr-search did not answer ({outcome.phase})"
+        return SourceResult(
+            name=FORGE_SOURCE, status=SourceStatus(state="unavailable", detail=detail)
+        )
+    basis = f"label {label} added"
+    waits = [_pr_wait(pr, basis) for pr in outcome.prs]
+    return SourceResult(name=FORGE_SOURCE, status=SourceStatus(state="ok"), waits=waits)
+
+
+def _pr_wait(pr: dict[str, object], basis: str) -> HumanWait:
+    repo = coerce_str(pr["repo"])
+    number = int(str(pr["number"]))
+    labeled_at = pr.get("labeled_at")
+    since, since_basis = proven_since(
+        labeled_at if isinstance(labeled_at, str) else None, basis
+    )
+    head_sha = pr.get("head_sha")
+    return HumanWait(
+        key=f"pr:{repo}#{number}",
+        reasons=["pr_human_merge"],
+        source=FORGE_SOURCE,
+        repo=repo,
+        ref=f"{repo}#{number}",
+        title=coerce_str(pr.get("title"), default=f"{repo}#{number}"),
+        since=since,
+        since_basis=since_basis,
+        act=HumanMergeAct(
+            repo=repo,
+            number=number,
+            url=coerce_str(pr["url"]),
+            head_sha=head_sha if isinstance(head_sha, str) else None,
+        ),
+    )
+
+
+class ForgeReader:
+    """The forge source with a TTL cache (spec A2 §3).
+
+    Failures are cached too: a GitHub outage must not turn every poll into
+    a fresh search. The label is fixed per reader.
+    """
+
+    def __init__(
+        self,
+        search: Callable[[str], ActionOutcome],
+        label: str,
+        *,
+        ttl: float = FORGE_TTL_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._search, self._label = search, label
+        self._ttl, self._clock = ttl, clock
+        self._at: float | None = None
+        self._result: SourceResult | None = None
+
+    def read(self) -> SourceResult:
+        """The cached source result, refreshed when older than the TTL."""
+        now = self._clock()
+        if self._result is not None and self._at is not None:
+            if now - self._at < self._ttl:
+                return self._result
+        result = _guarded(
+            FORGE_SOURCE, lambda: from_pr_search(self._search(self._label), self._label)
+        )
+        self._at, self._result = now, result
+        return result
 
 
 def _unavailable(name: str, exc: Exception) -> SourceResult:
@@ -282,9 +358,17 @@ def _guarded(name: str, adapter: Callable[[], SourceResult]) -> SourceResult:
 
 
 def build_human_queue(
-    config: DispatcherConfig, cache: SnapshotService, *, now: str
+    config: DispatcherConfig,
+    cache: SnapshotService,
+    *,
+    now: str,
+    forge: ForgeReader | None = None,
 ) -> HumanQueueView:
-    """Every A1 source, each isolated, assembled into one view."""
+    """Every source, each isolated, assembled into one view.
+
+    *forge* None means the forge source is off (`not_configured`) — the
+    app passes a reader only when `forge_merge_label` is set.
+    """
     # LaunchRecords are only an enrichment for maestro (run_view instead of
     # maestro_verb, spec §3.2). A failing store read makes dispatcher_runs
     # unavailable and leaves maestro to be read with no records — never the
@@ -305,6 +389,6 @@ def build_human_queue(
         ),
         # Looked up through the module at call time so tests can patch it.
         _guarded("impresario", lambda: from_impresario(cache)),
-        *_FORGE_PLACEHOLDERS,
+        forge.read() if forge is not None else _FORGE_OFF,
     ]
     return assemble(results, now=now)

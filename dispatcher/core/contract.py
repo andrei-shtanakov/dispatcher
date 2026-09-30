@@ -125,6 +125,24 @@ class IssueRef(BaseModel):
     labels: list[str]
 
 
+class PrRef(BaseModel):
+    """One open PR from `pr-search` (`$defs/pr_ref`).
+
+    `head_sha`/`head_ref`/`labeled_at` are required-and-nullable: null is
+    the producer's "that read failed", never a default.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo: str
+    number: int
+    title: str
+    url: str
+    head_sha: str | None
+    head_ref: str | None
+    labeled_at: str | None
+
+
 class PrDetail(BaseModel):
     """One PR's reviewable state (`$defs/pr_detail`).
 
@@ -207,6 +225,7 @@ class ActionPayload(BaseModel):
     malformed: list[IssueRef] | None = None
     created: bool | None = None
     issue: IssueRef | None = None
+    prs: list[PrRef] | None = None
 
 
 class CliError(BaseModel):

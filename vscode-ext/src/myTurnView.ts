@@ -12,6 +12,7 @@ import {
   isOverdue,
   myTurnStatus,
   waitDescription,
+  waitLabel,
 } from "./myTurn";
 
 /** What the view knows: a queue, the server being down, or the queue failing. */
@@ -78,7 +79,7 @@ export class MyTurnProvider implements vscode.TreeDataProvider<MyTurnNode> {
 
   private waitItem(wait: HumanWait): vscode.TreeItem {
     const now = new Date();
-    const item = new vscode.TreeItem(wait.title);
+    const item = new vscode.TreeItem(waitLabel(wait));
     item.description = waitDescription(wait, now);
     item.tooltip = [
       wait.key,

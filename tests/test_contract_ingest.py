@@ -42,7 +42,7 @@ from dispatcher.core.contract import (
 VENDORED_ROOT = (
     Path(__file__).parent.parent / "contracts" / "github-checker-actions" / "v1"
 )
-PRODUCER_COMMIT = "ef03fefcded37676b19ef1c6f88b956a09a26d3f"
+PRODUCER_COMMIT = "1283a74b45c6a0fe2711cbdc914be48846537103"
 _EXCLUDED_NAMES = {"PINNED.txt", "manifest.json"}
 
 
@@ -103,9 +103,9 @@ def test_the_manifest_covers_every_vendored_file() -> None:
     assert listed == on_disk
 
 
-def test_all_thirty_four_fixtures_are_present() -> None:
-    """The normative surface includes all 34 fixtures, not a subset."""
-    assert len(list((VENDORED_ROOT / "fixtures").glob("*.json"))) == 34
+def test_all_thirty_seven_fixtures_are_present() -> None:
+    """The normative surface includes all 37 fixtures, not a subset."""
+    assert len(list((VENDORED_ROOT / "fixtures").glob("*.json"))) == 37
 
 
 def test_the_tree_hash_is_recomputed_not_merely_stored() -> None:
@@ -659,7 +659,7 @@ def test_every_verb_in_the_schema_is_discoverable_for_diagnosis() -> None:
         for branch in schema["$defs"]["action_result"]["oneOf"]
     }
     assert set(_verb_defs().values()) == from_schema
-    assert len(_verb_defs()) == 8
+    assert len(_verb_defs()) == 9
 
 
 def test_an_unknown_verb_is_diagnosed_as_an_unknown_verb() -> None:
@@ -1019,6 +1019,9 @@ _FIXTURE_STEMS = [
     "pr-detail-full",
     "pr-detail-truncated",
     "pr-detail-unavailable",
+    "pr-search-found",
+    "pr-search-none",
+    "pr-search-unread",
     "propose-pr-created",
     "propose-pr-if-match",
     "propose-pr-pushed-without-pr",
@@ -1043,7 +1046,7 @@ def test_the_sweep_covers_every_fixture_by_name() -> None:
     failure mode a sweep cannot report about itself. Cardinality alone is
     not enough: thirty-four is satisfied by the wrong thirty-four, so the
     identities are pinned and cross-checked against what is on disk."""
-    assert len(VENDORED_FIXTURES) == 34
+    assert len(VENDORED_FIXTURES) == 37
     # Sorted by stem, not by path: `fixtures/cli-error-no-verb.json` sorts
     # before `fixtures/cli-error.json` ('-' < '.'), and the identity of the
     # set is what is being pinned, not the manifest's ordering.
@@ -1082,7 +1085,7 @@ def test_every_nested_object_round_trips_key_for_key(path: Path) -> None:
     for key in ("local", "pr_detail", "issue"):
         if isinstance(payload.get(key), dict):
             assert set(dumped[key]) == set(payload[key]), key
-    for key in ("matches", "malformed"):
+    for key in ("matches", "malformed", "prs"):
         sent_list = payload.get(key)
         if not isinstance(sent_list, list):
             continue
@@ -1285,7 +1288,7 @@ def test_the_action_payload_defaults_no_producer_fact_either() -> None:
     must therefore be absent-able, i.e. default to `None`."""
     defs = _schema_defs()
     verbs = [name for name in defs if name.startswith("verb_")]
-    assert len(verbs) == 8
+    assert len(verbs) == 9
     always_required = set.intersection(*(set(defs[v]["required"]) for v in verbs))
     assert always_required == {
         "schema_version",

@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "result_kind": "action",
+  "action": "pr-search",
+  "dir": "/repos/widget",
+  "ok": true,
+  "error": null,
+  "prs": [
+    {
+      "repo": "acme/widget",
+      "number": 7,
+      "title": "pr 7",
+      "url": "https://github.com/acme/widget/pull/7",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "head_ref": "feat/x",
+      "labeled_at": "2026-09-21T08:30:00Z"
+    },
+    {
+      "repo": "acme/gadget",
+      "number": 3,
+      "title": "pr 3",
+      "url": "https://github.com/acme/gadget/pull/3",
+      "head_sha": null,
+      "head_ref": null,
+      "labeled_at": null
+    }
+  ]
+}

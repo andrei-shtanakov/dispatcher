@@ -35,7 +35,7 @@ from dispatcher.core.epics import (
 )
 from dispatcher.core.governance import BundleGovernance
 from dispatcher.core.human_queue import HumanQueueView
-from dispatcher.core.human_queue_sources import build_human_queue
+from dispatcher.core.human_queue_sources import ForgeReader, build_human_queue
 from dispatcher.core.launchpad import LaunchpadSnapshot, assemble_snapshot
 from dispatcher.core.models import (
     ContractStatus,
@@ -248,6 +248,13 @@ def create_app(
     sync_cache = sync_service if sync_service is not None else SyncService(config)
     actions = ActionRunner(config)
     runs = RunController(config)
+    # One reader per app: its TTL cache is what keeps a 10-second poll from
+    # becoming a GitHub search every 10 seconds (human queue A2).
+    forge = (
+        ForgeReader(actions.pr_search, config.forge_merge_label)
+        if config.forge_merge_label
+        else None
+    )
     spec_runner_config_actions = SpecRunnerConfigActionRunner(config)
     suggest = suggest_runner if suggest_runner is not None else SuggestRunner(config)
     benchmarks_service = (
@@ -480,7 +487,7 @@ def create_app(
         error (spec 2026-09-29-human-queue-a1-design §4.1).
         """
         now = datetime.now(timezone.utc).isoformat()
-        return build_human_queue(config, cache, now=now)
+        return build_human_queue(config, cache, now=now, forge=forge)
 
     @app.get("/api/epics/{epic_id}", response_model=EpicDetail)
     def epic_detail(epic_id: str) -> EpicDetail:

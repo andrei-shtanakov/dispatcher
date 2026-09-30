@@ -203,7 +203,8 @@ export type WaitReason =
   | "run_awaiting_approval"
   | "loop_needs_human"
   | "proposal_gate"
-  | "backlog_gate";
+  | "backlog_gate"
+  | "pr_human_merge";
 
 export type WaitAct =
   | { kind: "run_view"; request_id: string }
@@ -214,7 +215,14 @@ export type WaitAct =
       run_id: string;
       repo_key: string;
     }
-  | { kind: "open_artifact"; path: string };
+  | { kind: "open_artifact"; path: string }
+  | {
+      kind: "human_merge";
+      repo: string;
+      number: number;
+      url: string;
+      head_sha: string | null;
+    };
 
 export interface HumanWait {
   key: string;

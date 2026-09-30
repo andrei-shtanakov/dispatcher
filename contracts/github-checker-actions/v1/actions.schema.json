@@ -286,7 +286,7 @@
       }
     },
     "action_result": {
-      "description": "result_kind=action: one of the eight verbs answered, and its own required fields apply.",
+      "description": "result_kind=action: one of the nine verbs answered, and its own required fields apply.",
       "type": "object",
       "properties": {
         "result_kind": {
@@ -320,6 +320,9 @@
         },
         {
           "$ref": "#/$defs/verb_issue_create"
+        },
+        {
+          "$ref": "#/$defs/verb_pr_search"
         }
       ]
     },
@@ -906,6 +909,101 @@
         },
         "error": {
           "type": "string"
+        }
+      }
+    },
+    "pr_ref": {
+      "type": "object",
+      "required": [
+        "repo",
+        "number",
+        "title",
+        "url",
+        "head_sha",
+        "head_ref",
+        "labeled_at"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "repo": {
+          "type": "string",
+          "description": "owner/name"
+        },
+        "number": {
+          "type": "integer"
+        },
+        "title": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "head_sha": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "null: the PR's own read failed — unknown, not absent"
+        },
+        "head_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "labeled_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "ISO-8601 time the label was LAST added (a re-label starts a new wait); null when unreadable or no labeled event exists"
+        }
+      }
+    },
+    "verb_pr_search": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "result_kind",
+        "action",
+        "dir",
+        "ok",
+        "error",
+        "prs"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "result_kind": {
+          "const": "action"
+        },
+        "action": {
+          "const": "pr-search"
+        },
+        "dir": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prs": {
+          "description": "[] means the search was read and found nothing; null means it was NOT read exhaustively (search failed, unparseable, or the result cap was hit). Search-index results may lag a just-applied label by seconds to minutes.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/pr_ref"
+          }
         }
       }
     }
