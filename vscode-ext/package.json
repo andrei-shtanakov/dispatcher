@@ -35,6 +35,10 @@
           "name": "My turn"
         },
         {
+          "id": "dispatcherFloor",
+          "name": "Factory floor"
+        },
+        {
           "id": "dispatcherProjects",
           "name": "Projects"
         },
@@ -101,13 +105,17 @@
       {
         "command": "dispatcher.myTurnAct",
         "title": "Dispatcher: Prepare My-Turn Act"
+      },
+      {
+        "command": "dispatcher.floorRunEnd",
+        "title": "Dispatcher: Prepare run-end for a stale run"
       }
     ],
     "menus": {
       "view/title": [
         {
           "command": "dispatcher.refresh",
-          "when": "view == dispatcherProjects || view == dispatcherErrors || view == dispatcherRoadmap || view == dispatcherSync || view == dispatcherMyTurn",
+          "when": "view == dispatcherProjects || view == dispatcherErrors || view == dispatcherRoadmap || view == dispatcherSync || view == dispatcherMyTurn || view == dispatcherFloor",
           "group": "navigation"
         }
       ],
@@ -171,6 +179,10 @@
         },
         {
           "command": "dispatcher.myTurnAct",
+          "when": "false"
+        },
+        {
+          "command": "dispatcher.floorRunEnd",
           "when": "false"
         }
       ]

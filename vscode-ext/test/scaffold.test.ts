@@ -14,6 +14,7 @@ describe("manifest", () => {
     );
     expect(views).toEqual([
       "dispatcherMyTurn",
+      "dispatcherFloor",
       "dispatcherProjects",
       "dispatcherErrors",
       "dispatcherRoadmap",
@@ -36,6 +37,7 @@ describe("manifest", () => {
     expect(commands).toContain("dispatcher.track");
     expect(commands).toContain("dispatcher.ignore");
     expect(commands).toContain("dispatcher.myTurnAct");
+    expect(commands).toContain("dispatcher.floorRunEnd");
   });
 
   it("ships the My-turn overdue threshold (parent spec §8, decision 5)", () => {

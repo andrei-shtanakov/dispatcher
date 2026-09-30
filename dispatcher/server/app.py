@@ -33,6 +33,7 @@ from dispatcher.core.epics import (
     build_detail,
     build_view,
 )
+from dispatcher.core.factory_floor import FactoryFloorView, build_factory_floor
 from dispatcher.core.governance import BundleGovernance
 from dispatcher.core.human_queue import HumanQueueView
 from dispatcher.core.human_queue_sources import ForgeReader, build_human_queue
@@ -478,6 +479,14 @@ def create_app(
         """
         now = datetime.now(timezone.utc).isoformat()
         return build_waits(config, now=now)
+
+    @app.get("/api/factory-floor", response_model=FactoryFloorView)
+    def factory_floor() -> FactoryFloorView:
+        """Maestro runs that have not ended, stale ones first (slice C1).
+
+        Always HTTP 200 — an unreadable source is content, not an error.
+        """
+        return build_factory_floor(config, now=datetime.now(timezone.utc))
 
     @app.get("/api/human-queue", response_model=HumanQueueView)
     def human_queue() -> HumanQueueView:

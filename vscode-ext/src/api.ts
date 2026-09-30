@@ -246,6 +246,34 @@ export interface HumanQueueView {
   generated_at: string;
 }
 
+// Factory floor (GET /api/factory-floor — spec 2026-09-30-factory-floor-c1-design).
+export interface RunEndAct {
+  kind: "maestro_run_end";
+  run_id: string;
+  repo_key: string;
+  maestro_home: string;
+  maestro_cli: string | null;
+}
+
+export interface InFlightRun {
+  repo_key: string;
+  run_id: string;
+  status: "running" | "suspended" | "interrupted";
+  started_at: string | null;
+  last_activity_at: string | null;
+  request_id: string | null;
+  work_id: string | null;
+  stale: boolean;
+  act: RunEndAct | null;
+}
+
+export interface FactoryFloorView {
+  in_flight: InFlightRun[];
+  sources: Record<string, SourceStatus>;
+  complete: boolean;
+  generated_at: string;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -346,6 +374,10 @@ export class ApiClient {
 
   humanQueue(): Promise<HumanQueueView> {
     return this.get("/api/human-queue");
+  }
+
+  factoryFloor(): Promise<FactoryFloorView> {
+    return this.get("/api/factory-floor");
   }
 
   pull(dir: string): Promise<ActionOutcome> {
