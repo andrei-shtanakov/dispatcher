@@ -7,12 +7,16 @@ import { ServerManager } from "./server";
 import type {
   ActionOutcome,
   HumanWait,
+  InFlightRun,
   OverviewResponse,
   SpecRunnerConfigEntry,
   SyncStatusResponse,
 } from "./api";
 import { prepareAct } from "./myTurn";
 import { MyTurnProvider, createMyTurnStatus } from "./myTurnView";
+import { FloorProvider } from "./floorView";
+import { prepareRunEnd } from "./floor";
+import type { RunEndOutcome } from "./floor";
 import { createStatusBar } from "./status";
 import type { OnboardingView } from "./onboarding";
 import { composeProjectDoc } from "./productProposals";
@@ -98,6 +102,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const overdueHours = (): number => readConfig().myTurnOverdueHours;
   const myTurn = new MyTurnProvider(overdueHours);
   const myTurnStatus = createMyTurnStatus(overdueHours);
+  const floor = new FloorProvider();
   // The overview carries the impresario mirror path an `open_artifact` act
   // resolves against; the last good one is enough (spec §3).
   let lastOverview: OverviewResponse | null = null;
@@ -126,6 +131,7 @@ export function activate(context: vscode.ExtensionContext): void {
         status.update(null);
         myTurn.setState({ kind: "offline" });
         myTurnStatus.update(null);
+        floor.setState({ kind: "offline" });
         await server.ensureRunning();
         return;
       }
@@ -135,14 +141,20 @@ export function activate(context: vscode.ExtensionContext): void {
       // медленный /api/sync не задерживает статус-бар и не мигает им
       status.update(overview, lastSync);
       server.markOnline();
-      const [events, roadmapData, syncData, benchData, queueData] =
+      const [events, roadmapData, syncData, benchData, queueData, floorData] =
         await Promise.allSettled([
           api.errors(),
           api.roadmap(),
           api.sync(),
           api.benchmarks(),
           api.humanQueue(),
+          api.factoryFloor(),
         ]);
+      floor.setState(
+        floorData.status === "fulfilled"
+          ? { kind: "view", view: floorData.value }
+          : { kind: "unavailable", detail: errorText(floorData.reason) },
+      );
       // An older server without /api/human-queue, or a failing read, is
       // «unavailable» — never an empty queue (spec §2).
       if (queueData.status === "fulfilled") {
@@ -531,6 +543,32 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   }
 
+  /** Prepare `run-end` for a stale run — the outcome is the human's call. */
+  async function floorRunEnd(run: InFlightRun): Promise<void> {
+    if (run.act === null) {
+      return;
+    }
+    const outcome = await vscode.window.showQuickPick(
+      [
+        { label: "superseded", description: "another run did this work" },
+        { label: "cancelled", description: "this work was abandoned" },
+      ],
+      { title: `End run ${run.run_id}? Pick the outcome (typed, not executed)` },
+    );
+    if (outcome === undefined) {
+      return;
+    }
+    const prepared = prepareRunEnd(run.act, outcome.label as RunEndOutcome);
+    if (prepared.kind === "refused") {
+      void vscode.window.showWarningMessage(prepared.note);
+      return;
+    }
+    const terminal = vscode.window.createTerminal({ name: prepared.name });
+    terminal.show();
+    terminal.sendText(prepared.text, false); // typed in, NOT executed
+    void vscode.window.showInformationMessage(prepared.note);
+  }
+
   const timer = setInterval(() => void poll(), readConfig().pollSeconds * 1000);
 
   context.subscriptions.push(
@@ -540,6 +578,11 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerTreeDataProvider("dispatcherSync", sync),
     vscode.window.registerTreeDataProvider("dispatcherBenchmarks", benchmarks),
     vscode.window.registerTreeDataProvider("dispatcherMyTurn", myTurn),
+    vscode.window.registerTreeDataProvider("dispatcherFloor", floor),
+    vscode.commands.registerCommand(
+      "dispatcher.floorRunEnd",
+      (run: InFlightRun) => void floorRunEnd(run),
+    ),
     status.item,
     myTurnStatus.item,
     vscode.commands.registerCommand(
@@ -603,6 +646,7 @@ export function activate(context: vscode.ExtensionContext): void {
     { dispose: () => roadmap.dispose() },
     { dispose: () => sync.dispose() },
     { dispose: () => myTurn.dispose() },
+    { dispose: () => floor.dispose() },
   );
 
   void poll();
