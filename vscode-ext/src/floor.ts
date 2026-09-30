@@ -37,6 +37,20 @@ export function floorEmptyText(view: FactoryFloorView): string | null {
     : "no known runs — sources incomplete";
 }
 
+function ago(iso: string | null, now: Date): string {
+  if (iso === null) {
+    return "unknown";
+  }
+  const hours = Math.floor((now.getTime() - Date.parse(iso)) / HOUR_MS);
+  if (Number.isNaN(hours)) {
+    return "unknown";
+  }
+  if (hours < 1) {
+    return "<1h";
+  }
+  return hours < 48 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
+}
+
 export function runAge(run: InFlightRun, now: Date): string {
   if (run.started_at === null) {
     return "age unknown";
@@ -56,8 +70,23 @@ export function runLabel(run: InFlightRun): string {
   return `${repo} · ${run.work_id ?? run.run_id}`;
 }
 
+/** `interrupted · started 37d · idle 37d` — idle is what decides "stale". */
 export function runDescription(run: InFlightRun, now: Date): string {
-  return [run.status, runAge(run, now)].join(" · ");
+  return [
+    run.status,
+    `started ${ago(run.started_at, now)}`,
+    `idle ${ago(run.last_activity_at, now)}`,
+  ].join(" · ");
+}
+
+/** What the tooltip may claim about the launch record. */
+export function launchLine(run: InFlightRun, recordsRead: boolean): string {
+  if (run.request_id) {
+    return `launched by dispatcher: ${run.request_id}`;
+  }
+  return recordsRead
+    ? "not launched by dispatcher"
+    : "launch record unknown — dispatcher's records were not fully read";
 }
 
 export type PreparedRunEnd =

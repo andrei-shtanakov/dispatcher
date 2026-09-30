@@ -12,7 +12,7 @@ named in `sources`, never absorbed into a shorter list.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -24,7 +24,7 @@ from dispatcher.core.human_queue import SourceStatus, proven_since
 from dispatcher.core.models import ProjectSnapshot
 from dispatcher.core.run_store import LaunchRecord, RunStore
 
-#: A run that is not live and started longer ago than this looks abandoned.
+#: A run with no observed activity for this long looks abandoned.
 STALE_HOURS = 24
 
 RunStatus = Literal["running", "suspended", "interrupted"]
@@ -56,6 +56,9 @@ class InFlightRun(BaseModel):
     run_id: str
     status: RunStatus
     started_at: str | None  # tz-aware ISO-8601, or None when unknown
+    # Newest mtime among the run's own files (state.db, its WAL, logs/) —
+    # observed activity, not a wait start. None when nothing could be stat'ed.
+    last_activity_at: str | None
     request_id: str | None  # the dispatcher launch record, if any
     work_id: str | None
     stale: bool
@@ -103,7 +106,7 @@ def build_factory_floor(config: DispatcherConfig, *, now: datetime) -> FactoryFl
             state="unavailable", detail=f"{type(exc).__name__}: {exc}"
         )
     sources["maestro"] = maestro_status
-    runs.sort(key=lambda r: (not r.stale, r.started_at or "~", r.run_id))
+    runs.sort(key=lambda r: (not r.stale, _instant(r.started_at), r.run_id))
     return FactoryFloorView(
         in_flight=runs,
         sources=sources,
@@ -125,7 +128,11 @@ def _in_flight(
         if status is None or info.run_id is None:
             continue
         started, _ = proven_since(info.started_at, "run started")
-        stale = status != "running" and _older_than(started, now, STALE_HOURS)
+        activity = _last_activity(_db.parent)
+        # Not `started_at`: a run dispatcher launches is never `running` (the
+        # holder is written only by maestro's service tick), so age from the
+        # start would call a live 25-hour run abandoned. A live run writes.
+        stale = status != "running" and _older_than(activity, now, STALE_HOURS)
         record = by_run.get((info.repo_key, info.run_id))
         out.append(
             InFlightRun(
@@ -133,6 +140,7 @@ def _in_flight(
                 run_id=info.run_id,
                 status=status,
                 started_at=started,
+                last_activity_at=activity,
                 request_id=record.request_id if record else None,
                 work_id=(record.work_id or None) if record else None,
                 stale=stale,
@@ -165,3 +173,32 @@ def _older_than(started: str | None, now: datetime, hours: int) -> bool:
     if started is None:
         return False
     return (now - datetime.fromisoformat(started)).total_seconds() > hours * 3600
+
+
+def _instant(value: str | None) -> datetime:
+    """Sort key by instant; an unknown start sorts last."""
+    return (
+        datetime.max.replace(tzinfo=UTC)
+        if value is None
+        else datetime.fromisoformat(value)
+    )
+
+
+def _last_activity(run_dir: Path) -> str | None:
+    """Newest mtime of the run's own files, as tz-aware ISO-8601."""
+    candidates = [run_dir / "state.db", run_dir / "state.db-wal"]
+    logs = run_dir / "logs"
+    try:
+        candidates.extend(p for p in logs.iterdir() if p.is_file())
+    except OSError:
+        pass
+    newest: float | None = None
+    for path in candidates:
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        newest = mtime if newest is None else max(newest, mtime)
+    return (
+        None if newest is None else datetime.fromtimestamp(newest, tz=UTC).isoformat()
+    )

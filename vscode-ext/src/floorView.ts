@@ -5,6 +5,7 @@ import type { FactoryFloorView, InFlightRun } from "./api";
 import {
   floorEmptyText,
   floorGroups,
+  launchLine,
   runDescription,
   runLabel,
 } from "./floor";
@@ -60,7 +61,7 @@ export class FloorProvider implements vscode.TreeDataProvider<FloorNode> {
         return item;
       }
       case "run":
-        return this.runItem(node.run);
+        return this.runItem(node.run, this.recordsRead());
       case "text": {
         const item = new vscode.TreeItem(node.text);
         item.iconPath = new vscode.ThemeIcon(node.icon);
@@ -69,14 +70,25 @@ export class FloorProvider implements vscode.TreeDataProvider<FloorNode> {
     }
   }
 
-  private runItem(run: InFlightRun): vscode.TreeItem {
+  private recordsRead(): boolean {
+    if (this.state.kind !== "view") {
+      return false;
+    }
+    const s = this.state.view.sources["dispatcher_runs"]?.state;
+    return s === "ok" || s === "not_configured";
+  }
+
+  private runItem(run: InFlightRun, recordsRead: boolean): vscode.TreeItem {
     const item = new vscode.TreeItem(runLabel(run));
     item.description = runDescription(run, new Date());
     item.tooltip = [
       `repo: ${run.repo_key}`,
       `run: ${run.run_id}`,
-      run.request_id ? `launched by dispatcher: ${run.request_id}` : "not launched by dispatcher",
+      launchLine(run, recordsRead),
       run.started_at ? `started: ${run.started_at}` : "start unknown",
+      run.last_activity_at
+        ? `last activity: ${run.last_activity_at}`
+        : "last activity unknown",
     ].join("\n");
     item.iconPath = run.stale
       ? new vscode.ThemeIcon("warning", new vscode.ThemeColor("list.warningForeground"))

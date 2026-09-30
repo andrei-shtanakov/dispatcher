@@ -3,7 +3,9 @@ import type { FactoryFloorView, InFlightRun } from "../src/api";
 import {
   floorEmptyText,
   floorGroups,
+  launchLine,
   prepareRunEnd,
+  runDescription,
   runAge,
   runLabel,
 } from "../src/floor";
@@ -16,6 +18,7 @@ function run(runId: string, extra: Partial<InFlightRun> = {}): InFlightRun {
     run_id: runId,
     status: "interrupted",
     started_at: "2026-08-24T07:29:18+00:00",
+    last_activity_at: "2026-08-24T08:00:00+00:00",
     request_id: null,
     work_id: null,
     stale: false,
@@ -73,5 +76,22 @@ describe("factory floor", () => {
 
   it("refuses control characters", () => {
     expect(prepareRunEnd({ ...ACT, run_id: "x\nrm" }, "cancelled").kind).toBe("refused");
+  });
+});
+
+describe("factory floor wording (review on #282)", () => {
+  it("shows idle time, which is what decides stale", () => {
+    expect(runDescription(run("a"), NOW)).toBe("interrupted · started 37d · idle 37d");
+    expect(runDescription(run("a", { last_activity_at: null }), NOW)).toContain(
+      "idle unknown",
+    );
+  });
+
+  it("never claims 'not launched by dispatcher' when its records were not read", () => {
+    expect(launchLine(run("a"), true)).toBe("not launched by dispatcher");
+    expect(launchLine(run("a"), false)).toContain("unknown");
+    expect(launchLine(run("a", { request_id: "rc-1" }), false)).toBe(
+      "launched by dispatcher: rc-1",
+    );
   });
 });

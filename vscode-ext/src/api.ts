@@ -260,6 +260,7 @@ export interface InFlightRun {
   run_id: string;
   status: "running" | "suspended" | "interrupted";
   started_at: string | null;
+  last_activity_at: string | null;
   request_id: string | null;
   work_id: string | null;
   stale: boolean;

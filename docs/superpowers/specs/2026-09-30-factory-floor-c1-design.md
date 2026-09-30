@@ -8,9 +8,13 @@
 `GET /api/factory-floor` → every maestro run that has not ended (`running`, `suspended`,
 `interrupted` — the same `classified_runs` walk as the dashboard, with
 `report_missing_state=True`), with its start time, the dispatcher launch record joined by
-`(repo_key, run_id)` when there is one, and a **stale** flag: not `running` and started
-more than 24 h ago. `running` needs a live holder pid, so it is never stale; an unknown
-(naive or missing) start is never stale either.
+`(repo_key, run_id)` when there is one, and a **stale** flag: not `running` and **no
+observed activity for 24 h** — `last_activity_at`, the newest mtime of the run's own files
+(`state.db`, its WAL, `logs/*`). Not the start time: a run dispatcher launches is never
+`running` (the holder is written only by maestro's service tick), so aging from the start
+would call a live 25-hour run abandoned (review on #282). `running` is never stale; an
+unknown activity time is never stale either. mtime here is observed activity, not a wait
+start, so the human-queue rule against mtime as `since` does not apply.
 
 It is an observation, not a wait: nothing here enters the human queue. A stale run carries
 a prepared `maestro_run_end` act (`run_id`, `repo_key`, `maestro_home`, `maestro_cli`);

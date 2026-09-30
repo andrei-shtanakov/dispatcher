@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from dispatcher.server.app import create_app
 
 _ACME = ("github.com", "acme", "app")
 _NOW = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
+_RECENT = datetime(2026, 9, 30, 11, 30, tzinfo=timezone.utc)
 _REQ = "11111111-1111-4111-8111-111111111111"
 
 
@@ -29,12 +31,29 @@ def _config(tmp_path: Path, *, control_plane: bool = True) -> DispatcherConfig:
     )
 
 
+def _touch(path: Path, when: datetime) -> None:
+    """Make a run file look last written at *when*."""
+    ts = when.timestamp()
+    os.utime(path, (ts, ts))
+
+
+def _run(run_id: str, started: str, *, active: datetime, tmp_path: Path) -> Path:
+    db = make_maestro_run(tmp_path / "mhome", _ACME, run_id, started_at=started)
+    _touch(db, active)
+    return db
+
+
 def test_only_unfinished_runs_stale_first_with_a_prepared_run_end(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "mhome"
-    make_maestro_run(home, _ACME, "01OLD", started_at="2026-08-24T07:29:18+00:00")
-    make_maestro_run(home, _ACME, "01NEW", started_at="2026-09-30T11:00:00+00:00")
+    _run(
+        "01OLD",
+        "2026-08-24T07:29:18+00:00",
+        active=datetime(2026, 8, 24, 8, 0, tzinfo=timezone.utc),
+        tmp_path=tmp_path,
+    )
+    _run("01NEW", "2026-09-30T11:00:00+00:00", active=_RECENT, tmp_path=tmp_path)
     make_maestro_run(
         home,
         _ACME,
@@ -48,6 +67,7 @@ def test_only_unfinished_runs_stale_first_with_a_prepared_run_end(
     assert [r.run_id for r in view.in_flight] == ["01OLD", "01NEW"]
     old, new = view.in_flight
     assert (old.status, old.stale) == ("interrupted", True)
+    assert old.last_activity_at == "2026-08-24T08:00:00+00:00"
     assert old.act is not None
     assert old.act.model_dump() == {
         "kind": "maestro_run_end",
@@ -56,32 +76,71 @@ def test_only_unfinished_runs_stale_first_with_a_prepared_run_end(
         "maestro_home": str(home),
         "maestro_cli": str(tmp_path / "bin" / "maestro"),
     }
-    assert (new.stale, new.act) == (False, None)  # interrupted, but only 1h old
+    assert (new.stale, new.act) == (False, None)
+
+
+def test_a_long_run_that_still_writes_is_not_stale(tmp_path: Path) -> None:
+    """Review on #282: dispatcher-launched runs are never `running` (no
+    holder outside maestro's service tick). A 3-day-old interrupted run that
+    wrote its state.db ten minutes ago is alive, not abandoned."""
+    _run(
+        "01LONG",
+        "2026-09-27T12:00:00+00:00",
+        active=datetime(2026, 9, 30, 11, 50, tzinfo=timezone.utc),
+        tmp_path=tmp_path,
+    )
+    [run] = build_factory_floor(_config(tmp_path), now=_NOW).in_flight
+    assert (run.status, run.stale, run.act) == ("interrupted", False, None)
+
+
+def test_recent_logs_count_as_activity(tmp_path: Path) -> None:
+    db = _run(
+        "01LOGS",
+        "2026-09-01T00:00:00+00:00",
+        active=datetime(2026, 9, 1, 1, 0, tzinfo=timezone.utc),
+        tmp_path=tmp_path,
+    )
+    log = db.parent / "logs" / "task.log"
+    log.parent.mkdir()
+    log.write_text("still going\n")
+    _touch(log, datetime(2026, 9, 30, 11, 55, tzinfo=timezone.utc))
+    [run] = build_factory_floor(_config(tmp_path), now=_NOW).in_flight
+    assert run.stale is False
 
 
 def test_a_live_run_is_never_stale(tmp_path: Path) -> None:
     home = tmp_path / "mhome"
-    make_maestro_run(home, _ACME, "01LIVE", started_at="2026-08-01T00:00:00+00:00")
-    import os
-
+    _run(
+        "01LIVE",
+        "2026-08-01T00:00:00+00:00",
+        active=datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc),
+        tmp_path=tmp_path,
+    )
     write_holder(home, _ACME, "01LIVE", os.getpid())
     [run] = build_factory_floor(_config(tmp_path), now=_NOW).in_flight
     assert (run.status, run.stale, run.act) == ("running", False, None)
 
 
-def test_an_unknown_start_is_never_called_stale(tmp_path: Path) -> None:
-    home = tmp_path / "mhome"
-    make_maestro_run(home, _ACME, "01NAIVE", started_at="2026-08-01T00:00:00")
-    [run] = build_factory_floor(_config(tmp_path), now=_NOW).in_flight
-    assert (run.started_at, run.stale) == (None, False)
+def test_an_unknown_start_is_shown_as_unknown_and_sorts_last(tmp_path: Path) -> None:
+    _run("01NAIVE", "2026-08-01T00:00:00", active=_RECENT, tmp_path=tmp_path)
+    _run("01KNOWN", "2026-09-30T11:00:00+00:00", active=_RECENT, tmp_path=tmp_path)
+    runs = build_factory_floor(_config(tmp_path), now=_NOW).in_flight
+    assert [r.run_id for r in runs] == ["01KNOWN", "01NAIVE"]
+    assert runs[1].started_at is None
+
+
+def test_order_is_by_instant_not_text(tmp_path: Path) -> None:
+    """'10:00+02:00' (08:00Z) is older than '09:00Z' though later as text."""
+    _run("01Z", "2026-09-30T09:00:00+00:00", active=_RECENT, tmp_path=tmp_path)
+    _run("01P2", "2026-09-30T10:00:00+02:00", active=_RECENT, tmp_path=tmp_path)
+    runs = build_factory_floor(_config(tmp_path), now=_NOW).in_flight
+    assert [r.run_id for r in runs] == ["01P2", "01Z"]
 
 
 def test_the_dispatcher_record_is_joined(tmp_path: Path) -> None:
     config = _config(tmp_path)
     assert config.run_state_dir is not None
-    make_maestro_run(
-        tmp_path / "mhome", _ACME, "01RUN", started_at="2026-09-30T11:00:00+00:00"
-    )
+    _run("01RUN", "2026-09-30T11:00:00+00:00", active=_RECENT, tmp_path=tmp_path)
     store = RunStore(config.run_state_dir)
     store.reserve(
         _REQ,
@@ -97,7 +156,7 @@ def test_the_dispatcher_record_is_joined(tmp_path: Path) -> None:
 
 def test_an_unreadable_run_makes_maestro_partial(tmp_path: Path) -> None:
     home = tmp_path / "mhome"
-    make_maestro_run(home, _ACME, "01GOOD", started_at="2026-09-30T11:00:00+00:00")
+    _run("01GOOD", "2026-09-30T11:00:00+00:00", active=_RECENT, tmp_path=tmp_path)
     home.joinpath("projects", *_ACME, "runs", "01BARE").mkdir()
     view = build_factory_floor(_config(tmp_path), now=_NOW)
     assert view.sources["maestro"].state == "partial"
