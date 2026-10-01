@@ -270,7 +270,10 @@ def create_app(
     )
     sync_cache = sync_service if sync_service is not None else SyncService(config)
     actions = ActionRunner(config)
-    runs = RunController(config)
+    # D2: no new run on a halted repository (github-checker halt-gate).
+    runs = RunController(
+        config, halt_gate=actions.halt_gate if config.halt_admission else None
+    )
     # One reader per app: its TTL cache is what keeps a 10-second poll from
     # becoming a GitHub search every 10 seconds (human queue A2).
     forge = (

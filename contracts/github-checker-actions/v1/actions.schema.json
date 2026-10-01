@@ -286,7 +286,7 @@
       }
     },
     "action_result": {
-      "description": "result_kind=action: one of the twelve verbs answered, and its own required fields apply.",
+      "description": "result_kind=action: one of the thirteen verbs answered, and its own required fields apply.",
       "type": "object",
       "properties": {
         "result_kind": {
@@ -332,6 +332,9 @@
         },
         {
           "$ref": "#/$defs/verb_halt_set"
+        },
+        {
+          "$ref": "#/$defs/verb_halt_gate"
         }
       ]
     },
@@ -1231,6 +1234,57 @@
               "type": "null"
             }
           ]
+        }
+      }
+    },
+    "verb_halt_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "result_kind",
+        "action",
+        "dir",
+        "ok",
+        "error",
+        "detail",
+        "admit"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "result_kind": {
+          "const": "action"
+        },
+        "dir": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "action": {
+          "const": "halt-gate"
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`<code>: <reason>`; codes per contracts/halt-admission/v1"
+        },
+        "admit": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "May NEW agent work start. Always a definite boolean from the verb itself (false when unreadable); null only from the catch-all of an unhandled error — treat null as refuse."
         }
       }
     }

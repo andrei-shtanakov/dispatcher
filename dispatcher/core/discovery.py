@@ -85,6 +85,11 @@ class DispatcherConfig:
     # a halt acts only on repos someone listed. Empty → the halt is off
     # (`not_configured`) and nothing can be toggled.
     halt_fleet: tuple[str, ...] = ()
+    # D2: refuse a NEW run on a halted repository (github-checker halt-gate,
+    # which calls GitHub). False in a bare DispatcherConfig keeps tests and
+    # embedded configs hermetic; load_config defaults it to True and only an
+    # explicit `halt_admission = false` turns it off.
+    halt_admission: bool = False
 
     @property
     def effective_maestro_home(self) -> Path:
@@ -154,6 +159,15 @@ def _halt_fleet(data: dict) -> tuple[str, ...]:
     return tuple(names)
 
 
+def _halt_admission(data: dict) -> bool:
+    """On unless explicitly `false`; a non-boolean is a load-time error —
+    a typo must not silently switch the halt check off."""
+    raw = data.get("halt_admission", True)
+    if not isinstance(raw, bool):
+        raise ValueError(f"halt_admission must be true or false, got: {raw!r}")
+    return raw
+
+
 def load_config(config_path: Path | None = None) -> DispatcherConfig:
     """Load dispatcher.toml; absent file yields defaults."""
     data: dict = {}
@@ -221,6 +235,7 @@ def load_config(config_path: Path | None = None) -> DispatcherConfig:
         atp_catalog=atp_catalog,
         forge_merge_label=_forge_merge_label(data),
         halt_fleet=_halt_fleet(data),
+        halt_admission=_halt_admission(data),
         agent_merge_login=_optional_str(
             data, "agent_merge_login", DEFAULT_AGENT_MERGE_LOGIN
         ),

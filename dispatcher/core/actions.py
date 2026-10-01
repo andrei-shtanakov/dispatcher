@@ -97,6 +97,7 @@ class ActionOutcome(BaseModel):
     prs: list[dict[str, Any]] | None = None
     merges: list[dict[str, Any]] | None = None
     changed: bool | None = None  # halt-set: did the read-back state move
+    admit: bool | None = None  # halt-gate: may a NEW run start
     halt: dict[str, Any] | None = None  # halt-read / halt-set: the READ state
     # Which side of the fork this outcome was decided on. Not cosmetic: it is
     # what stops "nothing ran" and "it ran and we could not read the answer"
@@ -106,6 +107,7 @@ class ActionOutcome(BaseModel):
 
 
 _PLAIN_PROJECTED = (
+    "admit",
     "changed",
     "detail",
     "error",
@@ -688,6 +690,22 @@ class ActionRunner:
             (outcome.halt or {}).get("state", "unknown"),
         )
         return outcome
+
+    def halt_gate(self, checkout: Path) -> tuple[bool, str]:
+        """May a NEW run start in *checkout*? `(admit, detail)` from
+        github-checker `halt-gate`; anything but a stated `admit: true`
+        refuses (halt-admission/v1). A read takes no lock."""
+        outcome = self._invoke("halt-gate", checkout)
+        admit = outcome.admit is True and outcome.phase == PHASE_READABLE
+        detail = outcome.detail or outcome.error or f"no answer ({outcome.phase})"
+        _audit.info(
+            "action=halt-gate dir=%s admit=%s phase=%s detail=%s",
+            checkout.name,
+            admit,
+            outcome.phase,
+            detail,
+        )
+        return admit, detail
 
     def halt_set(self, repo_dir: str, state: str) -> ActionOutcome:
         """Write the halt of one workspace repo, holding it like a merge."""

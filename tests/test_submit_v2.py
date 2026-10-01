@@ -1149,3 +1149,63 @@ def test_snapshot_id_is_persisted_as_the_audit_echo(tmp_path: Path) -> None:
     record = store.get(_REQ)
     assert record is not None
     assert record.snapshot_id == body.snapshot_id != ""
+
+
+# --- D2: the DarkFactory halt -------------------------------------------
+
+
+def test_a_halted_repository_refuses_before_anything_is_recorded(
+    tmp_path: Path,
+) -> None:
+    name = "halted"
+    root, head = _ready(tmp_path, name, "w1")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    config = _config(tmp_path, cli)
+    seen: list[Path] = []
+
+    def gate(checkout: Path) -> tuple[bool, str]:
+        seen.append(checkout)
+        return False, "refuse_on: the DarkFactory halt is ON for this repository"
+
+    controller = RunController(config, halt_gate=gate)
+    with pytest.raises(AdmissionRefused) as exc:
+        controller.submit_v2(
+            _body(repo_key=_key(name).as_text(), work_id="w1", revision=head)
+        )
+    assert (exc.value.status, exc.value.code) == (409, "halted")
+    assert "refuse_on" in exc.value.detail
+    assert seen == [root]
+    assert config.run_state_dir is not None
+    assert RunStore(config.run_state_dir).list()[0] == []  # nothing reserved
+
+
+def test_an_unreadable_halt_refuses(tmp_path: Path) -> None:
+    name = "halt-unreadable"
+    _, head = _ready(tmp_path, name, "w1")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+
+    def gate(checkout: Path) -> tuple[bool, str]:
+        raise RuntimeError("github-checker not runnable")
+
+    controller = RunController(_config(tmp_path, cli), halt_gate=gate)
+    with pytest.raises(AdmissionRefused) as exc:
+        controller.submit_v2(
+            _body(repo_key=_key(name).as_text(), work_id="w1", revision=head)
+        )
+    assert exc.value.code == "halted"
+    assert "refuse_unknown" in exc.value.detail
+
+
+def test_an_admitting_halt_lets_the_run_start(tmp_path: Path) -> None:
+    name = "halt-off"
+    _, head = _ready(tmp_path, name, "w1")
+    cli = _fake_maestro(tmp_path / "fake-maestro", creates_run="01AAA")
+    controller = RunController(
+        _config(tmp_path, cli),
+        materialize_timeout=10.0,
+        halt_gate=lambda checkout: (True, "admit_off: halt is off"),
+    )
+    receipt = controller.submit_v2(
+        _body(repo_key=_key(name).as_text(), work_id="w1", revision=head)
+    )
+    assert receipt.accepted is True

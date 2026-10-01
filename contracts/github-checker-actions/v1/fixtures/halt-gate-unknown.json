@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "result_kind": "action",
+  "action": "halt-gate",
+  "dir": "/repos/widget",
+  "ok": false,
+  "error": "rulesets could not be listed",
+  "detail": "refuse_unknown: rulesets could not be listed",
+  "admit": false
+}

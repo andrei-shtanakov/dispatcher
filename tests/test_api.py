@@ -1747,6 +1747,7 @@ _ACTION_OUTCOME_WIRE_KEYS = sorted(
         "merges",  # additive: merged-prs (factory floor C2)
         "changed",  # additive: halt-set (D1)
         "halt",  # additive: halt-read / halt-set (D1)
+        "admit",  # additive: halt-gate (D2)
         "phase",
     ]
 )
