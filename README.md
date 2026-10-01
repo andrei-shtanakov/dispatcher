@@ -493,5 +493,9 @@ codex-review-кита из steward (независимое ревью дифа �
 вахта `review-kit-drift.yml`. `review-prompt.md` — данные этого репо (вне
 integrity), generated-файлы объявляются в `.gitattributes`
 (`linguist-generated`). Локальный прогон: `sh scripts/review/local.sh`.
+Режим ревью спецификаций `local.sh --spec` (steward#184) в dispatcher **не
+адаптирован**: его промпт `.github/codex/review-prompt-spec.md` — такие же
+данные репо, как `review-prompt.md`, и пока не написан, поэтому `--spec`
+завершается кодом 2 с именем файла (или нужен явный `REVIEW_PROMPT_SPEC`).
 Ре-вендор — рецепт в комментарии PIN; смена состава кита — двухшаговая
 дисциплина из шапки `checksum.sh`.
