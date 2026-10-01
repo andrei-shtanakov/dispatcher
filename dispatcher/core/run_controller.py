@@ -1414,6 +1414,10 @@ class RunController:
             "MAESTRO_HOME": str(home),
             "ATP_CATALOG": str(catalog),
         }
+        if self._halt_gate is not None:
+            # D2b: maestro asks the halt itself too (opt-in flag) — a second
+            # check at the moment it mints the run, after ours.
+            env["DARKFACTORY_HALT_CHECK"] = "1"
         try:
             store.mark_launching(request.request_id)
         except (RunStoreError, OSError) as err:
