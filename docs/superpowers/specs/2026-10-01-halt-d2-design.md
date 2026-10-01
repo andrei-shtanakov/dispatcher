@@ -56,6 +56,30 @@ spec-runner). spec-runner: before `_run_tasks`; maestro: in `bootstrap_run`'s
 fresh-run branch. Both apply `admit_not_github` (their checkouts may be local or on
 another forge). Separate PRs in each repo.
 
+## 4a. As shipped (2026-10-01)
+
+| Repo | PR | Where the halt is asked |
+|---|---|---|
+| github-checker | #51 | `halt-gate` + `contracts/halt-admission/v1` (vectors, origin_vectors) |
+| dispatcher | #289, #290 | `submit_v2` (409 `halted`); maestro spawned with the flag |
+| devtools | #531 | `merge-pr.sh` (6 halted / 2 unread), runner `start`/`verify`/`reopen` |
+| spec-runner | #631 | `run` / `retry` / `watch` (watch pauses per task) |
+| maestro | #248 | the ENTRY of `run` / `orchestrate` / `service run --stage orchestrate` |
+
+Two refinements from review:
+
+- **maestro asks at the entry of every invocation**, fresh or `--resume` or `--db`:
+  under a halt it neither starts nor resumes work (a running process drains).
+  Three review rounds found the same class — work starting without the check — because
+  "is this a new run" was decided from CLI flags (`--resume` over an empty `--db`
+  mints a run). devtools' runner still lets `resume` drain: its resume continues a
+  recorded run, it cannot mint one.
+- **The review stage is not gated** (`maestro review-pr`, `service run --stage
+  review`): reviewing PRs that already exist lands nothing.
+
+Codes across consumers: 6 halt in force, 2 halt unread (retry fits), maestro 1 for a
+config that cannot name a repository.
+
 ## 5. Out of D2
 
 - Stopping tasks INSIDE an admitted run (a draining contract) — not v1.
