@@ -494,6 +494,14 @@
       Вторая половина — bump пина у devtools и снятие канонизации в conductor — работа
       соседа; вахту не заводим: ждёт сосед, а не мы.
 
+- [x] Переподписать E1-брифы через `discovery approve` (подпись = зеркало факта мержа, с `approved_content_hash`) — PR #296 @owner:github:andrei-shtanakov @id:reapprove-e1-briefs
+      Принятие inbox-issue #293 от discovery (`@id:admit-hash-total`, discovery#59).
+      `spec/discovery-brief-{customer,engineer}.md` были подписаны рукой на E1 без
+      хеша и проходили `admit` только по миграционному послаблению; discovery снимает
+      его после этого PR. Брифы — чистый вывод `approve` (customer ← #59, engineer ←
+      #37), повторный `approve` идемпотентен. **Байты обоих брифов больше не править
+      вручную**: любая правка снимет подпись. Ждёт discovery, а не мы — вахту не заводим.
+
 ## KB snapshots: доставка через ветку derived-snapshots (резолюция ecosystem-kb#98)
 
 - [x] `publish-snapshot` → ветка `derived-snapshots`: publisher и читатели уходят с master — PR #217 @owner:github:andrei-shtanakov @id:snapshot-publish-branch @epic:eco.ops
