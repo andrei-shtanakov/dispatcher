@@ -1,5 +1,18 @@
 # Changelog — plan-fields
 
+## 0.11.1 — 2026-10-01
+
+A repo's canonical reference to its OWN item, spelled with its declared locator,
+resolves (dispatcher#279, from devtools).
+
+- `parse_fleet`: `todo://<git_dir>/<id>` written inside the repo that `git_dir`
+  belongs to (e.g. `todo://prograph-vault/b` in `ecosystem-kb`) now resolves to
+  `todo://<key>/<id>` and forms an edge, exactly as the same reference from a
+  neighbouring repo does. Before, `parse_todo` (no manifest) read it as
+  cross-repo and the fleet layer took it for an already-resolved self-reference,
+  so it stayed `resolved_target: None` with no edge and no diagnostic. An absent
+  `@id` now gets the same `PF-ID-DANGLING` as the key spelling.
+
 ## 0.11.0 — 2026-09-22
 
 Acceptance of a cross-repo request matches the slug as a TOKEN (dispatcher#254,

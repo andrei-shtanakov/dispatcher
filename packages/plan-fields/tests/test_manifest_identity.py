@@ -685,6 +685,73 @@ def test_canonical_uri_spelled_with_the_locator_resolves_to_the_key(
     assert ref["resolved_target"] == "todo://ecosystem-kb/thing"
 
 
+def test_canonical_self_reference_spelled_with_the_locator_resolves(
+    tmp_path: Path,
+) -> None:
+    """A repo naming its OWN item by its locator reaches the same node (#279).
+
+    `parse_todo` has no manifest, so it read `todo://prograph-vault/b` inside
+    `ecosystem-kb` as cross-repo and left it; the fleet layer then took it for a
+    self-reference `parse_todo` had already resolved and skipped it too — so the
+    same URI resolved from a neighbour and stayed `None` from its own repo.
+    """
+    from plan_fields.fleet_api import RepoInput, parse_fleet
+
+    idx = manifest_index(_manifest(tmp_path, VAULT_MANIFEST))
+    snapshot = parse_fleet(
+        [
+            RepoInput(
+                "ecosystem-kb",
+                "- [ ] a @id:a @blocked_by:todo://prograph-vault/b\n- [ ] b @id:b\n",
+            ),
+            RepoInput("arbiter", "- [ ] c @id:c @blocked_by:todo://prograph-vault/b\n"),
+        ],
+        idx,
+    )
+    resolved = {
+        r["source_node_id"]: r["resolved_target"]
+        for r in snapshot["references"]
+        if r["kind"] == "blocked_by"
+    }
+    assert resolved == {
+        "todo://ecosystem-kb/a": "todo://ecosystem-kb/b",
+        "todo://arbiter/c": "todo://ecosystem-kb/b",
+    }
+    assert sorted(
+        (e["source_node_id"], e["target_node_id"]) for e in snapshot["edges"]
+    ) == [
+        ("todo://arbiter/c", "todo://ecosystem-kb/b"),
+        ("todo://ecosystem-kb/a", "todo://ecosystem-kb/b"),
+    ]
+
+
+def test_canonical_self_reference_by_locator_to_a_missing_id_dangles(
+    tmp_path: Path,
+) -> None:
+    """The alias spelling earns the same dangling verdict as the key spelling."""
+    from plan_fields.fleet_api import RepoInput, parse_fleet
+
+    idx = manifest_index(_manifest(tmp_path, VAULT_MANIFEST))
+
+    def dangling(spelling: str) -> list[dict]:
+        snapshot = parse_fleet(
+            [
+                RepoInput(
+                    "ecosystem-kb",
+                    f"- [ ] a @id:a @blocked_by:todo://{spelling}/ghost\n",
+                )
+            ],
+            idx,
+        )
+        return [d for d in snapshot["diagnostics"] if d["code"] == "PF-ID-DANGLING"]
+
+    keyed, aliased = dangling("ecosystem-kb"), dangling("prograph-vault")
+    assert len(keyed) == len(aliased) == 1
+    assert keyed[0]["subject_uri"] == aliased[0]["subject_uri"]
+    assert keyed[0]["severity"] == aliased[0]["severity"]
+    assert "absent from repo ecosystem-kb" in aliased[0]["message"]
+
+
 # --- an input's OWN name is normalised on the same rule ----------------------
 def test_repo_input_supplied_under_its_locator_mints_canonical_identity(
     tmp_path: Path,
