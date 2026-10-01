@@ -258,7 +258,12 @@ def test_launch_that_exits_nonzero_without_publishing_is_a_refusal(
         stderr_msg="config error: bad tasks.yaml",
     )
     config = _config(tmp_path, cli)
-    controller = RunController(config, poll_interval=0.05, materialize_timeout=2.0)
+    # The window must outlast a cold Python start under a loaded full run:
+    # at 2.0 s the dying child was sometimes not yet seen dead, and the
+    # honest answer was `launch_unknown` (accepted None), not the refusal
+    # this test is about. submit returns as soon as the child exits, so the
+    # wider window costs nothing when the machine is idle.
+    controller = RunController(config, poll_interval=0.05, materialize_timeout=10.0)
     receipt = controller.submit(_request(head))
     assert receipt.accepted is False
     assert receipt.run_id is None
@@ -975,23 +980,30 @@ def test_run_end_through_the_resolution_path_also_binds_to_the_checkout(
     # `_unknown` leaves the request in launch_unknown, which is the only
     # state end_orphan acts from; its fake never publishes, so the two
     # candidates below are what the operator would be shown.
-    controller, runs = _unknown(tmp_path)
+    _, runs = _unknown(tmp_path)
     checkout = tmp_path / "ws" / "deployer"
-    cli = tmp_path / "fake-maestro"
+    # A NEW file, never the `fake-maestro` `_unknown` launched: submit waits
+    # for that detached child only 0.3 s, and under load it execs late — it
+    # used to exec THIS test's rewritten script, racing it (a stray `run`
+    # line after ours; a FileExistsError from both creating 01AAA). The
+    # controller is rebuilt on the same store and home with this binary.
+    cli = tmp_path / "fake-maestro-recording"
     cli.write_text(
         "#!/usr/bin/env python3\n" + textwrap.dedent(_RECORD_CWD).strip() + "\n"
     )
     cli.chmod(0o755)
+    controller = RunController(_config(tmp_path, cli))
     (runs / "01BBB").mkdir(exist_ok=True)
     (runs / "01CCC").mkdir(exist_ok=True)
 
     controller.end_orphan(_REQ, "01BBB", "cancelled")
 
+    # Only run-end lines are the subject (the late launch child, now on its
+    # own binary, may still log nothing or a `run` of its own).
     recorded = _cwd_log_lines(log)
-    assert recorded, "end_orphan never reached the fake maestro"
-    ran_verb, ran_cwd = recorded[-1]
-    assert ran_verb == "run-end"
-    assert Path(ran_cwd).resolve() == checkout.resolve()
+    run_ends = [cwd for verb, cwd in recorded if verb == "run-end"]
+    assert run_ends, f"end_orphan never reached the fake maestro: {recorded}"
+    assert [Path(c).resolve() for c in run_ends] == [checkout.resolve()]
 
 
 def test_a_verb_refuses_when_the_recorded_checkout_moved_to_another_repo(
