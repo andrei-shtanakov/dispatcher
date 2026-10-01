@@ -687,6 +687,7 @@ def test_a_materialized_record_whose_run_ended_is_completed_not_active(
     assert [r.request_id for r in snap.active] == []
     [done] = snap.recent_completed
     assert (done.request_id, done.outcome, done.run_id) == ("done1", outcome, "01DONE")
+    assert done.updated_at == "2026-01-01T01:00:00Z"  # the run's end (#298)
     # read-only view: the record itself is untouched
     record = store.get("done1")
     assert record is not None and record.state == "materialized"

@@ -321,6 +321,11 @@ def assemble_snapshot(
     status_by_run_id = {
         info.run_id: info.status for info, _ in classified if info.run_id is not None
     }
+    ended_by_run_id = {
+        info.run_id: info.ended_at
+        for info, _ in classified
+        if info.run_id is not None and info.ended_at
+    }
 
     repositories: list[RepoRow] = []
     ready: list[ReadyRow] = []
@@ -519,7 +524,14 @@ def assemble_snapshot(
             run_id=record.run_id,
             revision=record.revision,
             outcome=_ended_outcome(record, status_by_run_id) or "",
-            updated_at=mtime_by_request_id.get(record.request_id, ""),
+            # A run maestro ended is dated by its END, not by the launch that
+            # last touched the record (review #298); else the record's time.
+            updated_at=(
+                ended_by_run_id.get(record.run_id, "")
+                if record.state == "materialized" and record.run_id
+                else ""
+            )
+            or mtime_by_request_id.get(record.request_id, ""),
             logs_available=_logs_available(home, record),
         )
         for record in records
