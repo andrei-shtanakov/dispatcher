@@ -649,3 +649,72 @@ def test_default_branch_is_the_remote_default_not_the_checked_out_one(
     snap = assemble_snapshot(RunController(_config(tmp_path)))
     row = next(r for r in snap.repositories if r.repository == "defbr")
     assert row.default_branch == default
+
+
+@pytest.mark.parametrize("outcome", ["completed", "superseded", "cancelled", "failed"])
+def test_a_materialized_record_whose_run_ended_is_completed_not_active(
+    tmp_path: Path, outcome: str
+) -> None:
+    """TODO launchpad-active-stale-records (2026-09-30: 4 of 5 active rows
+    were long-finished runs). Only a failed LAUNCH marks a record terminal;
+    the run's own end is maestro's fact, read here and never written back."""
+    config = _config(tmp_path)
+    store = _store(config)
+    key = _key("widget")
+    store.reserve(
+        "done1",
+        key,
+        known_runs=[],
+        window_start="t",
+        work_id="w-done",
+        revision="a" * 40,
+        repository="widget",
+    )
+    store.mark_launching("done1")
+    store.mark_materialized("done1", "01DONE")
+    assert config.maestro_home is not None
+    make_maestro_run(
+        config.maestro_home,
+        key.as_path_parts(),
+        "01DONE",
+        started_at="2026-01-01T00:00:00Z",
+        outcome=outcome,
+        ended_at="2026-01-01T01:00:00Z",
+    )
+
+    snap = assemble_snapshot(RunController(config))
+
+    assert [r.request_id for r in snap.active] == []
+    [done] = snap.recent_completed
+    assert (done.request_id, done.outcome, done.run_id) == ("done1", outcome, "01DONE")
+    assert done.updated_at == "2026-01-01T01:00:00Z"  # the run's end (#298)
+    # read-only view: the record itself is untouched
+    record = store.get("done1")
+    assert record is not None and record.state == "materialized"
+
+
+def test_a_materialized_record_whose_run_is_live_stays_active(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    store = _store(config)
+    key = _key("widget")
+    store.reserve(
+        "live1",
+        key,
+        known_runs=[],
+        window_start="t",
+        work_id="w-live",
+        revision="a" * 40,
+        repository="widget",
+    )
+    store.mark_launching("live1")
+    store.mark_materialized("live1", "01LIVE")
+    assert config.maestro_home is not None
+    make_maestro_run(
+        config.maestro_home,
+        key.as_path_parts(),
+        "01LIVE",
+        started_at="2026-01-01T00:00:00Z",
+    )
+    snap = assemble_snapshot(RunController(config))
+    assert [r.request_id for r in snap.active] == ["live1"]
+    assert snap.recent_completed == []

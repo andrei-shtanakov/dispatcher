@@ -56,6 +56,27 @@ _ACTIVE_CAP = 200
 _GIT_TIMEOUT = 15
 
 
+def _ended_outcome(
+    record: LaunchRecord, status_by_run_id: dict[str, str]
+) -> str | None:
+    """The outcome when the request has ended, else None.
+
+    A record is moved to `terminal` only when its LAUNCH fails; a launch
+    that materialized stays `materialized` after maestro ends the run
+    (completed, superseded, …), so the record alone kept a long-finished
+    run in `active` (4 of 5 rows on 2026-09-30). The run's own terminal
+    status is the fact; it is read here, never written back — this view
+    does not mutate the store.
+    """
+    if record.state == "terminal":
+        return record.outcome or "terminal"
+    if record.state == "materialized" and record.run_id is not None:
+        status = status_by_run_id.get(record.run_id)
+        if status in TERMINAL_RUN_STATUSES:
+            return status
+    return None
+
+
 class BlockerView(BaseModel):
     code: str
     request_id: str | None = None
@@ -300,6 +321,11 @@ def assemble_snapshot(
     status_by_run_id = {
         info.run_id: info.status for info, _ in classified if info.run_id is not None
     }
+    ended_by_run_id = {
+        info.run_id: info.ended_at
+        for info, _ in classified
+        if info.run_id is not None and info.ended_at
+    }
 
     repositories: list[RepoRow] = []
     ready: list[ReadyRow] = []
@@ -446,7 +472,7 @@ def assemble_snapshot(
 
     active_rows: list[ActiveRow] = []
     for record in records:
-        if record.state == "terminal":
+        if _ended_outcome(record, status_by_run_id) is not None:
             continue
         run_status = status_by_run_id.get(record.run_id) if record.run_id else None
         attention = (
@@ -497,12 +523,19 @@ def assemble_snapshot(
             work_id=record.work_id,
             run_id=record.run_id,
             revision=record.revision,
-            outcome=record.outcome or "",
-            updated_at=mtime_by_request_id.get(record.request_id, ""),
+            outcome=_ended_outcome(record, status_by_run_id) or "",
+            # A run maestro ended is dated by its END, not by the launch that
+            # last touched the record (review #298); else the record's time.
+            updated_at=(
+                ended_by_run_id.get(record.run_id, "")
+                if record.state == "materialized" and record.run_id
+                else ""
+            )
+            or mtime_by_request_id.get(record.request_id, ""),
             logs_available=_logs_available(home, record),
         )
         for record in records
-        if record.state == "terminal"
+        if _ended_outcome(record, status_by_run_id) is not None
     ]
     completed_sorted = sorted(
         completed_rows, key=lambda r: (r.updated_at, r.request_id), reverse=True
