@@ -254,13 +254,13 @@ def _resolve_cross(ref, src_repo, index, present, node_ids, no_todo):
         # the point: an unknown repo must stay visible as what was written.
         ref["legacy_blocker_ref"] = f"{canonical}#{key}"
 
-    if canonical == src_repo:
-        if is_canonical or trepo == src_repo:
-            # Already fully handled by `parse_todo`: same-repo `todo://` is its
-            # resolution, and a legacy self-reference spelled with the repo's
-            # own name got its verdict there. Re-deciding it here would
-            # double-report the case that already works.
-            return None, None
+    if canonical == src_repo and trepo == src_repo:
+        # Already fully handled by `parse_todo`: a self-reference spelled with
+        # the repo's own name — `todo://` or legacy — got its resolution or its
+        # verdict there. Re-deciding it here would double-report the case that
+        # already works.
+        return None, None
+    if canonical == src_repo and not is_canonical:
         # The gap, and only the gap: spelled with a declared locator, so
         # `parse_todo` — which has no manifest — read it as naming another repo
         # and said nothing. Normalised, it denotes the same self-reference, so
@@ -270,6 +270,10 @@ def _resolve_cross(ref, src_repo, index, present, node_ids, no_todo):
         return None, legacy_self_diagnostic(
             present[canonical], key, raw, canonical, src, prov
         )
+    # A canonical `todo://` self-reference spelled with a declared locator falls
+    # through: `parse_todo` read it as cross-repo and left it unresolved without
+    # a word, so it takes the same path a neighbour's reference to it takes
+    # (#279) — an edge to the node, or the same PF-ID-DANGLING.
 
     reason = _repo_reason(trepo, index, present, no_todo)
     if reason is not None:

@@ -486,6 +486,14 @@
       на неё не заводим: направление зависимости обратное (сосед ждёт нас), ничего
       нашего от bump'а не зависит.
 
+- [x] `parse_fleet` резолвит `todo://`-ссылку репо на собственный пункт прежним именем (locator) — PR #292 @owner:github:andrei-shtanakov @id:plan-fields-self-ref-old-name @epic:eco.plan-fields
+      Принятие inbox-issue #279 от devtools (ADR-ECO-006). `todo://prograph-vault/b`
+      из `ecosystem-kb` оставался `resolved_target: None` без ребра и без диагностики,
+      хотя та же ссылка из соседа резолвилась. Фикс в `_resolve_cross` + два теста
+      (ребро; одинаковый `PF-ID-DANGLING` для обоих написаний), plan-fields 0.11.1.
+      Вторая половина — bump пина у devtools и снятие канонизации в conductor — работа
+      соседа; вахту не заводим: ждёт сосед, а не мы.
+
 ## KB snapshots: доставка через ветку derived-snapshots (резолюция ecosystem-kb#98)
 
 - [x] `publish-snapshot` → ветка `derived-snapshots`: publisher и читатели уходят с master — PR #217 @owner:github:andrei-shtanakov @id:snapshot-publish-branch @epic:eco.ops

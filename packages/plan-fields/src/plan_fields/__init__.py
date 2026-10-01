@@ -42,7 +42,7 @@ from plan_fields.views import (
     repo_owner_verdicts,
 )
 
-__version__ = "0.11.0"
+__version__ = "0.11.1"
 
 __all__ = [
     "REPO_OWNER_EXTERNAL",
