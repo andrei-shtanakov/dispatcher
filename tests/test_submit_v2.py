@@ -1209,3 +1209,31 @@ def test_an_admitting_halt_lets_the_run_start(tmp_path: Path) -> None:
         _body(repo_key=_key(name).as_text(), work_id="w1", revision=head)
     )
     assert receipt.accepted is True
+
+
+@pytest.mark.parametrize(("gated", "flag"), [(True, "1"), (False, "")])
+def test_maestro_gets_the_halt_flag_only_when_dispatcher_gates(
+    tmp_path: Path, gated: bool, flag: str
+) -> None:
+    """D2b: maestro's own opt-in check is switched on by the launcher."""
+    name = f"halt-flag-{int(gated)}"
+    _, head = _ready(tmp_path, name, "w1")
+    seen = tmp_path / "flag.txt"
+    cli = tmp_path / "fake-maestro"
+    cli.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, pathlib\n"
+        f"pathlib.Path({str(seen)!r}).write_text("
+        "os.environ.get('DARKFACTORY_HALT_CHECK', ''))\n"
+    )
+    cli.chmod(0o755)
+    controller = RunController(
+        _config(tmp_path, cli),
+        materialize_timeout=2.0,
+        poll_interval=0.05,
+        halt_gate=(lambda checkout: (True, "admit_off: off")) if gated else None,
+    )
+    controller.submit_v2(
+        _body(repo_key=_key(name).as_text(), work_id="w1", revision=head)
+    )
+    assert seen.read_text() == flag
