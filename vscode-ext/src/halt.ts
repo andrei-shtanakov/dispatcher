@@ -46,6 +46,18 @@ export function repoLine(repo: RepoHalt): string {
   return repo.detail ? `${repo.repo}: ${repo.state} — ${repo.detail}` : `${repo.repo}: ${repo.state}`;
 }
 
+/** "read 7m ago" from the oldest per-repo read; null when unknown. */
+export function readAge(view: HaltView, now: Date): string | null {
+  const stamps = view.fleet
+    .map((r) => (r.read_at ? Date.parse(r.read_at) : Number.NaN))
+    .filter((t) => !Number.isNaN(t));
+  if (stamps.length === 0) {
+    return null;
+  }
+  const minutes = Math.floor((now.getTime() - Math.min(...stamps)) / 60_000);
+  return minutes < 1 ? "read <1m ago" : `read ${minutes}m ago`;
+}
+
 /** The lines under the halt node: repos, deviations, the last request. */
 export function haltLines(view: HaltView): string[] {
   const lines = view.fleet.map(repoLine);

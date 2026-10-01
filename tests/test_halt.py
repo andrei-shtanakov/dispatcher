@@ -387,3 +387,9 @@ def test_the_fleet_read_stays_far_inside_the_hourly_api_limit() -> None:
 
     calls_per_hour = 23 * 2 * 3600 / HALT_TTL_SECONDS
     assert calls_per_hour <= 500
+
+
+def test_every_read_carries_its_time() -> None:
+    """Review #295: a 10-min-old `off` must be visibly old."""
+    got = read_fleet(_FLEET, lambda r: _outcome("off"))
+    assert all(r.read_at is not None for r in got)

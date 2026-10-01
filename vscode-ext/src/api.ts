@@ -295,6 +295,7 @@ export interface RepoHalt {
   state: HaltState;
   ruleset_id: number | null;
   detail: string | null;
+  read_at?: string | null;
 }
 
 export interface HaltResult {
