@@ -1,24 +1,27 @@
 ---
 spec_stage: discovery
 status: approved
+approved_by: discovery-runtime
+approved_at: '2026-07-18T10:37:15Z'
+approver: andrei-shtanakov
+approved_content_hash: sha256:838472bd0b602162ed20c8b64aea23ebf3281657f52f19e6bcda13cb74efd176
 version: 1
 generated_by: discovery-agent@claude-fable-5
 generated_at: 2026-07-14
 source_prompt_version: sha256:7e392c0deeb405d009944e80deb08f26def602eb0cef8b969623c540ac339fa6
 validation: pass
-approved_by: discovery-agent@claude-fable-5
-approved_at: 2026-07-14
 owner_role: product
-approver: andrei-shtanakov
 schema: discovery-brief
 schema_version: 1
-feeds: [charter, requirements]
+feeds:
+- charter
+- requirements
 interview:
   frame: customer
   sessions:
-    - participant_role: ecosystem-tpm
-      date: 2026-07-14
-      medium: sync
+  - participant_role: ecosystem-tpm
+    date: 2026-07-14
+    medium: sync
 coverage:
   goals: covered
   personas: covered
@@ -34,8 +37,8 @@ open_questions: 2
 blocking_open_questions: 0
 conflicts: 0
 traces_to:
-  - README.md
-  - COWORK_CONTEXT.md
+- README.md
+- COWORK_CONTEXT.md
 ---
 
 # Discovery Brief — dispatcher, итерация «sync & roadmap» (customer-фрейм)
