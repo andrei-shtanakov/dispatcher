@@ -2,7 +2,7 @@
 
 import * as vscode from "vscode";
 import type { AgentMerge, FactoryFloorView, HaltView, InFlightRun } from "./api";
-import { haltLines, haltSummary } from "./halt";
+import { haltLines, haltSummary, readAge } from "./halt";
 import {
   floorEmptyText,
   floorGroups,
@@ -73,7 +73,12 @@ export class FloorProvider implements vscode.TreeDataProvider<FloorNode> {
           icon[0],
           icon[1] ? new vscode.ThemeColor(icon[1]) : undefined,
         );
-        item.tooltip = "Read back from GitHub — the ruleset, not the request.";
+        const age = node.view ? readAge(node.view, new Date()) : null;
+        item.description = age ?? undefined;
+        item.tooltip =
+          "Read back from GitHub — the ruleset, not the request. Re-read every " +
+          "10 min and right after a halt/lift from here; a change made by hand " +
+          "in GitHub shows within that window.";
         return item;
       }
       case "banner": {

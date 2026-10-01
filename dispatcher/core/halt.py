@@ -21,7 +21,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -33,7 +33,16 @@ from dispatcher.core.human_queue import SourceStatus
 
 HaltState = Literal["on", "off", "missing", "misconfigured", "unknown"]
 Target = Literal["on", "off"]
-HALT_TTL_SECONDS = 60.0
+#: The fleet read is ~2 GitHub calls per repo; at 60 s a 23-repo fleet spent
+#: ~2800 calls an hour and, with the other readers, exhausted the account's
+#: 5000/h core limit on 2026-10-01 (one repo then read `unknown`). The halt
+#: changes almost only through our own toggle, which refreshes the read at
+#: once (`invalidate`). A ruleset switched ON by hand in GitHub can still read
+#: `off` here for up to this window — so every read carries `read_at` and the
+#: surfaces show its age: an old `off` is visibly old, not silently current.
+#: (Enforcement does not depend on this read: GitHub refuses the merge and the
+#: agents' own admission checks ask GitHub directly.)
+HALT_TTL_SECONDS = 600.0
 REQUESTS_FILE = "halt-requests.jsonl"
 REASON_MAX_LEN = 500
 
@@ -43,6 +52,7 @@ class RepoHalt(BaseModel):
 
     repo: str  # directory name in the workspace
     state: HaltState
+    read_at: str | None = None  # when this state was read (UTC ISO-8601)
     ruleset_id: int | None = None
     detail: str | None = None
 
@@ -136,15 +146,18 @@ def read_fleet(
     """Read every fleet repo's halt; a failed read is `unknown`, never `off`."""
     out: list[RepoHalt] = []
     for repo in fleet:
+        stamp = datetime.now(UTC).isoformat()
         try:
             outcome = read(repo)
         except Exception as err:  # noqa: BLE001 — one repo's read, never the reader
             # BackgroundReader requires a fetch that never raises; a repo
             # whose read raised is `unknown`, and the rest are still read.
             detail = str(err) if isinstance(err, ActionRejectedError) else repr(err)
-            out.append(RepoHalt(repo=repo, state="unknown", detail=detail))
+            out.append(
+                RepoHalt(repo=repo, state="unknown", detail=detail, read_at=stamp)
+            )
             continue
-        out.append(_repo_halt(repo, outcome))
+        out.append(_repo_halt(repo, outcome).model_copy(update={"read_at": stamp}))
     return out
 
 

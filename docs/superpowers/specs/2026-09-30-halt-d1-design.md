@@ -49,7 +49,8 @@ Findings that shape D1:
 
 - `GET /api/halt` → `{fleet: [{repo, state, ruleset_id, detail}], applying, halted,
   unhealthy, deviations, last_request, sources, complete, generated_at}`. Read in the
-  background (`HaltReader`, TTL 60 s, one `halt-read` per repo; refreshed right after a
+  background (`HaltReader`, TTL 600 s — 60 s exhausted the 5000/h API limit with a
+  23-repo fleet on 2026-10-01 — one `halt-read` per repo; refreshed right after a
   request is applied). Before the first read: `unavailable` "in progress", never `off`.
   A repo whose read failed is `unknown` and makes `forge_halt` `partial`.
 - `POST /api/halt` `{state: on|off, repos: [..] | null, reason}` with the action token →

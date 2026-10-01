@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { HaltView } from "../src/api";
-import { haltLines, haltSummary, reasonProblem } from "../src/halt";
+import { haltLines, haltSummary, readAge, reasonProblem } from "../src/halt";
 
 const ok = { state: "ok" as const, detail: null };
 
@@ -94,5 +94,19 @@ describe("reason", () => {
     expect(reasonProblem("  ")).not.toBeNull();
     expect(reasonProblem("a\nb")).not.toBeNull();
     expect(reasonProblem("x".repeat(501))).not.toBeNull();
+  });
+});
+
+describe("read age", () => {
+  it("says how old the oldest read is, and nothing when unknown", () => {
+    const now = new Date("2026-10-01T12:10:00Z");
+    const v = view({
+      fleet: [
+        { repo: "a", state: "off", ruleset_id: 1, detail: null, read_at: "2026-10-01T12:03:00Z" },
+        { repo: "b", state: "off", ruleset_id: 2, detail: null, read_at: "2026-10-01T12:09:30Z" },
+      ],
+    });
+    expect(readAge(v, now)).toBe("read 7m ago");
+    expect(readAge(view(), now)).toBeNull();
   });
 });
