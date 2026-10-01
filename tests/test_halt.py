@@ -378,3 +378,12 @@ def test_an_invalidation_during_a_refresh_is_not_lost() -> None:
     pending.pop()()  # the in-flight read completes after the invalidation
     assert reader.read() is not None  # its value is served…
     assert len(pending) == 1  # …but a fresh read has already started
+
+
+def test_the_fleet_read_stays_far_inside_the_hourly_api_limit() -> None:
+    """2026-10-01: a 60 s TTL spent ~2800 of 5000 calls/h on a 23-repo fleet
+    and exhausted the limit together with the other readers."""
+    from dispatcher.core.halt import HALT_TTL_SECONDS
+
+    calls_per_hour = 23 * 2 * 3600 / HALT_TTL_SECONDS
+    assert calls_per_hour <= 500

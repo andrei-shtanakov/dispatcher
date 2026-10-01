@@ -33,7 +33,13 @@ from dispatcher.core.human_queue import SourceStatus
 
 HaltState = Literal["on", "off", "missing", "misconfigured", "unknown"]
 Target = Literal["on", "off"]
-HALT_TTL_SECONDS = 60.0
+#: The fleet read is ~2 GitHub calls per repo; at 60 s a 23-repo fleet spent
+#: ~2800 calls an hour and, with the other readers, exhausted the account's
+#: 5000/h core limit on 2026-10-01 (one repo then read `unknown`). The halt
+#: changes almost only through our own toggle, which refreshes the read at
+#: once (`invalidate`); a ruleset changed by hand in GitHub shows within this
+#: window — as a deviation, never as a false `off`.
+HALT_TTL_SECONDS = 600.0
 REQUESTS_FILE = "halt-requests.jsonl"
 REASON_MAX_LEN = 500
 
