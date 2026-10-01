@@ -703,7 +703,7 @@ class ActionRunner:
             checkout.name,
             admit,
             outcome.phase,
-            detail,
+            one_line(detail),  # producer text: one audit line per attempt
         )
         return admit, detail
 

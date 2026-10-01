@@ -779,3 +779,27 @@ async def test_release_malformed_survives_an_unlistable_root(
         )
     assert resp.status_code == 200
     assert not lock.exists()
+
+
+def test_the_app_wires_the_halt_gate_only_when_halt_admission_is_on(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Review #289: the one line that turns D2 on in production."""
+    from dispatcher.server import app as app_module
+
+    seen: list[object] = []
+    real = app_module.RunController
+
+    def capture(config, **kwargs):
+        seen.append(kwargs.get("halt_gate"))
+        return real(config, **kwargs)
+
+    monkeypatch.setattr(app_module, "RunController", capture)
+    (tmp_path / "ws").mkdir()
+    app_module.create_app(
+        DispatcherConfig(roots=(tmp_path / "ws",), halt_admission=True)
+    )
+    app_module.create_app(DispatcherConfig(roots=(tmp_path / "ws",)))
+    on, off = seen
+    assert getattr(on, "__name__", "") == "halt_gate"
+    assert off is None
