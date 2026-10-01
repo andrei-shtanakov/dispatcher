@@ -1464,6 +1464,7 @@ _CANONICAL = {
     "merged-prs": "merged-prs-found",
     "halt-read": "halt-read-on",
     "halt-set": "halt-set-on",
+    "halt-gate": "halt-gate-refuse-on",
 }
 DROP = object()
 
@@ -2075,3 +2076,20 @@ def test_halt_set_refuses_a_bad_state_and_a_busy_repo(tmp_path: Path) -> None:
     with runner._hold("merge", "app"):
         with pytest.raises(ActionBusyError):
             runner.halt_set("app", "on")
+
+
+def test_halt_gate_admits_only_a_stated_true(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    refuse = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)),
+        command=scripted_checker(tmp_path, {"halt-gate": v1("halt-gate")}),
+    )
+    admit, detail = refuse.halt_gate(repo)
+    assert admit is False and detail.startswith("refuse_on")
+    ok = ActionRunner(
+        DispatcherConfig(roots=(tmp_path,)),
+        command=scripted_checker(
+            tmp_path, {"halt-gate": v1("halt-gate", admit=True, detail="admit_off: x")}
+        ),
+    )
+    assert ok.halt_gate(repo) == (True, "admit_off: x")

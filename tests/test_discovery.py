@@ -239,3 +239,18 @@ def test_halt_fleet_is_an_explicit_list(tmp_path: Path) -> None:
         cfg.write_text(f'roots = ["{tmp_path}"]\nhalt_fleet = {bad}\n')
         with pytest.raises(ValueError, match="halt_fleet"):
             load_config(cfg)
+
+
+def test_halt_admission_is_on_for_a_loaded_config(tmp_path: Path) -> None:
+    """D2: on by default when loaded; off in a bare config (hermetic)."""
+    from dispatcher.core.discovery import DispatcherConfig, load_config
+
+    cfg = tmp_path / "dispatcher.toml"
+    cfg.write_text(f'roots = ["{tmp_path}"]\n')
+    assert load_config(cfg).halt_admission is True
+    cfg.write_text(f'roots = ["{tmp_path}"]\nhalt_admission = false\n')
+    assert load_config(cfg).halt_admission is False
+    cfg.write_text(f'roots = ["{tmp_path}"]\nhalt_admission = "no"\n')
+    with pytest.raises(ValueError, match="halt_admission"):
+        load_config(cfg)
+    assert DispatcherConfig(roots=(tmp_path,)).halt_admission is False

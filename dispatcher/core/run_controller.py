@@ -19,6 +19,7 @@ import os
 import re
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -563,12 +564,33 @@ class RunController:
         *,
         poll_interval: float = _POLL_INTERVAL,
         materialize_timeout: float = _MATERIALIZE_TIMEOUT,
+        halt_gate: Callable[[Path], tuple[bool, str]] | None = None,
     ) -> None:
         self._config = config
         self._poll = poll_interval
         self._timeout = materialize_timeout
+        # The DarkFactory halt (D2): `(admit, detail)` for a checkout. The
+        # app wires github-checker `halt-gate`; None (embedded/test use) skips
+        # the check — the forge ruleset still refuses the merge either way.
+        self._halt_gate = halt_gate
 
     # -- wiring -------------------------------------------------------------
+
+    def _refuse_if_halted(self, checkout: Path) -> None:
+        """D2: no NEW run on a halted repository (halt-admission/v1).
+
+        Before the guard and before any record: a halted launch is refused
+        like a missing checkout — nothing reserved, nothing spawned. A gate
+        that raises is unreadable, and unreadable refuses.
+        """
+        if self._halt_gate is None:
+            return
+        try:
+            admit, detail = self._halt_gate(checkout)
+        except Exception as exc:  # noqa: BLE001 — unreadable refuses
+            admit, detail = False, f"refuse_unknown: {type(exc).__name__}: {exc}"
+        if not admit:
+            raise AdmissionRefused(409, "halted", f"DarkFactory halt — {detail}")
 
     def _require_on(self) -> tuple[Path, Path, Path]:
         """`(state_dir, cli, home)`, or raise `ControlPlaneOff`.
@@ -1051,6 +1073,7 @@ class RunController:
         # `repo_key`: no separate re-verification needed.
         checkout = self._resolve_v2_checkout(repo_key)
         found_key = repo_key
+        self._refuse_if_halted(checkout)
 
         runs = self.runs_dir(found_key)
 

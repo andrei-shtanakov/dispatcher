@@ -1,6 +1,6 @@
 source: github-checker contracts/actions/v1
-commit: 75ab36044c607f37b75417023e577566a162b233
-vendored: 2026-09-30
+commit: 65c09a942c4ae87ce9beee62d8efffb3377f6972
+vendored: 2026-10-01
 note: pinned copy (repo-boundaries vendoring, ADR-ECO-003). Do not edit here —
   re-vendor with scripts/revendor_github_checker_actions.sh, which derives every
   value in this directory from the one commit it is given. Procedure:

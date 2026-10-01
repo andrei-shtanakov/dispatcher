@@ -260,6 +260,7 @@ class ActionPayload(BaseModel):
     merges: list[MergedPr] | None = None
     changed: bool | None = None
     halt: HaltStatus | None = None
+    admit: bool | None = None
 
 
 class CliError(BaseModel):
