@@ -48,3 +48,6 @@ hooks:
   post_done:
     run_lint: true
     lint_blocking: true
+
+# политика флота (devtools contracts/fleet-config-policy/v1, 2026-10-04): попытка, правящая файлы верификации, проваливается
+harness_guard: strict
