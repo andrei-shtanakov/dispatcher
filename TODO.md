@@ -502,7 +502,7 @@
       #37), повторный `approve` идемпотентен. **Байты обоих брифов больше не править
       вручную**: любая правка снимет подпись. Ждёт discovery, а не мы — вахту не заводим.
 
-- [ ] Мигрировать customer-бриф на контракт discovery-brief v1.3 и переподписать через `discovery approve` @owner:github:andrei-shtanakov @id:migrate-briefs-contract-v1.3
+- [x] Мигрировать customer-бриф на контракт discovery-brief v1.3 и переподписать через `discovery approve` — PR #320, #321 @owner:github:andrei-shtanakov @id:migrate-briefs-contract-v1.3
       Принятие inbox-issue #319 от discovery (discovery#74, перепин v1.3 в PR discovery#75).
       Линтер v1.3 (GC-18…GC-21) отвергал одобренный `spec/discovery-brief-customer.md`:
       нет translation table, нет NFR категории cost, не названы владельцы четырёх областей.
