@@ -1,4 +1,4 @@
-"""Vendored steward gate-catalog v2: the canonical obligation vocabulary.
+"""Vendored steward gate-catalog v3: the canonical obligation vocabulary.
 
 Inbox #125 (ADR-ECO-006, D7 of steward's gate-id-catalog design). Steward's
 ``profiles/gate-catalog.yaml`` is the SSOT for gate identity; its
@@ -28,7 +28,7 @@ _CATALOG_PATH = (
     / "v1"
     / "gate-catalog.yaml"
 )
-SUPPORTED_CATALOG_VERSION = 2
+SUPPORTED_CATALOG_VERSION = 3
 
 
 class GateEntry(BaseModel):
@@ -48,13 +48,26 @@ class GateEntry(BaseModel):
     replacement: str | None = None
 
 
+class GateIdNamespaces(BaseModel):
+    """v3 published mirror of steward's loader rule for gate-id namespaces."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    canonical_pattern: str
+    producer_pattern: str
+
+
 class GateCatalog(BaseModel):
     """The typed catalog: vocabularies plus the per-gate entries."""
 
     model_config = ConfigDict(extra="forbid")
 
     version: int
+    # v3 mirrors of steward's loader rules (inbox #309): carried for typing,
+    # not consulted — gate-id policy stays the producer's (CON-03).
+    gate_id_namespaces: GateIdNamespaces | None = None
     obligation_vocabulary: list[str]
+    obligation_reserved_tokens: list[str] = []
     stage_vocabulary: list[str]
     gates: dict[str, GateEntry]
 
@@ -74,6 +87,14 @@ def load_catalog() -> GateCatalog:
             f"vendored gate-catalog declares version {catalog.version}; "
             f"this consumer is pinned to v{SUPPORTED_CATALOG_VERSION} "
             "(contracts/steward-gate-catalog/v1/)"
+        )
+    reserved = set(catalog.obligation_reserved_tokens) & set(
+        catalog.obligation_vocabulary
+    )
+    if reserved:
+        raise ValueError(
+            f"vendored gate-catalog admits reserved tokens {sorted(reserved)} "
+            "into obligation_vocabulary (contracts/steward-gate-catalog/v1/)"
         )
     return catalog
 

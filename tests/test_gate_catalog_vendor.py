@@ -22,7 +22,7 @@ from pathlib import Path
 VENDORED_ROOT = (
     Path(__file__).parent.parent / "contracts" / "steward-gate-catalog" / "v1"
 )
-PRODUCER_COMMIT = "9b79700cb7edb7b6930734ecd10b7ad230870bc6"
+PRODUCER_COMMIT = "68f46a9b2e5cfe9ecd1f09524e986c3f687f4155"
 _EXCLUDED_NAMES = {"PINNED.txt", "manifest.json"}
 
 

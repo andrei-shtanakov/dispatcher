@@ -19,21 +19,22 @@ from dispatcher.core.gate_catalog import (
 )
 
 
-def test_the_vendored_catalog_loads_and_is_v2() -> None:
-    assert load_catalog().version == SUPPORTED_CATALOG_VERSION == 2
+def test_the_vendored_catalog_loads_and_is_v3() -> None:
+    assert load_catalog().version == SUPPORTED_CATALOG_VERSION == 3
 
 
 def test_the_obligation_vocabulary_is_the_canonical_pair() -> None:
     assert obligation_vocabulary() == {"quality", "approval"}
 
 
-def test_the_v2_composition_is_what_the_pin_ships() -> None:
-    """v2: all 20 gates active — GC-APPROVAL-MISSING flipped declared→active
-    (steward AP-5, approval-policy-enforcement). A re-vendor that changes the
-    composition must trip this deliberately (upstream bumps `version` on any
-    composition change) — this text was updated by exactly such a re-vendor."""
+def test_the_v3_composition_is_what_the_pin_ships() -> None:
+    """v3 (steward v0.2.0, approval-facts v3 M0 Task 9; inbox #309): the 20 v2
+    gates plus three GC-ACT-* approval gates of the mandatory act mode, all
+    active, at both stages. A re-vendor that changes the composition must trip
+    this deliberately (upstream bumps `version` on any composition change) —
+    this text was updated by exactly such a re-vendor."""
     catalog = load_catalog()
-    assert len(catalog.gates) == 20
+    assert len(catalog.gates) == 23
     non_active = {
         slug: entry for slug, entry in catalog.gates.items() if entry.status != "active"
     }
@@ -41,6 +42,24 @@ def test_the_v2_composition_is_what_the_pin_ships() -> None:
     approval = catalog.gates["GC-APPROVAL-MISSING"]
     assert approval.status == "active"
     assert approval.obligation == "approval"
+    for slug in (
+        "GC-ACT-MODE-CONFLICT",
+        "GC-ACT-PROVIDER-MISSING",
+        "GC-ACT-NOT-APPROVED",
+    ):
+        entry = catalog.gates[slug]
+        assert entry.obligation == "approval", slug
+        assert entry.stages == ["authoring", "release"], slug
+
+
+def test_v3_publishes_the_namespace_and_reserved_token_mirror() -> None:
+    """v3 carries the loader's id-namespace rule and the enforcement-axis
+    tokens barred from the obligation vocabulary (steward ruling 5)."""
+    catalog = load_catalog()
+    assert catalog.gate_id_namespaces is not None
+    assert catalog.gate_id_namespaces.canonical_pattern.startswith("^GC-")
+    assert catalog.obligation_reserved_tokens == ["mandatory", "advisory"]
+    assert not set(catalog.obligation_reserved_tokens) & obligation_vocabulary()
 
 
 def test_every_gate_speaks_the_catalog_vocabularies() -> None:
@@ -63,11 +82,32 @@ def test_a_future_catalog_version_refuses_to_load(
 
     doctored = tmp_path / "gate-catalog.yaml"
     original = mod._CATALOG_PATH.read_text(encoding="utf-8")
-    doctored.write_text(original.replace("version: 2", "version: 3", 1))
+    doctored.write_text(original.replace("version: 3", "version: 4", 1))
     monkeypatch.setattr(mod, "_CATALOG_PATH", doctored)
     load_catalog.cache_clear()
     try:
-        with pytest.raises(ValueError, match="version 3"):
+        with pytest.raises(ValueError, match="version 4"):
+            mod.load_catalog()
+    finally:
+        load_catalog.cache_clear()
+
+
+def test_a_reserved_token_in_the_vocabulary_refuses_to_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A vendored copy admitting a reserved enforcement token as an obligation
+    contradicts its own published mirror: a broken copy raises, never degrades."""
+    import dispatcher.core.gate_catalog as mod
+
+    doctored = tmp_path / "gate-catalog.yaml"
+    original = mod._CATALOG_PATH.read_text(encoding="utf-8")
+    doctored.write_text(
+        original.replace("  - approval\n", "  - approval\n  - mandatory\n", 1)
+    )
+    monkeypatch.setattr(mod, "_CATALOG_PATH", doctored)
+    load_catalog.cache_clear()
+    try:
+        with pytest.raises(ValueError, match="reserved"):
             mod.load_catalog()
     finally:
         load_catalog.cache_clear()

@@ -103,8 +103,8 @@ PRODUCER_COMMIT = "…"
 This stays a hand edit **on purpose**: it is the independent assertion about
 what the manifest should say, and a test that reads the value it checks
 proves nothing. `tests/test_gate_catalog.py` additionally pins the catalog's
-*content* the consumer stands on — the obligation vocabulary and the v1
-composition (19 active + `GC-APPROVAL-MISSING`); a re-vendor that changes
+*content* the consumer stands on — the obligation vocabulary and the v3
+composition (23 active, incl. three `GC-ACT-*`); a re-vendor that changes
 the composition updates those assertions deliberately, together with any
 consumer behaviour the change implies.
 
