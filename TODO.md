@@ -120,6 +120,9 @@
       2026-09-01, `merged_by: ai-prosto` различает актора без нового рантайма —
       ровно как обещал ADR-ECO-011 D3. Инцидентом считается расхождение этого
       аудита, спорный `merged_by` или ревокация.
+      **2026-11-15 (inbox #309):** v2 заморожен (гейт steward читает его как
+      `legacy_v2`); вендорить теперь `contracts/approval-facts/v3/` (запись
+      `delivery`) — см. steward `approval-facts-dispatcher-vendoring-handoff`.
       **Ход теперь наш, стадия 2:** завендорить пиненую копию `contracts/approval-facts/v2`
       внутрь себя (`PIN` + copy-integrity, как остальные контракты) и написать
       `core/merge_actor.py` — валидация по вендоренной схеме и рендер типизированного
@@ -375,6 +378,21 @@
       `core/governance.py` по словарю каталога — значение вне словаря =
       `unreadable`, fail-closed (NFR-02), отсутствующее значение валидно
       (старый producer). Ре-вендор: `docs/revendor-steward-gate-catalog.md`.
+- [ ] Ре-вендор steward gate-catalog v3 (три `GC-ACT-*`) @ `68f46a9` (steward v0.2.0) + потребитель на v3 @owner:github:andrei-shtanakov @id:gate-catalog-v3-revendor
+      Принятие inbox-issue #309 от steward (ADR-ECO-006, steward#211/#223, M0 Task 9).
+      Каталог 2 → 3: +`GC-ACT-MODE-CONFLICT`/`-PROVIDER-MISSING`/`-NOT-APPROVED`
+      (obligation `approval`, обе стадии) и два новых top-level ключа — опубликованные
+      зеркала правил загрузчика steward (`gate_id_namespaces`,
+      `obligation_reserved_tokens`). `core/gate_catalog.py`: v3, ключи типизированы, но
+      не консультируются (политика gate-id — продюсера); пересечение reserved-токенов со
+      словарём = сломанная копия, raise. Словарь obligation не менялся — поведение
+      governance-коллектора прежнее.
+- [ ] Поднять пин steward/gate-check до ≥ v0.2.0: обязательный `gate-check --act-mode legacy|review` @owner:github:andrei-shtanakov @blocked_by:todo://dispatcher/gate-catalog-v3-revendor @id:steward-pin-v020-act-mode
+      Хвост inbox #309: с v0.2.0 `gate-check` без `--act-mode` выходит с кодом 2
+      (`legacy` = прежнее поведение). Пин живёт в
+      `contracts/steward-gate-verdicts/v1/manifest.json` (его читают
+      `scripts/install_pinned_steward.sh` и CI); слепой подъём без флага сломает
+      governance-джоб. Предусловие — каталог v3 у нас (незнакомый `GC-*` = fail-closed).
 - [x] Вендор steward roles-catalog v1: пиненая копия `profiles/roles.yaml` @ `b79c858` + подготовка к следующему перепину gate-check — PR #131 @owner:github:andrei-shtanakov @id:vendor-roles-catalog
       Принятие inbox-issue #128 от steward (ADR-ECO-006, DEC-007 §1). Канон:
       `steward/profiles/roles.yaml` (v1, 6 slug'ов: product, architects, qa,

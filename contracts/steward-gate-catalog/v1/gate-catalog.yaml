@@ -12,12 +12,18 @@
 # quality = correctness/completeness gate (gate-check concern); approval =
 # evidence/authorization gate (a separate governance concern from quality,
 # but implemented the same way — a gate-check finding). The active set
-# ('status: active') forms the v2 contract; no other status appears in
-# runtime use. GC-APPROVAL-MISSING (AP-5, 2026-08-08) is the first and only
+# ('status: active') forms the v3 contract; no other status appears in
+# runtime use. GC-APPROVAL-MISSING (AP-5, 2026-08-08) was the first
 # approval-obligation gate: it enforces the release-stage merge-evidence
 # policy (steward.gatecheck.approval.check_approval_evidence) — presence of
 # first-parent merge provenance plus a classified, non-agent, non-unknown
 # merge actor for every approved artifact confirmed on the default branch.
+# Version 3 (approval-facts v3 §7.2, M0 Task 9) adds the three GC-ACT-*
+# approval gates of the mandatory act mode (`gate-check --act-mode`):
+# GC-ACT-MODE-CONFLICT (legacy contradicted by the approvals tree),
+# GC-ACT-PROVIDER-MISSING and GC-ACT-NOT-APPROVED (review without a node
+# status provider / a node the act did not establish). They apply at both
+# stages — "not approved" is a finding, never a rewritten status.
 #
 # Stages are profile/policy-scoped contexts that select which gate applies
 # (e.g., "authoring" vs "release"). Each active gate declares which stages
@@ -25,12 +31,53 @@
 # is inactive in that context.
 #
 # applicable_roles: Absent means role-agnostic — the check runs against the
-# artifact or bundle, not a specific role. At present, all 20 active gates are
+# artifact or bundle, not a specific role. At present, all 23 active gates are
 # role-agnostic (field omitted). When a gate *does* need role dispatch (future),
 # it will carry a non-empty list here. GC-APPROVAL-MISSING explicitly omits this
 # field. GC-APPROVAL-ROLE is intentionally absent from the catalog — the boundary
 # between gate identity (this catalog) and GC-GIT-ROLE's role-based authorization
 # policy requires a separate design decision and is out of scope for v1.
+#
+# Gate id namespaces and the obligation/enforcement boundary (owner ruling,
+# 2026-08-12, steward#62 / maestro#160):
+#
+#   1. `GC-` is a RESERVED, CLOSED namespace: only this catalog mints GC-* ids.
+#      Any writer emitting a GC-* id unknown to its vendored catalog copy must
+#      fail closed — never degrade to a pass, never invent the entry.
+#   2. Producer-specific ids are ALLOWED outside that namespace in the form
+#      `<namespace>.<name>` (see gate_id_namespaces.producer_pattern). They are
+#      owned by the producer that emits them; steward defines neither their
+#      semantics nor their lifecycle. The leading segment names the originating
+#      tool, NOT the owner of the id: `steward.risk_classify_*` written by
+#      Maestro is a Maestro-owned id. steward never claims an id merely because
+#      it carries a `steward.` prefix — outside GC-*, steward defines nothing.
+#      Should steward ever gate on risk classification itself, that gate gets a
+#      GC-* id, so the two namespaces cannot collide retroactively.
+#   3. No canonical mapping is issued for existing producer ids
+#      (`steward.risk_classify_*`, `human.owner_approval`,
+#      `maestro.validate_strict`). They are enforcement points of the consumer's
+#      own runtime, not gate-check gates; minting GC-* aliases would claim
+#      steward ownership of checks steward does not execute. They keep their
+#      names.
+#   4. The `obligation` vocabulary is a SHARED taxonomy: a producer may classify
+#      its own namespaced ids with it, on its own responsibility. Catalog
+#      membership is decided ONLY by resolving the id against the catalog —
+#      never inferred from the presence of an `obligation` field.
+#   5. `obligation` is the INTENT axis and is catalog-owned. ENFORCEMENT (does
+#      the gate block a transition) is a per-run policy of the consumer, not a
+#      property of gate identity — in steward it lives in `verdict: fail|warn`
+#      plus the stage policy, never here. Standing cross-repo commitment:
+#      steward will never define an `enforcement` key in this catalog and will
+#      never admit the tokens `mandatory` / `advisory` into
+#      obligation_vocabulary, so a consumer carrying its own
+#      `enforcement: mandatory|advisory` field can never collide with this
+#      contract. Enforced by the loader, not by this comment
+#      (`obligation_reserved_tokens` below; top-level keys are a closed set).
+#
+# `gate_id_namespaces` and `obligation_reserved_tokens` are a PUBLISHED MIRROR
+# of the loader's rule, carried in the file so a consumer vendoring a pinned
+# copy gets the patterns machine-readably. They are not a knob: the loader
+# rejects any value diverging from its own constants.
 #
 # Approval model: catalog = data artifact; ownership = the gate-check engine;
 # changes = PR review + merge (like profiles/roles.yaml, profiles/risk-model.yaml).
@@ -39,11 +86,21 @@
 # concerns gate identity, while a second OQ-1 addresses Maestro contract binding.
 # Always cite @id:oq-1-approval-evidence when referencing this decision.
 
-version: 2
+version: 3
+
+gate_id_namespaces:
+  canonical_pattern: "^GC-[A-Z0-9]+(-[A-Z0-9]+)*$"
+  producer_pattern: "^[a-z][a-z0-9-]*\\.[a-z0-9_]+(\\.[a-z0-9_]+)*$"
 
 obligation_vocabulary:
   - quality
   - approval
+
+# Tokens permanently barred from obligation_vocabulary: they belong to the
+# consumer-owned enforcement axis (see ruling 5 in the header).
+obligation_reserved_tokens:
+  - mandatory
+  - advisory
 
 stage_vocabulary:
   - authoring
@@ -169,3 +226,21 @@ gates:
     status: active
     title: "required merge evidence is absent"
     stages: [release]
+
+  GC-ACT-MODE-CONFLICT:
+    obligation: approval
+    status: active
+    title: "act mode legacy contradicted by the approvals tree"
+    stages: [authoring, release]
+
+  GC-ACT-PROVIDER-MISSING:
+    obligation: approval
+    status: active
+    title: "review act mode without a node status provider"
+    stages: [authoring, release]
+
+  GC-ACT-NOT-APPROVED:
+    obligation: approval
+    status: active
+    title: "node not approved by the review act"
+    stages: [authoring, release]

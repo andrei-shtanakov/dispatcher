@@ -1,6 +1,6 @@
 source: steward profiles/gate-catalog.yaml
-commit: 9b79700cb7edb7b6930734ecd10b7ad230870bc6
-vendored: 2026-08-08
+commit: 68f46a9b2e5cfe9ecd1f09524e986c3f687f4155
+vendored: 2026-11-15
 note: pinned copy (repo-boundaries vendoring, ADR-ECO-003). Do not edit here —
   re-vendor with scripts/revendor_steward_gate_catalog.sh, which derives every
   value in this directory from the one commit it is given. Procedure:

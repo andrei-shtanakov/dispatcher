@@ -1,13 +1,13 @@
 {
   "contract": "steward-gate-catalog",
   "contract_version": 1,
-  "producer_commit": "9b79700cb7edb7b6930734ecd10b7ad230870bc6",
+  "producer_commit": "68f46a9b2e5cfe9ecd1f09524e986c3f687f4155",
   "surface_note": "sha256 of every vendored file; excludes PINNED.txt and this manifest",
-  "tree_sha256": "97b5262585c4d0dadee515f10d0383acc1143ae6db3b7e37eb3591369611db62",
+  "tree_sha256": "b36c8a682445794ef56b0a667a3b6de2792c0ab3571a4e47258f3dc3a61d9ec0",
   "surface": [
     {
       "path": "gate-catalog.yaml",
-      "sha256": "b6d6566ee019290e7c8fc0c91a74f45ef2b728bb15d54264bfda82b9fe6431b5"
+      "sha256": "075202cfe41386d88f20d483aad939945a97d949549e3960fc911c5840759b8f"
     }
   ]
 }
