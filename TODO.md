@@ -378,7 +378,7 @@
       `core/governance.py` по словарю каталога — значение вне словаря =
       `unreadable`, fail-closed (NFR-02), отсутствующее значение валидно
       (старый producer). Ре-вендор: `docs/revendor-steward-gate-catalog.md`.
-- [ ] Ре-вендор steward gate-catalog v3 (три `GC-ACT-*`) @ `68f46a9` (steward v0.2.0) + потребитель на v3 @owner:github:andrei-shtanakov @id:gate-catalog-v3-revendor
+- [x] Ре-вендор steward gate-catalog v3 (три `GC-ACT-*`) @ `68f46a9` (steward v0.2.0) + потребитель на v3 — PR #322 @owner:github:andrei-shtanakov @id:gate-catalog-v3-revendor
       Принятие inbox-issue #309 от steward (ADR-ECO-006, steward#211/#223, M0 Task 9).
       Каталог 2 → 3: +`GC-ACT-MODE-CONFLICT`/`-PROVIDER-MISSING`/`-NOT-APPROVED`
       (obligation `approval`, обе стадии) и два новых top-level ключа — опубликованные
