@@ -502,6 +502,17 @@
       #37), повторный `approve` идемпотентен. **Байты обоих брифов больше не править
       вручную**: любая правка снимет подпись. Ждёт discovery, а не мы — вахту не заводим.
 
+- [ ] Мигрировать customer-бриф на контракт discovery-brief v1.3 и переподписать через `discovery approve` @owner:github:andrei-shtanakov @id:migrate-briefs-contract-v1.3
+      Принятие inbox-issue #319 от discovery (discovery#74, перепин v1.3 в PR discovery#75).
+      Линтер v1.3 (GC-18…GC-21) отвергал одобренный `spec/discovery-brief-customer.md`:
+      нет translation table, нет NFR категории cost, не названы владельцы четырёх областей.
+      Шаг 1 — PR с контентом (`status: draft`): translation table, NFR-04 cost → открытый
+      Q-03, `owns:` у P-01 (решения стейкхолдера 2026-11-15). Мержит **человек**. Шаг 2 —
+      `discovery approve` на клоне + PR с подписью. До шага 2 engineer-бриф падает по
+      GC-12 (upstream `draft`) — ожидаемо. `-customer-ui.md` — draft, upstream не служит,
+      не мигрируем. Затем discovery проверяет живой `start --upstream`
+      (`todo://discovery/upstream-v13-migration`) — ждёт сосед, вахту не заводим.
+
 ## KB snapshots: доставка через ветку derived-snapshots (резолюция ecosystem-kb#98)
 
 - [x] `publish-snapshot` → ветка `derived-snapshots`: publisher и читатели уходят с master — PR #217 @owner:github:andrei-shtanakov @id:snapshot-publish-branch @epic:eco.ops
