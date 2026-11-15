@@ -1,6 +1,10 @@
 ---
 spec_stage: discovery
-status: draft
+status: approved
+approved_by: discovery-runtime
+approved_at: '2026-11-15T17:27:48Z'
+approver: andrei-shtanakov
+approved_content_hash: sha256:8e18ea62fa44375b8ba80b42ffbd597b6ab9c63e0f9860e2d6ba980cae0bd1d0
 version: 2
 generated_by: discovery-agent@claude-fable-5
 generated_at: 2026-07-14
